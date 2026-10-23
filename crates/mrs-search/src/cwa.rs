@@ -37,7 +37,7 @@ use std::time::Duration;
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolId;
 use mrs_core::SymbolTable;
-use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
+use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource};
 use mrs_core::formula::Atom;
 use mrs_proof::extract::extract_proof;
 use mrs_proof::tstp::format_tstp;
@@ -80,8 +80,10 @@ fn clause_predicate_symbols(clause: &Clause) -> HashSet<SymbolId> {
 
 /// Looks for a single clause `T` in the input that matches the pattern:
 /// - has ≥ `MIN_BRANCHES` literals,
-/// - every literal is a positive `Pred(p_k, args_k)` (negative is also allowed
-///   since negation polarity is irrelevant to the branch structure),
+/// - every literal is a `Pred(p_k, args_k)` atom, positive or negative (the
+///   polarity is preserved verbatim into the branch's unit clause by
+///   `make_branch_unit` — see its doc comment for why flipping it would be
+///   unsound),
 /// - all predicate symbols `p_k` are distinct,
 /// - literals are pairwise variable-disjoint.
 ///
@@ -93,14 +95,27 @@ fn detect_top_disjunction(clauses: &[Clause]) -> Option<TopDisjunction> {
             continue;
         }
         // All literals must be Pred with distinct predicate symbols.
-        // (Variable sharing across literals is allowed: each branch's body
-        // refutation is universally quantified over the unit's variables, so
-        // sharing imposes no constraint on independence.)
+        // Literals must also be pairwise variable-disjoint to ensure soundness
+        // when split into independent universally-quantified branches.
         let mut preds: Vec<SymbolId> = Vec::with_capacity(clause.literals.len());
         let mut seen_preds: HashSet<SymbolId> = HashSet::default();
+        let mut seen_vars: HashSet<mrs_core::term::VarId> = HashSet::default();
         let mut ok = true;
         let mut why_rejected = "";
         for lit in &clause.literals {
+            let mut lit_vars = HashSet::default();
+            lit.collect_vars(&mut lit_vars);
+            for v in lit_vars {
+                if !seen_vars.insert(v) {
+                    ok = false;
+                    why_rejected = "shared variable across literals";
+                    break;
+                }
+            }
+            if !ok {
+                break;
+            }
+
             match &lit.atom {
                 Atom::Pred(sym, _) => {
                     if !seen_preds.insert(*sym) {
@@ -137,6 +152,17 @@ fn detect_top_disjunction(clauses: &[Clause]) -> Option<TopDisjunction> {
                 "[CWA] candidate clause {} with {} branches",
                 clause.id.0,
                 candidate.branch_predicates.len()
+            );
+        }
+        if std::env::var("TRACE_CWA_POLARITY").is_ok() {
+            let polarities: Vec<&str> = clause
+                .literals
+                .iter()
+                .map(|lit| if lit.positive { "+" } else { "-" })
+                .collect();
+            eprintln!(
+                "[CWA-POLARITY] candidate clause {} branch polarities: {:?}",
+                clause.id.0, polarities
             );
         }
         match &best {
@@ -231,15 +257,20 @@ fn extract_branch_clauses(top: &TopDisjunction, clauses: &[Clause]) -> Vec<Vec<u
     result
 }
 
-/// Builds the unit clause `def_k(X̄)` from the k-th literal of the top clause.
-/// The literal is forced positive (the original may be positive or negative —
-/// in definitional CNF on a top-level conjunction it is positive).
+/// Builds the unit clause `def_k(X̄)` (or `~def_k(X̄)`) from the k-th literal
+/// of the top clause, **preserving its original polarity**.
+///
+/// Forcing the literal positive here is unsound: if `T = ... ∨ ~def_k(X̄) ∨
+/// ...`, a model satisfying `T` via this disjunct has `def_k(X̄)` *false*, so
+/// the branch must attempt to refute `{~def_k(X̄)} ∪ Dₖ`, not `{def_k(X̄)} ∪
+/// Dₖ`. Silently flipping the sign here would search for (and potentially
+/// "refute") an entirely different, unrelated branch, which is exactly the
+/// class of bug that produced the false `Theorem` verdict on `PRO013+3.p`.
 fn make_branch_unit(top_clause: &Clause, k: usize, id_gen: &mut ClauseIdGen) -> Clause {
-    let lit = &top_clause.literals[k];
-    let positive_lit = Literal::pos(lit.atom.clone());
+    let branch_lit = top_clause.literals[k].clone();
     Clause::new(
         id_gen.next(),
-        vec![positive_lit],
+        vec![branch_lit],
         ClauseSource::Inference {
             rule: "split_component",
             parents: vec![top_clause.id].into(),
@@ -255,20 +286,40 @@ fn make_branch_unit(top_clause: &Clause, k: usize, id_gen: &mut ClauseIdGen) -> 
 ///
 /// Returns:
 /// - `Some(SearchResult::Refutation)` if every branch refutes.
-/// - `Some(SearchResult::Saturated)` if any branch genuinely saturates
+/// - `Some(SearchResult::Saturated(_))` if any branch genuinely saturates
 ///   without weight bound (currently unreachable because we always use a
 ///   weight bound; reserved for future use).
 /// - `None` if the input doesn't match the pattern, any branch times out, or
 ///   any branch saturates under the weight bound (which is incomplete).
 ///
-/// The TSTP proof string returned on refutation simply concatenates the
-/// per-branch proofs with explanatory comments — it is informational only.
+/// The TSTP proof string returned on refutation contains the original top
+/// disjunction followed by every branch derivation and an explicit
+/// `avatar_sat_refutation` roll-up.
 pub fn try_componentwise_refute(
     clauses: &[Clause],
+    provenance: &[Clause],
     id_gen: &mut ClauseIdGen,
     symbols: std::sync::Arc<SymbolTable>,
     sym_config: Arc<SymbolConfig>,
 ) -> Option<SearchResult> {
+    try_componentwise_refute_until(clauses, provenance, id_gen, symbols, sym_config, None)
+}
+
+/// Scheduler variant that caps the sum of branch searches at a shared wall
+/// deadline. The standalone diagnostic API retains its per-branch bound.
+pub(crate) fn try_componentwise_refute_until(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    id_gen: &mut ClauseIdGen,
+    symbols: std::sync::Arc<SymbolTable>,
+    sym_config: Arc<SymbolConfig>,
+    deadline: Option<std::time::Instant>,
+) -> Option<SearchResult> {
+    let fixed_budget_deadline =
+        std::time::Instant::now() + PER_BRANCH_TIME.saturating_mul(MIN_BRANCHES as u32);
+    let deadline = Some(deadline.map_or(fixed_budget_deadline, |deadline| {
+        deadline.min(fixed_budget_deadline)
+    }));
     let top = detect_top_disjunction(clauses)?;
     let n = top.branch_predicates.len();
     let branches = extract_branch_clauses(&top, clauses);
@@ -293,23 +344,38 @@ pub fn try_componentwise_refute(
         ..SearchConfig::default()
     };
 
-    let mut proof_parts: Vec<String> = Vec::with_capacity(n);
+    let mut combined_proof: HashMap<ClauseId, Clause> = HashMap::default();
+    let mut branch_empty_ids = Vec::new();
 
     #[allow(clippy::needless_range_loop)]
     for k in 0..n {
+        let remaining =
+            deadline.map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+        if remaining.is_some_and(|remaining| remaining.is_zero()) {
+            return None;
+        }
+        let branch_config = SearchConfig {
+            time_limit: remaining
+                .map_or(PER_BRANCH_TIME, |remaining| remaining.min(PER_BRANCH_TIME)),
+            ..sub_config.clone()
+        };
         let mut branch_clauses: Vec<Clause> =
             branches[k].iter().map(|&i| clauses[i].clone()).collect();
         let unit = make_branch_unit(top_clause, k, id_gen);
         branch_clauses.push(unit);
 
-        let mut state = SearchState::new(
+        let mut state = SearchState::new_with_ml(
             branch_clauses,
+            provenance.to_vec(),
             id_gen.clone(),
             sym_config.clone(),
             symbols.clone(),
             false,
+            None,
+            false,
+            crate::ClauseWeightFn::Standard,
         );
-        let result = search(&mut state, &sub_config);
+        let result = search(&mut state, &branch_config);
 
         // Advance the caller's id_gen past any IDs used by this sub-search.
         *id_gen = state.id_gen.clone();
@@ -317,9 +383,10 @@ pub fn try_componentwise_refute(
         if std::env::var("TRACE_CWA").is_ok() {
             let outcome = match &result {
                 SearchResult::Refutation(..) => "Refutation",
-                SearchResult::Saturated => "Saturated",
+                SearchResult::Saturated(_) => "Saturated",
                 SearchResult::Timeout => "Timeout",
                 SearchResult::GaveUp => "GaveUp",
+                SearchResult::ResourceOut(_) => "ResourceOut",
             };
             eprintln!(
                 "[CWA] branch {}/{} ({:?}, {} clauses): {}",
@@ -333,33 +400,58 @@ pub fn try_componentwise_refute(
 
         match result {
             SearchResult::Refutation(empty_id, _) => {
+                if std::env::var("TRACE_CWA").is_ok() {
+                    eprintln!("[TRACE] CWA branch empty_id = {}", empty_id.0);
+                }
+                branch_empty_ids.push(empty_id);
                 // Convert IdClause store → legacy Clause store for proof extraction
-                let legacy_store: HashMap<_, _> = state
+                let mut legacy_store: HashMap<_, _> = state
                     .clause_store
                     .iter()
                     .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
                     .collect();
+                legacy_store.insert(top_clause.id, top_clause.clone());
                 let proof = extract_proof(empty_id, &legacy_store);
-                let tstp = format_tstp(&proof, &symbols);
-                proof_parts.push(format!(
-                    "% --- componentwise branch {}/{}: predicate {:?} ---\n{}",
-                    k + 1,
-                    n,
-                    top.branch_predicates[k],
-                    tstp
-                ));
+                for clause in proof {
+                    combined_proof.insert(clause.id, clause);
+                }
             }
             // Any non-refutation outcome aborts CWA: if a single branch
             // doesn't refute within its budget we cannot conclude UNSAT.
             _ => return None,
         }
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            return None;
+        }
     }
 
-    let combined = proof_parts.join("\n");
-    // Reuse the top clause's id as the "empty clause" id for the overall
-    // refutation: this is just a placeholder for SearchResult::Refutation;
-    // the actual chain of evidence is in the TSTP string.
-    Some(SearchResult::Refutation(top_clause.id, combined))
+    let mut final_proof: Vec<Clause> = combined_proof.into_values().collect();
+
+    // Add the final unified/roll-up $false clause (avatar_sat_refutation)
+    // Allocate the roll-up node after all branch sub-searches so it cannot
+    // collide with a real clause ID. The original fixed sentinel made the
+    // proof graph depend on an out-of-band magic value.
+    let final_id = id_gen.next();
+    let final_false_clause = Clause::new(
+        final_id,
+        vec![], // empty literal set represents $false
+        ClauseSource::Inference {
+            rule: "avatar_sat_refutation",
+            // The first parent is the original top disjunction; the remaining
+            // parents are the independently refuted branch roots. This makes
+            // the CWA case split explicit and kernel-checkable.
+            parents: std::iter::once(top_clause.id)
+                .chain(branch_empty_ids)
+                .collect::<Vec<_>>()
+                .into(),
+        },
+    );
+    final_proof.push(final_false_clause);
+
+    final_proof.sort_unstable_by_key(|c| c.id.0);
+
+    let tstp = format_tstp(&final_proof, &symbols);
+    Some(SearchResult::Refutation(final_id, tstp))
 }
 
 // ---------------------------------------------------------------------------
@@ -370,7 +462,7 @@ pub fn try_componentwise_refute(
 mod tests {
     use super::*;
     use mrs_core::SymbolTable;
-    use mrs_core::clause::ClauseIdGen;
+    use mrs_core::clause::{ClauseIdGen, Literal};
     use mrs_core::term::Term;
 
     fn make_clause(id_gen: &mut ClauseIdGen, lits: Vec<Literal>, name: &str) -> Clause {
@@ -436,6 +528,7 @@ mod tests {
 
         let result = try_componentwise_refute(
             &clauses,
+            &[],
             &mut id_gen,
             std::sync::Arc::new(syms.clone()),
             make_sym_config(),
@@ -443,6 +536,128 @@ mod tests {
         assert!(
             matches!(result, Some(SearchResult::Refutation(..))),
             "expected Refutation, got {:?}",
+            result
+        );
+    }
+
+    /// Regression test for the PRO013+3.p unsoundness: `make_branch_unit`
+    /// must preserve the original literal's polarity instead of forcing it
+    /// positive. A negative disjunct `~def_k(X)` must produce a *negative*
+    /// branch unit clause, not `def_k(X)`.
+    #[test]
+    fn make_branch_unit_preserves_polarity() {
+        let mut syms = SymbolTable::new();
+        let mut id_gen = ClauseIdGen::new();
+        let d = syms.intern("def_0");
+
+        let top_lits = vec![
+            Literal::neg(Atom::pred(d, vec![Term::var(0)])),
+            Literal::pos(Atom::pred(syms.intern("def_1"), vec![Term::var(1)])),
+        ];
+        let top = make_clause(&mut id_gen, top_lits, "top");
+
+        let branch = make_branch_unit(&top, 0, &mut id_gen);
+        assert_eq!(branch.literals.len(), 1);
+        assert!(
+            !branch.literals[0].positive,
+            "expected branch unit for a negative top-clause literal to stay negative"
+        );
+
+        let branch_pos = make_branch_unit(&top, 1, &mut id_gen);
+        assert!(
+            branch_pos.literals[0].positive,
+            "expected branch unit for a positive top-clause literal to stay positive"
+        );
+    }
+
+    /// End-to-end regression test for the PRO013+3.p unsoundness, going
+    /// through the *real* detect_top_disjunction -> try_componentwise_refute
+    /// path (unlike `make_branch_unit_preserves_polarity` above, which only
+    /// exercises `make_branch_unit` in isolation). One of the top clause's
+    /// branch literals is negative (`~def_0(X0)`), mirroring real mixed-
+    /// polarity CWA candidates found in TPTP's SEU domain (e.g. SEU409+3.p,
+    /// SEU419+3.p, SEU421+3.p, SEU425+3.p, SEU441+3.p, SEU444+3.p,
+    /// SEU438+3.p all produce a candidate with branch polarities
+    /// `[-, +, -, +, +, +]`, confirmed via `TRACE_CWA_POLARITY=1` against
+    /// the real TPTP-v9.2.1 library) -- this is not just a theoretical
+    /// pattern.
+    ///
+    /// For the negative branch, `make_branch_unit` must emit `~def_0(Y)` as
+    /// the branch unit (not `def_0(Y)`), so the definition clauses proving
+    /// that branch's contradiction are flipped relative to the positive
+    /// branches: `def_0(Y) | p_0` and `def_0(Y) | ~p_0` (resolving the
+    /// negative unit against each still derives `p_0` and `~p_0`).
+    #[test]
+    fn cwa_solves_definitional_cnf_with_mixed_polarity_branches() {
+        let mut syms = SymbolTable::new();
+        let mut id_gen = ClauseIdGen::new();
+        let mut clauses: Vec<Clause> = Vec::new();
+        let mut top_lits: Vec<Literal> = Vec::new();
+
+        for k in 0..5u32 {
+            let dname = format!("def_{}", k);
+            let pname = format!("p_{}", k);
+            let d = syms.intern(&dname);
+            let p = syms.intern(&pname);
+
+            if k == 0 {
+                // Negative branch: top literal ~def_0(X0). The branch unit
+                // will be ~def_0(Y); definition clauses must be positive
+                // def_0 disjuncts so resolving the negative unit against
+                // them still derives the p_0 / ~p_0 contradiction.
+                top_lits.push(Literal::neg(Atom::pred(d, vec![Term::var(k)])));
+                clauses.push(make_clause(
+                    &mut id_gen,
+                    vec![
+                        Literal::pos(Atom::pred(d, vec![Term::var(100 + k)])),
+                        Literal::pos(Atom::prop(p)),
+                    ],
+                    &format!("d_{}_pos", k),
+                ));
+                clauses.push(make_clause(
+                    &mut id_gen,
+                    vec![
+                        Literal::pos(Atom::pred(d, vec![Term::var(200 + k)])),
+                        Literal::neg(Atom::prop(p)),
+                    ],
+                    &format!("d_{}_neg", k),
+                ));
+            } else {
+                // Positive branches, same shape as cwa_solves_small_definitional_cnf.
+                top_lits.push(Literal::pos(Atom::pred(d, vec![Term::var(k)])));
+                clauses.push(make_clause(
+                    &mut id_gen,
+                    vec![
+                        Literal::neg(Atom::pred(d, vec![Term::var(100 + k)])),
+                        Literal::pos(Atom::prop(p)),
+                    ],
+                    &format!("d_{}_pos", k),
+                ));
+                clauses.push(make_clause(
+                    &mut id_gen,
+                    vec![
+                        Literal::neg(Atom::pred(d, vec![Term::var(200 + k)])),
+                        Literal::neg(Atom::prop(p)),
+                    ],
+                    &format!("d_{}_neg", k),
+                ));
+            }
+        }
+
+        let top = make_clause(&mut id_gen, top_lits, "top");
+        clauses.push(top);
+
+        let result = try_componentwise_refute(
+            &clauses,
+            &[],
+            &mut id_gen,
+            std::sync::Arc::new(syms.clone()),
+            make_sym_config(),
+        );
+        assert!(
+            matches!(result, Some(SearchResult::Refutation(..))),
+            "expected Refutation (mixed-polarity branches must all still \
+             refute correctly), got {:?}",
             result
         );
     }
@@ -458,6 +673,7 @@ mod tests {
         ];
         let result = try_componentwise_refute(
             &clauses,
+            &[],
             &mut id_gen,
             std::sync::Arc::new(syms.clone()),
             make_sym_config(),
@@ -490,10 +706,10 @@ mod tests {
     }
 
     #[test]
-    fn cwa_accepts_top_with_shared_variables() {
-        // 5 distinct predicates but literals share variables — now allowed.
-        // Each branch's body refutation is universally quantified over the
-        // unit's variables, so sharing imposes no constraint on independence.
+    fn cwa_rejects_top_with_shared_variables() {
+        // 5 distinct predicates but literals share variables — REJECTED.
+        // Independent componentwise refutation is fundamentally unsound if the
+        // branches share variables (∀x(P(x) ∨ Q(x)) ≠ ∀x P(x) ∨ ∀x Q(x)).
         let mut syms = SymbolTable::new();
         let mut id_gen = ClauseIdGen::new();
         let preds: Vec<SymbolId> = (0..5).map(|i| syms.intern(&format!("p{}", i))).collect();
@@ -506,7 +722,6 @@ mod tests {
             "top",
         );
         let detected = detect_top_disjunction(&[top]);
-        assert!(detected.is_some());
-        assert_eq!(detected.unwrap().branch_predicates.len(), 5);
+        assert!(detected.is_none());
     }
 }

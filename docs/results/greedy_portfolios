@@ -5,13 +5,13 @@
   Consolidated : 2026-06-30 at commit 5cd1ac6
 
   Provenance:
-    FNE, FEQ, UEQ, EPU, EPS, ICU <- /mnt/c/Users/fr22192/tmp/portfolios_avx2/
+    FNE, FEQ, UEQ, EPU, EPS, ICU <- /mnt/c/Users/user/tmp/portfolios_avx2/
       - run_feq.csv
       - run_fne_eps_epu.csv
       - run_ueq.csv
 
   NOTE: This portfolio is tuned specifically using AVX2-enabled sweep data
-  sourced from /mnt/c/Users/fr22192/tmp/portfolios_avx2/.
+  sourced from /mnt/c/Users/user/tmp/portfolios_avx2/.
 ================================================================================
 
 ==========================================================

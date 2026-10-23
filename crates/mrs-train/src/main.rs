@@ -1,3 +1,5 @@
+#[allow(dead_code)]
+mod parent_train;
 mod premise_train;
 mod schedule_train;
 
@@ -9,6 +11,8 @@ struct TrainCfg {
     epochs: usize,
     val_split: f32,
     neg_per_pos: usize,
+    #[allow(dead_code)]
+    inference_kind: u8,
     out_prefix: String,
 }
 
@@ -18,6 +22,7 @@ fn parse_args() -> (String, TrainCfg) {
     let mut epochs = 30usize;
     let mut val_split = 0.15f32;
     let mut neg_per_pos = 1usize;
+    let mut inference_kind = 0u8;
     let mut positionals: Vec<String> = Vec::new();
 
     let mut i = 1;
@@ -39,6 +44,17 @@ fn parse_args() -> (String, TrainCfg) {
                 i += 1;
                 neg_per_pos = args[i].parse().expect("--neg-per-pos expects an integer");
             }
+            "--inference-kind" => {
+                i += 1;
+                inference_kind = args[i]
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|kind| *kind <= 3)
+                    .unwrap_or_else(|| {
+                        eprintln!("--inference-kind must be in 0..=3");
+                        std::process::exit(1);
+                    });
+            }
             other => positionals.push(other.to_string()),
         }
         i += 1;
@@ -46,7 +62,7 @@ fn parse_args() -> (String, TrainCfg) {
 
     if positionals.is_empty() {
         eprintln!(
-            "Usage: mrs-train [--mode premise|schedule|enigma] [--epochs N] [--val-split F] [--neg-per-pos R] <log_dir> [out_prefix]"
+            "Usage: mrs-train [--mode premise|schedule|parent|enigma] [--epochs N] [--val-split F] [--neg-per-pos R] [--inference-kind 0..3] <log_dir> [out_prefix]"
         );
         std::process::exit(1);
     }
@@ -63,6 +79,7 @@ fn parse_args() -> (String, TrainCfg) {
             epochs,
             val_split,
             neg_per_pos,
+            inference_kind,
             out_prefix,
         },
     )
@@ -73,12 +90,10 @@ fn main() {
 
     #[cfg(feature = "cuda")]
     {
-        println!("Using CUDA (LibTorch) Backend");
-        type MyBackend = burn::backend::libtorch::LibTorch;
-        type MyAutodiffBackend = burn::backend::autodiff::Autodiff<MyBackend>;
-        let device = burn::backend::libtorch::LibTorchDevice::Cuda(0);
+        println!("Using CUDA Backend");
+        let device = burn::tensor::Device::cuda(0).autodiff();
         if cfg.mode == "premise" {
-            premise_train::train_premise::<MyAutodiffBackend>(
+            premise_train::train_premise(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
@@ -87,12 +102,23 @@ fn main() {
                 cfg.neg_per_pos,
             );
         } else if cfg.mode == "schedule" {
-            schedule_train::train_schedule::<MyAutodiffBackend>(
+            schedule_train::train_schedule(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
                 cfg.epochs,
                 cfg.val_split,
+            );
+        } else if cfg.mode == "parent" {
+            #[cfg(feature = "ndarray")]
+            parent_train::run(&log_dir, &cfg.out_prefix, cfg.epochs, cfg.inference_kind)
+                .unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                });
+            #[cfg(not(feature = "ndarray"))]
+            eprintln!(
+                "The parent-guidance trainer requires `--no-default-features --features ndarray`."
             );
         } else {
             println!("Old enigma training is skipped in this mode.");
@@ -102,11 +128,9 @@ fn main() {
     #[cfg(all(feature = "wgpu", not(feature = "cuda")))]
     {
         println!("Using Wgpu Backend");
-        type MyBackend = burn::backend::wgpu::Wgpu;
-        type MyAutodiffBackend = burn::backend::autodiff::Autodiff<MyBackend>;
-        let device = burn::backend::wgpu::WgpuDevice::default();
+        let device = burn::tensor::Device::wgpu(Default::default()).autodiff();
         if cfg.mode == "premise" {
-            premise_train::train_premise::<MyAutodiffBackend>(
+            premise_train::train_premise(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
@@ -115,12 +139,23 @@ fn main() {
                 cfg.neg_per_pos,
             );
         } else if cfg.mode == "schedule" {
-            schedule_train::train_schedule::<MyAutodiffBackend>(
+            schedule_train::train_schedule(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
                 cfg.epochs,
                 cfg.val_split,
+            );
+        } else if cfg.mode == "parent" {
+            #[cfg(feature = "ndarray")]
+            parent_train::run(&log_dir, &cfg.out_prefix, cfg.epochs, cfg.inference_kind)
+                .unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                });
+            #[cfg(not(feature = "ndarray"))]
+            eprintln!(
+                "The parent-guidance trainer requires `--no-default-features --features ndarray`."
             );
         } else {
             println!("Old enigma training is skipped in this mode.");
@@ -129,12 +164,10 @@ fn main() {
 
     #[cfg(all(feature = "ndarray", not(any(feature = "cuda", feature = "wgpu"))))]
     {
-        println!("Using NdArray (CPU) Backend");
-        type MyBackend = burn::backend::ndarray::NdArray;
-        type MyAutodiffBackend = burn::backend::autodiff::Autodiff<MyBackend>;
-        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        println!("Using Flex (CPU) Backend");
+        let device = burn::tensor::Device::flex().autodiff();
         if cfg.mode == "premise" {
-            premise_train::train_premise::<MyAutodiffBackend>(
+            premise_train::train_premise(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
@@ -143,13 +176,19 @@ fn main() {
                 cfg.neg_per_pos,
             );
         } else if cfg.mode == "schedule" {
-            schedule_train::train_schedule::<MyAutodiffBackend>(
+            schedule_train::train_schedule(
                 device,
                 &log_dir,
                 &cfg.out_prefix,
                 cfg.epochs,
                 cfg.val_split,
             );
+        } else if cfg.mode == "parent" {
+            parent_train::run(&log_dir, &cfg.out_prefix, cfg.epochs, cfg.inference_kind)
+                .unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                });
         } else {
             println!("Old enigma training is skipped in this mode.");
         }

@@ -31,7 +31,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 PROBLEMS_DIR="${BENCH_DIR}/problems/${EDITION}"
-OUT="${SCRIPT_DIR}/answers.tsv"
+OUT="${SCRIPT_DIR}/answers_${EDITION}.tsv"
 
 if [[ ! -d "${PROBLEMS_DIR}/lists" ]]; then
     echo "Error: ${PROBLEMS_DIR}/lists not found." >&2
@@ -69,7 +69,7 @@ fetch_one() {
     # If the website had no answer, try the local problem file.
     if [[ -z "$status" || "$status" == "GaveUp" ]]; then
         local local_file
-        local_file=$(find "$PROBLEMS_DIR" -maxdepth 2 -name "${problem}.p" 2>/dev/null | head -1)
+        local_file=$(find -L "$PROBLEMS_DIR" -maxdepth 2 -name "${problem}.p" 2>/dev/null | head -1)
         if [[ -n "$local_file" ]]; then
             local local_status
             local_status=$(grep -m1 '% Status' "$local_file" 2>/dev/null | awk '{print $NF}')
@@ -101,4 +101,4 @@ trap - EXIT
 
 total_lines=$(wc -l < "$OUT")
 solved=$(awk -F'\t' '$2 != "GaveUp" {c++} END {print c+0}' "$OUT")
-echo "[reference] Done. ${total_lines} problems in answers.tsv (${solved} with definitive status)."
+echo "[reference] Done. ${total_lines} problems in answers_${EDITION}.tsv (${solved} with definitive status)."

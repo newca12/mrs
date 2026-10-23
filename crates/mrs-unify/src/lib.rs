@@ -30,6 +30,7 @@
 //! assert_eq!(mgu.apply_term(&Term::var(1)), Term::constant(a));
 //! ```
 
+pub mod ac_subset;
 pub mod matching;
 pub mod robinson;
 
@@ -47,6 +48,26 @@ pub enum UnifyError {
     ArityMismatch { expected: usize, found: usize },
     /// A variable occurs in the term it would be unified with (infinite term).
     OccursCheck { var: u32 },
+    /// The match would require binding a variable the caller declared rigid.
+    ///
+    /// Superposition and the other rewriting rules must not instantiate the
+    /// clause being rewritten; see
+    /// [`robinson::unify_ac_rigid_id`].
+    RigidVariable { var: u32 },
+    /// The deterministic pairing budget ran out before the search decided.
+    ///
+    /// Always a non-success: an exhausted budget is never read as a match and
+    /// never as a proof that no match exists. See
+    /// [`ac_subset::AcSubsetBudget`].
+    BudgetExhausted,
+    /// The terms are not a shape this operation is defined on.
+    ///
+    /// Returned rather than treated as a mismatch, so that an unsupported AC
+    /// shape cannot be silently reported as "no match" by a caller that is
+    /// obliged to fail closed.
+    UnsupportedShape,
+    /// No AC subset match exists.
+    NoAcSubsetMatch,
 }
 
 impl fmt::Display for UnifyError {
@@ -60,6 +81,18 @@ impl fmt::Display for UnifyError {
             }
             UnifyError::OccursCheck { var } => {
                 write!(f, "occurs check failed for X{}", var)
+            }
+            UnifyError::RigidVariable { var } => {
+                write!(f, "refused to bind rigid variable X{}", var)
+            }
+            UnifyError::BudgetExhausted => {
+                write!(f, "pairing budget exhausted before the search decided")
+            }
+            UnifyError::UnsupportedShape => {
+                write!(f, "terms are not a supported shape for this operation")
+            }
+            UnifyError::NoAcSubsetMatch => {
+                write!(f, "no AC subset match exists")
             }
         }
     }

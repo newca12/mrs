@@ -9,25 +9,86 @@
 
 pub mod named;
 
+/// Per-problem wall ceiling for the condensed-detachment pre-pass.
+const CONDENSED_DETACHMENT_BUDGET_MS: u64 = 1_000;
+/// Process-wide wall ceiling, so concurrent benchmark jobs cannot each pay the
+/// per-problem cap on every input problem.
+const CONDENSED_DETACHMENT_PROCESS_MS: u64 = 5_000;
+
+fn epr_ground_prepass_enabled(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
+fn epr_ground_prepass_should_run(is_epr: bool, enabled: bool, model_enabled: bool) -> bool {
+    is_epr && (enabled || model_enabled)
+}
+
+/// Remaining wall budget shared by the pre-passes and portfolio.
+fn remaining_schedule_budget(total_budget: Duration, elapsed: Duration) -> Option<Duration> {
+    let remaining = total_budget.saturating_sub(elapsed);
+    (!remaining.is_zero()).then_some(remaining)
+}
+
+fn epr_budget_with_remaining_time(
+    mut budget: crate::EprBudget,
+    remaining: Duration,
+) -> Option<crate::EprBudget> {
+    if remaining.is_zero() {
+        return None;
+    }
+    budget.timeout = budget.timeout.min(remaining);
+    Some(budget)
+}
+
+fn run_epr_prepass<T>(
+    budget: crate::EprBudget,
+    remaining: Option<Duration>,
+    run: impl FnOnce(crate::EprBudget) -> T,
+) -> Option<T> {
+    let pass_budget = epr_budget_with_remaining_time(budget, remaining?)?;
+    Some(run(pass_budget))
+}
+
+static CONDENSED_DETACHMENT_PROCESS_START: OnceLock<Instant> = OnceLock::new();
+
+fn condensed_detachment_process_elapsed() -> Duration {
+    CONDENSED_DETACHMENT_PROCESS_START
+        .get_or_init(Instant::now)
+        .elapsed()
+}
+
+/// Reads a bound override, falling back to the production value.
+///
+/// A malformed or zero value falls back rather than disabling the bound: a zero
+/// would turn "bounded pre-pass" into "unbounded closure", which is the one
+/// thing these bounds exist to prevent.
+fn condensed_detachment_env_bound(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
 use crate::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolTable;
 use mrs_core::clause::{Clause, ClauseIdGen};
-use mrs_core::symbol::SymbolId;
-use mrs_core::term::Term;
 use mrs_proof::extract::extract_proof;
 use mrs_proof::tstp::format_tstp;
 
-use crate::cwa::try_componentwise_refute;
+use crate::condensed_detachment::try_refutation as try_condensed_detachment_refutation;
 use crate::fvo::try_fvo_refutation;
 use crate::given_clause::search;
-use crate::instgen::is_epr;
+use crate::instgen::{InstGenTelemetry, is_epr};
 use crate::state::SearchState;
-use crate::{LiteralSelection, SearchConfig, SearchResult, SelectionStrategy, TermOrdering};
+use crate::{
+    LiteralSelection, SearchConfig, SearchResult, SelectionStrategy, SharedClauseChain,
+    TermOrdering,
+};
 
 /// A strategy schedule: a sequence of (config, time_slice) pairs.
 ///
@@ -39,19 +100,45 @@ pub struct StrategySchedule {
 }
 
 impl StrategySchedule {
+    /// Rescale all strategy slices proportionally so they sum to `total_time`.
+    /// The last slice absorbs rounding just like the schedule constructors do
+    /// at their initial allocation.
+    pub fn rescale_to_budget(&mut self, total_time: Duration) {
+        if self.strategies.is_empty() {
+            return;
+        }
+        let current: Duration = self.strategies.iter().map(|(_, slice)| *slice).sum();
+        if current.is_zero() {
+            return;
+        }
+        let mut allocated = Duration::ZERO;
+        let len = self.strategies.len();
+        for (index, (config, slice)) in self.strategies.iter_mut().enumerate() {
+            let time = if index + 1 == len {
+                total_time.saturating_sub(allocated)
+            } else {
+                let nanos = slice.as_nanos() * total_time.as_nanos() / current.as_nanos();
+                Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+            };
+            config.time_limit = time;
+            *slice = time;
+            allocated = allocated.saturating_add(time);
+        }
+    }
+
     /// Creates the default strategy schedule.
     ///
-    ///  1. AgeWeight(5) + AllNegative + KBO — balanced exploration (14%)
-    ///  2. SmallestFirst + AllNegative + KBO + no weight limit + no AVATAR — deep chain proofs (10%)
-    ///  3. SmallestFirst + AllNegative + KBO — pure best-first (10%)
-    ///  4. AgeWeight(5) + MaxNegative + KBO — aggressive selection (9%)
-    ///  5. AgeWeight(5) + All + KBO — unrestricted literal selection (9%)
-    ///  6. AgeWeight(5) + All + KBO + no AVATAR — FNE/definitional CNF proofs (10%)
-    ///  7. AgeWeight(5) + AllNegative + LPO — LPO balanced exploration (14%)
-    ///  8. GoalDirected(10) + AllNegative + LPO — LPO goal-directed (9%)
-    ///  9. SmallestFirst + AllNegative + LPO — LPO best-first (9%)
-    /// 10. SmallestFirst + All + KBO + max_weight=30 + no AVATAR — FEQ (4%)
-    /// 11. AgeWeight(5) + All + LPO + no weight limit + no AVATAR — FEQ (remainder ~2%)
+    ///  1. AgeWeight(5) + AllNegative + KBO — balanced exploration (weight 14)
+    ///  2. SmallestFirst + AllNegative + KBO + no weight limit + no AVATAR — deep chain proofs (weight 10)
+    ///  3. SmallestFirst + AllNegative + KBO — pure best-first (weight 10)
+    ///  4. AgeWeight(5) + MaxNegative + KBO — aggressive selection (weight 9)
+    ///  5. AgeWeight(5) + All + KBO — unrestricted literal selection (weight 9)
+    ///  6. AgeWeight(5) + All + KBO + no AVATAR — FNE/definitional CNF proofs (weight 10)
+    ///  7. AgeWeight(5) + AllNegative + LPO — LPO balanced exploration (weight 14)
+    ///  8. GoalDirected(10) + AllNegative + LPO — LPO goal-directed (weight 9)
+    ///  9. SmallestFirst + AllNegative + LPO — LPO best-first (weight 9)
+    /// 10. SmallestFirst + All + KBO + max_weight=30 + no AVATAR — FEQ (weight 2)
+    /// 11. AgeWeight(5) + All + LPO + no weight limit + no AVATAR — FEQ (weight 5)
     pub fn default_schedule(total_time: Duration, workers: usize) -> Self {
         // Allow overriding to a single strategy for diagnosis: MRS_SINGLE_STRATEGY=N
         // runs only strategy N (1-indexed) for the full time budget.
@@ -72,27 +159,30 @@ impl StrategySchedule {
 
     pub(crate) fn _all_strategies(total_time: Duration, _workers: usize) -> Self {
         let ms = total_time.as_millis() as u64;
-        // s1–s9: restored close to original proportions (92% combined for a 30 s budget)
-        // s10–s11: small FEQ-targeted bonus budgets (8% combined)
-        let t1 = Duration::from_millis(ms * 14 / 100); // 14% (was 15%)
-        let t2 = Duration::from_millis(ms * 10 / 100); // 10%
-        let t3 = Duration::from_millis(ms * 10 / 100); // 10%
-        let t4 = Duration::from_millis(ms * 9 / 100); //   9% (was 10%)
-        let t5 = Duration::from_millis(ms * 9 / 100); //   9% (was 10%)
-        let t6 = Duration::from_millis(ms * 10 / 100); // 10%
-        let t7 = Duration::from_millis(ms * 14 / 100); // 14% (was 15%)
-        let t8 = Duration::from_millis(ms * 9 / 100); //   9% (was 10%)
-        let t9 = Duration::from_millis(ms * 9 / 100); //   9% (was ~10%)
-        // s1–s9 total: 94%
-        // s1-s9: proven baseline portfolio (88% combined)
-        // s10-s15: new strategies exploiting distance propagation, SOS, and
-        //          goal-symbol heuristics (~12% combined)
-        let t10 = Duration::from_millis(ms * 5 / 100); //  5% SOS
-        let t11 = Duration::from_millis(ms * 5 / 100); //  5% ConjSymbolBoost
-        let t12 = Duration::from_millis(ms * 3 / 100); //  3% HornPenalty (FNE)
-        let t13 = Duration::from_millis(ms * 2 / 100); //  2% SOS + GoalDirected + LPO
-        let t14 = Duration::from_millis(ms * 2 / 100); //  2% ConjSymbolBoost + All (FEQ)
-        // t15 absorbs rounding remainder (~1% at 30 s) — FunctionDepth + LPO
+        // Strategy priority weights. Normalize these below to the caller's
+        // budget; s15 absorbs integer rounding.
+        // These weights used to be applied as percentages directly, but their
+        // sum (including s10–s14) is 111%. Normalize against the total weight
+        // so the default portfolio, like the named portfolios, cannot allocate
+        // more wall time than its caller supplied. s15 absorbs rounding.
+        const TOTAL_WEIGHT: u64 = 111;
+        let t1 = Duration::from_millis(ms * 14 / TOTAL_WEIGHT);
+        let t2 = Duration::from_millis(ms * 10 / TOTAL_WEIGHT);
+        let t3 = Duration::from_millis(ms * 10 / TOTAL_WEIGHT);
+        let t4 = Duration::from_millis(ms * 9 / TOTAL_WEIGHT);
+        let t5 = Duration::from_millis(ms * 9 / TOTAL_WEIGHT);
+        let t6 = Duration::from_millis(ms * 10 / TOTAL_WEIGHT);
+        let t7 = Duration::from_millis(ms * 14 / TOTAL_WEIGHT);
+        let t8 = Duration::from_millis(ms * 9 / TOTAL_WEIGHT);
+        let t9 = Duration::from_millis(ms * 9 / TOTAL_WEIGHT);
+        // s10–s15 add strategies exploiting distance propagation, SOS, and
+        // goal-symbol heuristics.
+        let t10 = Duration::from_millis(ms * 5 / TOTAL_WEIGHT); // SOS
+        let t11 = Duration::from_millis(ms * 5 / TOTAL_WEIGHT); // ConjSymbolBoost
+        let t12 = Duration::from_millis(ms * 3 / TOTAL_WEIGHT); // HornPenalty (FNE)
+        let t13 = Duration::from_millis(ms * 2 / TOTAL_WEIGHT); // SOS + GoalDirected + LPO
+        let t14 = Duration::from_millis(ms * 2 / TOTAL_WEIGHT); // ConjSymbolBoost + All (FEQ)
+        // t15 absorbs rounding remainder — FunctionDepth + LPO
         let t15 = total_time
             .saturating_sub(t1)
             .saturating_sub(t2)
@@ -109,7 +199,7 @@ impl StrategySchedule {
             .saturating_sub(t13)
             .saturating_sub(t14);
 
-        StrategySchedule {
+        let mut schedule = StrategySchedule {
             strategies: vec![
                 // ── KBO strategies ──────────────────────────────────────────
                 // s1: balanced exploration
@@ -136,6 +226,7 @@ impl StrategySchedule {
                         // No AVATAR: avoids overhead and incorrect dormancy on chain proofs.
                         use_avatar: false,
                         unit_only_resolution: false,
+                        precedence_scheme: crate::PrecedenceScheme::ArityMin,
                         ..SearchConfig::default()
                     },
                     t2,
@@ -147,6 +238,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::SmallestFirst,
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::Arity,
                         ..SearchConfig::default()
                     },
                     t3,
@@ -158,6 +250,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::AgeWeight(8),
                         literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
                         ordering: TermOrdering::KBO,
+                        precedence_scheme: crate::PrecedenceScheme::ArityMax,
                         ..SearchConfig::default()
                     },
                     t4,
@@ -169,6 +262,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::AgeWeight(5),
                         literal_selection: LiteralSelection::All,
                         ordering: TermOrdering::KBO,
+                        precedence_scheme: crate::PrecedenceScheme::Freq,
                         ..SearchConfig::default()
                     },
                     t5,
@@ -190,6 +284,7 @@ impl StrategySchedule {
                         // the SAT model, blocking key resolutions in FNE-style problems.
                         use_avatar: false,
                         unit_only_resolution: false,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::InvFreq,
                         ..SearchConfig::default()
                     },
                     t6,
@@ -213,6 +308,8 @@ impl StrategySchedule {
                         selection: SelectionStrategy::GoalDirected(10),
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
+                        precedence_scheme: crate::PrecedenceScheme::GoalBoost,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::ConjectureBonus,
                         ..SearchConfig::default()
                     },
                     t8,
@@ -224,6 +321,7 @@ impl StrategySchedule {
                         selection: SelectionStrategy::SmallestFirst,
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::LPO,
+                        precedence_scheme: crate::PrecedenceScheme::ArityMin,
                         ..SearchConfig::default()
                     },
                     t9,
@@ -241,6 +339,8 @@ impl StrategySchedule {
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
                         sos_depth: 100,
+                        precedence_scheme: crate::PrecedenceScheme::GoalBoost,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::ConjectureBonus,
                         ..SearchConfig::default()
                     },
                     t10,
@@ -256,6 +356,7 @@ impl StrategySchedule {
                         literal_selection: LiteralSelection::AllNegative,
                         ordering: TermOrdering::KBO,
                         weight_fn: crate::ClauseWeightFn::ConjSymbolBoost,
+                        precedence_scheme: crate::PrecedenceScheme::GoalBoost,
                         ..SearchConfig::default()
                     },
                     t11,
@@ -276,6 +377,8 @@ impl StrategySchedule {
                         max_term_weight: None,
                         use_avatar: false,
                         unit_only_resolution: false,
+                        precedence_scheme: crate::PrecedenceScheme::ArityMin,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::Arity,
                         ..SearchConfig::default()
                     },
                     t12,
@@ -293,6 +396,8 @@ impl StrategySchedule {
                         ordering: TermOrdering::KBO,
                         weight_fn: crate::ClauseWeightFn::FunctionWeightPenalty,
                         sos_depth: 100,
+                        precedence_scheme: crate::PrecedenceScheme::ArityMax,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::InvFreq,
                         ..SearchConfig::default()
                     },
                     t13,
@@ -310,6 +415,8 @@ impl StrategySchedule {
                         max_term_weight: Some(100),
                         use_avatar: false,
                         unit_only_resolution: false,
+                        precedence_scheme: crate::PrecedenceScheme::GoalBoost,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::ConjectureBonus,
                         ..SearchConfig::default()
                     },
                     t14,
@@ -330,6 +437,8 @@ impl StrategySchedule {
                         max_term_weight: None,
                         use_avatar: false,
                         unit_only_resolution: false,
+                        precedence_scheme: crate::PrecedenceScheme::InvFreq,
+                        symbol_weight_scheme: crate::SymbolWeightScheme::Arity,
                         ..SearchConfig::default()
                     },
                     t15,
@@ -355,19 +464,17 @@ impl StrategySchedule {
                     Duration::ZERO,
                 ),
             ],
+        };
+        for (idx, (config, _)) in schedule.strategies.iter_mut().enumerate() {
+            config.strategy_id = idx + 1;
         }
+        schedule
     }
 
     /// Automatically applies parallel SInE threshold tuning across the portfolio strategies.
     pub fn apply_sine_threshold_tuning(&mut self) {
-        let sine_configs = [
-            (Some(1.5), Some(3)), // strict SInE
-            (Some(2.0), Some(5)), // standard SInE
-            (Some(3.5), Some(8)), // relaxed SInE
-            (None, None),         // SInE disabled
-        ];
         for (i, (cfg, _)) in self.strategies.iter_mut().enumerate() {
-            let (sine_tol, sine_depth) = sine_configs[i % sine_configs.len()];
+            let (sine_tol, sine_depth) = sine_threshold_tuning(i);
             cfg.sine_tolerance = sine_tol;
             cfg.sine_depth_limit = sine_depth;
         }
@@ -382,7 +489,7 @@ impl StrategySchedule {
 ///
 /// `symbols` is required so that the TSTP proof string can be formatted inside the
 /// worker thread (while `SearchState` is still live), before the non-`Send`
-/// `cadical::Solver` is dropped.
+/// `mrs_cadical::Solver` is dropped.
 /// Options controlling ML data logging and ML-guided selection.
 ///
 /// Plain data in every build; only acted upon when the `ml-guidance`
@@ -407,6 +514,73 @@ pub struct MlOptions {
     /// `Saturated` (demoted to `GaveUp`), because saturating a subset says
     /// nothing about the full problem. `None` disables pruning.
     pub premise_keep: Option<Arc<std::collections::HashSet<mrs_core::clause::ClauseId>>>,
+    /// Parent-pair linear model JSON, enabled only in the final active slot.
+    #[cfg(feature = "parent-guidance")]
+    pub parent_weights: Option<String>,
+    /// Logit threshold required to turn scoring into pruning. Without it,
+    /// parent pairs are sampled for offline training only.
+    #[cfg(feature = "parent-guidance")]
+    pub parent_threshold: Option<f32>,
+}
+
+#[cfg(feature = "parent-guidance")]
+fn parent_guidance_tail_slot(strategy_idx: usize, schedule: &StrategySchedule) -> bool {
+    let Some(last_active) = schedule
+        .strategies
+        .iter()
+        .rposition(|(_, budget)| !budget.is_zero())
+    else {
+        return false;
+    };
+    last_active > 0 && strategy_idx == last_active
+}
+
+#[cfg(feature = "parent-guidance")]
+fn log_parent_samples(
+    log_dir: &str,
+    strategy_idx: usize,
+    samples: &[mrs_core::ml::parent_guidance::ParentPairSample],
+) {
+    use std::io::Write;
+    let dir = std::path::Path::new(log_dir).join("parent-guidance");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let name = std::env::var("PROBLEM_NAME").unwrap_or_else(|_| "problem".into());
+    if let Ok(mut file) = std::fs::File::create(dir.join(format!("{name}_{strategy_idx}.csv"))) {
+        for (features, _, kind, label) in samples {
+            let features = features
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            if let Some(label) = label {
+                let _ = writeln!(file, "{},{},{}", *kind as u8, u8::from(*label), features);
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "parent-guidance"))]
+mod parent_guidance_slot_tests {
+    use super::*;
+
+    #[test]
+    fn selects_only_last_active_strategy_and_requires_multiple() {
+        let schedule = StrategySchedule {
+            strategies: vec![
+                (SearchConfig::default(), Duration::from_secs(1)),
+                (SearchConfig::default(), Duration::from_secs(1)),
+                (SearchConfig::default(), Duration::ZERO),
+            ],
+        };
+        assert!(!parent_guidance_tail_slot(0, &schedule));
+        assert!(parent_guidance_tail_slot(1, &schedule));
+        let single = StrategySchedule {
+            strategies: vec![(SearchConfig::default(), Duration::from_secs(1))],
+        };
+        assert!(!parent_guidance_tail_slot(0, &single));
+    }
 }
 
 /// Pick a division portfolio from the syntactic shape of the clause set.
@@ -441,6 +615,25 @@ pub fn auto_schedule_name(clauses: &[Clause]) -> &'static str {
     if !has_eq { "casc_fne" } else { "casc_feq" }
 }
 
+/// The SInE (tolerance, depth-limit) pair for a portfolio slot.
+///
+/// A free function so that the named schedules and the pre-phase's routing table
+/// cannot disagree about what the default preprocessing is. It mattered: the
+/// pre-phase originally *cleared* SInE on the schedules it built, because its plan
+/// happened not to mention SInE. On CASC-30/UEQ that cost five problems — the
+/// large `CSR*-10` sets are refuted by the shipped portfolio in ~40 ms once SInE
+/// has reduced 8,000 unit-equality clauses to under a hundred, and without it the
+/// same portfolio times out. Silence about a preprocessing step must not mean
+/// "off".
+pub fn sine_threshold_tuning(slot: usize) -> (Option<f64>, Option<usize>) {
+    [
+        (Some(1.5), Some(3)), // strict SInE
+        (Some(2.0), Some(5)), // standard SInE
+        (Some(3.5), Some(8)), // relaxed SInE
+        (None, None),         // SInE disabled
+    ][slot % 4]
+}
+
 /// Number of trailing portfolio slots that ML premise pruning is allowed to
 /// substitute a pruned clause view for.
 pub const ML_PRUNE_LAST_SLOTS: usize = 2;
@@ -456,80 +649,142 @@ fn is_ml_prune_slot(strategy_idx: usize, total_strategies: usize) -> bool {
     strategy_idx >= total_strategies.saturating_sub(ML_PRUNE_LAST_SLOTS)
 }
 
+/// Start `total` workers, stopping at the first one the OS refuses, and report
+/// how many actually started.
+///
+/// `pthread_create` fails with `EAGAIN` when the process cannot reserve another
+/// 64 MiB worker stack: an `RLIMIT_AS` ceiling, a cgroup `pids.max`, or the
+/// thread limit. That is a resource condition, not a defect, and it must not end
+/// the run. A portfolio that asked for 64 workers runs the 40 that fit, and the
+/// caller sees the true count in `ScheduleReport::workers`.
+///
+/// Panicking here was worse than useless twice over: the panic message needs
+/// memory too, so on the host that provoked it the allocation failed as well and
+/// the process died with SIGABRT and a core dump, with the real reason — one
+/// line in the log — easy to miss.
+fn spawn_budget(total: usize, mut attempt: impl FnMut(usize) -> std::io::Result<()>) -> usize {
+    let mut spawned = 0usize;
+    for worker_id in 0..total {
+        match attempt(worker_id) {
+            Ok(()) => spawned += 1,
+            Err(error) => {
+                eprintln!(
+                    "Warning: worker {worker_id} of {total} could not be spawned ({error}); \
+                     running {spawned} worker(s) instead."
+                );
+                break;
+            }
+        }
+    }
+    spawned
+}
+
+/// A candidate refutation discovered during search.
+#[derive(Debug, Clone)]
+pub struct CandidateRefutation {
+    pub strategy_idx: usize,
+    pub strategy_id: usize,
+    pub clause_id: mrs_core::clause::ClauseId,
+    pub tstp_proof: String,
+    pub elapsed_ms: u64,
+    pub time_remaining: Duration,
+}
+
+/// Interface for receiving and evaluating candidate refutations asynchronously.
+pub trait CandidateReceiver: Send + Sync {
+    /// Submit a candidate refutation to the coordinator.
+    /// Returns `true` if search should stop immediately (e.g. candidate was already certified).
+    fn submit_candidate(&self, candidate: CandidateRefutation) -> bool;
+
+    /// Registers the search stop flag so the receiver can cancel workers when a candidate certifies.
+    fn register_stop_flag(&self, stop_flag: Arc<AtomicBool>);
+
+    /// Returns the certified search result, if one was accepted.
+    fn certified_result(&self) -> Option<SearchResult>;
+}
+
 pub fn run_schedule(
     clauses: &[Clause],
+    provenance: &[Clause],
     id_gen: ClauseIdGen,
     schedule: &StrategySchedule,
     symbols: &SymbolTable,
     ml: MlOptions,
     workers: Option<usize>,
 ) -> (SearchResult, crate::ScheduleReport) {
-    // 1. Analyze problem for symbol frequencies to configure KBO/LPO and weights.
-    let mut sym_counts: HashMap<SymbolId, u32> = HashMap::default();
-    for clause in clauses {
-        for lit in &clause.literals {
-            match &lit.atom {
-                mrs_core::formula::Atom::Pred(p, args) => {
-                    *sym_counts.entry(*p).or_insert(0) += 1;
-                    let mut stack: Vec<&Term> = args.iter().collect();
-                    while let Some(t) = stack.pop() {
-                        if let Term::App(f, nested_args) = t {
-                            *sym_counts.entry(*f).or_insert(0) += 1;
-                            stack.extend(nested_args.iter());
-                        }
-                    }
-                }
-                mrs_core::formula::Atom::Eq(l, r) => {
-                    let mut stack = vec![l, r];
-                    while let Some(t) = stack.pop() {
-                        if let Term::App(f, nested_args) = t {
-                            *sym_counts.entry(*f).or_insert(0) += 1;
-                            stack.extend(nested_args.iter());
-                        }
-                    }
-                }
-            }
-        }
+    run_schedule_with_candidate_receiver(
+        clauses, provenance, id_gen, schedule, symbols, ml, workers, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_schedule_with_candidate_receiver(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    id_gen: ClauseIdGen,
+    schedule: &StrategySchedule,
+    symbols: &SymbolTable,
+    ml: MlOptions,
+    workers: Option<usize>,
+    candidate_receiver: Option<Arc<dyn CandidateReceiver>>,
+) -> (SearchResult, crate::ScheduleReport) {
+    // Pre-passes and workers share one clock. `total_budget` below is the sum
+    // of the schedule slices, rescaled by the CLI to the caller's remaining
+    // wall time at the point search starts.
+    let schedule_start = Instant::now();
+
+    if let Some(cert_config) = schedule
+        .strategies
+        .iter()
+        .map(|(config, _)| config)
+        .find(|config| config.certify_ordered_inferences)
+    {
+        return run_certified_ordered_fragment(
+            clauses,
+            provenance,
+            id_gen,
+            symbols,
+            cert_config,
+            schedule_start_for_certification(),
+            candidate_receiver,
+            workers,
+        );
     }
 
-    let mut syms_by_freq: Vec<(SymbolId, u32)> = sym_counts.into_iter().collect();
-    syms_by_freq.sort_unstable_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))); // lowest count first (rarest)
-
-    // Rare symbols get HIGHER precedence to eliminate them quickly.
-    let mut precedence = vec![
-        0;
-        syms_by_freq
-            .iter()
-            .map(|&(s, _)| s.index() as usize)
-            .max()
-            .unwrap_or(0)
-            + 1
-    ];
-    for (i, &(sym, _)) in syms_by_freq.iter().rev().enumerate() {
-        precedence[sym.index() as usize] = (syms_by_freq.len() - i) as u32;
+    // 0. Clause preprocessing: Tautology Elimination, Pure Literal Elimination (PLE),
+    // and First-Order Blocked Clause Elimination (BCE).
+    // The optional finite-model path checks against these originals, because
+    // preprocessing need not preserve its particular candidate interpretation.
+    let original_clauses = clauses.to_vec();
+    let no_bce = std::env::var("MRS_NO_BCE").is_ok();
+    let no_ple = std::env::var("MRS_NO_PLE").is_ok();
+    let prep_config = crate::preprocessing::PreprocessingConfig {
+        enable_bce: !no_bce,
+        enable_ple: !no_ple,
+        ..Default::default()
+    };
+    let (preprocessed_clauses, prep_stats) =
+        crate::preprocessing::preprocess_clauses(clauses, &prep_config);
+    if (std::env::var("TRACE_SEARCH").is_ok() || std::env::var("TRACE_BCE").is_ok())
+        && prep_stats.total_removed > 0
+    {
+        eprintln!(
+            "[BCE] Preprocessing eliminated {} clauses (tautology: {}, pure: {}, blocked: {}), remaining: {}",
+            prep_stats.total_removed,
+            prep_stats.tautologies_removed,
+            prep_stats.pure_clauses_removed,
+            prep_stats.blocked_clauses_removed,
+            preprocessed_clauses.len()
+        );
     }
+    let clauses = &preprocessed_clauses[..];
 
-    // Config: dynamic weights and precedence driven by rarity
-    let mut weights = vec![
-        1;
-        syms_by_freq
-            .iter()
-            .map(|&(s, _)| s.index() as usize)
-            .max()
-            .unwrap_or(0)
-            + 1
-    ];
-    for (sym, _) in &syms_by_freq {
-        // We could use arity or other heuristics, but for now we just make non-variable symbols weigh 2
-        // KBO typically requires w(f) >= w0, and w(c) >= w0 for constants
-        weights[sym.index() as usize] = 2;
-    }
-
-    let config = Arc::new(SymbolConfig {
-        precedence,
-        weights,
-        w0: 1,
-    });
+    // 1. Compute default symbol configuration for pre-passes.
+    let default_config = crate::symbol_config::compute_symbol_config(
+        clauses,
+        crate::PrecedenceScheme::InvFreq,
+        crate::SymbolWeightScheme::Uniform,
+    );
 
     let mut has_eq = false;
     for clause in clauses {
@@ -550,6 +805,21 @@ pub fn run_schedule(
     let mut actual_configs = Vec::new();
     for (search_config, _) in &schedule.strategies {
         let mut actual_config = search_config.clone();
+        if std::env::var("MRS_NO_LRS").is_ok()
+            || std::env::var("MRS_LRS_POLICY").as_deref() == Ok("disabled")
+        {
+            actual_config.lrs_policy = crate::LrsPolicy::Disabled;
+        } else if search_config.strategy_id == 0
+            && let Ok(value) = std::env::var("MRS_LRS_FIXED_ITERATIONS")
+            && let Ok(budget) = value.parse::<u64>()
+        {
+            actual_config.lrs_policy = crate::LrsPolicy::FixedIterations { budget };
+        }
+        if let Ok(value) = std::env::var("MRS_SHARED_POOL_INTERVAL")
+            && let Ok(interval) = value.parse::<u64>()
+        {
+            actual_config.shared_pool_poll_interval = interval;
+        }
         if apply_max_neg
             && matches!(
                 actual_config.literal_selection,
@@ -558,9 +828,14 @@ pub fn run_schedule(
         {
             actual_config.literal_selection = LiteralSelection::MaxNegative;
         }
+        let sym_config = crate::symbol_config::compute_symbol_config(
+            clauses,
+            search_config.precedence_scheme,
+            search_config.symbol_weight_scheme,
+        );
         actual_config.ordering = match search_config.ordering {
-            TermOrdering::KBO => TermOrdering::CustomKBO(config.clone()),
-            TermOrdering::LPO => TermOrdering::CustomLPO(config.clone()),
+            TermOrdering::KBO => TermOrdering::CustomKBO(sym_config),
+            TermOrdering::LPO => TermOrdering::CustomLPO(sym_config),
             ref other => other.clone(),
         };
         actual_configs.push(actual_config);
@@ -568,28 +843,516 @@ pub fn run_schedule(
 
     let clauses_owned = clauses.to_vec();
 
-    // EPR pre-grounding is disabled: naive ground instance enumeration causes
-    // OOM on large EPR problems (tens of thousands of ground clauses inflate
-    // cadical's SAT instance beyond memory limits).  AVATAR handles EPR
-    // structure lazily and correctly without pre-expansion.
+    let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
+    let schedule_total_budget = total_budget;
+    let schedule_deadline = schedule_start + total_budget;
+    if total_budget.is_zero() || Instant::now() >= schedule_deadline {
+        return (
+            SearchResult::Timeout,
+            crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                ..crate::ScheduleReport::default()
+            },
+        );
+    }
 
     // Detect EPR structure even when the full expansion exceeds MAX_INSTANCES.
     // EPR problems (only variables and ground terms, no function symbols of
     // arity ≥ 1) must run without AVATAR regardless of whether we succeeded in
     // expanding them: AVATAR's SAT instance grows without bound during a
-    // resolution search over EPR clauses and can cause cadical to block for
+    // resolution search over EPR clauses and can cause CaDiCaL to block for
     // minutes with no way to interrupt it.
     let is_problem_epr = is_epr(&clauses_owned);
 
+    // EPR grounding pre-pass — enabled by default for EPR problems. Set
+    // `MRS_EPR_GROUND=0` to disable it. `MRS_EPR_GROUND=1` also explicitly
+    // enables it for benchmark scripts and compatibility.
+    //
+    // Grounding is the division's natural mode and now also covers the
+    // `epr_equality` profile. The ordinary engine continues to search that
+    // profile by superposition; the pre-pass is a complementary bounded route.
+    //
+    // A matched full-division CASC-30 EPU A/B at commit 3e9c004, on teenf9901
+    // with identical binary hashes and official limits, measured 9
+    // Unsatisfiable / 9 VerifiedGood with this refutation pre-pass disabled and
+    // 11 Unsatisfiable / 10 VerifiedGood with it enabled. HWV078-1 and MSC024-1
+    // were the additional refutations; HWV078-1's 13.38 MB proof was omitted by
+    // the then-default 8 MiB output cap, so that run did not certify it. This is
+    // one paired run, not replicated variance evidence. The pre-pass is now on
+    // by default with MRS_EPR_GROUND=0 as an opt-out; keep the results labeled
+    // as one campaign until replicated. See UI-5.
+    //
+    // The separate *model* arm (`MRS_EPR_MODEL=1`) on CASC-30 EPS was null:
+    // 44/100
+    // `Satisfiable` and 40/40 kernel-certified models with the arm on and with
+    // it off, identical problem-for-problem, both at commit `8a1fdd0`. The
+    // 12 rows where the pre-pass verified a model were already `Satisfiable`
+    // from the cert track in under 0.6 s, so what the arm buys is latency on
+    // rows already solved rather than coverage. See
+    // `docs/reports/benchmarks/eps-2026-09.md`.
+    //
+    // The EPS result is a different arm/division from EPU refutation. Also, 61
+    // of the 100 EPS problems never reach the model branch at all —
+    // 34 are `epr_equality`, 1 is not EPR, and the branch is entered only for
+    // `pure_relational_epr` and `ground`.
+    //
+    // Equality splitting (`MRS_EPR_SPLIT=1`) and complementary-unit E-matching
+    // (`MRS_EPR_EMATCH=1`) are bounded experiments and remain independently
+    // gated. E-matching adds ordinary ground substitution instances.
+    //
+    // `MSC024-1` is reconstructed from CaDiCaL's bounded LRAT trace: the local
+    // `--workers 1 --time 15 --schedule casc_epu` run produced a 26 189-node
+    // proof, certified `VerifiedGood` by the strict kernel. A
+    // `HWV078-1` still uses the ground-derivation fallback because its LRAT
+    // dependency cone exceeds the cap, but its derivation-loop proof is 13.38 MB.
+    // The 2026-10-12 matched full-division EPU A/B found two additional
+    // refutations with grounding on, one strict-certified with the old 8 MiB
+    // cap; the other was omitted solely by that cap. Grounding now defaults on,
+    // with MRS_EPR_GROUND=0 as an opt-out. The measurement is one replicate;
+    // see UI-5 for the exact counts and limitations.
+    //
+    // A refutation here is the final answer, so it goes through the candidate
+    // receiver like any other winner and can be certified.
+    let mut epr_telemetry: Option<crate::EprTelemetry> = None;
+    let epr_ground_enabled =
+        epr_ground_prepass_enabled(std::env::var("MRS_EPR_GROUND").ok().as_deref());
+    let epr_model_enabled = std::env::var("MRS_EPR_MODEL").is_ok_and(|v| v != "0");
+    let epr_ground_enabled = epr_ground_enabled || epr_model_enabled;
+    if epr_ground_prepass_should_run(is_problem_epr, epr_ground_enabled, epr_model_enabled) {
+        let memory_budget_mb = actual_configs
+            .iter()
+            .find_map(|c| c.resource_limits.max_memory_mb);
+        // The EPR pass and portfolio observe the same scheduler deadline.
+        // Keep the existing per-pass cap, but clamp it to the wall time still
+        // available after setup and any earlier pre-passes.
+        let model_search = epr_model_enabled;
+        let mut budget = crate::epr_budget(memory_budget_mb, schedule_total_budget);
+        if model_search {
+            // Model checking should be a bounded EPS experiment. Never let this
+            // opt-in pre-pass scale its instance cap with a large competition
+            // allowance: reserve most memory and time for the ordinary search.
+            //
+            // Measured consequence, CASC-30 EPS at `8a1fdd0`: these two clamps
+            // are the binding constraint on the arm, not a neutral safety
+            // margin. Of the 39 problems that enter the branch, 27 return
+            // nothing — 12 at `memory_ceiling` (the 128 MB allowance refuses
+            // before the 1 000-instance cap can bind; `SYN812/815/816/817/
+            // 818/826/828/830/838/840/841/853`, the arity 40-56 encodings) and
+            // 15 at `grounding_timeout` (the 500 ms ceiling, `epr_ms=500` on
+            // `SYN422-1`). Raising either clamp is the experiment to run next,
+            // and it has to be an A/B against this null baseline rather than a
+            // default change. See `docs/reports/benchmarks/eps-2026-09.md`.
+            let bounded_memory_mb = memory_budget_mb.unwrap_or(128).min(128);
+            let bounded = crate::epr_budget(Some(bounded_memory_mb), schedule_total_budget);
+            budget = crate::EprBudget {
+                timeout: bounded.timeout.min(Duration::from_millis(500)),
+                max_instances: bounded.max_instances.min(1_000),
+                ..bounded
+            };
+            budget.timeout = budget.timeout.min(schedule_total_budget);
+            // Equality-bearing profiles continue to the portfolio until the
+            // model path has a complete congruence-closure certificate.
+            if matches!(
+                crate::instgen::classify_epr_profile(&clauses_owned),
+                "pure_relational_epr" | "ground"
+            ) {
+                let remaining = remaining_schedule_budget(total_budget, schedule_start.elapsed());
+                let model_result = run_epr_prepass(budget, remaining, |pass_budget| {
+                    let mut model_id_gen = id_gen.clone();
+                    let (result, telemetry) = crate::epr_ground::try_epr_ground_with_originals(
+                        &clauses_owned,
+                        &original_clauses,
+                        provenance,
+                        &mut model_id_gen,
+                        symbols,
+                        pass_budget,
+                    );
+                    epr_telemetry = Some(telemetry);
+                    result
+                })
+                .flatten();
+                let report = crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                    strategies: Vec::new(),
+                    instgen: None,
+                    epr: epr_telemetry.clone(),
+                    cert_tier: None,
+                    cert_ordering: None,
+                };
+                let certified_model = matches!(
+                    model_result.as_ref(),
+                    Some(SearchResult::Saturated(witness)) if witness.model().is_some()
+                );
+                if certified_model {
+                    return (model_result.unwrap(), report);
+                }
+                if let Some(SearchResult::Refutation(id, tstp)) = model_result {
+                    if let Some(ref receiver) = candidate_receiver {
+                        let should_stop = receiver.submit_candidate(CandidateRefutation {
+                            strategy_idx: 0,
+                            strategy_id: 0,
+                            clause_id: id,
+                            tstp_proof: tstp,
+                            elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                            time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                        });
+                        if should_stop {
+                            return (
+                                receiver.certified_result().unwrap_or(SearchResult::GaveUp),
+                                report,
+                            );
+                        }
+                    } else {
+                        return (SearchResult::Refutation(id, tstp), report);
+                    }
+                }
+                if remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed())
+                    .is_none()
+                {
+                    return (SearchResult::Timeout, report);
+                }
+            }
+        }
+        let mut epr_id_gen = id_gen.clone();
+        if !model_search {
+            let remaining =
+                remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed());
+            let epr_result = run_epr_prepass(budget, remaining, |pass_budget| {
+                let (result, telemetry) = crate::try_epr_ground_refutation(
+                    &clauses_owned,
+                    provenance,
+                    &mut epr_id_gen,
+                    symbols,
+                    pass_budget,
+                );
+                epr_telemetry = Some(telemetry);
+                result
+            })
+            .flatten();
+            if let Some(SearchResult::Refutation(id, tstp)) = epr_result {
+                let report = crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                    strategies: Vec::new(),
+                    instgen: None,
+                    epr: epr_telemetry.clone(),
+                    cert_tier: None,
+                    cert_ordering: None,
+                };
+                if let Some(ref receiver) = candidate_receiver {
+                    let should_stop = receiver.submit_candidate(CandidateRefutation {
+                        strategy_idx: 0,
+                        strategy_id: 0,
+                        clause_id: id,
+                        tstp_proof: tstp,
+                        elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                        time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                    });
+                    if should_stop {
+                        return (
+                            receiver.certified_result().unwrap_or(SearchResult::GaveUp),
+                            report,
+                        );
+                    }
+                } else {
+                    return (SearchResult::Refutation(id, tstp), report);
+                }
+            }
+        }
+        if remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed()).is_none() {
+            return (
+                SearchResult::Timeout,
+                crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                    epr: epr_telemetry,
+                    ..crate::ScheduleReport::default()
+                },
+            );
+        }
+    }
+
     // FVO pre-pass: for clause sets where all predicate arguments are variables
-    // (no equality, no function terms), the first-order problem is
-    // propositionally equivalent.  Try a BFS propositional refutation first;
-    // it solves problems like SYN938+1 in milliseconds where the regular
-    // given-clause loop times out.
+    // (no equality, no function terms, one arity per predicate), every pair of
+    // atoms over the same predicate unifies, so a propositional skeleton of the
+    // clause set can be searched for a refutation much more cheaply than the
+    // clause set.  The proof is then rebuilt in first order from the clauses it
+    // emits, so the reported refutation is a real derivation -- see `fvo`.
+    //
+    // The pre-pass gets a wall-clock ceiling because it runs before any
+    // portfolio thread exists. Its elapsed time is included in the shared
+    // schedule clock and therefore reduces the time available to workers. It
+    // previously had no ceiling at all and only a clause-count cap, which on
+    // an instance whose resolution closure lands under the cap let it run for
+    // many minutes past `--time`.
+    //
+    // Note that it does not fire on the divisions it was written for: across the
+    // 800 CASC-J13 FNE, UEQ and FEQ problems, `mrs --profile` reports FVO on
+    // none, and the `SYN938+1` problem an earlier revision of this comment
+    // credited it with is not FVO either (`FVO (Vars-Only Pred):No`).  The
+    // pre-pass is currently reachable only on input no competition problem
+    // produces, so its cost here is close to zero and its coverage is not
+    // carrying the schedule.  `fvo`'s module docs record the measurements.
     {
         let mut fvo_id_gen = id_gen.clone();
-        if let Some(result) = try_fvo_refutation(&clauses_owned, &mut fvo_id_gen, symbols) {
-            return (result, crate::ScheduleReport::default());
+        let fvo_budget = crate::fvo::fvo_budget(schedule_total_budget).min(
+            remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed())
+                .unwrap_or_default(),
+        );
+        if let Some(result) = try_fvo_refutation(
+            &clauses_owned,
+            provenance,
+            &mut fvo_id_gen,
+            symbols,
+            fvo_budget,
+        ) {
+            if let SearchResult::Refutation(id, ref tstp) = result {
+                if let Some(ref r) = candidate_receiver {
+                    let should_stop = r.submit_candidate(CandidateRefutation {
+                        strategy_idx: 0,
+                        strategy_id: 0,
+                        clause_id: id,
+                        tstp_proof: tstp.clone(),
+                        elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                        time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                    });
+                    if should_stop {
+                        let final_res = r.certified_result().unwrap_or(result);
+                        return (
+                            final_res,
+                            crate::ScheduleReport {
+                                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                                ..crate::ScheduleReport::default()
+                            },
+                        );
+                    }
+                } else {
+                    return (
+                        result,
+                        crate::ScheduleReport {
+                            workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                            ..crate::ScheduleReport::default()
+                        },
+                    );
+                }
+            } else {
+                return (
+                    result,
+                    crate::ScheduleReport {
+                        workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                        ..crate::ScheduleReport::default()
+                    },
+                );
+            }
+        }
+    }
+
+    // LCL's compact `is_a_theorem` condensed-detachment basis is a narrow
+    // fragment with a proof-producing, bounded closure. Keep it opt-in until
+    // full-division measurements justify spending pre-pass time by default.
+    // The strict self-check coordinator owns its own wall-clock reserve; leave
+    // candidate verification to it via the ordinary schedule.
+    // A process-wide ceiling ensures concurrent benchmark jobs do not
+    // repeatedly pay this diagnostic cap for every input problem.
+    //
+    // All three bounds are overridable so a measurement can tell "the closure
+    // cannot close this fragment" apart from "the bound stopped it first".
+    // Widening them spends portfolio budget, so it stays a diagnostic action:
+    // see docs/research/condensed-detachment.md. MRS_CD_* spells the short
+    // names because MRS_CONDENSED_DETACHMENT_BUDGET_MS is unwieldy in a shell.
+    let cd_process_ceiling = Duration::from_millis(condensed_detachment_env_bound(
+        "MRS_CD_PROCESS_MS",
+        CONDENSED_DETACHMENT_PROCESS_MS,
+    ));
+    if std::env::var("MRS_CONDENSED_DETACHMENT").is_ok_and(|value| value != "0")
+        && condensed_detachment_process_elapsed() < cd_process_ceiling
+        && candidate_receiver.is_none()
+    {
+        let mut cd_id_gen = id_gen.clone();
+        let cd_budget = schedule_total_budget
+            .min(Duration::from_millis(condensed_detachment_env_bound(
+                "MRS_CD_BUDGET_MS",
+                CONDENSED_DETACHMENT_BUDGET_MS,
+            )))
+            .min(cd_process_ceiling.saturating_sub(condensed_detachment_process_elapsed()));
+        let cd_budget = cd_budget.min(
+            remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed())
+                .unwrap_or_default(),
+        );
+        let cd_limits = crate::condensed_detachment::Limits {
+            max_facts: condensed_detachment_env_bound(
+                "MRS_CD_MAX_FACTS",
+                crate::condensed_detachment::MAX_FACTS as u64,
+            ) as usize,
+            max_inferences: condensed_detachment_env_bound(
+                "MRS_CD_MAX_INFERENCES",
+                crate::condensed_detachment::MAX_INFERENCES,
+            ),
+        };
+        let mut cd_telemetry = crate::condensed_detachment::Telemetry::default();
+        let cd_result = try_condensed_detachment_refutation(
+            &clauses_owned,
+            provenance,
+            &mut cd_id_gen,
+            symbols,
+            cd_budget,
+            cd_limits,
+            &mut cd_telemetry,
+        );
+        eprintln!(
+            "% SZS detail condensed_detachment=ran shape={} stop={} facts={} inferences={} \
+             elapsed_ms={} budget_ms={} max_facts={} max_inferences={}",
+            if cd_telemetry.shape_matched {
+                "matched"
+            } else {
+                "unmatched"
+            },
+            cd_telemetry.stop_reason.as_str(),
+            cd_telemetry.facts,
+            cd_telemetry.inferences,
+            cd_telemetry.elapsed_ms,
+            cd_budget.as_millis(),
+            cd_limits.max_facts,
+            cd_limits.max_inferences,
+        );
+        if let Some(result) = cd_result
+            && matches!(result, SearchResult::Refutation(..))
+        {
+            let report = crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                strategies: vec![crate::StrategyReport {
+                    strategy_idx: 0,
+                    strategy_id: 0,
+                    result: result.clone(),
+                    stats: crate::SearchStats::default(),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                }],
+                ..crate::ScheduleReport::default()
+            };
+            return (result, report);
+        }
+    }
+
+    // Diagnostic harnesses can measure the pre-pass even when no fragment was
+    // recognised, without accidentally attributing a later portfolio refutation
+    // to it.
+    if std::env::var("MRS_CD_ONLY").is_ok_and(|value| value != "0") {
+        return (
+            SearchResult::GaveUp,
+            crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                ..crate::ScheduleReport::default()
+            },
+        );
+    }
+
+    if remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed()).is_none() {
+        return (
+            SearchResult::Timeout,
+            crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                epr: epr_telemetry,
+                ..crate::ScheduleReport::default()
+            },
+        );
+    }
+
+    // The following legacy InstGen pre-pass is independently deadline-capped
+    // below, and also shares the portfolio's total wall clock.
+    // InstGen pre-pass for EPR:
+    // For pure relational EPR problems (all terms are variables or constants, no
+    // function symbols with arity >= 1, no equality), the InstGen loop combines
+    // propositional SAT solving (via CaDiCaL) with first-order MGU instantiation.
+    // It decides both Satisfiability (EPS) and Unsatisfiability (EPU) lazily
+    // without combinatorial explosion.
+    let mut instgen_telemetry: Option<InstGenTelemetry> = None;
+    if is_problem_epr && std::env::var("MRS_NO_INSTGEN").is_err() {
+        if remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed()).is_none() {
+            return (
+                SearchResult::Timeout,
+                crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                    epr: epr_telemetry,
+                    ..crate::ScheduleReport::default()
+                },
+            );
+        }
+        let mut instgen_id_gen = id_gen.clone();
+        let remaining = remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed())
+            .expect("deadline checked before InstGen launch");
+        let (instgen_result, tele) = crate::instgen::try_instgen_epr_with_telemetry_and_timeout(
+            &clauses_owned,
+            provenance,
+            &mut instgen_id_gen,
+            symbols,
+            Some(remaining),
+        );
+        instgen_telemetry = Some(tele.clone());
+        // A variable-bearing SAT abstraction deliberately returns GaveUp:
+        // that is an inconclusive pre-pass outcome, not a result for the full
+        // problem. Fall through to the ordinary portfolio so EPS search can
+        // continue after InstGen refuses to claim a model.
+        if let Some(result) = instgen_result
+            && !matches!(result, SearchResult::GaveUp)
+        {
+            let single_stats = crate::SearchStats {
+                processed: tele.sat_clauses as u64,
+                generated: tele.generated_instances as u64,
+                ..crate::SearchStats::default()
+            };
+            let single_report = crate::ScheduleReport {
+                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                strategies: vec![crate::StrategyReport {
+                    strategy_idx: 0,
+                    strategy_id: 0,
+                    result: result.clone(),
+                    stats: single_stats,
+                    elapsed_ms: tele.elapsed_ms,
+                }],
+                instgen: Some(tele),
+                epr: epr_telemetry.clone(),
+                cert_tier: None,
+                cert_ordering: None,
+            };
+
+            if let SearchResult::Refutation(id, ref tstp) = result {
+                if let Some(ref r) = candidate_receiver {
+                    let should_stop = r.submit_candidate(CandidateRefutation {
+                        strategy_idx: 0,
+                        strategy_id: 0,
+                        clause_id: id,
+                        tstp_proof: tstp.clone(),
+                        elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                        time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                    });
+                    if should_stop {
+                        let final_res = r.certified_result().unwrap_or(result);
+                        return (final_res, single_report);
+                    }
+                } else {
+                    return (result, single_report);
+                }
+            } else {
+                return (result, single_report);
+            }
+        }
+        if remaining_schedule_budget(schedule_total_budget, schedule_start.elapsed()).is_none() {
+            return (
+                SearchResult::Timeout,
+                crate::ScheduleReport {
+                    workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                    elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                    instgen: instgen_telemetry,
+                    epr: epr_telemetry,
+                    ..crate::ScheduleReport::default()
+                },
+            );
         }
     }
 
@@ -603,20 +1366,64 @@ pub fn run_schedule(
     // symbols, plus definition clauses encoding each conjunct.  Refute every
     // branch independently.
     {
+        // Strict self-check requires a replayable SAT trace. CWA currently
+        // emits a structural case-split certificate without the SAT manifest,
+        // so let the regular AVATAR path produce the trace instead.
+        let strict_trace = schedule
+            .strategies
+            .iter()
+            .any(|(config, _)| config.emit_avatar_trace);
         let mut cwa_id_gen = id_gen.clone();
-        if let Some(result) = try_componentwise_refute(
-            &clauses_owned,
-            &mut cwa_id_gen,
-            symbols_arc.clone(),
-            config.clone(),
-        ) {
-            return (result, crate::ScheduleReport::default());
+        if !strict_trace
+            && let Some(result) = crate::cwa::try_componentwise_refute_until(
+                &clauses_owned,
+                provenance,
+                &mut cwa_id_gen,
+                symbols_arc.clone(),
+                default_config.clone(),
+                Some(schedule_deadline),
+            )
+        {
+            if let SearchResult::Refutation(id, ref tstp) = result {
+                if let Some(ref r) = candidate_receiver {
+                    let should_stop = r.submit_candidate(CandidateRefutation {
+                        strategy_idx: 0,
+                        strategy_id: 0,
+                        clause_id: id,
+                        tstp_proof: tstp.clone(),
+                        elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                        time_remaining: total_budget.saturating_sub(schedule_start.elapsed()),
+                    });
+                    if should_stop {
+                        let final_res = r.certified_result().unwrap_or(result);
+                        return (
+                            final_res,
+                            crate::ScheduleReport {
+                                workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                                ..crate::ScheduleReport::default()
+                            },
+                        );
+                    }
+                } else {
+                    return (
+                        result,
+                        crate::ScheduleReport {
+                            workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                            ..crate::ScheduleReport::default()
+                        },
+                    );
+                }
+            } else {
+                return (
+                    result,
+                    crate::ScheduleReport {
+                        workers: workers.unwrap_or_else(|| num_cpus::get_physical().max(1)),
+                        ..crate::ScheduleReport::default()
+                    },
+                );
+            }
         }
     }
-
-    // Total time budget = sum of all strategy slices.
-    let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
-    let schedule_start = Instant::now();
 
     // Run strategies in parallel.  Each non-zero strategy runs for the full
     // remaining budget instead of only its proportional slice — with N threads
@@ -627,19 +1434,28 @@ pub fn run_schedule(
     // a genuine Saturation; every other thread notices it on its next time-check
     // iteration and returns Timeout.
     //
-    // SearchState (and the cadical::Solver it contains) is Send, but TermBank
+    // SearchState (and the mrs_cadical::Solver it contains) is Send, but TermBank
     // is heavily thread-local (interning IDs are only valid locally). So each
     // thread constructs its own SearchState from the cloned clause data, but
     // we share a pool of globally discovered unit equalities via an RwLock.
     let stop_flag = Arc::new(AtomicBool::new(false));
-    let shared_pool = Arc::new(std::sync::RwLock::new(Vec::new()));
+    if let Some(ref r) = candidate_receiver {
+        r.register_stop_flag(Arc::clone(&stop_flag));
+    }
+    let shared_pool = Arc::new(std::sync::RwLock::new(Vec::<SharedClauseChain>::new()));
     let (tx, rx) = mpsc::channel::<(usize, SearchResult, crate::SearchStats, u64)>();
 
-    let available_cores = workers.unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    });
+    // Default to the *physical* core count, matching the default that
+    // `src/main.rs` uses when time-slicing the schedule itself
+    // (`num_cpus::get_physical()`). Previously this fell back to
+    // `std::thread::available_parallelism()` (logical/hyperthreaded core
+    // count), which on any SMT-enabled machine disagreed with the
+    // schedule's own assumed concurrency, causing more strategies to run
+    // concurrently than intended and making wall-clock-sensitive search
+    // heuristics (e.g. LRS pruning) non-reproducible between runs. Callers
+    // that explicitly resolve and pass their own `workers` value (as
+    // `src/main.rs` now does) are unaffected by this fallback.
+    let available_cores = workers.unwrap_or_else(|| num_cpus::get_physical().max(1));
     let num_workers = available_cores.min(actual_configs.len());
     let next_strategy = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let has_epr = is_problem_epr;
@@ -652,17 +1468,14 @@ pub fn run_schedule(
     }
     #[cfg(feature = "ml-guidance")]
     let ml_model = ml.weights.as_ref().and_then(|path| {
-        use burn::backend::NdArray;
         use burn::module::Module;
-        use burn::record::{BinFileRecorder, Recorder};
+        use burn::store::ModuleRecord;
         use mrs_core::ml::model::ClauseClassifier;
 
-        match BinFileRecorder::<burn::record::HalfPrecisionSettings>::default()
-            .load(path.into(), &Default::default())
-        {
+        match ModuleRecord::load(path) {
             Ok(record) => {
                 let model =
-                    ClauseClassifier::<NdArray>::new(&Default::default()).load_record(record);
+                    ClauseClassifier::new(&burn::tensor::Device::flex()).load_record(record);
                 Some(Arc::new(model))
             }
             Err(e) => {
@@ -672,28 +1485,50 @@ pub fn run_schedule(
         }
     });
 
-    // Compute how much time remains after all pre-processing steps.
-    let remaining_at_spawn = total_budget.saturating_sub(schedule_start.elapsed());
+    #[cfg(feature = "parent-guidance")]
+    let parent_model = ml.parent_weights.as_ref().and_then(|path| {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|content| {
+                serde_json::from_str::<mrs_core::ml::parent_guidance::ParentGuidanceModel>(&content)
+                    .ok()
+            })
+            .filter(mrs_core::ml::parent_guidance::ParentGuidanceModel::valid)
+            .map(Arc::new)
+    });
+    let mut spawned_workers = num_workers;
 
     std::thread::scope(|s| {
-        for _ in 0..num_workers {
+        spawned_workers = spawn_budget(num_workers, |worker_id| {
             let stop = Arc::clone(&stop_flag);
             let pool = Arc::clone(&shared_pool);
             let tx = tx.clone();
             let next_strategy = Arc::clone(&next_strategy);
             let clauses_for_thread = clauses_owned.clone();
+            let provenance_for_thread = provenance.to_vec();
             let id_gen_thread = id_gen.clone();
-            let config_thread = Arc::clone(&config);
+            let config_thread = Arc::clone(&default_config);
             let symbols_thread = symbols_arc.clone();
             let actual_configs_ref = &actual_configs;
 
             #[cfg(feature = "ml-guidance")]
             let ml_model_thread = ml_model.clone();
+            #[cfg(feature = "parent-guidance")]
+            let parent_model_thread = parent_model.clone();
+            #[cfg(feature = "parent-guidance")]
+            let parent_threshold_thread = ml.parent_threshold;
+            #[cfg(feature = "parent-guidance")]
+            let parent_guidance_requested = ml.parent_weights.is_some()
+                || ml.parent_threshold.is_some()
+                || ml.log_dir.is_some();
             let log_ml_data_thread = ml.log_dir.clone();
             let premise_keep_thread = ml.premise_keep.clone();
-
-            s.spawn(move || {
-                loop {
+            let candidate_receiver_thread = candidate_receiver.clone();
+            std::thread::Builder::new()
+                .name(format!("mrs-worker-{worker_id}"))
+                .stack_size(mrs_core::RECURSION_STACK_BYTES)
+                .spawn_scoped(s, move || {
+                    loop {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
@@ -707,14 +1542,25 @@ pub fn run_schedule(
                     if search_config.time_limit.is_zero() {
                         continue;
                     }
-                    if remaining_at_spawn.is_zero() {
+                    // A worker may finish a strategy early and start another
+                    // one. Recompute the shared wall-clock budget before each
+                    // launch; using one snapshot from thread creation lets a
+                    // sequence of short strategies run past the schedule
+                    // deadline.
+                    let Some(remaining) = remaining_schedule_budget(
+                        total_budget,
+                        schedule_start.elapsed(),
+                    ) else {
                         break;
-                    }
+                    };
 
-                    let mut sc = search_config.clone();
+            let mut sc = search_config.clone();
                     // Scale the individual time slice by the number of workers, capped by wall-clock limit.
                     let scaled_ms = (sc.time_limit.as_millis() as u64).saturating_mul(num_workers as u64);
-                    sc.time_limit = Duration::from_millis(scaled_ms).min(remaining_at_spawn);
+                    sc.time_limit = Duration::from_millis(scaled_ms).min(remaining);
+                    if sc.time_limit.is_zero() {
+                        break;
+                    }
 
                     if has_epr {
                         sc.max_term_weight = None;
@@ -723,15 +1569,33 @@ pub fn run_schedule(
 
                     let mut thread_clauses = clauses_for_thread.clone();
                     if let Some(tolerance) = sc.sine_tolerance {
-                        if thread_clauses.len() > 100 {
-                            let before_len = thread_clauses.len();
-                            thread_clauses = crate::sine::filter_items(&thread_clauses, tolerance, sc.sine_depth_limit);
-                            if thread_clauses.len() == before_len {
-                                sc.sine_tolerance = None;
-                            }
-                        } else {
+                        let application = crate::sine::apply_sine_filter(
+                            &thread_clauses,
+                            tolerance,
+                            sc.sine_depth_limit,
+                            &crate::sine::SinePolicy::from_env(),
+                        );
+                        if std::env::var("TRACE_SINE").is_ok() {
+                            eprintln!(
+                                "[SINE] before={} kept={} seeds={} removed_pct={} tol={:?} depth={:?} applied={} skip={}",
+                                application.before,
+                                application.kept,
+                                application.seeds,
+                                ((application.before.saturating_sub(application.kept) as u128)
+                                    * 100
+                                    / application.before.max(1) as u128),
+                                tolerance,
+                                sc.sine_depth_limit,
+                                application.applied,
+                                application
+                                    .skip
+                                    .map_or("none", |s| s.as_str()),
+                            );
+                        }
+                        if !application.applied {
                             sc.sine_tolerance = None;
                         }
+                        thread_clauses = application.items;
                     }
 
                     // Per-worker ML premise pruning: only the LAST
@@ -745,20 +1609,39 @@ pub fn run_schedule(
                     // this does not guarantee mrs-ml can never solve fewer
                     // problems than the unpruned baseline — it only bounds
                     // how much coverage is put at risk.
-                    let mut ml_pruned = false;
                     if let Some(keep) = &premise_keep_thread
                         && is_ml_prune_slot(strategy_idx, actual_configs_ref.len())
                     {
-                        let before_len = thread_clauses.len();
                         thread_clauses.retain(|c| keep.contains(&c.id));
-                        ml_pruned = thread_clauses.len() < before_len;
                     }
 
+                    let mut thread_provenance = provenance_for_thread.clone();
+                    let mut thread_symbols = (*symbols_thread).clone();
+                    let mut thread_id_gen = id_gen_thread.clone();
+
+                    if let Some(mode) = sc.goal_transformation {
+                        let res = mrs_cnf::goal_transform::transform_goal_clauses(
+                            &thread_clauses,
+                            &mut thread_symbols,
+                            &mut thread_id_gen,
+                            mode,
+                        );
+                        if res.transformed {
+                            thread_clauses = res.clauses;
+                            thread_provenance.extend(res.provenance);
+                        }
+                    }
+
+                    let thread_sym_config = match &sc.ordering {
+                        TermOrdering::CustomKBO(cfg) | TermOrdering::CustomLPO(cfg) => cfg.clone(),
+                        _ => config_thread.clone(),
+                    };
                     let mut state = SearchState::new_with_ml(
                         thread_clauses,
-                        id_gen_thread.clone(),
-                        config_thread.clone(),
-                        symbols_thread.clone(),
+                        thread_provenance,
+                        thread_id_gen,
+                        thread_sym_config,
+                        Arc::new(thread_symbols),
                         sc.use_avatar,
                         log_ml_data_thread.clone(),
                         ml.log_csv,
@@ -768,14 +1651,42 @@ pub fn run_schedule(
                     {
                         state.ml_model = ml_model_thread.clone();
                     }
+                    #[cfg(feature = "parent-guidance")]
+                    if parent_guidance_tail_slot(strategy_idx, schedule) {
+                        state.parent_guidance_model = parent_model_thread.clone();
+                        state.parent_guidance_threshold = parent_threshold_thread;
+                        state.parent_guidance_enabled = parent_guidance_requested;
+                        if state.parent_guidance_enabled && log_ml_data_thread.is_some() {
+                            state.parent_guidance_sample_probability = 0.02;
+                        }
+                    }
                     state.stop_flag = Some(Arc::clone(&stop));
                     state.shared_pool = Some(Arc::clone(&pool));
+
+                    // Thread setup (SInE, premise filtering, cloning and state
+                    // construction) is sequential work under the same wall
+                    // deadline too. Do not start given-clause search with the
+                    // stale allowance captured before that setup.
+                    let Some(remaining) = remaining_schedule_budget(
+                        total_budget,
+                        schedule_start.elapsed(),
+                    ) else {
+                        break;
+                    };
+                    sc.time_limit = sc.time_limit.min(remaining);
 
                     let strategy_start = std::time::Instant::now();
                     let raw = search(&mut state, &sc);
                     let elapsed_ms = strategy_start.elapsed().as_millis() as u64;
                     // Capture passive size after search (unprocessed set is still live).
                     state.stats.passive_size = state.unprocessed.active_count() as u64;
+                    #[cfg(feature = "parent-guidance")]
+                    if state.parent_guidance_enabled
+                        && state.stats.parent_guidance_sampled > 0
+                        && let Some(log_dir) = &state.log_ml_data
+                    {
+                        log_parent_samples(log_dir, strategy_idx, &state.parent_pairs);
+                    }
 
                     if std::env::var("TRACE_SEARCH").is_ok() {
                         eprintln!(
@@ -789,8 +1700,22 @@ pub fn run_schedule(
                         );
                     }
 
+                    let raw = {
+                        #[cfg(feature = "parent-guidance")]
+                        {
+                            if state.stats.parent_guidance_pruned > 0 {
+                                SearchResult::GaveUp
+                            } else {
+                                raw
+                            }
+                        }
+                        #[cfg(not(feature = "parent-guidance"))]
+                        {
+                            raw
+                        }
+                    };
                     let result = match raw {
-                        SearchResult::Refutation(id, _) => {
+                        SearchResult::Refutation(id, tstp_proof) => {
                             #[cfg(feature = "ml-guidance")]
                             if let Some(log_dir) = &state.log_ml_data {
                                 let elapsed = schedule_start.elapsed().as_secs_f64();
@@ -813,7 +1738,12 @@ pub fn run_schedule(
 
                                     let label = if is_pos { 1.0 } else { 0.0 };
                                     let weight = crate::weight::clause_weight_id(clause, &state.term_bank, &state.config) as f32;
-                                    let feats = mrs_core::ml::features::extract(clause, &state.term_bank, symbols, weight);
+                                    let feats = mrs_core::ml::features::extract(
+                                        clause,
+                                        &state.term_bank,
+                                        state.symbols.as_ref(),
+                                        weight,
+                                    );
                                     all_samples.push(mrs_core::ml::sample::LabeledSample { label, feats });
                                 }
 
@@ -846,14 +1776,23 @@ pub fn run_schedule(
                                         .collect();
 
                                     if !conjectures.is_empty() {
-                                        let ctx = mrs_core::ml::premise_selector::ConjectureContext::new(&conjectures, &state.term_bank, symbols);
+                                        let ctx = mrs_core::ml::premise_selector::ConjectureContext::new(
+                                            &conjectures,
+                                            &state.term_bank,
+                                            state.symbols.as_ref(),
+                                        );
                                         let mut premise_samples = Vec::new();
 
                                         for axiom in state.clause_store.values() {
                                             if matches!(axiom.source, mrs_core::clause::ClauseSource::Input { .. }) && axiom.distance != 0 {
                                                 let is_pos = pos_set.contains(&axiom.id);
                                                 let label = if is_pos { 1.0 } else { 0.0 };
-                                                let feats = mrs_core::ml::premise_selector::extract_premise_features(axiom, &ctx, &state.term_bank, symbols);
+                                                let feats = mrs_core::ml::premise_selector::extract_premise_features(
+                                                    axiom,
+                                                    &ctx,
+                                                    &state.term_bank,
+                                                    state.symbols.as_ref(),
+                                                );
                                                 premise_samples.push(mrs_core::ml::sample::PremiseSample { label, feats });
                                             }
                                         }
@@ -882,83 +1821,99 @@ pub fn run_schedule(
                                 }
                             }
 
-                            let legacy_store: HashMap<_, _> = state
-                                .clause_store
-                                .iter()
-                                .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
-                                .collect();
-                            let proof = extract_proof(id, &legacy_store);
-                            let tstp = format_tstp(&proof, symbols);
+                            let tstp = if tstp_proof.is_empty() {
+                                let legacy_store: HashMap<_, _> = state
+                                    .clause_store
+                                    .iter()
+                                    .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+                                    .collect();
+                                let proof = extract_proof(id, &legacy_store);
+                                format_tstp(&proof, state.symbols.as_ref())
+                            } else {
+                                tstp_proof
+                            };
                             SearchResult::Refutation(id, tstp)
                         }
-                        SearchResult::Saturated if sc.max_term_weight.is_some() => SearchResult::GaveUp,
-                        // SOS is refutationally incomplete: a strategy with sos_depth set
-                        // cannot distinguish "no proof exists" from "proof exists but is
-                        // unreachable under SOS restrictions".  Saturation from an
-                        // SOS-restricted strategy must therefore be GaveUp, not Saturated.
-                        // Without this, the stop flag fires and the entire portfolio is
-                        // killed, producing a false CounterSatisfiable on Theorem problems.
-                        SearchResult::Saturated if sc.sos_depth < u32::MAX => SearchResult::GaveUp,
-                        // Unit-only resolution is incomplete: a clause set may be
-                        // unsatisfiable yet require non-unit resolvents to find the proof.
-                        SearchResult::Saturated if sc.unit_only_resolution => SearchResult::GaveUp,
-                        // SInE filtering drops axioms; saturating on a subset of the problem
-                        // does not imply the full problem is satisfiable.
-                        SearchResult::Saturated if sc.sine_tolerance.is_some() => SearchResult::GaveUp,
-                        // Same for ML premise pruning: a worker that actually dropped
-                        // axioms cannot claim Saturated for the full problem.
-                        SearchResult::Saturated if ml_pruned => SearchResult::GaveUp,
-                        // Non-Standard weight functions affect the ORDER in which clauses
-                        // are selected, which in turn changes which clauses are generated
-                        // and which are simplified away.  This interaction between
-                        // ordering and simplification (forward subsumption, condensation)
-                        // can make saturation incomplete even when passive=0: a proof-
-                        // relevant clause may have been forward-subsumed earlier than it
-                        // would have been with Standard ordering.  Treat saturation from
-                        // any non-Standard weight strategy as GaveUp to avoid false
-                        // Satisfiable/CounterSatisfiable verdicts.
-                        SearchResult::Saturated
-                            if sc.weight_fn != crate::ClauseWeightFn::Standard =>
-                        {
-                            SearchResult::GaveUp
-                        }
+                        // Ordinary given-clause search is refutation-only until
+                        // its full completeness proof is established. Positive
+                        // saturation is produced only by the certified fragment.
+                        SearchResult::Saturated(_) => SearchResult::GaveUp,
                         other => other,
                     };
 
-                    if matches!(
-                        result,
-                        SearchResult::Refutation(..) | SearchResult::Saturated
-                    ) {
+                    if let SearchResult::Refutation(id, ref tstp) = result {
+                        if let Some(ref r) = candidate_receiver_thread {
+                            let should_stop = r.submit_candidate(CandidateRefutation {
+                                strategy_idx,
+                                strategy_id: sc.strategy_id,
+                                clause_id: id,
+                                tstp_proof: tstp.clone(),
+                                elapsed_ms,
+                                time_remaining: total_budget
+                                    .saturating_sub(schedule_start.elapsed()),
+                            });
+                            if should_stop {
+                                stop.store(true, Ordering::Relaxed);
+                            }
+                        } else {
+                            stop.store(true, Ordering::Relaxed);
+                        }
+                    } else if matches!(result, SearchResult::Saturated(_)) {
                         stop.store(true, Ordering::Relaxed);
                     }
 
-                    let _ = tx.send((strategy_idx, result, state.stats.clone(), elapsed_ms));
+                    // The demodulation memo lives on the state, not in
+                    // `SearchStats`, so its counters are folded in here — after
+                    // every pre-pass that used a different index and so left it
+                    // untouched.
+                    let (memo_lookups, memo_hits, _records, memo_evictions) =
+                        state.demod_memo.stats();
+                    let mut stats = state.stats.clone();
+                    stats.demod_memo_lookups = memo_lookups;
+                    stats.demod_memo_hits = memo_hits;
+                    stats.demod_memo_evictions = memo_evictions;
+                    let _ = tx.send((strategy_idx, result, stats, elapsed_ms));
                 }
-            });
-        }
+            })
+            .map(|_| ())
+        });
 
         // Drop the main sender so the channel closes when all threads finish.
         drop(tx);
 
         // Collect results: track the best definitive answer seen.
-        // Priority: Refutation > Saturated > GaveUp > Timeout
-        let mut best: SearchResult = SearchResult::GaveUp;
-        let mut report = crate::ScheduleReport::default();
+        // Priority: Refutation > Saturated > ResourceOut > GaveUp > Timeout
+        let mut best: SearchResult = SearchResult::Timeout;
+        let mut report = crate::ScheduleReport {
+            workers: spawned_workers,
+            ..crate::ScheduleReport::default()
+        };
 
         for (idx, res, stats, elapsed_ms) in rx.into_iter() {
             report.strategies.push(crate::StrategyReport {
                 strategy_idx: idx,
+                strategy_id: actual_configs
+                    .get(idx)
+                    .map(|config| config.strategy_id)
+                    .unwrap_or_default(),
                 result: res.clone(),
                 stats,
                 elapsed_ms,
             });
             match &res {
                 SearchResult::Refutation(..) => {
-                    best = res;
+                    if candidate_receiver.is_none() {
+                        best = res;
+                    }
                     // Keep draining the channel so threads can finish cleanly.
                 }
-                SearchResult::Saturated => {
+                SearchResult::Saturated(_) => {
                     if !matches!(best, SearchResult::Refutation(..)) {
+                        best = res;
+                    }
+                }
+                SearchResult::ResourceOut(_) => {
+                    if matches!(best, SearchResult::Timeout | SearchResult::GaveUp) {
                         best = res;
                     }
                 }
@@ -970,15 +1925,491 @@ pub fn run_schedule(
                 SearchResult::Timeout => { /* lowest priority — keep existing best */ }
             }
         }
+
+        if let Some(ref r) = candidate_receiver {
+            if let Some(certified) = r.certified_result() {
+                best = certified;
+            } else if matches!(best, SearchResult::Timeout)
+                && report
+                    .strategies
+                    .iter()
+                    .any(|s| matches!(s.result, SearchResult::Refutation(..)))
+            {
+                best = SearchResult::GaveUp;
+            }
+        }
+
+        report.instgen = instgen_telemetry;
+        report.epr = epr_telemetry;
+        report.elapsed_ms = schedule_start.elapsed().as_millis() as u64;
         (best, report)
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_certified_ordered_fragment(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    mut id_gen: ClauseIdGen,
+    symbols: &SymbolTable,
+    config: &SearchConfig,
+    schedule_start: Instant,
+    candidate_receiver: Option<Arc<dyn CandidateReceiver>>,
+    workers: Option<usize>,
+) -> (SearchResult, crate::ScheduleReport) {
+    // Worker count for the closure fan-out. `workers` is the schedule-wide
+    // budget the CLI already passes down; the certified fragment was ignoring
+    // it and saturating on a single thread.
+    let cert_workers = workers.unwrap_or(1).max(1);
+    let (result, stats, cert_tier) = match crate::certified::certify_ground_ordered_resolution(
+        clauses,
+        provenance,
+        symbols,
+        &config.ordering,
+        &mut id_gen,
+        crate::certified::CertifyBudget {
+            time_limit: config.time_limit,
+            workers: cert_workers,
+            memory_mb: config.resource_limits.max_memory_mb,
+        },
+    ) {
+        Ok(report) => (
+            report.result,
+            report.stats,
+            Some(report.tier.as_str().to_string()),
+        ),
+        Err(reason) => {
+            if std::env::var("TRACE_SEARCH").is_ok() {
+                eprintln!("[TRACE] ordered certifier refused input: {reason:?}");
+            }
+            (SearchResult::GaveUp, crate::SearchStats::default(), None)
+        }
+    };
+    let cert_ordering = match &config.ordering {
+        crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_) => Some("kbo".to_string()),
+        crate::TermOrdering::LPO | crate::TermOrdering::CustomLPO(_) => Some("lpo".to_string()),
+        crate::TermOrdering::CustomACKBO(_, _) => Some("ac-kbo".to_string()),
+    };
+
+    // Keep the raw search outcome for schedule-report telemetry: a
+    // submitted-but-not-yet-certified (or later-rejected) candidate must
+    // still surface as `result=Refutation` so `self_check=Rejected` is
+    // distinguishable from `Unchecked`. The returned value reflects only
+    // what the coordinator has already certified (or the raw outcome when
+    // there is no receiver).
+    let search_outcome = result.clone();
+    let result = if let SearchResult::Refutation(id, ref tstp) = result {
+        if let Some(receiver) = candidate_receiver {
+            let candidate = CandidateRefutation {
+                strategy_idx: 0,
+                strategy_id: config.strategy_id,
+                clause_id: id,
+                tstp_proof: tstp.clone(),
+                elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+                time_remaining: config.time_limit.saturating_sub(schedule_start.elapsed()),
+            };
+            receiver.submit_candidate(candidate);
+            receiver.certified_result().unwrap_or(SearchResult::GaveUp)
+        } else {
+            result
+        }
+    } else {
+        result
+    };
+
+    let report = crate::ScheduleReport {
+        workers: workers.unwrap_or(1),
+        elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+        strategies: vec![crate::StrategyReport {
+            strategy_idx: 0,
+            strategy_id: config.strategy_id,
+            result: search_outcome,
+            stats,
+            elapsed_ms: schedule_start.elapsed().as_millis() as u64,
+        }],
+        instgen: None,
+        epr: None,
+        cert_tier,
+        cert_ordering,
+    };
+    (result, report)
+}
+
+fn schedule_start_for_certification() -> Instant {
+    Instant::now()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use mrs_core::clause::{ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
+
+    #[test]
+    fn epr_ground_prepass_defaults_on_and_supports_explicit_opt_out() {
+        assert!(epr_ground_prepass_enabled(None));
+        assert!(epr_ground_prepass_enabled(Some("1")));
+        assert!(!epr_ground_prepass_enabled(Some("0")));
+        assert!(!epr_ground_prepass_should_run(false, true, false));
+        assert!(!epr_ground_prepass_should_run(true, false, false));
+        assert!(epr_ground_prepass_should_run(true, true, false));
+        assert!(epr_ground_prepass_should_run(true, false, true));
+    }
+
+    #[test]
+    fn default_schedule_allocates_exactly_the_callers_wall_budget() {
+        for total in [
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+            Duration::from_secs(30),
+            Duration::from_secs(120),
+        ] {
+            let schedule = StrategySchedule::_all_strategies(total, 8);
+            let allocated: Duration = schedule.strategies.iter().map(|(_, slice)| *slice).sum();
+            assert_eq!(allocated, total);
+        }
+    }
+
+    #[test]
+    fn schedule_rescaling_preserves_ratios_and_exact_total() {
+        let mut schedule = StrategySchedule {
+            strategies: vec![
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(2),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(2),
+                ),
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(3),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(3),
+                ),
+            ],
+        };
+        schedule.rescale_to_budget(Duration::from_secs(10));
+        let allocated: Duration = schedule.strategies.iter().map(|(_, slice)| *slice).sum();
+        assert_eq!(allocated, Duration::from_secs(10));
+        assert_eq!(schedule.strategies[0].0.time_limit, Duration::from_secs(4));
+        assert_eq!(schedule.strategies[1].0.time_limit, Duration::from_secs(6));
+    }
+
+    #[test]
+    fn schedule_rescaling_shrinks_existing_budgets() {
+        let mut schedule = StrategySchedule {
+            strategies: vec![
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(4),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(4),
+                ),
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(6),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(6),
+                ),
+            ],
+        };
+        schedule.rescale_to_budget(Duration::from_secs(5));
+        let allocated: Duration = schedule.strategies.iter().map(|(_, slice)| *slice).sum();
+        assert_eq!(allocated, Duration::from_secs(5));
+        assert_eq!(schedule.strategies[0].0.time_limit, Duration::from_secs(2));
+        assert_eq!(schedule.strategies[1].0.time_limit, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn schedule_rescaling_updates_config_and_reported_slice() {
+        let mut schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::from_secs(2),
+                    ..SearchConfig::default()
+                },
+                Duration::from_secs(1),
+            )],
+        };
+        schedule.rescale_to_budget(Duration::from_secs(3));
+        assert_eq!(schedule.strategies[0].0.time_limit, Duration::from_secs(3));
+        assert_eq!(schedule.strategies[0].1, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn schedule_rescaling_handles_zero_and_empty_allocations() {
+        let schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::ZERO,
+                    ..SearchConfig::default()
+                },
+                Duration::ZERO,
+            )],
+        };
+        let mut schedule = schedule;
+        schedule.rescale_to_budget(Duration::from_secs(5));
+        assert!(schedule.strategies[0].0.time_limit.is_zero());
+        assert!(schedule.strategies[0].1.is_zero());
+
+        let mut empty = StrategySchedule { strategies: vec![] };
+        empty.rescale_to_budget(Duration::from_secs(5));
+        assert!(empty.strategies.is_empty());
+    }
+
+    #[test]
+    fn schedule_rescaling_uses_declared_slices() {
+        let mut schedule = StrategySchedule {
+            strategies: vec![
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(8),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(2),
+                ),
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_secs(2),
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(3),
+                ),
+            ],
+        };
+        schedule.rescale_to_budget(Duration::from_secs(10));
+        assert_eq!(schedule.strategies[0].0.time_limit, Duration::from_secs(4));
+        assert_eq!(schedule.strategies[1].0.time_limit, Duration::from_secs(6));
+    }
+
+    #[test]
+    fn total_schedule_budget_is_clamped_to_entry_deadline_remainder() {
+        let caller_budget = Duration::from_secs(10);
+        let entry_elapsed = Duration::from_secs(3);
+        let schedule_deadline = Instant::now() + caller_budget - entry_elapsed;
+        let total_budget = schedule_deadline.saturating_duration_since(Instant::now());
+        assert!(total_budget <= Duration::from_secs(7));
+        assert!(total_budget > Duration::from_secs(6));
+    }
+
+    #[test]
+    fn prepass_budget_uses_only_the_remaining_schedule_deadline() {
+        let caller_budget = Duration::from_secs(10);
+        let pass_elapsed = Duration::from_secs(4);
+        let remaining = remaining_schedule_budget(caller_budget, pass_elapsed).unwrap();
+        assert_eq!(remaining, Duration::from_secs(6));
+
+        let budget = crate::epr_budget(None, caller_budget);
+        let mut observed = None;
+        let output = run_epr_prepass(budget, Some(remaining), |bounded| {
+            observed = Some(bounded.timeout);
+            7
+        });
+        assert_eq!(output, Some(7));
+        assert_eq!(observed, Some(Duration::from_secs(6)));
+    }
+
+    #[test]
+    fn exhausted_shared_deadline_prevents_prepass_launch() {
+        let budget = crate::epr_budget(None, Duration::from_secs(10));
+        let mut launched = false;
+        assert_eq!(
+            run_epr_prepass(
+                budget,
+                remaining_schedule_budget(Duration::from_secs(10), Duration::from_secs(10)),
+                |_| {
+                    launched = true;
+                }
+            ),
+            None
+        );
+        assert!(!launched);
+    }
+
+    #[test]
+    fn rejected_epr_candidate_is_not_a_success_unless_portfolio_proves() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = [
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+                "positive",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+                "negative",
+            ),
+        ];
+        let configs = [1, 2].map(|strategy_id| SearchConfig {
+            time_limit: Duration::from_secs(1),
+            strategy_id,
+            use_avatar: false,
+            ..SearchConfig::default()
+        });
+        let schedule = StrategySchedule {
+            strategies: configs
+                .into_iter()
+                .map(|config| (config.clone(), config.time_limit))
+                .collect(),
+        };
+        let (result, report) = run_schedule_with_candidate_receiver(
+            &clauses,
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(2),
+            Some(Arc::new(RejectingCandidateReceiver)),
+        );
+        assert!(matches!(result, SearchResult::GaveUp));
+        assert!(matches!(
+            report.epr.as_ref().map(|telemetry| telemetry.result),
+            Some("refutation")
+        ));
+        assert!(
+            report
+                .strategies
+                .iter()
+                .any(|strategy| matches!(strategy.result, SearchResult::Refutation(..)))
+        );
+        assert!(report.instgen.is_some());
+    }
+
+    struct RejectingCandidateReceiver;
+
+    impl CandidateReceiver for RejectingCandidateReceiver {
+        fn submit_candidate(&self, _candidate: CandidateRefutation) -> bool {
+            false
+        }
+
+        fn register_stop_flag(&self, _stop_flag: Arc<AtomicBool>) {}
+
+        fn certified_result(&self) -> Option<SearchResult> {
+            None
+        }
+    }
+
+    #[test]
+    fn exhausted_deadline_does_not_start_another_search_phase() {
+        let budget = crate::epr_budget(None, Duration::from_secs(10));
+        let mut started = false;
+        assert_eq!(
+            run_epr_prepass(budget, None, |_| {
+                started = true;
+            }),
+            None
+        );
+        assert!(!started);
+        assert_eq!(
+            remaining_schedule_budget(Duration::from_secs(10), Duration::from_secs(10)),
+            None
+        );
+        assert_eq!(
+            remaining_schedule_budget(Duration::from_secs(10), Duration::from_secs(12)),
+            None
+        );
+    }
+
+    #[test]
+    fn non_success_prepass_outcomes_do_not_become_certified_results() {
+        let incomplete = crate::CompletenessWitness::sat_backed_grounding().with_model(None);
+        let incomplete_result = SearchResult::Saturated(incomplete);
+        let has_verified_model = |result: &SearchResult| {
+            matches!(
+                result,
+                SearchResult::Saturated(witness) if witness.model().is_some()
+            )
+        };
+        assert!(!has_verified_model(&incomplete_result));
+        assert!(!has_verified_model(&SearchResult::GaveUp));
+        assert!(!has_verified_model(&SearchResult::Timeout));
+        assert!(!has_verified_model(&SearchResult::ResourceOut(
+            crate::ResourceReason::Unknown
+        )));
+        let certified_model = SearchResult::Saturated(
+            crate::CompletenessWitness::sat_backed_grounding().with_model(Some(
+                mrs_core::model::ModelCertificate {
+                    domain_size: 1,
+                    constants: Default::default(),
+                    functions: Default::default(),
+                    predicates: Default::default(),
+                    equality: mrs_core::model::EqualitySemantics::StrictIdentity,
+                    digest: String::new(),
+                },
+            )),
+        );
+        assert!(has_verified_model(&certified_model));
+    }
+
+    #[test]
+    fn epr_model_arm_keeps_its_cap_while_refutation_uses_grounding_budget() {
+        let caller_budget = Duration::from_secs(40);
+        let remaining = Duration::from_secs(7);
+        let refutation = crate::epr_budget(None, caller_budget);
+        assert_eq!(
+            epr_budget_with_remaining_time(refutation, remaining)
+                .unwrap()
+                .timeout,
+            remaining
+        );
+
+        let model_budget = crate::epr_budget(Some(128), caller_budget);
+        let model_budget = crate::EprBudget {
+            timeout: model_budget.timeout.min(Duration::from_millis(500)),
+            max_instances: model_budget.max_instances.min(1_000),
+            ..model_budget
+        };
+        let bounded = epr_budget_with_remaining_time(model_budget, remaining).unwrap();
+        assert_eq!(bounded.timeout, Duration::from_millis(500));
+        assert_eq!(bounded.max_instances, 1_000);
+    }
+
+    #[test]
+    fn spawn_budget_stops_at_the_first_refusal_and_reports_the_truth() {
+        // A process that cannot reserve another 64 MiB stack gets EAGAIN from
+        // pthread_create. The portfolio must keep the workers it already has
+        // rather than panicking: this is the state a 64-core host under a 12
+        // GiB RLIMIT_AS actually reached.
+        let mut attempts = Vec::new();
+        let spawned = spawn_budget(64, |worker_id| {
+            attempts.push(worker_id);
+            if worker_id == 40 {
+                Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(spawned, 40, "the 40 workers that started must be reported");
+        assert_eq!(
+            attempts.len(),
+            41,
+            "the loop must stop at the first refusal instead of trying all 64"
+        );
+    }
+
+    #[test]
+    fn spawn_budget_spawns_everything_when_the_os_allows_it() {
+        let spawned = spawn_budget(8, |_| Ok(()));
+        assert_eq!(spawned, 8);
+    }
+
+    #[test]
+    fn spawn_budget_reports_zero_without_panicking() {
+        let spawned = spawn_budget(8, |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+        });
+        assert_eq!(spawned, 0);
+    }
 
     #[test]
     fn ml_prune_slot_picks_last_two_of_eight() {
@@ -1093,8 +2524,9 @@ mod tests {
         );
 
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5), 1);
-        let (result, _) = run_schedule(
+        let (result, report) = run_schedule(
             &[c1, c2],
+            &[],
             id_gen,
             &schedule,
             &syms,
@@ -1102,6 +2534,14 @@ mod tests {
             None,
         );
         assert!(matches!(result, SearchResult::Refutation(..)));
+        assert!(
+            report.strategies.is_empty(),
+            "EPR should return before portfolio"
+        );
+        assert_eq!(
+            report.epr.as_ref().map(|telemetry| telemetry.result),
+            Some("refutation")
+        );
     }
 
     #[test]
@@ -1127,6 +2567,7 @@ mod tests {
         let schedule = StrategySchedule::default_schedule(Duration::from_secs(5), 1);
         let (result, _) = run_schedule(
             &[c1, c2],
+            &[],
             id_gen,
             &schedule,
             &syms,
@@ -1136,8 +2577,374 @@ mod tests {
         // After EPR preprocessing, a saturated ground search is demoted to
         // GaveUp (conservative: avoids outputting a wrong Satisfiable).
         assert!(
-            matches!(result, SearchResult::Saturated | SearchResult::GaveUp),
+            matches!(result, SearchResult::Saturated(_) | SearchResult::GaveUp),
             "expected Saturated or GaveUp, got {result:?}"
         );
+    }
+
+    #[test]
+    fn instgen_gaveup_falls_through_to_portfolio() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(
+                    p,
+                    vec![Term::var(0), Term::var(0)],
+                ))],
+                "same",
+            )
+            .with_distance(0),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::neg(Atom::pred(
+                    p,
+                    vec![Term::constant(a), Term::constant(b)],
+                ))],
+                "different",
+            )
+            .with_distance(0),
+        ];
+        let schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::from_millis(100),
+                    max_term_weight: None,
+                    use_avatar: false,
+                    ..SearchConfig::default()
+                },
+                Duration::from_millis(100),
+            )],
+        };
+        let (result, report) = run_schedule(
+            &clauses,
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(1),
+        );
+        assert!(matches!(
+            result,
+            SearchResult::GaveUp | SearchResult::Timeout
+        ));
+        assert_eq!(
+            report.instgen.as_ref().map(|tele| tele.return_reason),
+            Some(Some("gaveup_variable_model"))
+        );
+        assert_eq!(report.strategies.len(), 1);
+        assert!(report.strategies[0].stats.iterations > 0);
+    }
+
+    #[test]
+    fn incomplete_saturation_cannot_stop_the_portfolio() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let clause = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax",
+        );
+        let schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::from_millis(100),
+                    ordered_inferences: true,
+                    max_term_weight: None,
+                    use_avatar: false,
+                    ..SearchConfig::default()
+                },
+                Duration::from_millis(100),
+            )],
+        };
+
+        let (result, report) = run_schedule(
+            &[clause],
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(1),
+        );
+
+        assert!(matches!(
+            result,
+            SearchResult::GaveUp | SearchResult::Timeout
+        ));
+        assert!(
+            report
+                .strategies
+                .iter()
+                .all(|strategy| !matches!(strategy.result, SearchResult::Saturated(_)))
+        );
+    }
+
+    /// The `--certify-ordered` path attributes tier and ordering in the
+    /// schedule report so harnesses read them from `% SZS detail` without
+    /// TRACE output. Uses a two-unit SAT input (Tier-1 saturates).
+    #[test]
+    fn certified_schedule_reports_tier_and_ordering() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+                "ax1",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(q, vec![Term::constant(a)]))],
+                "ax2",
+            ),
+        ];
+        for (ordering, expected) in [(TermOrdering::KBO, "kbo"), (TermOrdering::LPO, "lpo")] {
+            let schedule = StrategySchedule {
+                strategies: vec![(
+                    SearchConfig {
+                        time_limit: Duration::from_secs(5),
+                        certify_ordered_inferences: true,
+                        ordered_inferences: true,
+                        max_term_weight: None,
+                        use_avatar: false,
+                        literal_selection: LiteralSelection::All,
+                        ordering,
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_secs(5),
+                )],
+            };
+            let (result, report) = run_schedule(
+                &clauses,
+                &[],
+                id_gen.clone(),
+                &schedule,
+                &syms,
+                MlOptions::default(),
+                Some(1),
+            );
+            assert!(
+                matches!(result, SearchResult::Saturated(_)),
+                "certified SAT input must saturate under {expected}"
+            );
+            // The SAT tier decides a satisfiable grounding before the ordered
+            // closure is attempted, so the reported tier is 2. The ordering is
+            // still reported: it remains a property of the schedule, and a
+            // future input that reaches the closure would carry it.
+            assert_eq!(report.cert_tier.as_deref(), Some("2"));
+            assert_eq!(report.cert_ordering.as_deref(), Some(expected));
+            let detail = report.telemetry_detail("Saturation");
+            assert!(
+                detail.contains("cert_tier=2"),
+                "telemetry detail must carry the tier"
+            );
+            assert!(
+                detail.contains(&format!("cert_ordering={expected}")),
+                "telemetry detail must carry the ordering"
+            );
+        }
+    }
+
+    /// Fail-closed certification leaves tier attribution empty while still
+    /// recording the attempted ordering.
+    #[test]
+    fn certified_schedule_omits_tier_on_gaveup() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let f = syms.intern("f");
+        let mut id_gen = ClauseIdGen::new();
+        // Function term: outside the fragment, instant GaveUp.
+        let clause = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::constant(a)])],
+            ))],
+            "ax",
+        );
+        let schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::from_secs(5),
+                    certify_ordered_inferences: true,
+                    ordered_inferences: true,
+                    max_term_weight: None,
+                    use_avatar: false,
+                    ordering: TermOrdering::KBO,
+                    ..SearchConfig::default()
+                },
+                Duration::from_secs(5),
+            )],
+        };
+        let (result, report) = run_schedule(
+            &[clause],
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(1),
+        );
+        assert!(matches!(result, SearchResult::GaveUp));
+        assert_eq!(report.cert_tier, None);
+        assert_eq!(report.cert_ordering.as_deref(), Some("kbo"));
+    }
+
+    #[test]
+    fn schedule_report_records_actual_worker_count() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax1",
+        );
+        let schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::from_millis(50),
+                    max_term_weight: None,
+                    use_avatar: false,
+                    ..SearchConfig::default()
+                },
+                Duration::from_millis(50),
+            )],
+        };
+        let (_result, report) = run_schedule(
+            &[c1],
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(1),
+        );
+        assert_eq!(report.workers, 1);
+        assert!(report.elapsed_ms <= 1_000);
+        assert_eq!(report.strategies.len(), 1);
+    }
+
+    #[test]
+    fn candidate_receiver_recovers_after_rejection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Mutex, RwLock};
+
+        struct MockReceiver {
+            stop_flag: RwLock<Option<Arc<AtomicBool>>>,
+            attempts: AtomicUsize,
+            winner: Mutex<Option<SearchResult>>,
+        }
+
+        impl CandidateReceiver for MockReceiver {
+            fn submit_candidate(&self, candidate: CandidateRefutation) -> bool {
+                let n = self.attempts.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // Reject first candidate to test search continuation
+                    false
+                } else {
+                    // Accept subsequent candidate
+                    *self.winner.lock().unwrap() = Some(SearchResult::Refutation(
+                        candidate.clause_id,
+                        format!("certified:{}", candidate.tstp_proof),
+                    ));
+                    if let Some(stop) = self.stop_flag.read().unwrap().as_ref() {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                    true
+                }
+            }
+
+            fn register_stop_flag(&self, stop_flag: Arc<AtomicBool>) {
+                *self.stop_flag.write().unwrap() = Some(stop_flag);
+            }
+
+            fn certified_result(&self) -> Option<SearchResult> {
+                self.winner.lock().unwrap().clone()
+            }
+        }
+
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        // Contradictory input: p(a) and ~p(a)
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax2",
+        );
+
+        let receiver = Arc::new(MockReceiver {
+            stop_flag: RwLock::new(None),
+            attempts: AtomicUsize::new(0),
+            winner: Mutex::new(None),
+        });
+
+        // Two strategies so the second one can run if the first's refutation is rejected
+        let schedule = StrategySchedule {
+            strategies: vec![
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_millis(200),
+                        max_term_weight: None,
+                        use_avatar: false,
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_millis(200),
+                ),
+                (
+                    SearchConfig {
+                        time_limit: Duration::from_millis(200),
+                        max_term_weight: None,
+                        use_avatar: false,
+                        ..SearchConfig::default()
+                    },
+                    Duration::from_millis(200),
+                ),
+            ],
+        };
+
+        let (result, _report) = run_schedule_with_candidate_receiver(
+            &[c1, c2],
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(1),
+            Some(receiver.clone()),
+        );
+
+        assert!(
+            receiver.attempts.load(Ordering::SeqCst) >= 2,
+            "expected at least 2 candidates submitted across strategies, got {}",
+            receiver.attempts.load(Ordering::SeqCst)
+        );
+        assert!(
+            matches!(result, SearchResult::Refutation(..)),
+            "expected SearchResult::Refutation, got {result:?}"
+        );
+        if let SearchResult::Refutation(_, proof) = result {
+            assert!(proof.starts_with("certified:"));
+        }
     }
 }

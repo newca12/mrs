@@ -241,22 +241,22 @@ use burn::module::Module;
 #[cfg(feature = "ml")]
 use burn::nn::{Linear, LinearConfig};
 #[cfg(feature = "ml")]
-use burn::tensor::Tensor;
+use burn::store::{ModuleRecord, RecordError};
 #[cfg(feature = "ml")]
-use burn::tensor::backend::Backend;
+use burn::tensor::{Device, Tensor};
 
 #[cfg(feature = "ml")]
 #[derive(Module, Debug)]
-pub struct PremiseModel<B: Backend> {
-    layer1: Linear<B>,
-    layer2: Linear<B>,
-    layer3: Linear<B>,
-    output: Linear<B>,
+pub struct PremiseModel {
+    layer1: Linear,
+    layer2: Linear,
+    layer3: Linear,
+    output: Linear,
 }
 
 #[cfg(feature = "ml")]
-impl<B: Backend> PremiseModel<B> {
-    pub fn new(device: &B::Device) -> Self {
+impl PremiseModel {
+    pub fn new(device: &Device) -> Self {
         Self {
             layer1: LinearConfig::new(PREMISE_FEATURE_DIM, 256).init(device),
             layer2: LinearConfig::new(256, 128).init(device),
@@ -265,7 +265,7 @@ impl<B: Backend> PremiseModel<B> {
         }
     }
 
-    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn forward(&self, x: Tensor<2>) -> Tensor<2> {
         let x = burn::tensor::activation::gelu(self.layer1.forward(x));
         let x = burn::tensor::activation::gelu(self.layer2.forward(x));
         let x = burn::tensor::activation::gelu(self.layer3.forward(x));
@@ -274,27 +274,22 @@ impl<B: Backend> PremiseModel<B> {
 }
 
 #[cfg(feature = "ml")]
-pub struct PremiseSelector<B: Backend> {
-    model: PremiseModel<B>,
-    device: B::Device,
+pub struct PremiseSelector {
+    model: PremiseModel,
+    device: Device,
 }
 
 #[cfg(feature = "ml")]
-impl<B: Backend> PremiseSelector<B> {
-    pub fn new(device: B::Device) -> Self {
+impl PremiseSelector {
+    pub fn new(device: Device) -> Self {
         Self {
             model: PremiseModel::new(&device),
             device,
         }
     }
 
-    pub fn load_from_file(
-        path: &str,
-        device: &B::Device,
-    ) -> Result<Self, burn::record::RecorderError> {
-        use burn::record::{BinFileRecorder, Recorder};
-        let recorder = BinFileRecorder::<burn::record::HalfPrecisionSettings>::default();
-        let record = recorder.load(path.into(), device)?;
+    pub fn load_from_file(path: &str, device: &Device) -> Result<Self, RecordError> {
+        let record = ModuleRecord::load(path)?;
         let model = PremiseModel::new(device).load_record(record);
         Ok(Self {
             model,
@@ -302,7 +297,7 @@ impl<B: Backend> PremiseSelector<B> {
         })
     }
 
-    pub fn with_model(model: PremiseModel<B>, device: B::Device) -> Self {
+    pub fn with_model(model: PremiseModel, device: Device) -> Self {
         Self { model, device }
     }
 
@@ -320,7 +315,7 @@ impl<B: Backend> PremiseSelector<B> {
     /// axiom-heavy problems (FEQ/UEQ problems pulling in large `%include`d
     /// background theories can have thousands of axioms) this turned into a
     /// real, uniform per-problem tax charged against the search time budget
-    /// (see docs/BENCHMARKS.md). Stacking all feature vectors into one
+    /// (see docs/history/benchmark-log.md). Stacking all feature vectors into one
     /// `[n, PREMISE_FEATURE_DIM]` tensor and running a single forward pass
     /// removes that per-axiom overhead entirely.
     pub fn evaluate_scores_batch(&self, features: &[[f32; PREMISE_FEATURE_DIM]]) -> Vec<f32> {
@@ -332,7 +327,7 @@ impl<B: Backend> PremiseSelector<B> {
         for f in features {
             flat.extend_from_slice(f);
         }
-        let input = Tensor::<B, 1>::from_floats(flat.as_slice(), &self.device)
+        let input = Tensor::<1>::from_floats(flat.as_slice(), &self.device)
             .reshape([n, PREMISE_FEATURE_DIM]);
         let logits = self.model.forward(input);
         let probs = burn::tensor::activation::sigmoid(logits);
@@ -372,21 +367,21 @@ impl<B: Backend> PremiseSelector<B> {
 #[cfg(all(test, feature = "ml"))]
 mod tests {
     use super::*;
-    use burn::backend::NdArray;
+    use burn::tensor::Device;
 
     #[test]
     fn test_premise_model_shape() {
-        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
-        let model = PremiseModel::<NdArray>::new(&device);
-        let x = Tensor::<NdArray, 2>::zeros([2, PREMISE_FEATURE_DIM], &device);
+        let device = Device::flex();
+        let model = PremiseModel::new(&device);
+        let x = Tensor::<2>::zeros([2, PREMISE_FEATURE_DIM], &device);
         let out = model.forward(x);
         assert_eq!(out.shape().dims(), [2, 1]);
     }
 
     #[test]
     fn batched_scores_match_per_axiom_scores() {
-        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
-        let selector = PremiseSelector::<NdArray>::new(device);
+        let device = Device::flex();
+        let selector = PremiseSelector::new(device);
 
         let mut features = Vec::new();
         for i in 0..7 {
@@ -412,8 +407,8 @@ mod tests {
 
     #[test]
     fn evaluate_scores_batch_empty_input() {
-        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
-        let selector = PremiseSelector::<NdArray>::new(device);
+        let device = Device::flex();
+        let selector = PremiseSelector::new(device);
         assert!(selector.evaluate_scores_batch(&[]).is_empty());
     }
 }

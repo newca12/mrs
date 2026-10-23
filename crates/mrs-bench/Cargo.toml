@@ -9,9 +9,22 @@ rust-version.workspace = true
 description = "CASC benchmark harness and report tool for mrs"
 
 [dependencies]
+rayon = { workspace = true }
 mrs-core = { workspace = true }
+mrs-search = { workspace = true }
+mrs-szs = { workspace = true }
 mrs-tptp = { workspace = true }
-walkdir = "2.5.0"
+mrs-proof-kernel = { workspace = true }
+mrs-prephase = { workspace = true }
+mrs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+walkdir = { workspace = true }
+num_cpus = { workspace = true }
+libc = { workspace = true }
+wait-timeout = { workspace = true }
 
 [[bin]]
 name = "bench_report"
@@ -24,3 +37,43 @@ path = "src/bin/categorize_tptp.rs"
 [[bin]]
 name = "greedy_set_cover"
 path = "src/bin/greedy_set_cover.rs"
+
+[[bin]]
+name = "normalize_proover2026"
+path = "src/bin/normalize_proover2026.rs"
+
+[[bin]]
+name = "validate_proover2026"
+path = "src/bin/validate_proover2026.rs"
+
+[[bin]]
+name = "audit_proover"
+path = "src/bin/audit_proover.rs"
+
+[[bin]]
+name = "release_gate"
+path = "src/bin/release_gate.rs"
+
+[[bin]]
+name = "repeat_search"
+path = "src/bin/repeat_search.rs"
+
+[[bin]]
+name = "dual_run_sanity_check"
+path = "src/bin/dual_run_sanity_check.rs"
+
+[[bin]]
+name = "audit_casc_proofs"
+path = "src/bin/audit_casc_proofs.rs"
+
+[[bin]]
+name = "perf_probe"
+path = "src/bin/perf_probe.rs"
+
+[[bin]]
+name = "prephase_dump"
+path = "src/bin/prephase_dump.rs"
+
+[[bin]]
+name = "prephase_sweep"
+path = "src/bin/prephase_sweep.rs"

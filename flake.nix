@@ -10,22 +10,40 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      nixpkgs,
+      rust-overlay,
+      flake-utils,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
-        # Pin the exact stable toolchain (>= 1.95 required by Cargo.toml,
-        # edition 2024). The `default` profile bundles cargo, rustfmt,
-        # clippy, rust-std and rust-docs; we add rust-src + rust-analyzer
-        # for editor support. This toolchain lives in the Nix store and is
-        # GC-rooted by the flake, so it is immune to the ~/.rustup linker
-        # shim breakage that occurs when nixpkgs `rustup` is rebuilt and the
-        # old build is garbage-collected.
-        rustToolchain = pkgs.rust-bin.stable."1.97.0".default.override {
-          extensions = [ "rust-src" "rust-analyzer" ];
-        };
+        # Parse Cargo.toml dynamically
+        cargoToml = fromTOML (builtins.readFile ./Cargo.toml);
+        rustVersion =
+          if builtins.isString (cargoToml.package.rust-version or null) then
+            cargoToml.package.rust-version
+          else
+            cargoToml.workspace.package.rust-version or "latest";
+
+        rustToolchain =
+          (
+            if rustVersion == "latest" then
+              pkgs.rust-bin.stable.latest.default
+            else
+              pkgs.rust-bin.stable.${rustVersion}.default
+          ).override
+            {
+              extensions = [
+                "rust-src"
+                "rust-analyzer"
+              ];
+            };
 
         # Optional runtime libraries for the `ml`/`ml-guidance` feature builds
         # (Burn + wgpu). Not needed for the default CASC / ProoVer builds.
@@ -36,8 +54,8 @@
       in
       {
         devShells.default = pkgs.mkShell {
-          # stdenv supplies a C/C++ compiler, which the `cadical` crate
-          # (CaDiCaL SAT solver, built from source via the `cc` crate) needs.
+          # stdenv supplies a C/C++ compiler, which the `mrs-cadical-sys`
+          # crate (CaDiCaL 3.0.1 built from source via `cc`) needs.
           nativeBuildInputs = [
             rustToolchain
             pkgs.pkg-config
@@ -52,6 +70,10 @@
           packages = with pkgs; [
             git
             cargo-nextest
+            python3
+            jq
+            curl
+            unzip
           ];
 
           # Make the wgpu/vulkan loader discoverable for `--features
@@ -71,7 +93,29 @@
           '';
         };
 
+        # Verus uses its own Rust toolchain, isolated from the workspace's
+        # pinned Rust 1.99 toolchain. Use `nix develop .#verus -c ...` for
+        # Verus install/verification so rustup cannot change the main shell.
+        devShells.verus = pkgs.mkShell {
+          packages = with pkgs; [
+            git
+            jq
+            curl
+            unzip
+            rustup
+          ];
+
+          shellHook = ''
+            export RUSTUP_HOME="''${RUSTUP_HOME:-''${XDG_CACHE_HOME:-$HOME/.cache}/mrs-verus/rustup}"
+            export CARGO_HOME="''${CARGO_HOME:-''${XDG_CACHE_HOME:-$HOME/.cache}/mrs-verus/cargo}"
+            echo "mrs Verus shell — rustup home: $RUSTUP_HOME"
+            echo "  install: formal/superposition-checker/install-verus.sh"
+            echo "  verify:  formal/superposition-checker/verify.sh"
+          '';
+        };
+
         # `nix fmt` formats this flake.
         formatter = pkgs.nixpkgs-fmt;
-      });
+      }
+    );
 }

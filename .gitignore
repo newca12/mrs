@@ -21,6 +21,9 @@ Thumbs.db
 laptop_i.err
 laptop_i.out
 
+# Benchmark run output (run.csv, raw stdout/stderr, job files)
+/results/
+
 # Profiling output
 heaptrack.*.zst
 *.zst
@@ -56,3 +59,15 @@ experiment.log
 
 # mrs-codex: runtime output database from processing a problem corpus
 /codex.db
+
+# Local Nix environment
+.direnv/
+
+# Local SQLite runtime databases
+/*.db
+/*.db-shm
+/*.db-wal
+
+# Local log outputs
+/*.out
+/*.err

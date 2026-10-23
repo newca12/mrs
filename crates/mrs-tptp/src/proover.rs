@@ -43,6 +43,84 @@ pub struct ParentRef<'a> {
     pub negated: bool,
 }
 
+/// One branch entry in an explicit AVATAR split annotation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvatarSplitComponent<'a> {
+    pub branch_index: usize,
+    pub sat_var: &'a str,
+    pub literal_indices: Vec<usize>,
+}
+
+/// Metadata carried by an `avatar_split_clause` step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvatarSplitInfo<'a> {
+    pub components: Vec<AvatarSplitComponent<'a>>,
+    pub inherited: Vec<&'a str>,
+}
+
+/// Metadata carried by an `avatar_component_clause` step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AvatarComponentInfo<'a> {
+    pub split_parent: &'a str,
+    pub branch_index: usize,
+    pub sat_var: &'a str,
+}
+
+/// Metadata carried by an `avatar_branch_refutation` step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvatarBranchInfo<'a> {
+    pub context: Vec<&'a str>,
+}
+
+/// Metadata carried by a `sat_backed_refutation` step: a SAT-backed
+/// refutation of a large grounded EPR set with no AVATAR splits. Unlike
+/// [`AvatarSatInfo`], there are no split/branch nodes — `inputs` names every
+/// cited ground instance and the trace payload is mandatory for a
+/// `Certified` verdict (the kernel demands it; the parser tolerates its
+/// absence so the kernel, not the parser, classifies the gap).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SatBackedInfo<'a> {
+    pub inputs: Vec<&'a str>,
+    pub trace_format: Option<&'a str>,
+    pub trace_variables: Option<usize>,
+    pub trace_digest: Option<&'a str>,
+    pub trace_original_ids: Vec<i64>,
+    pub trace_cited_indices: Vec<usize>,
+    pub trace_clauses: Vec<Vec<i32>>,
+    pub trace_bytes: Option<&'a str>,
+}
+
+/// Metadata carried by the final `avatar_sat_refutation` step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvatarSatInfo<'a> {
+    pub split_nodes: Vec<&'a str>,
+    pub branch_roots: Vec<&'a str>,
+    pub trace_format: Option<&'a str>,
+    pub trace_variables: Option<usize>,
+    pub trace_digest: Option<&'a str>,
+    pub trace_original_ids: Vec<i64>,
+    pub trace_cited_indices: Vec<usize>,
+    pub trace_clauses: Vec<Vec<i32>>,
+    pub trace_bytes: Option<&'a str>,
+}
+
+/// One recorded rewrite of a `demodulation` step.
+///
+/// A demodulation step collapses a whole fixpoint of unit-equality rewriting
+/// into a single proof node, so the intermediate positions are not visible in
+/// the parent/conclusion pair. The prover records them, in application order,
+/// as `rule_parent(literal, [term_path])` inside
+/// `demodulation_steps(...)`, where `rule_parent` is the *index* of the cited
+/// unit equality in the step's own parent list (index 0 is the rewritten
+/// clause) and `term_path` selects a subterm: an argument index for a
+/// predicate atom, and `0`/`1` for the left/right side of an equality atom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemodStepRef {
+    pub rule_parent: usize,
+    pub literal: usize,
+    pub term_path: Vec<usize>,
+}
+
 impl<'a> Annotations<'a> {
     /// Extract the inference rule name from `inference(rule, …, …)` source.
     pub fn inference_rule(&self) -> Option<&'a str> {
@@ -115,6 +193,22 @@ impl<'a> Annotations<'a> {
         out
     }
 
+    /// Return whether an inference pedigree contains only supported parent
+    /// reference terms.
+    ///
+    /// `parent_refs` intentionally returns a flat list for callers that need
+    /// the common case. It must not silently turn an unsupported term into an
+    /// omitted citation, because that changes the logical premises of a step.
+    pub fn parent_refs_well_formed(&self) -> bool {
+        match &self.source {
+            GeneralTerm::Function(AtomicWord::Lower("inference"), args) => {
+                inference_parent_terms_well_formed(args)
+            }
+            GeneralTerm::Function(AtomicWord::SingleQuoted("inference"), _) => false,
+            _ => true,
+        }
+    }
+
     /// Iterate the inference-info list (the second arg of `inference/3`).
     fn info_items(&self) -> &[GeneralTerm<'a>] {
         match &self.source {
@@ -162,6 +256,223 @@ impl<'a> Annotations<'a> {
             }
         }
         Vec::new()
+    }
+
+    /// Extract the SAT literals recorded by an AVATAR branch certificate.
+    pub fn avatar_context(&self) -> Vec<&'a str> {
+        for item in self.info_items() {
+            if let GeneralTerm::Function(AtomicWord::Lower("avatar_context"), args) = item
+                && let Some(GeneralTerm::List(items)) = args.first()
+            {
+                return items
+                    .iter()
+                    .filter_map(|item| match item {
+                        GeneralTerm::Word(AtomicWord::Lower(name)) => Some(*name),
+                        GeneralTerm::Word(AtomicWord::SingleQuoted(name)) => Some(*name),
+                        _ => None,
+                    })
+                    .collect();
+            }
+        }
+        Vec::new()
+    }
+
+    /// Parse `avatar_split([branch(0, spl0_1, [0]), ...], [spl0_9, ...])`.
+    pub fn avatar_split(&self) -> Option<AvatarSplitInfo<'a>> {
+        let args = self.info_function("avatar_split")?;
+        if args.len() != 2 {
+            return None;
+        }
+        let components = match args.first()? {
+            GeneralTerm::List(items) => items
+                .iter()
+                .map(|item| {
+                    let GeneralTerm::Function(name, args) = item else {
+                        return None;
+                    };
+                    if !word_is(name, "branch") || args.len() != 3 {
+                        return None;
+                    }
+                    Some(AvatarSplitComponent {
+                        branch_index: number_value(args.first()?)?,
+                        sat_var: word_value(args.get(1)?)?,
+                        literal_indices: number_list(args.get(2)?)?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+            _ => return None,
+        };
+        let inherited = match args.get(1) {
+            Some(GeneralTerm::List(items)) => items.iter().filter_map(word_value).collect(),
+            _ => return None,
+        };
+        Some(AvatarSplitInfo {
+            components,
+            inherited,
+        })
+    }
+
+    /// Parse `avatar_component(c123, 0, spl0_1)`.
+    pub fn avatar_component(&self) -> Option<AvatarComponentInfo<'a>> {
+        let args = self.info_function("avatar_component")?;
+        if args.len() != 3 {
+            return None;
+        }
+        Some(AvatarComponentInfo {
+            split_parent: word_value(args.first()?)?,
+            branch_index: number_value(args.get(1)?)?,
+            sat_var: word_value(args.get(2)?)?,
+        })
+    }
+
+    /// Parse `avatar_context([spl0_1, spl0_2])`.
+    pub fn avatar_branch(&self) -> Option<AvatarBranchInfo<'a>> {
+        let args = self.info_function("avatar_context")?;
+        if args.len() != 1 {
+            return None;
+        }
+        let context = match args.first()? {
+            GeneralTerm::List(items) => items.iter().map(word_value).collect::<Option<Vec<_>>>()?,
+            _ => return None,
+        };
+        Some(AvatarBranchInfo { context })
+    }
+
+    /// Parse the self-contained SAT payload carried by an AVATAR certificate.
+    ///
+    /// The supported shape is
+    /// `sat_trace(frat-lrat, Variables, Digest, [Ids], [Cited], [[Clauses]], HexBytes)`.
+    pub fn avatar_sat(&self) -> Option<AvatarSatInfo<'a>> {
+        let args = self.info_function("avatar_sat_refutation")?;
+        if args.len() < 2 || args.len() > 3 {
+            return None;
+        }
+        let split_nodes = term_list(args.first()?)?;
+        let branch_roots = term_list(args.get(1)?)?;
+        let (
+            trace_format,
+            trace_variables,
+            trace_digest,
+            trace_original_ids,
+            trace_cited_indices,
+            trace_clauses,
+            trace_bytes,
+        ) = match args.get(2) {
+            Some(GeneralTerm::Function(name, trace_args))
+                if word_is(name, "sat_trace") && trace_args.len() == 7 =>
+            {
+                let original_ids = number_list_i64(trace_args.get(3)?)?;
+                let cited_indices = number_list(trace_args.get(4)?)?;
+                let clauses = clause_list(trace_args.get(5)?)?;
+                (
+                    Some(word_value(trace_args.first()?)?),
+                    Some(number_value(trace_args.get(1)?)?),
+                    Some(word_value(trace_args.get(2)?)?),
+                    original_ids,
+                    cited_indices,
+                    clauses,
+                    Some(word_value(trace_args.get(6)?)?),
+                )
+            }
+            None => (None, None, None, Vec::new(), Vec::new(), Vec::new(), None),
+            _ => return None,
+        };
+        Some(AvatarSatInfo {
+            split_nodes,
+            branch_roots,
+            trace_format,
+            trace_variables,
+            trace_digest,
+            trace_original_ids,
+            trace_cited_indices,
+            trace_clauses,
+            trace_bytes,
+        })
+    }
+
+    /// Parse the self-contained SAT payload carried by a SAT-backed
+    /// refutation certificate.
+    ///
+    /// The supported shape is
+    /// `sat_backed_refutation([Inputs], sat_trace(frat-lrat, Variables,
+    /// Digest, [Ids], [Cited], [[Clauses]], HexBytes))`.
+    pub fn sat_backed(&self) -> Option<SatBackedInfo<'a>> {
+        let args = self.info_function("sat_backed_refutation")?;
+        if args.is_empty() || args.len() > 2 {
+            return None;
+        }
+        let inputs = term_list(args.first()?)?;
+        let (
+            trace_format,
+            trace_variables,
+            trace_digest,
+            trace_original_ids,
+            trace_cited_indices,
+            trace_clauses,
+            trace_bytes,
+        ) = match args.get(1) {
+            Some(GeneralTerm::Function(name, trace_args))
+                if word_is(name, "sat_trace") && trace_args.len() == 7 =>
+            {
+                let original_ids = number_list_i64(trace_args.get(3)?)?;
+                let cited_indices = number_list(trace_args.get(4)?)?;
+                let clauses = clause_list(trace_args.get(5)?)?;
+                (
+                    Some(word_value(trace_args.first()?)?),
+                    Some(number_value(trace_args.get(1)?)?),
+                    Some(word_value(trace_args.get(2)?)?),
+                    original_ids,
+                    cited_indices,
+                    clauses,
+                    Some(word_value(trace_args.get(6)?)?),
+                )
+            }
+            None => (None, None, None, Vec::new(), Vec::new(), Vec::new(), None),
+            _ => return None,
+        };
+        Some(SatBackedInfo {
+            inputs,
+            trace_format,
+            trace_variables,
+            trace_digest,
+            trace_original_ids,
+            trace_cited_indices,
+            trace_clauses,
+            trace_bytes,
+        })
+    }
+
+    fn info_function(&self, name: &str) -> Option<&[GeneralTerm<'a>]> {
+        self.info_items().iter().find_map(|item| match item {
+            GeneralTerm::Function(function, args) if word_is(function, name) => {
+                Some(args.as_slice())
+            }
+            _ => None,
+        })
+    }
+
+    /// Parse `demodulation_steps(rule(1, 0, [0]), rule(1, 1, [1, 0]), …)`.
+    ///
+    /// Returns the recorded rewrites in application order, or `None` when the
+    /// annotation is absent or malformed. An absent annotation is not a
+    /// failure: a verifier then has to reconstruct the rewrite sequence itself.
+    pub fn demodulation_steps(&self) -> Option<Vec<DemodStepRef>> {
+        let args = self.info_function("demodulation_steps")?;
+        args.iter()
+            .map(|item| {
+                let GeneralTerm::Function(name, args) = item else {
+                    return None;
+                };
+                if !word_is(name, "rule") || args.len() != 3 {
+                    return None;
+                }
+                Some(DemodStepRef {
+                    rule_parent: number_value(args.first()?)?,
+                    literal: number_value(args.get(1)?)?,
+                    term_path: number_list(args.get(2)?)?,
+                })
+            })
+            .collect()
     }
 
     /// Extract `skolemize(Var, sk(args…))` if present.
@@ -232,6 +543,106 @@ impl<'a> Annotations<'a> {
             }
             _ => None,
         }
+    }
+}
+
+fn word_is(word: &AtomicWord<'_>, expected: &str) -> bool {
+    matches!(
+        word,
+        AtomicWord::Lower(value) | AtomicWord::SingleQuoted(value) if *value == expected
+    )
+}
+
+fn inference_parent_terms_well_formed(args: &[GeneralTerm<'_>]) -> bool {
+    if args.len() != 3
+        || !matches!(args[0], GeneralTerm::Word(_))
+        || !matches!(args[1], GeneralTerm::List(_))
+    {
+        return false;
+    }
+    let GeneralTerm::List(parents) = &args[2] else {
+        return false;
+    };
+    parents.iter().all(parent_term_well_formed)
+}
+
+fn parent_term_well_formed(term: &GeneralTerm<'_>) -> bool {
+    match term {
+        GeneralTerm::Word(_) | GeneralTerm::Number(_) => true,
+        GeneralTerm::Function(AtomicWord::Lower("inference"), args) => {
+            inference_parent_terms_well_formed(args)
+        }
+        GeneralTerm::Function(AtomicWord::SingleQuoted("inference"), _) => false,
+        // Metis attaches an explicit substitution to the cited parent. The
+        // verifier currently consumes the parent reference but not the
+        // substitution payload, so require the standard list-shaped payload
+        // rather than accepting arbitrary ignored syntax.
+        GeneralTerm::ColonPair(left, right) => {
+            matches!(right.as_ref(), GeneralTerm::List(_)) && parent_term_well_formed(left)
+        }
+        _ => false,
+    }
+}
+
+fn word_value<'a>(term: &GeneralTerm<'a>) -> Option<&'a str> {
+    match term {
+        GeneralTerm::Word(AtomicWord::Lower(value) | AtomicWord::SingleQuoted(value)) => {
+            Some(*value)
+        }
+        _ => None,
+    }
+}
+
+fn number_value(term: &GeneralTerm<'_>) -> Option<usize> {
+    match term {
+        GeneralTerm::Number(value) => value.as_str().parse().ok(),
+        _ => None,
+    }
+}
+
+fn term_list<'a>(term: &GeneralTerm<'a>) -> Option<Vec<&'a str>> {
+    match term {
+        GeneralTerm::List(items) => items.iter().map(word_value).collect(),
+        _ => None,
+    }
+}
+
+fn number_list(term: &GeneralTerm<'_>) -> Option<Vec<usize>> {
+    match term {
+        GeneralTerm::List(items) => items.iter().map(number_value).collect(),
+        _ => None,
+    }
+}
+
+fn number_list_i64(term: &GeneralTerm<'_>) -> Option<Vec<i64>> {
+    match term {
+        GeneralTerm::List(items) => items
+            .iter()
+            .map(|item| match item {
+                GeneralTerm::Number(value) => value.as_str().parse().ok(),
+                _ => None,
+            })
+            .collect(),
+        _ => None,
+    }
+}
+
+fn clause_list(term: &GeneralTerm<'_>) -> Option<Vec<Vec<i32>>> {
+    match term {
+        GeneralTerm::List(clauses) => clauses
+            .iter()
+            .map(|clause| match clause {
+                GeneralTerm::List(literals) => literals
+                    .iter()
+                    .map(|literal| match literal {
+                        GeneralTerm::Number(value) => value.as_str().parse().ok(),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => None,
+            })
+            .collect(),
+        _ => None,
     }
 }
 
@@ -361,10 +772,33 @@ mod tests {
         let ann = parse_single(
             "fof(c_0_5, plain, ($false), inference(cn,[status(thm)],[c_0_3, c_0_4])).",
         );
+        assert!(ann.parent_refs_well_formed());
         let refs = ann.parent_refs();
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].name, "c_0_3");
         assert_eq!(refs[1].name, "c_0_4");
+    }
+
+    #[test]
+    fn unsupported_parent_term_is_not_well_formed() {
+        let ann = parse_single(
+            "fof(bot, plain, $false, inference(consequence, [status(thm)], [S0, s6])).",
+        );
+        assert!(!ann.parent_refs_well_formed());
+        assert_eq!(ann.parent_refs().len(), 1);
+        assert_eq!(ann.parent_refs()[0].name, "s6");
+    }
+
+    #[test]
+    fn nested_inference_parent_is_well_formed() {
+        let ann = parse_single(
+            "fof(bot, plain, $false, inference(consequence, [status(thm)], [inference(assume_negation, [], [c])])).",
+        );
+        assert!(ann.parent_refs_well_formed());
+        let refs = ann.parent_refs();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, "c");
+        assert!(refs[0].negated);
     }
 
     #[test]
@@ -383,5 +817,32 @@ mod tests {
         assert_eq!(refs.len(), 1, "expected exactly one parent, got {refs:?}");
         assert_eq!(refs[0].name, "refute_0_8");
         assert!(!refs[0].negated);
+    }
+
+    #[test]
+    fn avatar_certificate_metadata_is_parsed() {
+        let ann = parse_single(
+            "fof(split, plain, spl0_1 | spl0_2, \
+             inference(avatar_split, [status(thm), \
+               avatar_split([branch(0, spl0_1, [0]), branch(1, spl0_2, [1])], [])], [top])).",
+        );
+        let split = ann.avatar_split().expect("split metadata");
+        assert_eq!(split.components.len(), 2);
+        assert_eq!(split.components[1].branch_index, 1);
+        assert_eq!(split.components[1].literal_indices, vec![1]);
+    }
+
+    #[test]
+    fn avatar_sat_trace_metadata_is_parsed() {
+        let ann = parse_single(
+            "fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm), avatar_sat_refutation([split], [branch], sat_trace('frat-lrat', 2, '00', [1], [0], [[1]], 'aa'))], [split, branch])).",
+        );
+        let sat = ann.avatar_sat().expect("SAT metadata");
+        assert_eq!(sat.trace_format, Some("frat-lrat"));
+        assert_eq!(sat.trace_variables, Some(2));
+        assert_eq!(sat.trace_original_ids, vec![1]);
+        assert_eq!(sat.trace_cited_indices, vec![0]);
+        assert_eq!(sat.trace_clauses, vec![vec![1]]);
+        assert_eq!(sat.trace_bytes, Some("aa"));
     }
 }

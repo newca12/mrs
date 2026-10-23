@@ -1,11 +1,16 @@
 use crate::{HashMap, HashSet};
+use smallvec::SmallVec;
 
-use cadical::Solver;
+use mrs_cadical::Solver;
 
-use mrs_core::clause::{Clause, ClauseIdGen, Literal};
+use mrs_core::SymbolTable;
+use mrs_core::clause::{
+    AvatarComponent, Clause, ClauseCertificate, ClauseIdGen, ClauseSource, Literal,
+};
 use mrs_core::formula::Atom;
 use mrs_core::term::{Term, VarId};
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermNode};
+use mrs_core::witness::{ProofNodeId, ProofWitness};
 
 pub struct AvatarContext {
     pub solver: Solver,
@@ -16,6 +21,16 @@ pub struct AvatarContext {
 
     // The current SAT model (true variables)
     pub current_model: HashSet<u32>,
+
+    /// Exact clauses submitted to the SAT solver, in insertion order.
+    /// This manifest is replayed by proof-mode CaDiCaL after search.
+    pub sat_manifest: Vec<Vec<i32>>,
+    /// Clause IDs for the split constraints in `sat_manifest`.
+    ///
+    /// Branch-exclusion clauses are also present in `sat_manifest`, so the
+    /// split IDs are tracked separately instead of reconstructing them by
+    /// scanning the mutable clause store during proof export.
+    pub sat_split_ids: Vec<mrs_core::clause::ClauseId>,
 }
 
 impl AvatarContext {
@@ -25,7 +40,35 @@ impl AvatarContext {
             component_vars: HashMap::default(),
             next_var: 1, // cadical variables start from 1
             current_model: HashSet::default(),
+            sat_manifest: Vec::new(),
+            sat_split_ids: Vec::new(),
         }
+    }
+
+    pub fn add_sat_clause(&mut self, clause: Vec<i32>) {
+        self.solver.add_clause(&clause);
+        self.sat_manifest.push(clause);
+    }
+
+    /// Allocate a SAT variable for a component, reusing an equivalent
+    /// component's variable when it is not already used in this split.
+    ///
+    /// CaDiCaL literals use signed `i32` values, so refuse allocations beyond
+    /// the representable positive-variable range instead of overflowing.
+    fn component_var(&mut self, key: String, used_vars: &HashSet<u32>) -> Option<u32> {
+        if let Some(&var) = self.component_vars.get(&key)
+            && !used_vars.contains(&var)
+        {
+            return Some(var);
+        }
+
+        let var = self.next_var;
+        if var > i32::MAX as u32 {
+            return None;
+        }
+        self.next_var = var.checked_add(1)?;
+        self.component_vars.entry(key).or_insert(var);
+        Some(var)
     }
 
     /// Splits a clause into variable-disjoint components.
@@ -108,33 +151,49 @@ impl AvatarContext {
         }
 
         // We have successfully split the clause into `parts`.
+        let mut sat_vars = Vec::with_capacity(parts.len());
+        let mut used_vars = HashSet::default();
+        for lits in &parts {
+            let comp_str = canonical_component_key(lits);
+            let var = self.component_var(comp_str, &used_vars)?;
+            if clause.avatar.contains(&var) {
+                // The clause already contains this component in its avatar trail.
+                // Splitting would introduce a propositional tautology (var | ~var).
+                return None;
+            }
+            used_vars.insert(var);
+            sat_vars.push(var);
+        }
+
+        let split_id = id_gen.next();
         let mut split_clauses = Vec::new();
-        let mut sat_clause = Vec::new();
+        let mut sat_clause = Vec::with_capacity(sat_vars.len() + clause.avatar.len());
 
-        for lits in parts {
-            // For each part, canonicalize the component by renaming variables
-            // 0..N in DFS order through the literals.  Two alpha-equivalent
-            // components (identical up to variable renaming) then get the same
-            // key, which lets the SAT solver share AVATAR variables between them
-            // and prunes redundant case splits.
-            let comp_str = canonical_component_key(&lits);
-
-            let var = if let Some(&v) = self.component_vars.get(&comp_str) {
-                v
-            } else {
-                let v = self.next_var;
-                self.next_var += 1;
-                self.component_vars.insert(comp_str, v);
-                v
-            };
-
+        for (i, (var, lits)) in sat_vars.into_iter().zip(parts).enumerate() {
             sat_clause.push(var as i32);
 
             let mut new_avatar = clause.avatar.clone();
             new_avatar.push(var);
 
-            let new_clause =
-                Clause::new_avatar(id_gen.next(), lits, clause.source.clone(), new_avatar);
+            let mut new_clause = Clause::new_avatar(
+                id_gen.next(),
+                lits,
+                ClauseSource::Inference {
+                    rule: "avatar_component_clause",
+                    parents: vec![split_id].into(),
+                },
+                new_avatar,
+            );
+            new_clause.certificate = Some(ClauseCertificate::AvatarComponent {
+                split_parent: split_id,
+                branch_index: i,
+                sat_var: var,
+            });
+            new_clause.witness = Some(ProofWitness::Avatar {
+                split_parent: Some(ProofNodeId(split_id.0)),
+                branch_roots: vec![ProofNodeId(split_id.0)],
+                context: new_clause.avatar.clone(),
+            });
             split_clauses.push(new_clause);
         }
 
@@ -146,7 +205,8 @@ impl AvatarContext {
             sat_clause.push(-(a as i32));
         }
 
-        self.solver.add_clause(sat_clause);
+        self.add_sat_clause(sat_clause);
+        self.sat_split_ids.push(split_id);
 
         Some(split_clauses)
     }
@@ -168,10 +228,15 @@ impl AvatarContext {
         clause: &IdClause,
         id_gen: &mut ClauseIdGen,
         bank: &TermBank,
+        clause_store: &mut HashMap<mrs_core::clause::ClauseId, IdClause>,
+        symbols: &mut SymbolTable,
     ) -> Option<Vec<IdClause>> {
         if clause.literals.len() <= 1 {
             return None;
         }
+
+        // Insert the unsplit parent clause itself so it can be resolved during proof extraction
+        clause_store.insert(clause.id, clause.clone());
 
         let n = clause.literals.len();
         let mut parent = (0..n).collect::<Vec<_>>();
@@ -206,16 +271,16 @@ impl AvatarContext {
             }
         }
 
-        let mut components: HashMap<usize, Vec<IdLiteral>> = HashMap::default();
-        let mut ground_lits: Vec<IdLiteral> = Vec::new();
+        let mut components: HashMap<usize, Vec<(usize, IdLiteral)>> = HashMap::default();
+        let mut ground_lits: Vec<(usize, IdLiteral)> = Vec::new();
 
         for (i, lit) in clause.literals.iter().enumerate() {
             let p = find(&mut parent, i);
             let vars = id_literal_vars(lit, bank);
             if vars.is_empty() {
-                ground_lits.push(lit.clone());
+                ground_lits.push((i, lit.clone()));
             } else {
-                components.entry(p).or_default().push(lit.clone());
+                components.entry(p).or_default().push((i, lit.clone()));
             }
         }
 
@@ -224,35 +289,106 @@ impl AvatarContext {
             return None;
         }
 
-        let mut parts_raw: Vec<(usize, Vec<IdLiteral>)> = components.into_iter().collect();
+        let mut parts_raw: Vec<(usize, Vec<(usize, IdLiteral)>)> = components.into_iter().collect();
         parts_raw.sort_unstable_by_key(|(k, _)| *k);
-        let mut parts: Vec<Vec<IdLiteral>> = parts_raw.into_iter().map(|(_, lits)| lits).collect();
+        let mut parts: Vec<Vec<(usize, IdLiteral)>> =
+            parts_raw.into_iter().map(|(_, lits)| lits).collect();
         for lit in ground_lits {
             parts.push(vec![lit]);
         }
 
-        let mut split_clauses = Vec::new();
-        let mut sat_clause = Vec::new();
-
-        for lits in parts {
+        // 1. Generate split component variable IDs and ensure none is already assumed in the trail
+        let mut sat_vars = Vec::with_capacity(parts.len());
+        let mut used_vars = HashSet::default();
+        for entries in &parts {
+            let lits: Vec<IdLiteral> = entries.iter().map(|(_, lit)| lit.clone()).collect();
             let comp_str = canonical_component_key_id(&lits, bank);
 
-            let var = if let Some(&v) = self.component_vars.get(&comp_str) {
-                v
-            } else {
-                let v = self.next_var;
-                self.next_var += 1;
-                self.component_vars.insert(comp_str, v);
-                v
-            };
+            let var = self.component_var(comp_str, &used_vars)?;
+            if clause.avatar.contains(&var) {
+                // The clause already contains this component in its avatar trail.
+                // Splitting would introduce a propositional tautology (var | ~var).
+                return None;
+            }
+            used_vars.insert(var);
+            sat_vars.push(var);
+        }
 
+        let mut sat_clause = Vec::with_capacity(sat_vars.len() + clause.avatar.len());
+        let mut split_lits = Vec::with_capacity(sat_vars.len());
+
+        for &var in &sat_vars {
             sat_clause.push(var as i32);
+
+            let sym_name = format!("spl0_{}", var);
+            let sym_id = symbols.intern(&sym_name);
+            let atom = IdAtom::Pred(sym_id, SmallVec::new());
+            let lit = IdLiteral {
+                positive: true,
+                atom,
+            };
+            split_lits.push(lit);
+        }
+
+        let split_id = id_gen.next();
+        let mut split_c = IdClause::new_avatar(
+            split_id,
+            split_lits,
+            ClauseSource::Inference {
+                rule: "avatar_split_clause",
+                parents: vec![clause.id].into(),
+            },
+            clause.avatar.clone(),
+        );
+        split_c.certificate = Some(ClauseCertificate::AvatarSplit {
+            inherited: clause.avatar.clone(),
+            components: sat_clause
+                .iter()
+                .enumerate()
+                .map(|(branch_index, var)| AvatarComponent {
+                    branch_index,
+                    sat_var: *var as u32,
+                    literal_indices: parts[branch_index]
+                        .iter()
+                        .map(|(index, _)| *index)
+                        .collect(),
+                })
+                .collect(),
+        });
+        split_c.witness = Some(ProofWitness::Avatar {
+            split_parent: Some(clause.proof_id.unwrap_or(ProofNodeId(clause.id.0))),
+            branch_roots: Vec::new(),
+            context: clause.avatar.clone(),
+        });
+        clause_store.insert(split_id, split_c);
+        // 2. Construct each component clause derived from split_c
+        let mut split_clauses = Vec::with_capacity(parts.len());
+        for (i, entries) in parts.into_iter().enumerate() {
+            let var = sat_clause[i] as u32;
+            let lits: Vec<IdLiteral> = entries.into_iter().map(|(_, lit)| lit).collect();
 
             let mut new_avatar = clause.avatar.clone();
             new_avatar.push(var);
 
-            let new_clause =
-                IdClause::new_avatar(id_gen.next(), lits, clause.source.clone(), new_avatar);
+            let mut new_clause = IdClause::new_avatar(
+                id_gen.next(),
+                lits,
+                ClauseSource::Inference {
+                    rule: "avatar_component_clause",
+                    parents: vec![split_id].into(),
+                },
+                new_avatar,
+            );
+            new_clause.certificate = Some(ClauseCertificate::AvatarComponent {
+                split_parent: split_id,
+                branch_index: i,
+                sat_var: var,
+            });
+            new_clause.witness = Some(ProofWitness::Avatar {
+                split_parent: Some(ProofNodeId(split_id.0)),
+                branch_roots: vec![ProofNodeId(split_id.0)],
+                context: new_clause.avatar.clone(),
+            });
             split_clauses.push(new_clause);
         }
 
@@ -260,7 +396,8 @@ impl AvatarContext {
             sat_clause.push(-(a as i32));
         }
 
-        self.solver.add_clause(sat_clause);
+        self.add_sat_clause(sat_clause);
+        self.sat_split_ids.push(split_id);
         Some(split_clauses)
     }
 }
@@ -294,17 +431,84 @@ fn collect_vars(term: &Term, vars: &mut HashSet<VarId>) {
     }
 }
 
+fn term_shape_key(term: &Term, s: &mut String) {
+    match term {
+        Term::Var(_) => s.push('V'),
+        Term::App(sym, args) => {
+            s.push('F');
+            push_u32(s, sym.index());
+            if !args.is_empty() {
+                s.push('(');
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    term_shape_key(a, s);
+                }
+                s.push(')');
+            }
+        }
+    }
+}
+
+fn literal_shape_key(lit: &Literal) -> String {
+    let mut s = String::new();
+    if lit.is_negative() {
+        s.push('~');
+    } else {
+        s.push('+');
+    }
+    match &lit.atom {
+        Atom::Pred(sym, args) => {
+            s.push('P');
+            push_u32(&mut s, sym.index());
+            if !args.is_empty() {
+                s.push('(');
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    term_shape_key(a, &mut s);
+                }
+                s.push(')');
+            }
+        }
+        Atom::Eq(l, r) => {
+            s.push_str("Eq(");
+            let mut sl = String::new();
+            term_shape_key(l, &mut sl);
+            let mut sr = String::new();
+            term_shape_key(r, &mut sr);
+            if sl <= sr {
+                s.push_str(&sl);
+                s.push(',');
+                s.push_str(&sr);
+            } else {
+                s.push_str(&sr);
+                s.push(',');
+                s.push_str(&sl);
+            }
+            s.push(')');
+        }
+    }
+    s
+}
+
 /// Returns a canonical string key for a set of literals that is invariant
-/// under variable renaming.  Variables are assigned fresh names V0, V1, …
-/// in the order they are first encountered during a left-to-right, DFS
-/// traversal of the literals.  This means two alpha-equivalent components
-/// produce the same key, enabling the SAT solver to share AVATAR variables.
+/// under variable renaming, literal permutation, and equality symmetry.
 fn canonical_component_key(lits: &[Literal]) -> String {
+    let mut indexed_lits: Vec<(usize, &Literal, String)> = lits
+        .iter()
+        .enumerate()
+        .map(|(i, lit)| (i, lit, literal_shape_key(lit)))
+        .collect();
+    indexed_lits.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+
     let mut var_map: HashMap<VarId, u32> = HashMap::default();
     let mut next: u32 = 0;
     let mut s = String::new();
-    for (i, lit) in lits.iter().enumerate() {
-        if i > 0 {
+    for (idx, (_, lit, _)) in indexed_lits.into_iter().enumerate() {
+        if idx > 0 {
             s.push('|');
         }
         if lit.is_negative() {
@@ -327,9 +531,19 @@ fn canonical_component_key(lits: &[Literal]) -> String {
             }
             Atom::Eq(l, r) => {
                 s.push_str("Eq(");
-                write_term_canonical(l, &mut s, &mut var_map, &mut next);
-                s.push(',');
-                write_term_canonical(r, &mut s, &mut var_map, &mut next);
+                let mut sl = String::new();
+                term_shape_key(l, &mut sl);
+                let mut sr = String::new();
+                term_shape_key(r, &mut sr);
+                if sl <= sr {
+                    write_term_canonical(l, &mut s, &mut var_map, &mut next);
+                    s.push(',');
+                    write_term_canonical(r, &mut s, &mut var_map, &mut next);
+                } else {
+                    write_term_canonical(r, &mut s, &mut var_map, &mut next);
+                    s.push(',');
+                    write_term_canonical(l, &mut s, &mut var_map, &mut next);
+                }
                 s.push(')');
             }
         }
@@ -417,14 +631,84 @@ fn id_collect_vars(term: mrs_core::term_bank::TermId, bank: &TermBank, vars: &mu
     }
 }
 
+fn id_term_shape_key(term: mrs_core::term_bank::TermId, bank: &TermBank, s: &mut String) {
+    match bank.get(term) {
+        TermNode::Var(_) => s.push('V'),
+        TermNode::App(sym, args) => {
+            s.push('F');
+            push_u32(s, sym.index());
+            if !args.is_empty() {
+                s.push('(');
+                for (i, &a) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    id_term_shape_key(a, bank, s);
+                }
+                s.push(')');
+            }
+        }
+    }
+}
+
+fn id_literal_shape_key(lit: &IdLiteral, bank: &TermBank) -> String {
+    let mut s = String::new();
+    if lit.positive {
+        s.push('+');
+    } else {
+        s.push('~');
+    }
+    match &lit.atom {
+        IdAtom::Pred(sym, args) => {
+            s.push('P');
+            push_u32(&mut s, sym.index());
+            if !args.is_empty() {
+                s.push('(');
+                for (i, &a) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    id_term_shape_key(a, bank, &mut s);
+                }
+                s.push(')');
+            }
+        }
+        IdAtom::Eq(l, r) => {
+            s.push_str("Eq(");
+            let mut sl = String::new();
+            id_term_shape_key(*l, bank, &mut sl);
+            let mut sr = String::new();
+            id_term_shape_key(*r, bank, &mut sr);
+            if sl <= sr {
+                s.push_str(&sl);
+                s.push(',');
+                s.push_str(&sr);
+            } else {
+                s.push_str(&sr);
+                s.push(',');
+                s.push_str(&sl);
+            }
+            s.push(')');
+        }
+    }
+    s
+}
+
 /// Returns a canonical string key for a set of `IdLiteral`s, invariant
-/// under variable renaming (same algorithm as `canonical_component_key`).
+/// under variable renaming, literal permutation, and equality symmetry.
 fn canonical_component_key_id(lits: &[IdLiteral], bank: &TermBank) -> String {
+    let mut indexed_lits: Vec<(usize, &IdLiteral, String)> = lits
+        .iter()
+        .enumerate()
+        .map(|(i, lit)| (i, lit, id_literal_shape_key(lit, bank)))
+        .collect();
+    indexed_lits.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+
     let mut var_map: HashMap<VarId, u32> = HashMap::default();
     let mut next: u32 = 0;
     let mut s = String::new();
-    for (i, lit) in lits.iter().enumerate() {
-        if i > 0 {
+    for (idx, (_, lit, _)) in indexed_lits.into_iter().enumerate() {
+        if idx > 0 {
             s.push('|');
         }
         if !lit.positive {
@@ -447,9 +731,19 @@ fn canonical_component_key_id(lits: &[IdLiteral], bank: &TermBank) -> String {
             }
             IdAtom::Eq(l, r) => {
                 s.push_str("Eq(");
-                write_id_term_canonical(*l, bank, &mut s, &mut var_map, &mut next);
-                s.push(',');
-                write_id_term_canonical(*r, bank, &mut s, &mut var_map, &mut next);
+                let mut sl = String::new();
+                id_term_shape_key(*l, bank, &mut sl);
+                let mut sr = String::new();
+                id_term_shape_key(*r, bank, &mut sr);
+                if sl <= sr {
+                    write_id_term_canonical(*l, bank, &mut s, &mut var_map, &mut next);
+                    s.push(',');
+                    write_id_term_canonical(*r, bank, &mut s, &mut var_map, &mut next);
+                } else {
+                    write_id_term_canonical(*r, bank, &mut s, &mut var_map, &mut next);
+                    s.push(',');
+                    write_id_term_canonical(*l, bank, &mut s, &mut var_map, &mut next);
+                }
                 s.push(')');
             }
         }
@@ -585,5 +879,196 @@ mod tests {
             vars1, vars2,
             "alpha-equivalent clauses must reuse the same AVATAR variables"
         );
+        assert_eq!(ctx.sat_split_ids.len(), 2);
+    }
+
+    #[test]
+    fn split_clause_uses_distinct_sat_vars_within_one_split() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let mut ctx = AvatarContext::new();
+        let mut id_gen = mrs_core::clause::ClauseIdGen::new();
+        let clause = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(p, vec![Term::var(5)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "duplicate-shape".into(),
+                role: "axiom".into(),
+            },
+        );
+
+        let components = ctx
+            .split_clause(&clause, &mut id_gen)
+            .expect("split expected");
+        let vars = components
+            .iter()
+            .filter_map(|component| component.avatar.last().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(vars.len(), 2);
+        assert_ne!(vars[0], vars[1]);
+    }
+
+    #[test]
+    fn split_clause_id_lazily_interns_high_avatar_symbols() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let mut bank = TermBank::new();
+        let mut id_gen = mrs_core::clause::ClauseIdGen::new();
+        let clause = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(q, vec![Term::var(1)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "high-avatar-variable".into(),
+                role: "axiom".into(),
+            },
+        );
+        let id_clause = bank.clause_from_legacy(&clause);
+        let mut clause_store = HashMap::default();
+        let mut ctx = AvatarContext::new();
+        ctx.next_var = 50_001;
+
+        let components = ctx
+            .split_clause_id(
+                &id_clause,
+                &mut id_gen,
+                &bank,
+                &mut clause_store,
+                &mut symbols,
+            )
+            .expect("high AVATAR variables should be allocated lazily");
+
+        assert_eq!(components.len(), 2);
+        assert!(symbols.resolve_name("spl0_50001").is_some());
+        assert!(symbols.resolve_name("spl0_50002").is_some());
+    }
+
+    #[test]
+    fn canonical_key_literal_permutation_invariant() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+
+        let lits_pq = vec![
+            Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+            Literal::pos(Atom::pred(q, vec![Term::var(0)])),
+        ];
+        let lits_qp = vec![
+            Literal::pos(Atom::pred(q, vec![Term::var(1)])),
+            Literal::pos(Atom::pred(p, vec![Term::var(1)])),
+        ];
+        assert_eq!(
+            canonical_component_key(&lits_pq),
+            canonical_component_key(&lits_qp),
+            "permuted multi-literal components must produce the same canonical key"
+        );
+    }
+
+    #[test]
+    fn canonical_key_equality_symmetry_invariant() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+
+        let lits_lr = vec![Literal::pos(Atom::eq(
+            Term::app(f, vec![Term::var(0)]),
+            Term::var(1),
+        ))];
+        let lits_rl = vec![Literal::pos(Atom::eq(
+            Term::var(5),
+            Term::app(f, vec![Term::var(6)]),
+        ))];
+        assert_eq!(
+            canonical_component_key(&lits_lr),
+            canonical_component_key(&lits_rl),
+            "symmetric equalities must produce the same canonical key"
+        );
+    }
+
+    #[test]
+    fn split_clause_shares_var_for_permuted_multi_literal_components() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let r = syms.intern("r");
+        let s = syms.intern("s");
+        let mut ctx = AvatarContext::new();
+        let mut id_gen = mrs_core::clause::ClauseIdGen::new();
+
+        // Clause 1: (p(X0) | q(X0)) | r(Y0)
+        let c1 = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(q, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(r, vec![Term::var(1)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "c1".into(),
+                role: "axiom".into(),
+            },
+        );
+        // Clause 2: (q(X5) | p(X5)) | s(Y5)
+        let c2 = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(q, vec![Term::var(5)])),
+                Literal::pos(Atom::pred(p, vec![Term::var(5)])),
+                Literal::pos(Atom::pred(s, vec![Term::var(6)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "c2".into(),
+                role: "axiom".into(),
+            },
+        );
+
+        let splits1 = ctx.split_clause(&c1, &mut id_gen).expect("c1 must split");
+        let splits2 = ctx.split_clause(&c2, &mut id_gen).expect("c2 must split");
+
+        assert_eq!(splits1[0].avatar.last(), splits2[0].avatar.last());
+    }
+
+    #[test]
+    fn split_clause_refuses_when_component_in_avatar_trail() {
+        let mut ctx = AvatarContext::new();
+        let mut id_gen = ClauseIdGen::new();
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+
+        let c1 = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(q, vec![Term::var(1)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "c1".into(),
+                role: "axiom".into(),
+            },
+        );
+        let splits1 = ctx.split_clause(&c1, &mut id_gen).expect("c1 must split");
+        let p_var = *splits1[0].avatar.last().unwrap();
+
+        let r = syms.intern("r");
+        let mut c2 = Clause::new(
+            id_gen.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(r, vec![Term::var(2)])),
+            ],
+            mrs_core::clause::ClauseSource::Input {
+                name: "c2".into(),
+                role: "axiom".into(),
+            },
+        );
+        c2.avatar.push(p_var);
+
+        assert!(ctx.split_clause(&c2, &mut id_gen).is_none());
     }
 }

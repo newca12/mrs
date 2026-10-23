@@ -26,7 +26,6 @@ pub fn skolemize(formula: &Formula, symbols: &mut SymbolTable, prefix: &str) -> 
     let mut ctx = SkolemCtx {
         symbols,
         prefix: prefix.to_string(),
-        counter: 0,
         universal_vars: Vec::new(),
     };
     ctx.skolemize(formula)
@@ -35,7 +34,6 @@ pub fn skolemize(formula: &Formula, symbols: &mut SymbolTable, prefix: &str) -> 
 struct SkolemCtx<'a> {
     symbols: &'a mut SymbolTable,
     prefix: String,
-    counter: usize,
     /// Stack of universally quantified variables currently in scope.
     universal_vars: Vec<VarId>,
 }
@@ -43,9 +41,18 @@ struct SkolemCtx<'a> {
 impl SkolemCtx<'_> {
     /// Generates a fresh Skolem function symbol.
     fn fresh_skolem(&mut self) -> mrs_core::SymbolId {
-        let name = format!("sk_{}_{}", self.prefix, self.counter);
-        self.counter += 1;
-        self.symbols.intern(&name)
+        let sanitized_prefix: String = self
+            .prefix
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        self.symbols.fresh_symbol(&format!("sk_{sanitized_prefix}"))
     }
 
     fn skolemize(&mut self, formula: &Formula) -> Formula {
@@ -61,13 +68,27 @@ impl SkolemCtx<'_> {
                 // Replace the existential variable with a Skolem term
                 let skolem_sym = self.fresh_skolem();
 
-                let skolem_term = if self.universal_vars.is_empty() {
-                    // No universal vars in scope: Skolem constant
+                // Free-variable filtered Skolemization (optimized Skolemization):
+                // The Skolem function needs to depend ONLY on the in-scope universal
+                // variables that actually occur free in the existential body.
+                // Any universal variable not occurring in the body cannot influence the
+                // existential witness, so passing it introduces unnecessary term bloat
+                // and higher arities.
+                let body_fvs = body.free_vars();
+                let mut seen = std::collections::HashSet::new();
+                let filtered_vars: Vec<VarId> = self
+                    .universal_vars
+                    .iter()
+                    .copied()
+                    .filter(|u| body_fvs.contains(u) && seen.insert(*u))
+                    .collect();
+
+                let skolem_term = if filtered_vars.is_empty() {
+                    // No relevant universal vars in scope: Skolem constant
                     Term::constant(skolem_sym)
                 } else {
-                    // Skolem function applied to all universal vars in scope
-                    let args: Vec<Term> =
-                        self.universal_vars.iter().map(|&u| Term::var(u)).collect();
+                    // Skolem function applied only to the universal vars that occur free in body
+                    let args: Vec<Term> = filtered_vars.into_iter().map(Term::var).collect();
                     Term::app(skolem_sym, args)
                 };
 
@@ -191,5 +212,86 @@ mod tests {
         let sk_ax1 = syms.intern("sk_ax1_0");
         let sk_ax2 = syms.intern("sk_ax2_0");
         assert_ne!(sk_ax1, sk_ax2);
+    }
+
+    #[test]
+    fn skolem_prefix_sanitization() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+
+        // Prefix containing non-alphanumeric/non-underscore characters
+        let complex_prefix = "def(cond(conseq(105), 0), 1)";
+        let f = Formula::exists(0, Formula::atom(Atom::pred(p, vec![Term::var(0)])));
+        let result = skolemize(&f, &mut syms, complex_prefix);
+
+        // Parentheses and commas must be mapped to underscores, ensuring 100% TPTP compliance
+        assert_eq!(fmt(&result, &syms), "p(sk_def_cond_conseq_105___0___1__0)");
+    }
+
+    #[test]
+    fn filtered_skolem_drops_unused_universal() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+
+        // ∀X. ∃Y. p(Y)
+        // Since X is not free in p(Y), Y becomes a Skolem constant sk_t_0, NOT sk_t_0(X0).
+        let f = Formula::forall(
+            0,
+            Formula::exists(1, Formula::atom(Atom::pred(p, vec![Term::var(1)]))),
+        );
+        let result = skolemize(&f, &mut syms, "t");
+        assert_eq!(fmt(&result, &syms), "![X0]: (p(sk_t_0))");
+    }
+
+    #[test]
+    fn filtered_skolem_partial_universal_dependency() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+
+        // ∀X. ∀Z. ∃Y. p(Z, Y)
+        // Since X is not free in p(Z, Y), Y depends only on Z (X1), yielding sk_t_0(X1), NOT sk_t_0(X0, X1).
+        let f = Formula::forall(
+            0,
+            Formula::forall(
+                1,
+                Formula::exists(
+                    2,
+                    Formula::atom(Atom::pred(p, vec![Term::var(1), Term::var(2)])),
+                ),
+            ),
+        );
+        let result = skolemize(&f, &mut syms, "t");
+        assert_eq!(fmt(&result, &syms), "![X0]: (![X1]: (p(X1, sk_t_0(X1))))");
+    }
+
+    #[test]
+    fn filtered_skolem_independent_nested_existentials() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+
+        // ∀X. ∀Y. (∃Z. p(X, Z) ∧ ∃W. q(Y, W))
+        // Z depends only on X; W depends only on Y.
+        let f = Formula::forall(
+            0,
+            Formula::forall(
+                1,
+                Formula::and(vec![
+                    Formula::exists(
+                        2,
+                        Formula::atom(Atom::pred(p, vec![Term::var(0), Term::var(2)])),
+                    ),
+                    Formula::exists(
+                        3,
+                        Formula::atom(Atom::pred(q, vec![Term::var(1), Term::var(3)])),
+                    ),
+                ]),
+            ),
+        );
+        let result = skolemize(&f, &mut syms, "t");
+        assert_eq!(
+            fmt(&result, &syms),
+            "![X0]: (![X1]: ((p(X0, sk_t_0(X0)) & q(X1, sk_t_1(X1)))))"
+        );
     }
 }

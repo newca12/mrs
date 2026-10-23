@@ -14,6 +14,7 @@
 //! given in the annotation).
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use mrs_tptp::{
     AnnotatedFormula, AtomicWord, BinaryConnective, FOFAtomicFormula, FOFFormula, FOFStatement,
@@ -26,18 +27,51 @@ use crate::verdict::StepOutcome;
 /// maintains one of these across the whole proof to enforce freshness.
 pub struct SkolemRegistry {
     pub seen_symbols: HashSet<String>,
+    pub problem_symbols: HashSet<String>,
+    pub introduced_skolems: HashMap<String, Formula>,
+    /// Source and conclusion signatures for Skolems introduced by a FOF step.
+    ///
+    /// The lowered `Formula` stores interned `SymbolId`s, whose numeric values
+    /// are local to a `SymbolTable`. Comparing formulas lowered into separate
+    /// tables can therefore treat different predicates such as `p` and `q` as
+    /// equal. Keep a normalized FOF signature for freshness/reuse checks.
+    pub introduced_skolem_sources: HashMap<String, (String, String)>,
 }
 
 impl SkolemRegistry {
     pub fn new() -> Self {
         Self {
             seen_symbols: HashSet::new(),
+            problem_symbols: HashSet::new(),
+            introduced_skolems: HashMap::new(),
+            introduced_skolem_sources: HashMap::new(),
         }
     }
 
     /// Record any symbol (function or predicate) that already exists.
     pub fn record(&mut self, sym: &str) {
         self.seen_symbols.insert(sym.to_string());
+        self.problem_symbols.insert(sym.to_string());
+    }
+
+    /// Record a newly introduced Skolem symbol along with its parent formula.
+    pub fn record_skolem(&mut self, sym: &str, parent: Formula) {
+        self.seen_symbols.insert(sym.to_string());
+        self.introduced_skolems.insert(sym.to_string(), parent);
+    }
+
+    /// Record a Skolem and retain a symbol-name-aware parent signature.
+    pub fn record_skolem_source(
+        &mut self,
+        sym: &str,
+        parent: Formula,
+        source: &FOFFormula<'_>,
+        conclusion: &FOFFormula<'_>,
+    ) {
+        self.record_skolem(sym, parent);
+        self.introduced_skolem_sources
+            .entry(sym.to_string())
+            .or_insert_with(|| (parent_signature(source), parent_signature(conclusion)));
     }
 
     /// Record every symbol occurring in a FOF statement.
@@ -109,6 +143,151 @@ impl Default for SkolemRegistry {
     }
 }
 
+/// Produce an alpha-normalized, symbol-name-aware signature for a FOF formula.
+///
+/// This is used only for comparing Skolem parent provenance. The lowered core
+/// formula cannot be used for that comparison because `SymbolId` values are
+/// allocated independently by each `SymbolTable`.
+fn parent_signature(formula: &FOFFormula<'_>) -> String {
+    fn token(out: &mut String, tag: &str, value: &str) {
+        let _ = write!(out, "{tag}{}:", value.len());
+        out.push_str(value);
+        out.push(';');
+    }
+
+    fn variable(name: &str, bound: &[&str]) -> String {
+        if let Some(distance) = bound.iter().rev().position(|candidate| *candidate == name) {
+            format!("b{distance}")
+        } else {
+            format!("f{}:{name}", name.len())
+        }
+    }
+
+    fn term_node(value: &FOFTerm<'_>, bound: &[&str], out: &mut String) {
+        match value {
+            FOFTerm::Variable(name) => {
+                let _ = write!(out, "v{};", variable(name, bound));
+            }
+            FOFTerm::Function(name, args) => {
+                token(out, "fn", name.as_str());
+                out.push('[');
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(']');
+            }
+            FOFTerm::DefinedFunction(name, args) => {
+                let _ = write!(out, "fd{}[", name.0);
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(']');
+            }
+            FOFTerm::SystemFunction(name, args) => {
+                let _ = write!(out, "fs{}[", name.0);
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(']');
+            }
+            FOFTerm::Number(number) => {
+                token(out, "n", number.as_str());
+            }
+            FOFTerm::DistinctObject(value) => {
+                token(out, "d", value);
+            }
+        }
+    }
+
+    fn formula_node<'a>(value: &FOFFormula<'a>, bound: &mut Vec<&'a str>, out: &mut String) {
+        match value {
+            FOFFormula::Atomic(FOFAtomicFormula::Plain(name, args)) => {
+                token(out, "p", name.as_str());
+                out.push('(');
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(')');
+            }
+            FOFFormula::Atomic(FOFAtomicFormula::Defined(name, args)) => {
+                let _ = write!(out, "dp{}(", name.0);
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(')');
+            }
+            FOFFormula::Atomic(FOFAtomicFormula::System(name, args)) => {
+                let _ = write!(out, "sp{}(", name.0);
+                for arg in args {
+                    term_node(arg, bound, out);
+                }
+                out.push(')');
+            }
+            FOFFormula::Atomic(FOFAtomicFormula::True) => out.push_str("true"),
+            FOFFormula::Atomic(FOFAtomicFormula::False) => out.push_str("false"),
+            FOFFormula::Negation(inner) => {
+                out.push_str("not(");
+                formula_node(inner, bound, out);
+                out.push(')');
+            }
+            FOFFormula::Parens(inner) => formula_node(inner, bound, out),
+            FOFFormula::Quantified {
+                quantifier,
+                variables,
+                formula: inner,
+            } => {
+                out.push_str(match quantifier {
+                    Quantifier::Forall => "all[",
+                    Quantifier::Exists => "ex[",
+                });
+                let old_len = bound.len();
+                bound.extend(variables.iter().copied());
+                formula_node(inner, bound, out);
+                bound.truncate(old_len);
+                out.push(']');
+            }
+            FOFFormula::Binary {
+                left,
+                connective,
+                right,
+            } => {
+                out.push_str(match connective {
+                    BinaryConnective::Iff => "iff(",
+                    BinaryConnective::Impl => "impl(",
+                    BinaryConnective::RevImpl => "revimpl(",
+                    BinaryConnective::Xor => "xor(",
+                    BinaryConnective::Nor => "nor(",
+                    BinaryConnective::Nand => "nand(",
+                    BinaryConnective::Or => "or(",
+                    BinaryConnective::And => "and(",
+                });
+                formula_node(left, bound, out);
+                out.push(',');
+                formula_node(right, bound, out);
+                out.push(')');
+            }
+            FOFFormula::Equality(left, right) => {
+                out.push_str("eq(");
+                term_node(left, bound, out);
+                out.push(',');
+                term_node(right, bound, out);
+                out.push(')');
+            }
+            FOFFormula::Inequality(left, right) => {
+                out.push_str("neq(");
+                term_node(left, bound, out);
+                out.push(',');
+                term_node(right, bound, out);
+                out.push(')');
+            }
+        }
+    }
+
+    let mut result = String::new();
+    formula_node(formula, &mut Vec::new(), &mut result);
+    result
+}
+
 /// Check a single `skolemize` step.
 ///
 /// `dag_status` is the DAG-computed status for this node (see
@@ -142,7 +321,7 @@ pub fn check<'p>(
     // Skolem. If we find at least one such fresh symbol AND no symbol in
     // the step clashes with the registry, we accept the step as `Unknown`
     // — not provably sound, but not provably unsound either. This avoids
-    // a false-positive FailedVerified for the many E proofs whose skolemize
+    // a false-positive VerifiedBad for the many E proofs whose skolemize
     // annotations are too sparse.
     let Some(info) = ann.skolemize_info() else {
         return check_e_style_skolemize(step, parent, registry);
@@ -163,15 +342,7 @@ pub fn check<'p>(
         ));
     }
 
-    // 4) fresh-symbol check.
-    if registry.seen_symbols.contains(info.skolem_symbol) {
-        return StepOutcome::Unsound(format!(
-            "Skolem symbol `{}` is not fresh (reused or clashes with an existing symbol)",
-            info.skolem_symbol
-        ));
-    }
-
-    // 5) Need the parent formula.
+    // 4) Need the parent formula.
     let Some(parent) = parent else {
         return StepOutcome::Unsound("skolemize step has no parent".into());
     };
@@ -183,6 +354,42 @@ pub fn check<'p>(
         FOFStatement::Logical(f) => f,
         _ => return StepOutcome::Unsound("skolemize parent is a sequent".into()),
     };
+    let step_fof = match step.as_fof() {
+        Some(f) => f,
+        None => return StepOutcome::Unknown("skolemize step is not FOF".into()),
+    };
+    let step_f = match &step_fof.formula {
+        FOFStatement::Logical(f) => f,
+        _ => return StepOutcome::Unsound("skolemize step is a sequent".into()),
+    };
+
+    // 5) fresh-symbol check (allowing duplicates if Skolemising the exact same parent formula).
+    if registry.problem_symbols.contains(info.skolem_symbol) {
+        return StepOutcome::Unsound(format!(
+            "Skolem symbol `{}` clashes with problem symbols",
+            info.skolem_symbol
+        ));
+    }
+    let mut sym_tab_parent = SymbolTable::new();
+    let mut ctx_parent = crate::lower::LowerCtx::new(&mut sym_tab_parent);
+    let parent_core = crate::lower::lower_fof_formula(&mut ctx_parent, parent_f);
+    if let Some(previous_source) = registry.introduced_skolem_sources.get(info.skolem_symbol) {
+        if previous_source.0 != parent_signature(parent_f)
+            || previous_source.1 != parent_signature(step_f)
+        {
+            return StepOutcome::Unsound(format!(
+                "Skolem symbol `{}` is reused for a different parent or Skolemized conclusion",
+                info.skolem_symbol
+            ));
+        }
+    } else if registry.introduced_skolems.contains_key(info.skolem_symbol) {
+        // A prior non-FOF registration (for example a Vampire Skolem axiom)
+        // cannot establish that this explicit FOF step has the same parent.
+        return StepOutcome::Unsound(format!(
+            "Skolem symbol `{}` was already introduced without matching FOF provenance",
+            info.skolem_symbol
+        ));
+    }
 
     // 6) Walk through ∀ binders; the next thing we expect is ?Var or a path
     // that contains ?Var as the next existential under some universal prefix.
@@ -200,20 +407,29 @@ pub fn check<'p>(
         }
     };
 
-    // 7) Compare args (ordered) to universals (ordered).
-    if info.args.len() != universals.len() {
+    // 7) Compare args to universals (allowing extra free parameters/constants in the Skolem term arguments,
+    // and ignoring any universals in scope that do not actually occur in the existential's scope).
+    let mut scope_vars = HashSet::new();
+    collect_formula_vars(body_after_existential, &mut scope_vars);
+    let active_universals: Vec<&str> = universals
+        .iter()
+        .copied()
+        .filter(|u| scope_vars.contains(u))
+        .collect();
+
+    if info.args.len() < active_universals.len() {
         return StepOutcome::Unsound(format!(
-            "skolemize: Skolem term `{}` has {} args but {} universal variable(s) are in scope",
+            "skolemize: Skolem term `{}` has only {} args but {} active universal variable(s) are in scope",
             info.skolem_symbol,
             info.args.len(),
-            universals.len()
+            active_universals.len()
         ));
     }
-    for (i, (a, u)) in info.args.iter().zip(universals.iter()).enumerate() {
-        if a != u {
+    for (i, u) in active_universals.iter().enumerate() {
+        if !info.args.contains(u) {
             return StepOutcome::Unsound(format!(
-                "skolemize: arg {} of `{}` is `{}` but expected universal `{}`",
-                i, info.skolem_symbol, a, u
+                "skolemize: expected active universal `{}` (arg {}) to be in Skolem term `{}` arguments {:?}",
+                u, i, info.skolem_symbol, info.args
             ));
         }
     }
@@ -222,22 +438,32 @@ pub fn check<'p>(
     // step's formula (syntactic equality after substitution, modulo
     // structural equality of the AST — no α-renaming yet because the proof
     // tool kept the variable names).
-    let sk_term = build_skolem_term(info.skolem_symbol, &info.args);
+    let sk_term = if let Some(t) = find_skolem_term(step_f, info.skolem_symbol) {
+        let mut step_univs = Vec::new();
+        collect_all_universals(step_f, &mut step_univs);
+        let mut parent_univs = Vec::new();
+        collect_all_universals(parent_f, &mut parent_univs);
+
+        let mut map = HashMap::new();
+        for (su, pu) in step_univs.iter().zip(parent_univs.iter()) {
+            map.insert(*su, *pu);
+        }
+        rename_vars_in_term(&t, &map)
+    } else {
+        build_skolem_term(info.skolem_symbol, &info.args)
+    };
     let expected_body = subst_var_in_formula(body_after_existential, info.var, &sk_term);
     let expected = wrap_universals(&universals, expected_body);
 
-    let step_fof = match step.as_fof() {
-        Some(f) => f,
-        None => return StepOutcome::Unknown("skolemize step is not FOF".into()),
-    };
-    let step_f = match &step_fof.formula {
-        FOFStatement::Logical(f) => f,
-        _ => return StepOutcome::Unsound("skolemize step is a sequent".into()),
-    };
+    let direct_expected = remove_quantifier_and_subst(parent_f, info.var, &sk_term);
 
-    if formula_eq(step_f, &expected) {
+    if formula_eq(step_f, &expected)
+        || formula_eq(step_f, &direct_expected)
+        || alpha_eq_fof(step_f, &expected)
+        || alpha_eq_fof(step_f, &direct_expected)
+    {
         // Register the new Skolem symbol so the next step sees it as taken.
-        registry.record(info.skolem_symbol);
+        registry.record_skolem_source(info.skolem_symbol, parent_core, parent_f, step_f);
         StepOutcome::Sound
     } else {
         StepOutcome::Unsound(format!(
@@ -260,35 +486,47 @@ fn find_existential_binder<'p>(
 ) -> Option<(Vec<&'p str>, &'p FOFFormula<'p>)> {
     let mut universals: Vec<&'p str> = Vec::new();
     let mut cur = strip_parens(f);
+    let mut polarity = true;
     loop {
         match cur {
-            FOFFormula::Quantified {
-                quantifier: Quantifier::Forall,
-                variables,
-                formula,
-            } => {
-                for v in variables {
-                    universals.push(*v);
-                }
-                cur = strip_parens(formula);
+            FOFFormula::Negation(inner) => {
+                polarity = !polarity;
+                cur = strip_parens(inner);
             }
             FOFFormula::Quantified {
-                quantifier: Quantifier::Exists,
+                quantifier,
                 variables,
                 formula,
             } => {
-                // The existential we're after must be the first variable in
-                // *some* leading existential binder. Per the example proofs,
-                // each existential is its own binder with one variable.
-                if variables.first().copied() == Some(var) {
-                    // If there are more vars in the same `?[A,B]:` block, we
-                    // can't cleanly Skolemize just `A`. Refuse.
-                    if variables.len() != 1 {
-                        return None;
+                let is_forall = matches!(
+                    (quantifier, polarity),
+                    (Quantifier::Forall, true) | (Quantifier::Exists, false)
+                );
+                if is_forall {
+                    for v in variables {
+                        universals.push(*v);
                     }
-                    return Some((universals, formula));
+                    cur = strip_parens(formula);
+                } else {
+                    if variables.contains(&var) {
+                        let remaining: Vec<&'p str> =
+                            variables.iter().copied().filter(|&v| v != var).collect();
+                        if remaining.is_empty() {
+                            return Some((universals, formula));
+                        } else {
+                            let wrapped: &'p FOFFormula<'p> =
+                                Box::leak(Box::new(FOFFormula::Quantified {
+                                    quantifier: Quantifier::Exists,
+                                    variables: remaining,
+                                    formula: formula.clone(),
+                                }));
+                            return Some((universals, wrapped));
+                        }
+                    } else {
+                        // Skip this existential quantifier and continue looking for `var`
+                        cur = strip_parens(formula);
+                    }
                 }
-                return None;
             }
             _ => return None,
         }
@@ -657,6 +895,105 @@ fn match_skolem_term<'p>(
     }
 }
 
+fn miniscope<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[skolem-dbg] miniscope called with f={:?}", f);
+    }
+    match f {
+        FOFFormula::Atomic(_) | FOFFormula::Equality(..) | FOFFormula::Inequality(..) => f.clone(),
+        FOFFormula::Parens(inner) => miniscope(inner),
+        FOFFormula::Negation(inner) => FOFFormula::Negation(Box::new(miniscope(inner))),
+        FOFFormula::Binary {
+            left,
+            connective,
+            right,
+        } => FOFFormula::Binary {
+            left: Box::new(miniscope(left)),
+            connective: *connective,
+            right: Box::new(miniscope(right)),
+        },
+        FOFFormula::Quantified {
+            quantifier,
+            variables,
+            formula,
+        } => {
+            let inner = miniscope(formula);
+            let mut current = inner;
+            for v in variables.iter().rev() {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!(
+                        "[skolem-dbg] miniscope matching quantifier={:?}, var={}, current={:?}",
+                        quantifier, v, current
+                    );
+                }
+                current = match (*quantifier, &current) {
+                    (
+                        Quantifier::Exists,
+                        FOFFormula::Binary {
+                            left,
+                            connective: BinaryConnective::Or,
+                            right,
+                        },
+                    ) => {
+                        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                            eprintln!("[skolem-dbg] miniscope Exists MATCHED!");
+                        }
+                        FOFFormula::Binary {
+                            left: Box::new(FOFFormula::Quantified {
+                                quantifier: Quantifier::Exists,
+                                variables: vec![*v],
+                                formula: left.clone(),
+                            }),
+                            connective: BinaryConnective::Or,
+                            right: Box::new(FOFFormula::Quantified {
+                                quantifier: Quantifier::Exists,
+                                variables: vec![*v],
+                                formula: right.clone(),
+                            }),
+                        }
+                    }
+                    (
+                        Quantifier::Forall,
+                        FOFFormula::Binary {
+                            left,
+                            connective: BinaryConnective::And,
+                            right,
+                        },
+                    ) => {
+                        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                            eprintln!("[skolem-dbg] miniscope Forall MATCHED!");
+                        }
+                        FOFFormula::Binary {
+                            left: Box::new(FOFFormula::Quantified {
+                                quantifier: Quantifier::Forall,
+                                variables: vec![*v],
+                                formula: left.clone(),
+                            }),
+                            connective: BinaryConnective::And,
+                            right: Box::new(FOFFormula::Quantified {
+                                quantifier: Quantifier::Forall,
+                                variables: vec![*v],
+                                formula: right.clone(),
+                            }),
+                        }
+                    }
+                    _ => {
+                        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                            eprintln!("[skolem-dbg] miniscope FALLBACK!");
+                        }
+                        FOFFormula::Quantified {
+                            quantifier: *quantifier,
+                            variables: vec![*v],
+                            formula: Box::new(current),
+                        }
+                    }
+                };
+            }
+            current
+        }
+    }
+}
+
 fn fof_to_nnf<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
     match f {
         FOFFormula::Atomic(_) | FOFFormula::Equality(..) | FOFFormula::Inequality(..) => f.clone(),
@@ -695,14 +1032,14 @@ fn fof_to_nnf<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
                     FOFFormula::Binary {
                         left: Box::new(FOFFormula::Binary {
                             left: Box::new(left_pos),
-                            connective: BinaryConnective::And,
-                            right: Box::new(right_neg),
+                            connective: BinaryConnective::Or,
+                            right: Box::new(right_pos),
                         }),
-                        connective: BinaryConnective::Or,
+                        connective: BinaryConnective::And,
                         right: Box::new(FOFFormula::Binary {
                             left: Box::new(left_neg),
-                            connective: BinaryConnective::And,
-                            right: Box::new(right_pos),
+                            connective: BinaryConnective::Or,
+                            right: Box::new(right_neg),
                         }),
                     }
                 }
@@ -962,25 +1299,138 @@ fn distribute_or_over_and<'p>(f: &FOFFormula<'p>) -> FOFFormula<'p> {
     }
 }
 
+fn contains_too_many_iffs_fof(f: &FOFFormula) -> bool {
+    fn count_iffs(f: &FOFFormula) -> usize {
+        match f {
+            FOFFormula::Binary {
+                left,
+                connective,
+                right,
+            } => {
+                let current = if *connective == BinaryConnective::Iff {
+                    1
+                } else {
+                    0
+                };
+                current + count_iffs(left) + count_iffs(right)
+            }
+            FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => count_iffs(inner),
+            FOFFormula::Quantified { formula, .. } => count_iffs(formula),
+            _ => 0,
+        }
+    }
+    count_iffs(f) > 15
+}
+
+fn has_and_under_or_fof(f: &FOFFormula) -> bool {
+    fn contains_and(f: &FOFFormula) -> bool {
+        match f {
+            FOFFormula::Binary {
+                left,
+                connective,
+                right,
+            } => *connective == BinaryConnective::And || contains_and(left) || contains_and(right),
+            FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => contains_and(inner),
+            FOFFormula::Quantified { formula, .. } => contains_and(formula),
+            _ => false,
+        }
+    }
+    fn has_and_under_or_rec(f: &FOFFormula) -> bool {
+        match f {
+            FOFFormula::Binary {
+                left,
+                connective: BinaryConnective::Or,
+                right,
+            } => contains_and(left) || contains_and(right),
+            FOFFormula::Binary {
+                left,
+                connective: _,
+                right,
+            } => has_and_under_or_rec(left) || has_and_under_or_rec(right),
+            FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => has_and_under_or_rec(inner),
+            FOFFormula::Quantified { formula, .. } => has_and_under_or_rec(formula),
+            _ => false,
+        }
+    }
+    has_and_under_or_rec(f)
+}
+
+fn formula_nodes_count_fof(f: &FOFFormula) -> usize {
+    match f {
+        FOFFormula::Binary { left, right, .. } => {
+            1 + formula_nodes_count_fof(left) + formula_nodes_count_fof(right)
+        }
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            1 + formula_nodes_count_fof(inner)
+        }
+        FOFFormula::Quantified { formula, .. } => 1 + formula_nodes_count_fof(formula),
+        FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => {
+            1 + term_nodes_count_fof(l) + term_nodes_count_fof(r)
+        }
+        FOFFormula::Atomic(a) => match a {
+            FOFAtomicFormula::Plain(_, args)
+            | FOFAtomicFormula::Defined(_, args)
+            | FOFAtomicFormula::System(_, args) => {
+                let mut sum = 1;
+                for arg in args {
+                    sum += term_nodes_count_fof(arg);
+                }
+                sum
+            }
+            _ => 1,
+        },
+    }
+}
+
+fn term_nodes_count_fof(t: &FOFTerm) -> usize {
+    match t {
+        FOFTerm::Function(_, args)
+        | FOFTerm::DefinedFunction(_, args)
+        | FOFTerm::SystemFunction(_, args) => {
+            let mut sum = 1;
+            for a in args {
+                sum += term_nodes_count_fof(a);
+            }
+            sum
+        }
+        _ => 1,
+    }
+}
+
 /// Positively verify an unannotated `skolemize` step: confirm the conclusion is
 /// exactly the parent with every existential (at any depth) replaced by a
 /// distinct fresh Skolem term over precisely the universals in scope at it.
 /// Returns `true` only on a fully-confirmed sound Skolemisation; `false` means
 /// "could not confirm" and the caller falls back to the conservative path.
-fn try_positive_skolemize<'p>(
+pub(crate) fn try_positive_skolemize<'p>(
     parent_f: &'p FOFFormula<'p>,
     step_f: &'p FOFFormula<'p>,
     fresh: &[&str],
     registry: &SkolemRegistry,
 ) -> bool {
-    let mut counter = 0;
-    let mut subst = HashMap::new();
-    let parent_nnf = fof_to_nnf(parent_f);
-    let parent_renamed = rename_bound_variables(&parent_nnf, &mut counter, &mut subst);
+    if formula_nodes_count_fof(parent_f) > 1000 || formula_nodes_count_fof(step_f) > 1000 {
+        return false;
+    }
+    if contains_too_many_iffs_fof(parent_f) || contains_too_many_iffs_fof(step_f) {
+        return false;
+    }
+    if has_and_under_or_fof(parent_f)
+        && (formula_nodes_count_fof(parent_f) > 500 || formula_nodes_count_fof(step_f) > 500)
+    {
+        return false;
+    }
+    let mut parent_counter = 0;
+    let mut parent_subst = HashMap::new();
+    let parent_nnf = miniscope(&fof_to_nnf(parent_f));
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[skolem-dbg] parent_nnf AFTER miniscope = {:?}", parent_nnf);
+    }
+    let parent_renamed =
+        rename_bound_variables(&parent_nnf, &mut parent_counter, &mut parent_subst);
     let parent_stripped = strip_all_quantifiers(&parent_renamed);
     let parent_cnf = distribute_or_over_and(&parent_stripped);
 
-    let step_nnf = fof_to_nnf(step_f);
+    let step_nnf = miniscope(&fof_to_nnf(step_f));
     let step_stripped = strip_all_quantifiers(&step_nnf);
     let step_cnf = distribute_or_over_and(&step_stripped);
 
@@ -1020,18 +1470,30 @@ fn try_positive_skolemize<'p>(
         return false;
     }
 
-    // The universal renaming must be injective.
-    let mut seen_conc: HashSet<&str> = HashSet::new();
-    for w in m.uni_map.values() {
-        if !seen_conc.insert(*w) {
-            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
-                eprintln!("[skolem-dbg] universal renaming not injective for {}", w);
+    // The universal renaming must be injective *within each clause*.
+    let mut parent_clauses = Vec::new();
+    collect_clause_vars(&parent_cnf, &mut parent_clauses);
+    for clause in parent_clauses {
+        let mut seen_conc: HashSet<&str> = HashSet::new();
+        for &v in &clause {
+            if univ_set.contains(v)
+                && let Some(&w) = m.uni_map.get(v)
+                && !seen_conc.insert(w)
+            {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!(
+                        "[skolem-dbg] universal renaming not injective within clause for {} -> {}",
+                        v, w
+                    );
+                }
+                return false;
             }
-            return false;
         }
     }
 
     let fresh_set: HashSet<&str> = fresh.iter().copied().collect();
+    let parent_sig = parent_signature(parent_f);
+    let conclusion_sig = parent_signature(step_f);
     let mut used_syms: HashSet<&str> = HashSet::new();
     for e in &exist_set {
         // Every existential must have been witnessed and have a recorded scope.
@@ -1058,11 +1520,21 @@ fn try_positive_skolemize<'p>(
                 return false; // a Skolem witness must be a function/constant term
             }
         };
-        if !fresh_set.contains(sym) || registry.seen_symbols.contains(sym) {
+        let is_ok = fresh_set.contains(sym) && !registry.problem_symbols.contains(sym);
+        let is_duplicate = if is_ok {
+            if let Some(prev_source) = registry.introduced_skolem_sources.get(sym) {
+                parent_sig == prev_source.0 && conclusion_sig == prev_source.1
+            } else {
+                !registry.introduced_skolems.contains_key(sym)
+            }
+        } else {
+            false
+        };
+        if !is_ok || !is_duplicate {
             if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
                 eprintln!(
-                    "[skolem-dbg] witness symbol {} not fresh. fresh_set={:?}, seen={:?}",
-                    sym, fresh_set, registry.seen_symbols
+                    "[skolem-dbg] witness symbol {} not fresh. fresh_set={:?}, seen={:?}, is_ok={}, is_duplicate={}",
+                    sym, fresh_set, registry.seen_symbols, is_ok, is_duplicate
                 );
             }
             return false; // symbol not fresh
@@ -1133,6 +1605,71 @@ fn try_positive_skolemize<'p>(
     true
 }
 
+fn collect_clause_vars<'a>(f: &FOFFormula<'a>, clauses: &mut Vec<HashSet<&'a str>>) {
+    match f {
+        FOFFormula::Binary {
+            left,
+            connective: BinaryConnective::And,
+            right,
+        } => {
+            collect_clause_vars(left, clauses);
+            collect_clause_vars(right, clauses);
+        }
+        _ => {
+            let mut vars = HashSet::new();
+            collect_vars_in_formula(f, &mut vars);
+            clauses.push(vars);
+        }
+    }
+}
+
+fn collect_vars_in_formula<'a>(f: &FOFFormula<'a>, vars: &mut HashSet<&'a str>) {
+    match f {
+        FOFFormula::Atomic(a) => collect_vars_in_atomic(a, vars),
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            collect_vars_in_formula(inner, vars)
+        }
+        FOFFormula::Binary { left, right, .. } => {
+            collect_vars_in_formula(left, vars);
+            collect_vars_in_formula(right, vars);
+        }
+        FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => {
+            collect_vars_in_term(l, vars);
+            collect_vars_in_term(r, vars);
+        }
+        _ => {}
+    }
+}
+
+fn collect_vars_in_term<'a>(t: &FOFTerm<'a>, vars: &mut HashSet<&'a str>) {
+    match t {
+        FOFTerm::Variable(v) => {
+            vars.insert(*v);
+        }
+        FOFTerm::Function(_, args)
+        | FOFTerm::DefinedFunction(_, args)
+        | FOFTerm::SystemFunction(_, args) => {
+            for arg in args {
+                collect_vars_in_term(arg, vars);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_vars_in_atomic<'a>(a: &FOFAtomicFormula<'a>, vars: &mut HashSet<&'a str>) {
+    match a {
+        FOFAtomicFormula::Plain(_, args)
+        | FOFAtomicFormula::Defined(_, args)
+        | FOFAtomicFormula::System(_, args) => {
+            for arg in args {
+                collect_vars_in_term(arg, vars);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn wrap_universals<'p>(vars: &[&'p str], body: FOFFormula<'p>) -> FOFFormula<'p> {
     let mut cur = body;
     for v in vars.iter().rev() {
@@ -1151,6 +1688,169 @@ fn build_skolem_term<'p>(sym: &'p str, args: &[&'p str]) -> FOFTerm<'p> {
     } else {
         let ts: Vec<FOFTerm<'p>> = args.iter().map(|a| FOFTerm::Variable(a)).collect();
         FOFTerm::Function(AtomicWord::Lower(sym), ts)
+    }
+}
+
+fn find_skolem_term<'p>(f: &'p FOFFormula<'p>, sym: &str) -> Option<FOFTerm<'p>> {
+    match f {
+        FOFFormula::Atomic(a) => match a {
+            FOFAtomicFormula::Plain(_, args)
+            | FOFAtomicFormula::Defined(_, args)
+            | FOFAtomicFormula::System(_, args) => {
+                for arg in args {
+                    if let Some(t) = find_skolem_term_in_term(arg, sym) {
+                        return Some(t);
+                    }
+                }
+                None
+            }
+            _ => None,
+        },
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => find_skolem_term(inner, sym),
+        FOFFormula::Binary { left, right, .. } => {
+            find_skolem_term(left, sym).or_else(|| find_skolem_term(right, sym))
+        }
+        FOFFormula::Quantified { formula, .. } => find_skolem_term(formula, sym),
+        FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => {
+            find_skolem_term_in_term(l, sym).or_else(|| find_skolem_term_in_term(r, sym))
+        }
+    }
+}
+
+fn find_skolem_term_in_term<'p>(t: &'p FOFTerm<'p>, sym: &str) -> Option<FOFTerm<'p>> {
+    match t {
+        FOFTerm::Function(w, args) => {
+            if w.as_str() == sym {
+                return Some(t.clone());
+            }
+            for a in args {
+                if let Some(res) = find_skolem_term_in_term(a, sym) {
+                    return Some(res);
+                }
+            }
+            None
+        }
+        FOFTerm::DefinedFunction(w, args) => {
+            if w.0 == sym {
+                return Some(t.clone());
+            }
+            for a in args {
+                if let Some(res) = find_skolem_term_in_term(a, sym) {
+                    return Some(res);
+                }
+            }
+            None
+        }
+        FOFTerm::SystemFunction(w, args) => {
+            if w.0 == sym {
+                return Some(t.clone());
+            }
+            for a in args {
+                if let Some(res) = find_skolem_term_in_term(a, sym) {
+                    return Some(res);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn collect_all_universals<'p>(f: &'p FOFFormula<'p>, vars: &mut Vec<&'p str>) {
+    let mut cur = strip_parens(f);
+    let mut polarity = true;
+    loop {
+        match cur {
+            FOFFormula::Negation(inner) => {
+                polarity = !polarity;
+                cur = strip_parens(inner);
+            }
+            FOFFormula::Quantified {
+                quantifier,
+                variables,
+                formula,
+            } => {
+                let is_forall = matches!(
+                    (quantifier, polarity),
+                    (Quantifier::Forall, true) | (Quantifier::Exists, false)
+                );
+                if is_forall {
+                    for v in variables {
+                        vars.push(*v);
+                    }
+                }
+                cur = strip_parens(formula);
+            }
+            _ => break,
+        }
+    }
+}
+
+fn collect_formula_vars<'p>(f: &'p FOFFormula<'p>, vars: &mut HashSet<&'p str>) {
+    match f {
+        FOFFormula::Atomic(a) => match a {
+            FOFAtomicFormula::Plain(_, args)
+            | FOFAtomicFormula::Defined(_, args)
+            | FOFAtomicFormula::System(_, args) => {
+                for arg in args {
+                    collect_term_vars_f(arg, vars);
+                }
+            }
+            _ => {}
+        },
+        FOFFormula::Negation(inner) | FOFFormula::Parens(inner) => {
+            collect_formula_vars(inner, vars);
+        }
+        FOFFormula::Binary { left, right, .. } => {
+            collect_formula_vars(left, vars);
+            collect_formula_vars(right, vars);
+        }
+        FOFFormula::Quantified { formula, .. } => collect_formula_vars(formula, vars),
+        FOFFormula::Equality(l, r) | FOFFormula::Inequality(l, r) => {
+            collect_term_vars_f(l, vars);
+            collect_term_vars_f(r, vars);
+        }
+    }
+}
+
+fn collect_term_vars_f<'p>(t: &'p FOFTerm<'p>, vars: &mut HashSet<&'p str>) {
+    match t {
+        FOFTerm::Variable(v) => {
+            vars.insert(*v);
+        }
+        FOFTerm::Function(_, args)
+        | FOFTerm::DefinedFunction(_, args)
+        | FOFTerm::SystemFunction(_, args) => {
+            for a in args {
+                collect_term_vars_f(a, vars);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rename_vars_in_term<'p>(t: &FOFTerm<'p>, map: &HashMap<&str, &'p str>) -> FOFTerm<'p> {
+    match t {
+        FOFTerm::Variable(v) => {
+            if let Some(&new_v) = map.get(v) {
+                FOFTerm::Variable(new_v)
+            } else {
+                FOFTerm::Variable(v)
+            }
+        }
+        FOFTerm::Function(w, args) => FOFTerm::Function(
+            w.clone(),
+            args.iter().map(|a| rename_vars_in_term(a, map)).collect(),
+        ),
+        FOFTerm::DefinedFunction(w, args) => FOFTerm::DefinedFunction(
+            w.clone(),
+            args.iter().map(|a| rename_vars_in_term(a, map)).collect(),
+        ),
+        FOFTerm::SystemFunction(w, args) => FOFTerm::SystemFunction(
+            w.clone(),
+            args.iter().map(|a| rename_vars_in_term(a, map)).collect(),
+        ),
+        _ => t.clone(),
     }
 }
 
@@ -1197,10 +1897,43 @@ fn subst_var_in_formula<'p>(
                     formula: formula.clone(),
                 }
             } else {
-                FOFFormula::Quantified {
-                    quantifier: *quantifier,
-                    variables: variables.clone(),
-                    formula: Box::new(subst_var_in_formula(formula, var, replacement)),
+                let mut repl_vars = HashSet::new();
+                crate::checks::introduced_definition::collect_term_vars(
+                    replacement,
+                    &mut repl_vars,
+                );
+                let captures: Vec<&str> = variables
+                    .iter()
+                    .copied()
+                    .filter(|v| repl_vars.contains(v))
+                    .collect();
+
+                if !captures.is_empty() {
+                    let mut new_vars = variables.clone();
+                    let mut renamed_formula = formula.clone();
+                    for &c in &captures {
+                        let fresh_name: &str = &*Box::leak(format!("{c}1").into_boxed_str());
+                        new_vars = new_vars
+                            .into_iter()
+                            .map(|v| if v == c { fresh_name } else { v })
+                            .collect();
+                        *renamed_formula = subst_var_in_formula(
+                            &renamed_formula,
+                            c,
+                            &FOFTerm::Variable(fresh_name),
+                        );
+                    }
+                    FOFFormula::Quantified {
+                        quantifier: *quantifier,
+                        variables: new_vars,
+                        formula: Box::new(subst_var_in_formula(&renamed_formula, var, replacement)),
+                    }
+                } else {
+                    FOFFormula::Quantified {
+                        quantifier: *quantifier,
+                        variables: variables.clone(),
+                        formula: Box::new(subst_var_in_formula(formula, var, replacement)),
+                    }
                 }
             }
         }
@@ -1348,8 +2081,8 @@ fn term_eq(a: &FOFTerm<'_>, b: &FOFTerm<'_>) -> bool {
 /// were already in the registry (problem symbols), record them as fresh
 /// Skolems and return `Unknown` (we cannot prove soundness without the
 /// missing var/term info, but we have no evidence of unsoundness either —
-/// `Unknown` propagates to `NotVerified`, scoring 0 instead of the −1 a
-/// false-positive `FailedVerified` would cost).
+/// `Unknown` propagates to a final `Verdict::Unknown`, scoring 0 instead of the −1 a
+/// false-positive `VerifiedBad` would cost).
 fn check_e_style_skolemize<'p>(
     step: &AnnotatedFormula<'p>,
     parent: Option<&AnnotatedFormula<'p>>,
@@ -1382,9 +2115,9 @@ fn check_e_style_skolemize<'p>(
 
     let fresh: Vec<&str> = step_syms.difference(&parent_syms).copied().collect();
     if fresh.is_empty() {
-        return StepOutcome::Unknown(
+        return StepOutcome::Unsound(
             "skolemize step missing `skolemize(Var, sk(...))` annotation; \
-             no fresh symbols introduced — cannot verify structurally"
+             no fresh symbols introduced"
                 .into(),
         );
     }
@@ -1395,7 +2128,7 @@ fn check_e_style_skolemize<'p>(
         .filter(|s| registry.seen_symbols.contains(*s))
         .collect();
     if !stale.is_empty() {
-        return StepOutcome::Unknown(format!(
+        return StepOutcome::Unsound(format!(
             "skolemize step missing annotation and candidate Skolem symbol(s) {stale:?} \
              clash with the problem's symbols"
         ));
@@ -1405,11 +2138,14 @@ fn check_e_style_skolemize<'p>(
     // confirm the conclusion is exactly the parent with each existential
     // replaced by a distinct fresh Skolem term over its in-scope universals.
     // On success this is a *confirmed* sound step (`Sound` → contributes to
-    // `Verified`); the proofs the dataset emits without a
+    // `VerifiedGood`); the proofs the dataset emits without a
     // `skolemize(Var, sk(...))` annotation (e.g. PyRes) are handled here.
     if try_positive_skolemize(parent_f, step_f, &fresh, registry) {
+        let mut sym_tab_sk = SymbolTable::new();
+        let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
+        let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, parent_f);
         for s in &fresh {
-            registry.record(s);
+            registry.record_skolem_source(s, parent_core.clone(), parent_f, step_f);
         }
         return StepOutcome::Sound;
     }
@@ -1525,7 +2261,10 @@ fn check_e_style_skolemize<'p>(
             // PyRes), so we conservatively downgrade to `Unknown` (0 pts). A
             // genuinely bad Skolemisation still fails downstream at the ATP.
             if mismatch {
-                registry.record(sk);
+                let mut sym_tab_sk = SymbolTable::new();
+                let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
+                let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, parent_f);
+                registry.record_skolem_source(sk, parent_core, parent_f, step_f);
                 return StepOutcome::Unknown(format!(
                     "skolemize step (unannotated) introduces Skolem `{sk}` whose argument \
                      variables match no existential scope of the parent; cannot confirm \
@@ -1535,13 +2274,269 @@ fn check_e_style_skolemize<'p>(
         }
     }
 
+    let mut sym_tab_sk = SymbolTable::new();
+    let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
+    let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, parent_f);
     for s in &fresh {
-        registry.record(s);
+        registry.record_skolem_source(s, parent_core.clone(), parent_f, step_f);
     }
     StepOutcome::Unknown(format!(
         "skolemize step missing `skolemize(Var, sk(...))` annotation; \
          inferred fresh Skolem(s) {fresh:?} from step\\parent — accepted as Unknown"
     ))
+}
+
+fn remove_quantifier_and_subst<'p>(
+    f: &'p FOFFormula<'p>,
+    var: &str,
+    sk_term: &FOFTerm<'p>,
+) -> FOFFormula<'p> {
+    match f {
+        FOFFormula::Parens(inner) => {
+            FOFFormula::Parens(Box::new(remove_quantifier_and_subst(inner, var, sk_term)))
+        }
+        FOFFormula::Negation(inner) => {
+            FOFFormula::Negation(Box::new(remove_quantifier_and_subst(inner, var, sk_term)))
+        }
+        FOFFormula::Quantified {
+            quantifier,
+            variables,
+            formula,
+        } => {
+            if variables.len() == 1 && variables[0] == var {
+                subst_var_in_formula(formula, var, sk_term)
+            } else if variables.contains(&var) {
+                let new_vars: Vec<&'p str> =
+                    variables.iter().copied().filter(|v| *v != var).collect();
+                FOFFormula::Quantified {
+                    quantifier: *quantifier,
+                    variables: new_vars,
+                    formula: Box::new(subst_var_in_formula(formula, var, sk_term)),
+                }
+            } else {
+                FOFFormula::Quantified {
+                    quantifier: *quantifier,
+                    variables: variables.clone(),
+                    formula: Box::new(remove_quantifier_and_subst(formula, var, sk_term)),
+                }
+            }
+        }
+        FOFFormula::Binary {
+            left,
+            connective,
+            right,
+        } => FOFFormula::Binary {
+            left: Box::new(remove_quantifier_and_subst(left, var, sk_term)),
+            connective: *connective,
+            right: Box::new(remove_quantifier_and_subst(right, var, sk_term)),
+        },
+        _ => subst_var_in_formula(f, var, sk_term),
+    }
+}
+
+use mrs_core::{Atom, Formula, SymbolTable, Term, VarId};
+
+fn collect_forall(f: &Formula, vars: &mut Vec<VarId>) -> Formula {
+    match f {
+        Formula::Forall(v, body) => {
+            vars.push(*v);
+            collect_forall(body, vars)
+        }
+        _ => f.clone(),
+    }
+}
+
+fn collect_exists(f: &Formula, vars: &mut Vec<VarId>) -> Formula {
+    match f {
+        Formula::Exists(v, body) => {
+            vars.push(*v);
+            collect_exists(body, vars)
+        }
+        _ => f.clone(),
+    }
+}
+
+fn term_equiv(
+    a: &Term,
+    b: &Term,
+    env: &HashMap<VarId, VarId>,
+    rev_env: &HashMap<VarId, VarId>,
+) -> bool {
+    match (a, b) {
+        (Term::Var(v1), Term::Var(v2)) => match env.get(v1) {
+            Some(&mapped_v) => mapped_v == *v2,
+            None => *v1 == *v2 && !rev_env.contains_key(v2),
+        },
+        (Term::App(s1, args1), Term::App(s2, args2)) => {
+            s1 == s2
+                && args1.len() == args2.len()
+                && args1
+                    .iter()
+                    .zip(args2.iter())
+                    .all(|(x, y)| term_equiv(x, y, env, rev_env))
+        }
+        _ => false,
+    }
+}
+
+fn atom_equiv(
+    a: &Atom,
+    b: &Atom,
+    env: &HashMap<VarId, VarId>,
+    rev_env: &HashMap<VarId, VarId>,
+) -> bool {
+    match (a, b) {
+        (Atom::Pred(s1, args1), Atom::Pred(s2, args2)) => {
+            s1 == s2
+                && args1.len() == args2.len()
+                && args1
+                    .iter()
+                    .zip(args2.iter())
+                    .all(|(x, y)| term_equiv(x, y, env, rev_env))
+        }
+        (Atom::Eq(l1, r1), Atom::Eq(l2, r2)) => {
+            (term_equiv(l1, l2, env, rev_env) && term_equiv(r1, r2, env, rev_env))
+                || (term_equiv(l1, r2, env, rev_env) && term_equiv(r1, l2, env, rev_env))
+        }
+        _ => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn match_binders(
+    idx: usize,
+    vars_a: &[VarId],
+    vars_b: &[VarId],
+    used_b: &mut [bool],
+    body_a: &Formula,
+    body_b: &Formula,
+    env: &mut HashMap<VarId, VarId>,
+    rev_env: &mut HashMap<VarId, VarId>,
+) -> bool {
+    if idx == vars_a.len() {
+        return equiv_modulo_perms(body_a, body_b, env, rev_env);
+    }
+    let va = vars_a[idx];
+    for i in 0..vars_b.len() {
+        if !used_b[i] {
+            let vb = vars_b[i];
+            used_b[i] = true;
+            env.insert(va, vb);
+            rev_env.insert(vb, va);
+            if match_binders(
+                idx + 1,
+                vars_a,
+                vars_b,
+                used_b,
+                body_a,
+                body_b,
+                env,
+                rev_env,
+            ) {
+                return true;
+            }
+            env.remove(&va);
+            rev_env.remove(&vb);
+            used_b[i] = false;
+        }
+    }
+    false
+}
+
+fn equiv_modulo_perms(
+    a: &Formula,
+    b: &Formula,
+    env: &mut HashMap<VarId, VarId>,
+    rev_env: &mut HashMap<VarId, VarId>,
+) -> bool {
+    match (a, b) {
+        (Formula::True, Formula::True) | (Formula::False, Formula::False) => true,
+        (Formula::Atom(x), Formula::Atom(y)) => atom_equiv(x, y, env, rev_env),
+        (Formula::Neg(x), Formula::Neg(y)) => equiv_modulo_perms(x, y, env, rev_env),
+        (Formula::And(xs), Formula::And(ys)) | (Formula::Or(xs), Formula::Or(ys)) => {
+            if xs.len() != ys.len() {
+                return false;
+            }
+            let mut used = vec![false; ys.len()];
+            for x in xs {
+                let mut matched = false;
+                for (j, y) in ys.iter().enumerate() {
+                    if !used[j] && equiv_modulo_perms(x, y, env, rev_env) {
+                        used[j] = true;
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    return false;
+                }
+            }
+            true
+        }
+        (Formula::Iff(a1, b1), Formula::Iff(a2, b2)) => {
+            (equiv_modulo_perms(a1, a2, env, rev_env) && equiv_modulo_perms(b1, b2, env, rev_env))
+                || (equiv_modulo_perms(a1, b2, env, rev_env)
+                    && equiv_modulo_perms(b1, a2, env, rev_env))
+        }
+        (Formula::Implies(a1, b1), Formula::Implies(a2, b2)) => {
+            equiv_modulo_perms(a1, a2, env, rev_env) && equiv_modulo_perms(b1, b2, env, rev_env)
+        }
+        (Formula::Forall(..), Formula::Forall(..)) => {
+            let mut vars_a = Vec::new();
+            let body_a = collect_forall(a, &mut vars_a);
+            let mut vars_b = Vec::new();
+            let body_b = collect_forall(b, &mut vars_b);
+            if vars_a.len() != vars_b.len() {
+                return false;
+            }
+            let mut used_b = vec![false; vars_b.len()];
+            match_binders(
+                0,
+                &vars_a,
+                &vars_b,
+                &mut used_b,
+                &body_a,
+                &body_b,
+                env,
+                rev_env,
+            )
+        }
+        (Formula::Exists(..), Formula::Exists(..)) => {
+            let mut vars_a = Vec::new();
+            let body_a = collect_exists(a, &mut vars_a);
+            let mut vars_b = Vec::new();
+            let body_b = collect_exists(b, &mut vars_b);
+            if vars_a.len() != vars_b.len() {
+                return false;
+            }
+            let mut used_b = vec![false; vars_b.len()];
+            match_binders(
+                0,
+                &vars_a,
+                &vars_b,
+                &mut used_b,
+                &body_a,
+                &body_b,
+                env,
+                rev_env,
+            )
+        }
+        _ => false,
+    }
+}
+
+fn alpha_eq_fof<'p>(a: &'p FOFFormula<'p>, b: &'p FOFFormula<'p>) -> bool {
+    let mut symbols = mrs_core::SymbolTable::new();
+    let mut ctx = crate::lower::LowerCtx::new(&mut symbols);
+    ctx.reset_vars();
+    let a_core = crate::lower::lower_fof_formula(&mut ctx, a);
+    ctx.reset_vars();
+    let b_core = crate::lower::lower_fof_formula(&mut ctx, b);
+
+    let mut env = HashMap::new();
+    let mut rev_env = HashMap::new();
+    equiv_modulo_perms(&a_core, &b_core, &mut env, &mut rev_env)
+        || crate::checks::definition_folding::canon_eq(&a_core, &b_core, Some(ctx.symbols))
 }
 
 #[cfg(test)]
@@ -1557,7 +2552,7 @@ mod tests {
     /// PyRes emits multi-existential Skolemisation in a single `skolemize`
     /// step: `? [X2] : ! [X3,X4] : ? [X5] : …` collapses to a constant Skolem
     /// for `X2` and an arity-2 Skolem `sk(X3,X4)` for `X5`. With positive
-    /// verification this is now confirmed `Sound` (→ `Verified`).
+    /// verification this is now confirmed `Sound` (→ `VerifiedGood`).
     #[test]
     fn nested_multi_existential_skolemize_is_sound() {
         let parent = nth_fof(
@@ -1639,8 +2634,8 @@ mod tests {
 
     /// A Skolem term that *under-captures* its in-scope universals
     /// (`sk(X2,X4)` shrunk to `sk(X2)`) is an unsound dependency. The positive
-    /// check must NOT confirm it (no false `Sound`/`Verified`); it falls back to
-    /// the conservative `Unknown`/`NotVerified`.
+    /// check must NOT confirm it (no false `Sound`/`VerifiedGood`); it falls back to
+    /// the conservative `StepOutcome::Unknown`, aggregating to `Verdict::Unknown`.
     #[test]
     fn under_capturing_skolem_is_not_sound() {
         let parent = nth_fof(

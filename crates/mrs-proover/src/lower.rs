@@ -46,11 +46,14 @@ impl<'a> LowerCtx<'a> {
     }
 }
 
-pub fn lower_annotated_formula(ctx: &mut LowerCtx<'_>, af: &AnnotatedFormula<'_>) -> Formula {
+pub fn lower_annotated_formula(
+    ctx: &mut LowerCtx<'_>,
+    af: &AnnotatedFormula<'_>,
+) -> Option<Formula> {
     match af {
-        AnnotatedFormula::FOF(f) => lower_fof_statement(ctx, &f.formula),
-        AnnotatedFormula::CNF(c) => lower_cnf_statement(ctx, &c.formula),
-        _ => panic!("Unsupported formula type in lower_annotated_formula"),
+        AnnotatedFormula::FOF(f) => Some(lower_fof_statement(ctx, &f.formula)),
+        AnnotatedFormula::CNF(c) => Some(lower_cnf_statement(ctx, &c.formula)),
+        _ => None,
     }
 }
 

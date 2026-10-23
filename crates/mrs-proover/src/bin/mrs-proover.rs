@@ -3,17 +3,19 @@
 //! Usage:
 //!
 //! ```text
-//! mrs-proover [--problems-dir DIR] [--no-atp] [--verbose] <proof.p>
+//! mrs-proover [--strict] [--problems-dir DIR] [--no-atp] [--verbose] <proof.p>
 //! ```
 //!
-//! Emits one line on stdout: `% SZS status Verified|FailedVerified|NotVerified`.
+//! Emits one line on stdout: `% SZS status VerifiedGood|VerifiedBad|Unknown`.
 //! With `--verbose`, also writes per-step progress to stderr.
 //!
-//! By default, the verifier auto-discovers `eprover` and `vampire` in the
+//! With `--strict`, the independent `mrs-proof-kernel` is used and no ATP is
+//! invoked. By default, the verifier auto-discovers `eprover` and `vampire` in the
 //! repo's `crates/mrs-bench/systems/*/bin/` directory and uses them as a
 //! ladder ATP backend for inference steps not covered by internal checks.
 //! Use `--no-atp` to disable external ATP calls.
 
+use mrs_proof_kernel::model::ModelEvaluation;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -32,8 +34,9 @@ fn print_and_exit(v: Verdict) -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: mrs-proover [--problems-dir DIR] [--no-atp] [--no-mrs] [--no-fmb]\n\
-                      [--eprover PATH] [--vampire PATH]\n\
+        "usage: mrs-proover [--strict] [--problems-dir DIR] [--no-atp] [--no-mrs] [--no-fmb]\n\
+                       [--eprover PATH] [--vampire PATH]\n\
+                       [--verus-shadow PATH|--verus-gate PATH] [--verus-sha256 HASH]\n\
                       [--only-mrs|--only-eprover|--only-vampire]\n\
                       [--time SECS] [--workers N] [--verbose] <proof.p>"
     );
@@ -47,6 +50,9 @@ fn main() -> ExitCode {
     let mut no_atp = false;
     let mut no_mrs = false;
     let mut no_fmb = false;
+    let mut strict = false;
+    let mut verus: Option<(PathBuf, bool)> = None;
+    let mut verus_hash: Option<String> = None;
     let mut eprover_override: Option<PathBuf> = None;
     let mut vampire_override: Option<PathBuf> = None;
     let mut verbose = false;
@@ -64,6 +70,26 @@ fn main() -> ExitCode {
             "--no-atp" => no_atp = true,
             "--no-mrs" => no_mrs = true,
             "--no-fmb" => no_fmb = true,
+            "--strict" => strict = true,
+            "--verus-shadow" | "--verus-gate" => {
+                if verus.is_some() {
+                    return usage();
+                }
+                let Some(path) = iter.next() else {
+                    return usage();
+                };
+                strict = true;
+                verus = Some((path.into(), a == "--verus-gate"));
+            }
+            "--verus-sha256" => {
+                let Some(hash) = iter.next() else {
+                    return usage();
+                };
+                if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return usage();
+                }
+                verus_hash = Some(hash.to_ascii_lowercase());
+            }
             "--only-mrs" => only = Some("mrs"),
             "--only-eprover" => only = Some("eprover"),
             "--only-vampire" => only = Some("vampire"),
@@ -76,12 +102,14 @@ fn main() -> ExitCode {
                 None => return usage(),
             },
             "--time" => match iter.next().and_then(|s| s.parse::<u64>().ok()) {
-                Some(n) => total_budget_secs = Some(n),
+                Some(n) if n > 0 => total_budget_secs = Some(n),
                 None => return usage(),
+                Some(_) => return usage(),
             },
             "--workers" => match iter.next().and_then(|s| s.parse::<usize>().ok()) {
-                Some(n) => workers = Some(n),
+                Some(n) if n > 0 => workers = Some(n),
                 None => return usage(),
+                Some(_) => return usage(),
             },
             "-v" | "--verbose" => verbose = true,
             s if s.starts_with("--") => return usage(),
@@ -96,11 +124,53 @@ fn main() -> ExitCode {
     let Some(proof_path) = proof_path else {
         return usage();
     };
+    if verus.is_some() != verus_hash.is_some() {
+        return usage();
+    }
+
+    let problems_dir = problems_dir.or_else(|| std::env::var("TPTP").ok().map(PathBuf::from));
+
+    // Check if the input file contains a model certificate
+    if let Ok(raw_text) = std::fs::read_to_string(&proof_path)
+        && let Ok(cert) = mrs_proover::model::ModelCertificate::extract_from_text(&raw_text)
+    {
+        if verus.is_some() {
+            return print_and_exit(Verdict::Unknown(
+                "Verus proof-DAG mode does not support model certificates".into(),
+            ));
+        }
+        let header_link = mrs_tptp::proover::proof_header_link(&raw_text);
+        let prob_path = header_link
+            .and_then(|link| {
+                mrs_proover::load::resolve_problem_path_with_base(
+                    &proof_path,
+                    problems_dir.as_deref(),
+                    std::path::Path::new("."),
+                    link,
+                )
+            })
+            .or_else(|| {
+                let stem = proof_path.file_stem()?.to_str()?;
+                problems_dir
+                    .as_ref()
+                    .map(|dir| dir.join(format!("{stem}.p")))
+            });
+
+        if let Some(path) = prob_path {
+            let verdict = cert.validate_file(&path, None);
+            let v = match verdict {
+                mrs_proover::model::ModelVerdict::Certified { .. } => Verdict::VerifiedGood,
+                mrs_proover::model::ModelVerdict::Rejected(reason) => Verdict::VerifiedBad(reason),
+                mrs_proover::model::ModelVerdict::Inconclusive(reason) => Verdict::Unknown(reason),
+            };
+            return print_and_exit(v);
+        }
+    }
 
     let job = match load(&proof_path, problems_dir.as_deref()) {
         Ok(j) => j,
         Err(LoadError::MissingProofHeader) => {
-            return print_and_exit(Verdict::NotVerified(
+            return print_and_exit(Verdict::Unknown(
                 "proof file has no `% Proof :` header; cannot locate problem file".into(),
             ));
         }
@@ -109,20 +179,62 @@ fn main() -> ExitCode {
         // syntactically well-formed and parsable in TPTP", and the
         // official `example3_e_proof.p` evil example contains a malformed
         // `skolemize(Groom sK0(Marriage))` (missing comma) that should be
-        // flagged as bad. Reporting `FailedVerified` scores +2 instead of
+        // flagged as bad. Reporting `VerifiedBad` scores +2 instead of
         // 0 in that case; the rules' guarantee means we should never
         // wrongly hit this branch on a legitimate good proof.
+        Err(LoadError::ParseProof(detail)) if strict => {
+            return print_and_exit(Verdict::Unknown(format!(
+                "strict proof parse error: {detail}"
+            )));
+        }
         Err(LoadError::ParseProof(detail)) => {
-            return print_and_exit(Verdict::FailedVerified(format!(
+            return print_and_exit(Verdict::VerifiedBad(format!(
                 "proof file is not parseable TPTP: {detail}"
             )));
         }
         // ReadProof / ReadProblem / ParseProblem are infrastructure or
         // problem-file issues, not proof faults; stay conservative.
         Err(e) => {
-            return print_and_exit(Verdict::NotVerified(format!("load error: {e}")));
+            return print_and_exit(Verdict::Unknown(format!("load error: {e}")));
         }
     };
+
+    if strict {
+        let kernel = if let Some((path, gate)) = verus {
+            let config = mrs_proof_kernel::verus::VerusConfig {
+                executable: path,
+                expected_sha256: verus_hash.expect("validated Verus hash"),
+                timeout: Duration::from_secs(total_budget_secs.unwrap_or(10).min(60)),
+            };
+            let verify = if gate {
+                mrs_proover::strict::verify_loaded_job_with_verus_gate
+            } else {
+                mrs_proover::strict::verify_loaded_job_with_verus_shadow
+            };
+            match verify(
+                &job,
+                mrs_proof_kernel::VerificationLimits::default(),
+                &config,
+            ) {
+                Ok((kernel, report)) => {
+                    eprintln!(
+                        "% Verus {}: {report:?}",
+                        if gate { "dual-check gate" } else { "shadow" }
+                    );
+                    kernel
+                }
+                Err(verdict) => verdict,
+            }
+        } else {
+            mrs_proover::strict::verify_loaded_job_default(&job)
+        };
+        let verdict = match kernel {
+            mrs_proof_kernel::KernelVerdict::Certified => Verdict::VerifiedGood,
+            mrs_proof_kernel::KernelVerdict::Rejected(reason) => Verdict::VerifiedBad(reason),
+            mrs_proof_kernel::KernelVerdict::Inconclusive(reason) => Verdict::Unknown(reason),
+        };
+        return print_and_exit(verdict);
+    }
 
     let mut settings = Settings {
         verbose,
@@ -165,7 +277,7 @@ fn main() -> ExitCode {
     }
     // Counter-model finder rung (last): only when not in single-backend mode
     // and not explicitly disabled. FMB confirms non-entailments the saturation
-    // provers can only time out on, earning FailedVerified (+2) on bad proofs.
+    // provers can only time out on, earning VerifiedBad (+2) on bad proofs.
     // The esa guard in `delegate_to_atp` still suppresses any FMB refutation of
     // an equisatisfiability step, so this never costs us a good-proof point.
     if only.is_none()

@@ -1,0 +1,11418 @@
+use vstd::prelude::*;
+
+verus! {
+
+/// First-order terms with variables, constants, and unary/binary functions.
+pub enum Term {
+    Var(u64),
+    Const(u64),
+    App1(u64, Box<Term>),
+    App2(u64, Box<Term>, Box<Term>),
+}
+
+/// A term-tree position is a sequence of child indices. Unary applications
+/// have child 0; binary applications have children 0 (left) and 1 (right).
+pub struct TermPosition {
+    path: Seq<nat>,
+}
+
+pub enum Atom {
+    Pred0(u64),
+    Pred1(u64, Box<Term>),
+    Pred2(u64, Box<Term>, Box<Term>),
+    Eq(Term, Term),
+}
+
+pub struct Literal {
+    positive: bool,
+    atom: Atom,
+}
+
+pub struct Clause {
+    literals: Seq<Literal>,
+}
+
+spec fn seq_equal<T>(left: Seq<T>, right: Seq<T>) -> bool {
+    left.len() == right.len()
+        && forall|i: int| 0 <= i < left.len() ==> left[i] == right[i]
+}
+
+spec fn clause_equal(left: Clause, right: Clause) -> bool {
+    seq_equal(left.literals, right.literals)
+}
+
+pub struct Interpretation {
+    domain: Set<u64>,
+    // These finite maps act as total interpretations only when their domains
+    // contain every signature application used by the formula. Semantic
+    // lemmas state those definedness preconditions explicitly.
+    functions: IMap<(u64, Seq<u64>), u64>,
+    predicates: IMap<(u64, Seq<u64>), bool>,
+}
+
+pub struct Valuation {
+    values: IMap<u64, u64>,
+}
+
+pub struct Model {
+    interp: Interpretation,
+    valuation: Valuation,
+}
+
+/// The semantic carrier is non-empty and all signature interpretations are
+/// total and return carrier elements. Predicate interpretations are total as
+/// well, so substituted argument tuples are always defined.
+spec fn interpretation_well_formed(interp: Interpretation) -> bool {
+    (exists|x: u64| interp.domain.contains(x))
+        && interp.functions.is_full()
+        && interp.predicates.is_full()
+        && forall|f: u64, args: Seq<u64>|
+            interp.domain.contains(interp.functions[(f, args)])
+}
+
+spec fn valuation_well_formed(interp: Interpretation, valuation: Valuation) -> bool {
+    valuation.values.is_full()
+        && forall|x: u64| interp.domain.contains(valuation.values[x])
+}
+
+/// Truth of a universally closed formula with one free variable.
+pub struct UniversalFormula {
+    body: IMap<u64, bool>,
+}
+
+spec fn formula_holds(formula: UniversalFormula) -> bool {
+    forall|value: u64| formula.body[value]
+}
+
+proof fn universal_formula_instance(formula: UniversalFormula, chosen: u64)
+    requires formula_holds(formula)
+    ensures formula.body[chosen]
+{
+    assert(formula.body[chosen]);
+}
+
+/// A finite simultaneous substitution. Duplicate-free domains are checked by
+/// the executable checker below. RHS terms are not recursively substituted.
+pub struct Substitution {
+    bindings: Seq<(u64, Term)>,
+}
+
+spec fn lookup_rec(bindings: Seq<(u64, Term)>, v: u64, n: nat) -> Option<Term>
+    decreases n
+{
+    if n == 0 {
+        None
+    } else if bindings[n - 1].0 == v {
+        Some(bindings[n - 1].1)
+    } else {
+        lookup_rec(bindings, v, (n - 1) as nat)
+    }
+}
+
+spec fn lookup(sigma: Substitution, v: u64) -> Option<Term> {
+    lookup_rec(sigma.bindings, v, sigma.bindings.len())
+}
+
+spec fn apply(term: Term, sigma: Substitution) -> Term
+    decreases term
+{
+    match term {
+        Term::Var(v) => match lookup(sigma, v) {
+            Some(t) => t,
+            None => Term::Var(v),
+        },
+        Term::Const(c) => Term::Const(c),
+        Term::App1(f, child) => Term::App1(f, Box::new(apply(*child, sigma))),
+        Term::App2(f, left, right) => Term::App2(
+            f,
+            Box::new(apply(*left, sigma)),
+            Box::new(apply(*right, sigma)),
+        ),
+    }
+}
+
+spec fn eval(term: Term, interp: Interpretation, valuation: Valuation) -> u64
+    decreases term
+{
+    match term {
+        Term::Var(v) => valuation.values[v],
+        Term::Const(c) => interp.functions[(c, seq![])],
+        Term::App1(f, child) => interp.functions[(f, seq![eval(*child, interp, valuation)])],
+        Term::App2(f, left, right) => interp.functions[(
+            f,
+            seq![eval(*left, interp, valuation), eval(*right, interp, valuation)],
+        )],
+    }
+}
+
+/// Replace the first occurrence of `needle` in a term, searching left to
+/// right. The Boolean records whether a replacement was performed.
+spec fn replace_term(term: Term, needle: Term, replacement: Term) -> (Term, bool)
+    decreases term
+{
+    if term == needle {
+        (replacement, true)
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => (term, false),
+            Term::App1(f, child) => {
+                let (child2, changed) = replace_term(*child, needle, replacement);
+                (Term::App1(f, Box::new(child2)), changed)
+            },
+            Term::App2(f, left, right) => {
+                let (left2, changed_left) = replace_term(*left, needle, replacement);
+                if changed_left {
+                    (Term::App2(f, Box::new(left2), right), true)
+                } else {
+                    let (right2, changed_right) = replace_term(*right, needle, replacement);
+                    (Term::App2(f, left, Box::new(right2)), changed_right)
+                }
+            },
+        }
+    }
+}
+
+spec fn term_at_position(term: Term, position: TermPosition, depth: nat) -> Option<Term>
+    recommends depth <= position.path.len()
+    decreases term
+{
+    if depth == position.path.len() {
+        Some(term)
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => None,
+            Term::App1(_, child) => {
+                if position.path[depth as int] == 0 {
+                    term_at_position(*child, position, depth + 1)
+                } else {
+                    None
+                }
+            },
+            Term::App2(_, left, right) => {
+                if position.path[depth as int] == 0 {
+                    term_at_position(*left, position, depth + 1)
+                } else if position.path[depth as int] == 1 {
+                    term_at_position(*right, position, depth + 1)
+                } else {
+                    None
+                }
+            },
+        }
+    }
+}
+
+spec fn replace_at_position(
+    term: Term,
+    position: TermPosition,
+    replacement: Term,
+    depth: nat,
+) -> Option<Term>
+    recommends depth <= position.path.len()
+    decreases term
+{
+    if depth == position.path.len() {
+        Some(replacement)
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => None,
+            Term::App1(f, child) => {
+                if position.path[depth as int] == 0 {
+                    match replace_at_position(*child, position, replacement, depth + 1) {
+                        Some(child2) => Some(Term::App1(f, Box::new(child2))),
+                        None => None,
+                    }
+                } else {
+                    None
+                }
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    match replace_at_position(*left, position, replacement, depth + 1) {
+                        Some(left2) => Some(Term::App2(f, Box::new(left2), right)),
+                        None => None,
+                    }
+                } else if position.path[depth as int] == 1 {
+                    match replace_at_position(*right, position, replacement, depth + 1) {
+                        Some(right2) => Some(Term::App2(f, left, Box::new(right2))),
+                        None => None,
+                    }
+                } else {
+                    None
+                }
+            },
+        }
+    }
+}
+
+spec fn replace_at_position_preserving_context(
+    term: Term,
+    position: TermPosition,
+    replacement: Term,
+    depth: nat,
+) -> Option<Term>
+    recommends depth <= position.path.len()
+    decreases term
+{
+    if depth == position.path.len() {
+        Some(replacement)
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => None,
+            Term::App1(f, child) => {
+                if position.path[depth as int] == 0 {
+                    match replace_at_position_preserving_context(
+                        *child, position, replacement, depth + 1,
+                    ) {
+                        Some(child2) => Some(Term::App1(f, Box::new(child2))),
+                        None => None,
+                    }
+                } else { None }
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    match replace_at_position_preserving_context(
+                        *left, position, replacement, depth + 1,
+                    ) {
+                        Some(left2) => Some(Term::App2(f, Box::new(left2), right)),
+                        None => None,
+                    }
+                } else if position.path[depth as int] == 1 {
+                    match replace_at_position_preserving_context(
+                        *right, position, replacement, depth + 1,
+                    ) {
+                        Some(right2) => Some(Term::App2(f, left, Box::new(right2))),
+                        None => None,
+                    }
+                } else { None }
+            },
+        }
+    }
+}
+
+proof fn replace_at_valid_position_exists(
+    term: Term,
+    position: TermPosition,
+    replacement: Term,
+    depth: nat,
+)
+    requires depth <= position.path.len(),
+        term_at_position(term, position, depth).is_some(),
+    ensures replace_at_position(term, position, replacement, depth).is_some()
+    decreases position.path.len() - depth
+{
+    if depth == position.path.len() {
+        assert(replace_at_position(term, position, replacement, depth)
+            == Some(replacement));
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => {
+                assert(term_at_position(term, position, depth) == None);
+            },
+            Term::App1(_, child) => {
+                assert(position.path[depth as int] == 0);
+                assert(term_at_position(*child, position, depth + 1).is_some());
+                replace_at_valid_position_exists(*child, position, replacement, depth + 1);
+            },
+            Term::App2(_, left, right) => {
+                if position.path[depth as int] == 0 {
+                    assert(term_at_position(*left, position, depth + 1).is_some());
+                    replace_at_valid_position_exists(*left, position, replacement, depth + 1);
+                } else {
+                    assert(position.path[depth as int] == 1);
+                    assert(term_at_position(*right, position, depth + 1).is_some());
+                    replace_at_valid_position_exists(*right, position, replacement, depth + 1);
+                }
+            },
+        }
+    }
+}
+
+proof fn replacement_commutes_with_substitution_at_position(
+    term: Term,
+    sigma: Substitution,
+    position: TermPosition,
+    replacement: Term,
+    depth: nat,
+)
+    requires depth <= position.path.len(),
+        term_at_position(term, position, depth).is_some(),
+    ensures replace_at_position(apply(term, sigma), position,
+            apply(replacement, sigma), depth)
+        == match replace_at_position(term, position, replacement, depth) {
+            Some(rewritten) => Some(apply(rewritten, sigma)),
+            None => None,
+        }
+    decreases position.path.len() - depth
+{
+    if depth == position.path.len() {
+        assert(replace_at_position(term, position, replacement, depth) == Some(replacement));
+        assert(replace_at_position(apply(term, sigma), position,
+            apply(replacement, sigma), depth) == Some(apply(replacement, sigma)));
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => {
+                assert(term_at_position(term, position, depth) == None);
+            },
+            Term::App1(f, child) => {
+                assert(position.path[depth as int] == 0);
+                replacement_commutes_with_substitution_at_position(
+                    *child, sigma, position, replacement, depth + 1,
+                );
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    replacement_commutes_with_substitution_at_position(
+                        *left, sigma, position, replacement, depth + 1,
+                    );
+                } else {
+                    assert(position.path[depth as int] == 1);
+                    replacement_commutes_with_substitution_at_position(
+                        *right, sigma, position, replacement, depth + 1,
+                    );
+                }
+            },
+        }
+    }
+}
+
+proof fn position_replacement_preserves_evaluation(
+    term: Term,
+    position: TermPosition,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+    depth: nat,
+)
+    requires
+        interp.functions.is_full(),
+        depth <= position.path.len(),
+        term_at_position(term, position, depth).is_some(),
+        match term_at_position(term, position, depth) {
+            Some(found) => eval(found, interp, valuation) == eval(replacement, interp, valuation),
+            None => false,
+        },
+    ensures
+        replace_at_position(term, position, replacement, depth).is_some(),
+        match replace_at_position(term, position, replacement, depth) {
+            Some(replaced) => eval(replaced, interp, valuation) == eval(term, interp, valuation),
+            None => false,
+        }
+    decreases term
+{
+    if depth == position.path.len() {
+        assert(term_at_position(term, position, depth) == Some(term));
+        assert(replace_at_position(term, position, replacement, depth) == Some(replacement));
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => {
+                assert(term_at_position(term, position, depth) == None);
+            },
+            Term::App1(f, child) => {
+                assert(position.path[depth as int] == 0);
+                position_replacement_preserves_evaluation(
+                    *child, position, replacement, interp, valuation, depth + 1,
+                );
+                assert(replace_at_position(term, position, replacement, depth).is_some());
+                assert(interp.functions.is_full());
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    position_replacement_preserves_evaluation(
+                        *left, position, replacement, interp, valuation, depth + 1,
+                    );
+                    assert(replace_at_position(term, position, replacement, depth).is_some());
+                } else {
+                    assert(position.path[depth as int] == 1);
+                    position_replacement_preserves_evaluation(
+                        *right, position, replacement, interp, valuation, depth + 1,
+                    );
+                    assert(replace_at_position(term, position, replacement, depth).is_some());
+                }
+                assert(interp.functions.is_full());
+            },
+        }
+    }
+}
+
+/// First-order function interpretations are congruent: replacing an
+/// occurrence by a term with the same denotation preserves the whole term.
+proof fn eval_after_replacing_equal_subterm(
+    term: Term,
+    needle: Term,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        eval(needle, interp, valuation) == eval(replacement, interp, valuation),
+    ensures
+        replace_term(term, needle, replacement).1
+            ==> eval(replace_term(term, needle, replacement).0, interp, valuation)
+                == eval(term, interp, valuation)
+    decreases term
+{
+    if term == needle {
+        assert(replace_term(term, needle, replacement) == (replacement, true));
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => {},
+            Term::App1(f, child) => {
+                eval_after_replacing_equal_subterm(
+                    *child, needle, replacement, interp, valuation,
+                );
+                if replace_term(*child, needle, replacement).1 {
+                    assert(eval(replace_term(*child, needle, replacement).0, interp, valuation)
+                        == eval(*child, interp, valuation));
+                }
+            },
+            Term::App2(f, left, right) => {
+                eval_after_replacing_equal_subterm(
+                    *left, needle, replacement, interp, valuation,
+                );
+                if replace_term(*left, needle, replacement).1 {
+                    assert(eval(replace_term(*left, needle, replacement).0, interp, valuation)
+                        == eval(*left, interp, valuation));
+                } else {
+                    eval_after_replacing_equal_subterm(
+                        *right, needle, replacement, interp, valuation,
+                    );
+                    if replace_term(*right, needle, replacement).1 {
+                        assert(eval(replace_term(*right, needle, replacement).0, interp, valuation)
+                            == eval(*right, interp, valuation));
+                    }
+                }
+            },
+        }
+    }
+}
+
+proof fn eval_in_domain(term: Term, interp: Interpretation, valuation: Valuation)
+    requires
+        interpretation_well_formed(interp),
+        valuation_well_formed(interp, valuation),
+    ensures interp.domain.contains(eval(term, interp, valuation))
+    decreases term
+{
+    match term {
+        Term::Var(v) => {
+            assert(interp.domain.contains(valuation.values[v]));
+        },
+        Term::Const(c) => {
+            assert(interp.domain.contains(interp.functions[(c, seq![])]));
+        },
+        Term::App1(f, child) => {
+            eval_in_domain(*child, interp, valuation);
+            assert(interp.domain.contains(interp.functions[
+                (f, seq![eval(*child, interp, valuation)])]));
+        },
+        Term::App2(f, left, right) => {
+            eval_in_domain(*left, interp, valuation);
+            eval_in_domain(*right, interp, valuation);
+            assert(interp.domain.contains(interp.functions[(
+                f,
+                seq![eval(*left, interp, valuation), eval(*right, interp, valuation)],
+            )]));
+        },
+    }
+}
+
+/// Update variables simultaneously: each replacement is interpreted using
+/// the original valuation and unmapped variables retain their original value.
+spec fn valuation_after(
+    interp: Interpretation,
+    valuation: Valuation,
+    sigma: Substitution,
+) -> Valuation {
+    Valuation {
+        values: IMap::total(|x: u64| match lookup(sigma, x) {
+            Some(replacement) => eval(replacement, interp, valuation),
+            None => valuation.values[x],
+        }),
+    }
+}
+
+/// A model pointwise updated by the simultaneous substitution. Keeping the
+/// denotation as a total IMap makes instance semantics available for every
+/// variable in a parent clause.
+spec fn update_valuation(interp: Interpretation, valuation: Valuation, sigma: Substitution)
+    -> Valuation
+{
+    Valuation {
+        values: IMap::total(|x: u64| match lookup(sigma, x) {
+            Some(replacement) => eval(replacement, interp, valuation),
+            None => valuation.values[x],
+        }),
+    }
+}
+
+proof fn updated_valuation_well_formed(
+    interp: Interpretation,
+    valuation: Valuation,
+    sigma: Substitution,
+)
+    requires
+        interpretation_well_formed(interp),
+        valuation_well_formed(interp, valuation),
+    ensures valuation_well_formed(interp, update_valuation(interp, valuation, sigma))
+{
+    assert forall|x: u64| interp.domain.contains(
+        update_valuation(interp, valuation, sigma).values[x]) by {
+        match lookup(sigma, x) {
+            Some(replacement) => {
+                eval_in_domain(replacement, interp, valuation);
+            },
+            None => {
+                assert(interp.domain.contains(valuation.values[x]));
+            },
+        }
+    }
+}
+
+/// Applying a simultaneous substitution to a term and then evaluating it is
+/// equivalent to evaluating the original term under the substitution-updated
+/// valuation. This is the general semantic bridge used by inference proofs.
+proof fn eval_after_substitution(
+    term: Term,
+    sigma: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        valuation.values.is_full(),
+    ensures eval(apply(term, sigma), interp, valuation)
+        == eval(term, interp, valuation_after(interp, valuation, sigma))
+    decreases term
+{
+    match term {
+        Term::Var(x) => {
+            match lookup(sigma, x) {
+                Some(replacement) => {
+                    assert(apply(Term::Var(x), sigma) == replacement);
+                    assert(valuation_after(interp, valuation, sigma).values[x]
+                        == eval(replacement, interp, valuation));
+                },
+                None => {
+                    assert(apply(Term::Var(x), sigma) == Term::Var(x));
+                    assert(valuation_after(interp, valuation, sigma).values[x]
+                        == valuation.values[x]);
+                },
+            }
+        },
+        Term::Const(_) => {},
+        Term::App1(f, child) => {
+            eval_after_substitution(*child, sigma, interp, valuation);
+        },
+        Term::App2(f, left, right) => {
+            eval_after_substitution(*left, sigma, interp, valuation);
+            eval_after_substitution(*right, sigma, interp, valuation);
+        },
+    }
+}
+
+spec fn atom_holds(atom: Atom, interp: Interpretation, valuation: Valuation) -> bool
+    decreases atom
+{
+    match atom {
+        Atom::Pred0(p) => interp.predicates[(p, seq![])],
+        Atom::Pred1(p, arg) => interp.predicates[(p, seq![eval(*arg, interp, valuation)])],
+        Atom::Pred2(p, left, right) => interp.predicates[(
+            p,
+            seq![eval(*left, interp, valuation), eval(*right, interp, valuation)],
+        )],
+        Atom::Eq(left, right) => eval(left, interp, valuation) == eval(right, interp, valuation),
+    }
+}
+
+/// Replace one occurrence in an atom's term arguments, searching in argument
+/// order. Predicate symbols and literal polarity are unchanged.
+spec fn replace_atom(atom: Atom, needle: Term, replacement: Term) -> (Atom, bool)
+    decreases atom
+{
+    match atom {
+        Atom::Pred0(p) => (Atom::Pred0(p), false),
+        Atom::Pred1(p, arg) => {
+            let (arg2, changed) = replace_term(*arg, needle, replacement);
+            (Atom::Pred1(p, Box::new(arg2)), changed)
+        },
+        Atom::Pred2(p, left, right) => {
+            let (left2, changed_left) = replace_term(*left, needle, replacement);
+            if changed_left {
+                (Atom::Pred2(p, Box::new(left2), right), true)
+            } else {
+                let (right2, changed_right) = replace_term(*right, needle, replacement);
+                (Atom::Pred2(p, left, Box::new(right2)), changed_right)
+            }
+        },
+        Atom::Eq(left, right) => {
+            let (left2, changed_left) = replace_term(left, needle, replacement);
+            if changed_left {
+                (Atom::Eq(left2, right), true)
+            } else {
+                let (right2, changed_right) = replace_term(right, needle, replacement);
+                (Atom::Eq(left, right2), changed_right)
+            }
+        },
+    }
+}
+
+proof fn atom_holds_after_equal_subterm_replacement(
+    atom: Atom,
+    needle: Term,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        eval(needle, interp, valuation) == eval(replacement, interp, valuation),
+    ensures replace_atom(atom, needle, replacement).1
+        ==> atom_holds(replace_atom(atom, needle, replacement).0, interp, valuation)
+            == atom_holds(atom, interp, valuation)
+    decreases atom
+{
+    match atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            eval_after_replacing_equal_subterm(*arg, needle, replacement, interp, valuation);
+        },
+        Atom::Pred2(_, left, right) => {
+            eval_after_replacing_equal_subterm(*left, needle, replacement, interp, valuation);
+            if !replace_term(*left, needle, replacement).1 {
+                eval_after_replacing_equal_subterm(*right, needle, replacement, interp, valuation);
+            }
+        },
+        Atom::Eq(left, right) => {
+            eval_after_replacing_equal_subterm(left, needle, replacement, interp, valuation);
+            if !replace_term(left, needle, replacement).1 {
+                eval_after_replacing_equal_subterm(right, needle, replacement, interp, valuation);
+            }
+        },
+    }
+}
+
+spec fn replace_literal(literal: Literal, needle: Term, replacement: Term) -> (Literal, bool) {
+    let (atom2, changed) = replace_atom(literal.atom, needle, replacement);
+    (Literal { positive: literal.positive, atom: atom2 }, changed)
+}
+
+spec fn atom_at_position(atom: Atom, slot: nat, position: TermPosition) -> Option<Term> {
+    match atom {
+        Atom::Pred0(_) => None,
+        Atom::Pred1(_, arg) => {
+            if slot == 0 { term_at_position(*arg, position, 0) } else { None }
+        },
+        Atom::Pred2(_, left, right) => {
+            if slot == 0 {
+                term_at_position(*left, position, 0)
+            } else if slot == 1 {
+                term_at_position(*right, position, 0)
+            } else {
+                None
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                term_at_position(left, position, 0)
+            } else if slot == 1 {
+                term_at_position(right, position, 0)
+            } else {
+                None
+            }
+        },
+    }
+}
+
+spec fn replace_atom_at_position(
+    atom: Atom,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+) -> Option<Atom> {
+    match atom {
+        Atom::Pred0(_) => None,
+        Atom::Pred1(p, arg) => {
+            if slot == 0 {
+                match replace_at_position(*arg, position, replacement, 0) {
+                    Some(arg2) => Some(Atom::Pred1(p, Box::new(arg2))),
+                    None => None,
+                }
+            } else { None }
+        },
+        Atom::Pred2(p, left, right) => {
+            if slot == 0 {
+                match replace_at_position(*left, position, replacement, 0) {
+                    Some(left2) => Some(Atom::Pred2(p, Box::new(left2), right)),
+                    None => None,
+                }
+            } else if slot == 1 {
+                match replace_at_position(*right, position, replacement, 0) {
+                    Some(right2) => Some(Atom::Pred2(p, left, Box::new(right2))),
+                    None => None,
+                }
+            } else { None }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                match replace_at_position(left, position, replacement, 0) {
+                    Some(left2) => Some(Atom::Eq(left2, right)),
+                    None => None,
+                }
+            } else if slot == 1 {
+                match replace_at_position(right, position, replacement, 0) {
+                    Some(right2) => Some(Atom::Eq(left, right2)),
+                    None => None,
+                }
+            } else { None }
+        },
+    }
+}
+
+spec fn literal_at_position(
+    literal: Literal,
+    slot: nat,
+    position: TermPosition,
+) -> Option<Term> {
+    atom_at_position(literal.atom, slot, position)
+}
+
+spec fn term_variables(term: Term) -> Set<u64>
+    decreases term
+{
+    match term {
+        Term::Var(v) => Set::empty().insert(v),
+        Term::Const(_) => Set::empty(),
+        Term::App1(_, child) => term_variables(*child),
+        Term::App2(_, left, right) => term_variables(*left).union(term_variables(*right)),
+    }
+}
+
+spec fn atom_variables(atom: Atom) -> Set<u64>
+    decreases atom
+{
+    match atom {
+        Atom::Pred0(_) => Set::empty(),
+        Atom::Pred1(_, arg) => term_variables(*arg),
+        Atom::Pred2(_, left, right) => term_variables(*left).union(term_variables(*right)),
+        Atom::Eq(left, right) => term_variables(left).union(term_variables(right)),
+    }
+}
+
+spec fn literal_variables(literal: Literal) -> Set<u64> {
+    atom_variables(literal.atom)
+}
+
+spec fn renaming_substitution(sigma: Substitution) -> bool {
+    forall|v: u64| lookup(sigma, v).is_some()
+        ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
+}
+
+spec fn renames_variables_on(sigma: Substitution, variables: Set<u64>) -> bool {
+    forall|v: u64| variables.contains(v)
+        ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
+}
+
+proof fn renaming_restricts_to_subset(sigma: Substitution, subset: Set<u64>, superset: Set<u64>)
+    requires renames_variables_on(sigma, superset),
+        forall|v: u64| subset.contains(v) ==> superset.contains(v),
+    ensures renames_variables_on(sigma, subset)
+{}
+
+proof fn apply_view_exec_term(term: ExecTerm, bindings: Seq<ExecBinding>)
+    ensures apply(view(term), view_subst(bindings)) == view(apply_exec_model(term, bindings))
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => {
+            match lookup(view_subst(bindings), v) {
+                Some(t) => {
+                    assert(apply(Term::Var(v), view_subst(bindings)) == t);
+                    assert(apply_exec_model(term, bindings) == view_to_exec(t));
+                    view_to_exec_roundtrip(t);
+                },
+                None => assert(view(apply_exec_model(term, bindings)) == Term::Var(v)),
+            }
+        },
+        ExecTerm::Const(_) => {},
+        ExecTerm::App1(f, child) => apply_view_exec_term(*child, bindings),
+        ExecTerm::App2(f, left, right) => {
+            apply_view_exec_term(*left, bindings);
+            apply_view_exec_term(*right, bindings);
+        },
+    }
+}
+
+proof fn renaming_preserves_selected_position(
+    literal: Literal,
+    sigma: Substitution,
+    slot: nat,
+    position: TermPosition,
+    variables: Set<u64>,
+)
+    requires
+        renaming_substitution(sigma),
+        renames_variables_on(sigma, variables),
+        forall|v: u64| literal_variables(literal).contains(v) ==> variables.contains(v),
+    ensures match literal_at_position(literal, slot, position) {
+        Some(term) => literal_at_position(substitute_literal(literal, sigma), slot, position)
+            == Some(apply(term, sigma)),
+        None => literal_at_position(substitute_literal(literal, sigma), slot, position) == None,
+    }
+{
+    match literal.atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            if slot == 0 {
+                term_position_substitution(*arg, sigma, position, 0);
+            }
+        },
+        Atom::Pred2(_, left, right) => {
+            if slot == 0 {
+                term_position_substitution(*left, sigma, position, 0);
+            } else if slot == 1 {
+                term_position_substitution(*right, sigma, position, 0);
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                term_position_substitution(left, sigma, position, 0);
+            } else if slot == 1 {
+                term_position_substitution(right, sigma, position, 0);
+            }
+        },
+    }
+}
+
+proof fn executable_freshening_preserves_selected_position(
+    literal: Literal,
+    sigma: Substitution,
+    variables: Set<u64>,
+    slot: nat,
+    position: TermPosition,
+)
+    requires
+        renaming_substitution(sigma),
+        renames_variables_on(sigma, variables),
+        forall|v: u64| literal_variables(literal).contains(v) ==> variables.contains(v),
+    ensures match literal_at_position(literal, slot, position) {
+        Some(term) => literal_at_position(substitute_literal(literal, sigma), slot, position)
+            == Some(apply(term, sigma)),
+        None => literal_at_position(substitute_literal(literal, sigma), slot, position) == None,
+    }
+{
+    renaming_preserves_selected_position(literal, sigma, slot, position, variables);
+}
+
+/// Lift successful path stability through atoms and literal polarity. This is
+/// the certificate-facing position fact for a general unifier, which may map
+/// the selected subterm itself to a non-variable term.
+proof fn literal_position_substitution_success(
+    literal: Literal,
+    sigma: Substitution,
+    slot: nat,
+    position: TermPosition,
+)
+    requires literal_at_position(literal, slot, position).is_some(),
+    ensures match literal_at_position(literal, slot, position) {
+        Some(found) => literal_at_position(
+            substitute_literal(literal, sigma), slot, position,
+        ) == Some(apply(found, sigma)),
+        None => false,
+    }
+{
+    match literal.atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            assert(slot == 0);
+            assert(term_at_position(*arg, position, 0).is_some());
+            term_position_substitution_success(*arg, sigma, position, 0);
+        },
+        Atom::Pred2(_, left, right) => {
+            if slot == 0 {
+                assert(term_at_position(*left, position, 0).is_some());
+                term_position_substitution_success(*left, sigma, position, 0);
+            } else {
+                assert(slot == 1);
+                assert(term_at_position(*right, position, 0).is_some());
+                term_position_substitution_success(*right, sigma, position, 0);
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                assert(term_at_position(left, position, 0).is_some());
+                term_position_substitution_success(left, sigma, position, 0);
+            } else {
+                assert(slot == 1);
+                assert(term_at_position(right, position, 0).is_some());
+                term_position_substitution_success(right, sigma, position, 0);
+            }
+        },
+    }
+}
+
+proof fn atom_position_substitution_success(
+    atom: Atom,
+    sigma: Substitution,
+    slot: nat,
+    position: TermPosition,
+)
+    requires atom_at_position(atom, slot, position).is_some(),
+    ensures match atom_at_position(atom, slot, position) {
+        Some(found) => atom_at_position(substitute_atom(atom, sigma), slot, position)
+            == Some(apply(found, sigma)),
+        None => false,
+    }
+{
+    match atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            assert(slot == 0);
+            assert(term_at_position(*arg, position, 0).is_some());
+            term_position_substitution_success(*arg, sigma, position, 0);
+        },
+        Atom::Pred2(_, left, right) => {
+            if slot == 0 {
+                assert(term_at_position(*left, position, 0).is_some());
+                term_position_substitution_success(*left, sigma, position, 0);
+            } else {
+                assert(slot == 1);
+                assert(term_at_position(*right, position, 0).is_some());
+                term_position_substitution_success(*right, sigma, position, 0);
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                assert(term_at_position(left, position, 0).is_some());
+                term_position_substitution_success(left, sigma, position, 0);
+            } else {
+                assert(slot == 1);
+                assert(term_at_position(right, position, 0).is_some());
+                term_position_substitution_success(right, sigma, position, 0);
+            }
+        },
+    }
+}
+
+proof fn term_position_substitution(
+    term: Term,
+    sigma: Substitution,
+    position: TermPosition,
+    depth: nat,
+)
+    requires depth <= position.path.len(), renaming_substitution(sigma)
+    ensures match term_at_position(term, position, depth) {
+        Some(found) => term_at_position(apply(term, sigma), position, depth)
+            == Some(apply(found, sigma)),
+        None => term_at_position(apply(term, sigma), position, depth) == None,
+    }
+    decreases position.path.len() - depth
+{
+    if depth == position.path.len() {
+        assert(term_at_position(term, position, depth) == Some(term));
+        assert(term_at_position(apply(term, sigma), position, depth)
+            == Some(apply(term, sigma)));
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => {
+                assert(term_at_position(term, position, depth) == None);
+                match term {
+                    Term::Var(v) => match lookup(sigma, v) {
+                        Some(Term::Var(fresh)) => {
+                            assert(apply(term, sigma) == Term::Var(fresh));
+                            assert(term_at_position(Term::Var(fresh), position, depth) == None);
+                        },
+                        _ => {},
+                    },
+                    Term::Const(_) => {},
+                    _ => {},
+                }
+            },
+            Term::App1(f, child) => {
+                if position.path[depth as int] == 0 {
+                    term_position_substitution(*child, sigma, position, depth + 1);
+                } else {
+                    assert(term_at_position(term, position, depth) == None);
+                    assert(term_at_position(apply(term, sigma), position, depth) == None);
+                }
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    term_position_substitution(*left, sigma, position, depth + 1);
+                } else if position.path[depth as int] == 1 {
+                    term_position_substitution(*right, sigma, position, depth + 1);
+                } else {
+                    assert(term_at_position(term, position, depth) == None);
+                    assert(term_at_position(apply(term, sigma), position, depth) == None);
+                }
+            },
+        }
+    }
+}
+
+/// A substitution preserves any already-valid function-tree position, even
+/// when it maps the variable at that position to a compound term. The
+/// renaming-only lemma above also characterizes invalid positions; this
+/// success-only version is the one needed after general unification.
+proof fn term_position_substitution_success(
+    term: Term,
+    sigma: Substitution,
+    position: TermPosition,
+    depth: nat,
+)
+    requires
+        depth <= position.path.len(),
+        term_at_position(term, position, depth).is_some(),
+    ensures match term_at_position(term, position, depth) {
+        Some(found) => term_at_position(apply(term, sigma), position, depth)
+            == Some(apply(found, sigma)),
+        None => false,
+    }
+    decreases position.path.len() - depth
+{
+    if depth == position.path.len() {
+        assert(term_at_position(term, position, depth) == Some(term));
+        assert(term_at_position(apply(term, sigma), position, depth)
+            == Some(apply(term, sigma)));
+    } else {
+        match term {
+            Term::Var(_) | Term::Const(_) => {
+                assert(term_at_position(term, position, depth) == None);
+            },
+            Term::App1(f, child) => {
+                assert(position.path[depth as int] == 0);
+                assert(term_at_position(*child, position, depth + 1).is_some());
+                term_position_substitution_success(*child, sigma, position, depth + 1);
+            },
+            Term::App2(f, left, right) => {
+                if position.path[depth as int] == 0 {
+                    assert(term_at_position(*left, position, depth + 1).is_some());
+                    term_position_substitution_success(*left, sigma, position, depth + 1);
+                } else {
+                    assert(position.path[depth as int] == 1);
+                    assert(term_at_position(*right, position, depth + 1).is_some());
+                    term_position_substitution_success(*right, sigma, position, depth + 1);
+                }
+            },
+        }
+    }
+}
+
+spec fn replace_literal_at_position(
+    literal: Literal,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+) -> Option<Literal> {
+    match replace_atom_at_position(literal.atom, slot, position, replacement) {
+        Some(atom2) => Some(Literal { positive: literal.positive, atom: atom2 }),
+        None => None,
+    }
+}
+
+proof fn atom_holds_after_position_replacement(
+    atom: Atom,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        atom_at_position(atom, slot, position).is_some(),
+        replace_atom_at_position(atom, slot, position, replacement).is_some(),
+        match atom_at_position(atom, slot, position) {
+            Some(found) => eval(found, interp, valuation) == eval(replacement, interp, valuation),
+            None => false,
+        },
+    ensures match replace_atom_at_position(atom, slot, position, replacement) {
+        Some(replaced) => atom_holds(replaced, interp, valuation)
+            == atom_holds(atom, interp, valuation),
+        None => false,
+    }
+{
+    match atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            position_replacement_preserves_evaluation(
+                *arg, position, replacement, interp, valuation, 0,
+            );
+        },
+        Atom::Pred2(_, left, right) => {
+            if slot == 0 {
+                position_replacement_preserves_evaluation(
+                    *left, position, replacement, interp, valuation, 0,
+                );
+            } else {
+                position_replacement_preserves_evaluation(
+                    *right, position, replacement, interp, valuation, 0,
+                );
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                position_replacement_preserves_evaluation(
+                    left, position, replacement, interp, valuation, 0,
+                );
+            } else {
+                position_replacement_preserves_evaluation(
+                    right, position, replacement, interp, valuation, 0,
+                );
+            }
+        },
+    }
+}
+
+proof fn literal_holds_after_position_replacement(
+    literal: Literal,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        literal_at_position(literal, slot, position).is_some(),
+        replace_literal_at_position(literal, slot, position, replacement).is_some(),
+        match literal_at_position(literal, slot, position) {
+            Some(found) => eval(found, interp, valuation) == eval(replacement, interp, valuation),
+            None => false,
+        },
+    ensures match replace_literal_at_position(literal, slot, position, replacement) {
+        Some(replaced) => literal_holds(replaced, interp, valuation)
+            == literal_holds(literal, interp, valuation),
+        None => false,
+    }
+{
+    atom_holds_after_position_replacement(
+        literal.atom, slot, position, replacement, interp, valuation,
+    );
+}
+
+proof fn literal_position_replacement_after_substitution(
+    literal: Literal,
+    sigma: Substitution,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+)
+    requires literal_at_position(literal, slot, position).is_some(),
+        replace_literal_at_position(literal, slot, position, replacement).is_some(),
+    ensures replace_literal_at_position(
+        substitute_literal(literal, sigma), slot, position,
+        apply(replacement, sigma),
+    ).is_some(),
+        replace_literal_at_position(
+            substitute_literal(literal, sigma), slot, position,
+            apply(replacement, sigma),
+        ) == match replace_literal_at_position(literal, slot, position, replacement) {
+            Some(rewritten) => Some(substitute_literal(rewritten, sigma)),
+            None => None,
+        }
+{
+    literal_position_substitution_success(literal, sigma, slot, position);
+    match literal.atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(p, arg) => {
+            assert(slot == 0);
+            term_position_substitution_success(*arg, sigma, position, 0);
+            replace_at_valid_position_exists(
+                apply(*arg, sigma), position, apply(replacement, sigma), 0,
+            );
+            replacement_commutes_with_substitution_at_position(
+                *arg, sigma, position, replacement, 0,
+            );
+        },
+        Atom::Pred2(p, left, right) => {
+            if slot == 0 {
+                assert(term_at_position(*left, position, 0).is_some());
+                term_position_substitution_success(*left, sigma, position, 0);
+                replace_at_valid_position_exists(
+                    apply(*left, sigma), position, apply(replacement, sigma), 0,
+                );
+                replacement_commutes_with_substitution_at_position(
+                    *left, sigma, position, replacement, 0,
+                );
+            } else {
+                assert(slot == 1);
+                assert(term_at_position(*right, position, 0).is_some());
+                term_position_substitution_success(*right, sigma, position, 0);
+                replace_at_valid_position_exists(
+                    apply(*right, sigma), position, apply(replacement, sigma), 0,
+                );
+                replacement_commutes_with_substitution_at_position(
+                    *right, sigma, position, replacement, 0,
+                );
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                assert(term_at_position(left, position, 0).is_some());
+                term_position_substitution_success(left, sigma, position, 0);
+                replace_at_valid_position_exists(
+                    apply(left, sigma), position, apply(replacement, sigma), 0,
+                );
+                replacement_commutes_with_substitution_at_position(
+                    left, sigma, position, replacement, 0,
+                );
+            } else {
+                assert(slot == 1);
+                assert(term_at_position(right, position, 0).is_some());
+                term_position_substitution_success(right, sigma, position, 0);
+                replace_at_valid_position_exists(
+                    apply(right, sigma), position, apply(replacement, sigma), 0,
+                );
+                replacement_commutes_with_substitution_at_position(
+                    right, sigma, position, replacement, 0,
+                );
+            }
+        },
+    }
+}
+
+proof fn atom_position_replacement_commutes_with_substitution(
+    atom: Atom,
+    sigma: Substitution,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+)
+    requires atom_at_position(atom, slot, position).is_some(),
+        replace_atom_at_position(atom, slot, position, replacement).is_some(),
+    ensures replace_atom_at_position(
+        substitute_atom(atom, sigma), slot, position, apply(replacement, sigma),
+    ) == match replace_atom_at_position(atom, slot, position, replacement) {
+        Some(rewritten) => Some(substitute_atom(rewritten, sigma)),
+        None => None,
+    }
+{
+    match atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(p, arg) => {
+            assert(slot == 0);
+            replacement_commutes_with_substitution_at_position(
+                *arg, sigma, position, replacement, 0,
+            );
+        },
+        Atom::Pred2(p, left, right) => {
+            if slot == 0 {
+                replacement_commutes_with_substitution_at_position(
+                    *left, sigma, position, replacement, 0,
+                );
+            } else {
+                assert(slot == 1);
+                replacement_commutes_with_substitution_at_position(
+                    *right, sigma, position, replacement, 0,
+                );
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                replacement_commutes_with_substitution_at_position(
+                    left, sigma, position, replacement, 0,
+                );
+            } else {
+                assert(slot == 1);
+                replacement_commutes_with_substitution_at_position(
+                    right, sigma, position, replacement, 0,
+                );
+            }
+        },
+    }
+}
+
+proof fn literal_position_replacement_exists(
+    literal: Literal,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+)
+    requires literal_at_position(literal, slot, position).is_some(),
+    ensures replace_literal_at_position(literal, slot, position, replacement).is_some()
+{
+    match literal.atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            assert(slot == 0);
+            replace_at_valid_position_exists(*arg, position, replacement, 0);
+        },
+        Atom::Pred2(_, left, right) => {
+            if slot == 0 {
+                replace_at_valid_position_exists(*left, position, replacement, 0);
+            } else {
+                assert(slot == 1);
+                replace_at_valid_position_exists(*right, position, replacement, 0);
+            }
+        },
+        Atom::Eq(left, right) => {
+            if slot == 0 {
+                replace_at_valid_position_exists(left, position, replacement, 0);
+            } else {
+                assert(slot == 1);
+                replace_at_valid_position_exists(right, position, replacement, 0);
+            }
+        },
+    }
+}
+
+proof fn literal_position_replacement_commutes_with_substitution(
+    literal: Literal,
+    sigma: Substitution,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+)
+    requires literal_at_position(literal, slot, position).is_some(),
+        replace_literal_at_position(literal, slot, position, replacement).is_some(),
+    ensures replace_literal_at_position(
+        substitute_literal(literal, sigma), slot, position, apply(replacement, sigma),
+    ) == match replace_literal_at_position(literal, slot, position, replacement) {
+        Some(rewritten) => Some(substitute_literal(rewritten, sigma)),
+        None => None,
+    }
+{
+    atom_position_replacement_commutes_with_substitution(
+        literal.atom, sigma, slot, position, replacement,
+    );
+}
+
+proof fn target_literal_replacement_commutes_through_freshening_then_unifier(
+    literal: Literal,
+    target_freshening: Substitution,
+    unifier: Substitution,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+)
+    requires
+        literal_at_position(literal, slot, position).is_some(),
+        replace_literal_at_position(literal, slot, position, replacement).is_some(),
+        replace_literal_at_position(
+            substitute_literal(literal, target_freshening), slot, position,
+            apply(replacement, target_freshening),
+        ).is_some(),
+        literal_at_position(
+            substitute_literal(literal, target_freshening), slot, position,
+        ).is_some(),
+    ensures replace_literal_at_position(
+        substitute_literal(substitute_literal(literal, target_freshening), unifier),
+        slot, position, apply(apply(replacement, target_freshening), unifier),
+    ) == match replace_literal_at_position(
+        substitute_literal(literal, target_freshening), slot, position,
+        apply(replacement, target_freshening),
+    ) {
+        Some(rewritten) => Some(substitute_literal(rewritten, unifier)),
+        None => None,
+    }
+{
+    literal_position_replacement_commutes_with_substitution(
+        literal, target_freshening, slot, position, replacement,
+    );
+    let after_freshening = substitute_literal(literal, target_freshening);
+    literal_position_replacement_commutes_with_substitution(
+        after_freshening, unifier, slot, position,
+        apply(replacement, target_freshening),
+    );
+}
+
+proof fn literal_holds_after_equal_subterm_replacement(
+    literal: Literal,
+    needle: Term,
+    replacement: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        eval(needle, interp, valuation) == eval(replacement, interp, valuation),
+    ensures replace_literal(literal, needle, replacement).1
+        ==> literal_holds(replace_literal(literal, needle, replacement).0, interp, valuation)
+            == literal_holds(literal, interp, valuation)
+{
+    atom_holds_after_equal_subterm_replacement(
+        literal.atom, needle, replacement, interp, valuation,
+    );
+}
+
+/// Semantic core of ordinary superposition. The parents have already been
+/// standardized apart and instantiated by the same proposed unifier. Their
+/// non-selected literals are represented by `source_context` and
+/// `target_context`; `target_literal` is the selected target literal. If the
+/// positive source equality's left side and the selected target subterm have
+/// equal denotation, and the equality holds, replacing that occurrence by the
+/// right side preserves the target literal. Therefore the conclusion context
+/// is entailed by the two instantiated parents.
+proof fn superposition_context_sound(
+    source_context: Clause,
+    source_equality: Literal,
+    target_context: Clause,
+    target_literal: Literal,
+    target_subterm: Term,
+    source_left: Term,
+    source_right: Term,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        valuation.values.is_full(),
+        source_equality.positive,
+        source_equality.atom == Atom::Eq(source_left, source_right),
+        clause_holds(source_context, interp, valuation)
+            || literal_holds(source_equality, interp, valuation),
+        clause_holds(target_context, interp, valuation)
+            || literal_holds(target_literal, interp, valuation),
+        eval(source_left, interp, valuation) == eval(target_subterm, interp, valuation),
+        replace_literal(target_literal, target_subterm, source_right).1,
+    ensures
+        clause_holds(source_context, interp, valuation)
+            || clause_holds(target_context, interp, valuation)
+            || literal_holds(
+                replace_literal(target_literal, target_subterm, source_right).0,
+                interp,
+                valuation,
+            )
+{
+    if clause_holds(source_context, interp, valuation) {
+    } else if clause_holds(target_context, interp, valuation) {
+    } else {
+        assert(literal_holds(source_equality, interp, valuation));
+        assert(literal_holds(target_literal, interp, valuation));
+        assert(atom_holds(source_equality.atom, interp, valuation));
+        assert(eval(source_left, interp, valuation) == eval(source_right, interp, valuation));
+        assert(eval(target_subterm, interp, valuation) == eval(source_right, interp, valuation));
+        literal_holds_after_equal_subterm_replacement(
+            target_literal,
+            target_subterm,
+            source_right,
+            interp,
+            valuation,
+        );
+    }
+}
+
+/// Substitution preserves atom truth when the valuation is updated
+/// simultaneously. Total predicate interpretations are essential here: they
+/// guarantee meaning for every substituted argument tuple.
+proof fn atom_holds_after_substitution(
+    atom: Atom,
+    sigma: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        valuation.values.is_full(),
+    ensures atom_holds(substitute_atom(atom, sigma), interp, valuation)
+        == atom_holds(atom, interp, update_valuation(interp, valuation, sigma))
+    decreases atom
+{
+    match atom {
+        Atom::Pred0(_) => {},
+        Atom::Pred1(_, arg) => {
+            eval_after_substitution(*arg, sigma, interp, valuation);
+        },
+        Atom::Pred2(_, left, right) => {
+            eval_after_substitution(*left, sigma, interp, valuation);
+            eval_after_substitution(*right, sigma, interp, valuation);
+        },
+        Atom::Eq(left, right) => {
+            eval_after_substitution(left, sigma, interp, valuation);
+            eval_after_substitution(right, sigma, interp, valuation);
+        },
+    }
+}
+
+spec fn substitute_atom(atom: Atom, sigma: Substitution) -> Atom
+    decreases atom
+{
+    match atom {
+        Atom::Pred0(p) => Atom::Pred0(p),
+        Atom::Pred1(p, arg) => Atom::Pred1(p, Box::new(apply(*arg, sigma))),
+        Atom::Pred2(p, left, right) =>
+            Atom::Pred2(p, Box::new(apply(*left, sigma)), Box::new(apply(*right, sigma))),
+        Atom::Eq(left, right) => Atom::Eq(apply(left, sigma), apply(right, sigma)),
+    }
+}
+
+spec fn substitute_literal(literal: Literal, sigma: Substitution) -> Literal {
+    Literal { positive: literal.positive, atom: substitute_atom(literal.atom, sigma) }
+}
+
+spec fn substitute_clause(clause: Clause, sigma: Substitution) -> Clause {
+    Clause {
+        literals: clause.literals.map(|_i: int, literal: Literal|
+            substitute_literal(literal, sigma)),
+    }
+}
+
+spec fn replace_clause_literal(
+    clause: Clause,
+    literal_index: int,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+) -> Option<Clause> {
+    if 0 <= literal_index < clause.literals.len() {
+        match replace_literal_at_position(
+            clause.literals[literal_index], slot, position, replacement,
+        ) {
+            Some(literal) => Some(Clause {
+                literals: clause.literals.update(literal_index, literal),
+            }),
+            None => None,
+        }
+    } else {
+        None
+    }
+}
+
+spec fn literal_holds(literal: Literal, interp: Interpretation, valuation: Valuation) -> bool {
+    literal.positive == atom_holds(literal.atom, interp, valuation)
+}
+
+spec fn clause_holds(clause: Clause, interp: Interpretation, valuation: Valuation) -> bool {
+    exists|i: int| 0 <= i < clause.literals.len()
+        && literal_holds(clause.literals[i], interp, valuation)
+}
+
+/// Universal closure semantics: a clause is true in an interpretation when
+/// it holds for every valuation of its universally quantified variables into
+/// the non-empty carrier.
+spec fn clause_valid(clause: Clause, interp: Interpretation) -> bool {
+    forall|valuation: Valuation|
+        valuation_well_formed(interp, valuation)
+            ==> clause_holds(clause, interp, valuation)
+}
+
+proof fn literal_holds_after_substitution(
+    literal: Literal,
+    sigma: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        valuation.values.is_full(),
+    ensures literal_holds(substitute_literal(literal, sigma), interp, valuation)
+        == literal_holds(literal, interp, update_valuation(interp, valuation, sigma))
+{
+    atom_holds_after_substitution(literal.atom, sigma, interp, valuation);
+}
+
+proof fn clause_holds_after_substitution(
+    clause: Clause,
+    sigma: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interp.functions.is_full(),
+        interp.predicates.is_full(),
+        valuation.values.is_full(),
+    ensures clause_holds(substitute_clause(clause, sigma), interp, valuation)
+        == clause_holds(clause, interp, update_valuation(interp, valuation, sigma))
+{
+    assert forall|i: int| 0 <= i < clause.literals.len()
+        implies literal_holds(substitute_clause(clause, sigma).literals[i], interp, valuation)
+            == literal_holds(clause.literals[i], interp,
+                update_valuation(interp, valuation, sigma)) by {
+        assert(substitute_clause(clause, sigma).literals[i]
+            == substitute_literal(clause.literals[i], sigma));
+        literal_holds_after_substitution(clause.literals[i], sigma, interp, valuation);
+    }
+}
+
+/// Every simultaneous substitution instance of a universally closed clause
+/// is entailed by that clause. This is the semantic fact that permits a
+/// unifier to instantiate variables from either standardized-apart parent.
+proof fn universal_clause_substitution_instance(
+    clause: Clause,
+    sigma: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(clause, interp),
+        valuation_well_formed(interp, valuation),
+    ensures clause_holds(substitute_clause(clause, sigma), interp, valuation)
+{
+    updated_valuation_well_formed(interp, valuation, sigma);
+    assert(clause_holds(clause, interp, update_valuation(interp, valuation, sigma)));
+    clause_holds_after_substitution(clause, sigma, interp, valuation);
+}
+
+spec fn append_literal(clause: Clause, literal: Literal) -> Clause {
+    Clause { literals: clause.literals.push(literal) }
+}
+
+spec fn clause_concat(left: Clause, right: Clause) -> Clause {
+    Clause { literals: left.literals + right.literals }
+}
+
+spec fn singleton_clause(literal: Literal) -> Clause {
+    Clause { literals: seq![literal] }
+}
+
+spec fn delete_literal(clause: Clause, pivot: int) -> Clause {
+    Clause { literals: clause.literals.subrange(0, pivot)
+        + clause.literals.subrange(pivot + 1, clause.literals.len() as int) }
+}
+
+spec fn resolution_conclusion(left: Clause, right: Clause,
+    left_pivot: int, right_pivot: int) -> Clause {
+    clause_concat(delete_literal(left, left_pivot), delete_literal(right, right_pivot))
+}
+
+proof fn nullary_predicate_resolution_sound(
+    left: Clause, right: Clause, left_pivot: int, right_pivot: int,
+    interp: Interpretation, valuation: Valuation,
+)
+    requires
+        interpretation_well_formed(interp),
+        valuation_well_formed(interp, valuation),
+        clause_holds(left, interp, valuation),
+        clause_holds(right, interp, valuation),
+        0 <= left_pivot < left.literals.len(),
+        0 <= right_pivot < right.literals.len(),
+        match left.literals[left_pivot].atom {
+            Atom::Pred0(p) => left.literals[left_pivot].positive
+                && right.literals[right_pivot] == Literal {
+                    positive: false, atom: Atom::Pred0(p),
+                },
+            _ => false,
+        },
+    ensures clause_holds(resolution_conclusion(left, right,
+        left_pivot, right_pivot), interp, valuation)
+{
+    let left_true = choose|i: int| 0 <= i < left.literals.len()
+        && literal_holds(left.literals[i], interp, valuation);
+    let right_true = choose|i: int| 0 <= i < right.literals.len()
+        && literal_holds(right.literals[i], interp, valuation);
+    if left_true != left_pivot {
+        let mapped = if left_true < left_pivot { left_true } else { left_true - 1 };
+        assert(0 <= mapped < delete_literal(left, left_pivot).literals.len());
+        assert(delete_literal(left, left_pivot).literals[mapped] == left.literals[left_true]);
+        assert(clause_holds(delete_literal(left, left_pivot), interp, valuation));
+    } else {
+        assert(right_true != right_pivot);
+        let mapped = if right_true < right_pivot { right_true } else { right_true - 1 };
+        assert(0 <= mapped < delete_literal(right, right_pivot).literals.len());
+        assert(delete_literal(right, right_pivot).literals[mapped] == right.literals[right_true]);
+        assert(clause_holds(delete_literal(right, right_pivot), interp, valuation));
+    }
+    clause_holds_concat(delete_literal(left, left_pivot),
+        delete_literal(right, right_pivot), interp, valuation);
+}
+
+/// Exact syntactic pivots need no unification: both parents hold under the
+/// same valuation, so complementary occurrences of the same atom cannot both
+/// be their only true literal. This includes equality atoms and variables.
+proof fn exact_atom_resolution_sound(
+    left: Clause, right: Clause, left_pivot: int, right_pivot: int,
+    interp: Interpretation, valuation: Valuation,
+)
+    requires
+        clause_holds(left, interp, valuation), clause_holds(right, interp, valuation),
+        0 <= left_pivot < left.literals.len(), 0 <= right_pivot < right.literals.len(),
+        left.literals[left_pivot].positive, !right.literals[right_pivot].positive,
+        left.literals[left_pivot].atom == right.literals[right_pivot].atom,
+    ensures clause_holds(resolution_conclusion(left, right, left_pivot, right_pivot),
+        interp, valuation)
+{
+    let li = choose|i: int| 0 <= i < left.literals.len()
+        && literal_holds(left.literals[i], interp, valuation);
+    let ri = choose|i: int| 0 <= i < right.literals.len()
+        && literal_holds(right.literals[i], interp, valuation);
+    if li != left_pivot {
+        let j = if li < left_pivot { li } else { li - 1 };
+        assert(delete_literal(left, left_pivot).literals[j] == left.literals[li]);
+        assert(clause_holds(delete_literal(left, left_pivot), interp, valuation));
+    } else {
+        assert(ri != right_pivot);
+        let j = if ri < right_pivot { ri } else { ri - 1 };
+        assert(delete_literal(right, right_pivot).literals[j] == right.literals[ri]);
+        assert(clause_holds(delete_literal(right, right_pivot), interp, valuation));
+    }
+    clause_holds_concat(delete_literal(left, left_pivot), delete_literal(right, right_pivot),
+        interp, valuation);
+}
+
+proof fn clause_holds_concat(left: Clause, right: Clause, interp: Interpretation,
+    valuation: Valuation)
+    ensures clause_holds(clause_concat(left, right), interp, valuation)
+        == (clause_holds(left, interp, valuation) || clause_holds(right, interp, valuation))
+{
+    let combined = clause_concat(left, right);
+    if clause_holds(combined, interp, valuation) {
+        let i = choose|i: int| 0 <= i < combined.literals.len()
+            && literal_holds(combined.literals[i], interp, valuation);
+        if i < left.literals.len() {
+            assert(combined.literals[i] == left.literals[i]);
+            assert(clause_holds(left, interp, valuation));
+        } else {
+            let j = i - left.literals.len();
+            assert(0 <= j < right.literals.len());
+            assert(combined.literals[i] == right.literals[j]);
+            assert(clause_holds(right, interp, valuation));
+        }
+    } else {
+        if clause_holds(left, interp, valuation) {
+            let i = choose|i: int| 0 <= i < left.literals.len()
+                && literal_holds(left.literals[i], interp, valuation);
+            assert(combined.literals[i] == left.literals[i]);
+            assert(clause_holds(combined, interp, valuation));
+        } else if clause_holds(right, interp, valuation) {
+            let j = choose|j: int| 0 <= j < right.literals.len()
+                && literal_holds(right.literals[j], interp, valuation);
+            let i = left.literals.len() + j;
+            assert(combined.literals[i] == right.literals[j]);
+            assert(clause_holds(combined, interp, valuation));
+        }
+    }
+}
+
+proof fn clause_holds_singleton(literal: Literal, interp: Interpretation, valuation: Valuation)
+    ensures clause_holds(singleton_clause(literal), interp, valuation)
+        == literal_holds(literal, interp, valuation)
+{
+    if clause_holds(singleton_clause(literal), interp, valuation) {
+        let i = choose|i: int| 0 <= i < 1 && literal_holds(
+            singleton_clause(literal).literals[i], interp, valuation);
+        assert(i == 0);
+        assert(singleton_clause(literal).literals[0] == literal);
+    } else if literal_holds(literal, interp, valuation) {
+        assert(singleton_clause(literal).literals[0] == literal);
+        assert(clause_holds(singleton_clause(literal), interp, valuation));
+    }
+}
+
+/// If the selected source equality and target literal are the final entries
+/// of their standardized, unifier-instantiated parents, the checker resolvent
+/// is the concatenation of the non-equality source context and the rewritten
+/// target parent. This converts the semantic disjunction theorem into ordinary
+/// clause validity for the emitted binary resolvent.
+proof fn standardized_superposition_resolvent_valid(
+    source_context: Clause,
+    source_equality: Literal,
+    target_context: Clause,
+    target_literal: Literal,
+    source_left: Term,
+    source_right: Term,
+    target_subterm: Term,
+    target_slot: nat,
+    target_position: TermPosition,
+    source_freshening: Substitution,
+    target_freshening: Substitution,
+    unifier: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(append_literal(source_context, source_equality), interp),
+        clause_valid(append_literal(target_context, target_literal), interp),
+        source_equality.positive,
+        source_equality.atom == Atom::Eq(source_left, source_right),
+        apply(apply(source_left, source_freshening), unifier)
+            == apply(apply(target_subterm, target_freshening), unifier),
+        literal_at_position(
+            substitute_literal(substitute_literal(target_literal, target_freshening), unifier),
+            target_slot,
+            target_position,
+        ) == Some(apply(apply(target_subterm, target_freshening), unifier)),
+        replace_literal_at_position(
+            substitute_literal(substitute_literal(target_literal, target_freshening), unifier),
+            target_slot,
+            target_position,
+            apply(apply(source_right, source_freshening), unifier),
+        ).is_some(),
+    ensures clause_valid(clause_concat(
+        clause_concat(
+            substitute_clause(substitute_clause(source_context, source_freshening), unifier),
+            substitute_clause(substitute_clause(target_context, target_freshening), unifier),
+        ),
+        singleton_clause(match replace_literal_at_position(
+            substitute_literal(substitute_literal(target_literal, target_freshening), unifier),
+            target_slot,
+            target_position,
+            apply(apply(source_right, source_freshening), unifier),
+        ) {
+            Some(rewritten) => rewritten,
+            None => target_literal,
+        }),
+    ), interp)
+{
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(clause_concat(
+            clause_concat(
+                substitute_clause(substitute_clause(source_context, source_freshening), unifier),
+                substitute_clause(substitute_clause(target_context, target_freshening), unifier),
+            ),
+            singleton_clause(match replace_literal_at_position(
+                substitute_literal(substitute_literal(target_literal, target_freshening), unifier),
+                target_slot,
+                target_position,
+                apply(apply(source_right, source_freshening), unifier),
+            ) {
+                Some(rewritten) => rewritten,
+                None => target_literal,
+            }),
+        ), interp, valuation) by {
+        standardized_superposition_sound(
+            source_context,
+            source_equality,
+            target_context,
+            target_literal,
+            source_left,
+            source_right,
+            target_subterm,
+            target_slot,
+            target_position,
+            source_freshening,
+            target_freshening,
+            unifier,
+            interp,
+            valuation,
+        );
+        let rewritten_literal = match replace_literal_at_position(
+            substitute_literal(substitute_literal(target_literal, target_freshening), unifier),
+            target_slot,
+            target_position,
+            apply(apply(source_right, source_freshening), unifier),
+        ) {
+            Some(rewritten) => rewritten,
+            None => target_literal,
+        };
+        clause_holds_singleton(rewritten_literal, interp, valuation);
+        clause_holds_concat(
+            substitute_clause(substitute_clause(source_context, source_freshening), unifier),
+            substitute_clause(substitute_clause(target_context, target_freshening), unifier),
+            interp,
+            valuation,
+        );
+        clause_holds_concat(
+            clause_concat(
+                substitute_clause(substitute_clause(source_context, source_freshening), unifier),
+                substitute_clause(substitute_clause(target_context, target_freshening), unifier),
+            ),
+            singleton_clause(rewritten_literal),
+            interp,
+            valuation,
+        );
+    }
+}
+
+proof fn clause_valid_from_context_concatenation(
+    left: Clause,
+    right: Clause,
+    interp: Interpretation,
+)
+    requires interpretation_well_formed(interp),
+        clause_valid(clause_concat(left, right), interp),
+    ensures forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        ==> clause_holds(left, interp, valuation) || clause_holds(right, interp, valuation)
+{
+    assert forall|valuation: Valuation|
+        valuation_well_formed(interp, valuation)
+        implies clause_holds(left, interp, valuation)
+            || clause_holds(right, interp, valuation) by {
+        assert(clause_holds(clause_concat(left, right), interp, valuation)) by {
+            assert(clause_valid(clause_concat(left, right), interp));
+        }
+        clause_holds_concat(left, right, interp, valuation);
+    }
+}
+
+proof fn clause_validity_is_stable_under_literal_permutation(
+    original: Clause,
+    reordered: Clause,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        original.literals.len() == reordered.literals.len(),
+        forall|i: int| 0 <= i < original.literals.len()
+            && #[trigger] original.literals[i] == original.literals[i]
+            ==> exists|j: int| 0 <= j < reordered.literals.len()
+                && original.literals[i] == reordered.literals[j],
+        forall|j: int| 0 <= j < reordered.literals.len()
+            && #[trigger] reordered.literals[j] == reordered.literals[j]
+            ==> exists|i: int| 0 <= i < original.literals.len()
+                && reordered.literals[j] == original.literals[i],
+        forall|i: int, j: int| 0 <= i < original.literals.len()
+            && 0 <= j < reordered.literals.len()
+            && original.literals[i] == reordered.literals[j]
+            ==> i == j,
+        forall|j: int, i: int| 0 <= j < reordered.literals.len()
+            && 0 <= i < original.literals.len()
+            && reordered.literals[j] == original.literals[i]
+            ==> j == i,
+    ensures clause_valid(original, interp) == clause_valid(reordered, interp)
+{
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(original, interp, valuation)
+            == clause_holds(reordered, interp, valuation) by {
+        if clause_holds(original, interp, valuation) {
+            let index = choose|i: int| 0 <= i < original.literals.len()
+                && literal_holds(original.literals[i], interp, valuation);
+            let corresponding = choose|j: int| 0 <= j < reordered.literals.len()
+                && original.literals[index] == reordered.literals[j];
+            assert(literal_holds(reordered.literals[corresponding], interp, valuation));
+        } else if clause_holds(reordered, interp, valuation) {
+            let index = choose|j: int| 0 <= j < reordered.literals.len()
+                && literal_holds(reordered.literals[j], interp, valuation);
+            let corresponding = choose|i: int| 0 <= i < original.literals.len()
+                && reordered.literals[index] == original.literals[i];
+            assert(literal_holds(original.literals[corresponding], interp, valuation));
+        }
+    }
+}
+
+proof fn permutation_reindexed_sequence(
+    source: Clause,
+    source_equality_index: int,
+    target: Clause,
+    target_literal_index: int,
+    rewritten: Literal,
+)
+    requires
+        0 <= source_equality_index < source.literals.len(),
+        0 <= target_literal_index < target.literals.len(),
+    ensures clause_equal(
+        Clause { literals:
+            source.literals.subrange(0, source_equality_index)
+                + source.literals.subrange(source_equality_index + 1,
+                    source.literals.len() as int)
+                + target.literals.update(target_literal_index, rewritten) },
+        Clause { literals:
+            source.literals.subrange(0, source_equality_index)
+                + source.literals.subrange(source_equality_index + 1,
+                    source.literals.len() as int)
+                + target.literals.subrange(0, target_literal_index)
+                + seq![rewritten]
+                + target.literals.subrange(target_literal_index + 1,
+                    target.literals.len() as int) },
+    )
+{
+    assert(clause_equal(
+        Clause { literals: source.literals.subrange(0, source_equality_index)
+            + source.literals.subrange(source_equality_index + 1,
+                source.literals.len() as int)
+            + target.literals.update(target_literal_index, rewritten) },
+        Clause { literals: source.literals.subrange(0, source_equality_index)
+            + source.literals.subrange(source_equality_index + 1,
+                source.literals.len() as int)
+            + target.literals.subrange(0, target_literal_index)
+            + seq![rewritten]
+            + target.literals.subrange(target_literal_index + 1,
+                target.literals.len() as int) },
+    ));
+}
+
+proof fn superposition_rewrite_is_locally_entailed(
+    source_equality: Literal,
+    target_literal: Literal,
+    source_left: Term,
+    source_right: Term,
+    target_subterm: Term,
+    slot: nat,
+    position: TermPosition,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(singleton_clause(source_equality), interp),
+        clause_valid(singleton_clause(target_literal), interp),
+        source_equality.positive,
+        source_equality.atom == Atom::Eq(source_left, source_right),
+        source_left == target_subterm,
+        literal_at_position(target_literal, slot, position) == Some(target_subterm),
+        replace_literal_at_position(target_literal, slot, position, source_right).is_some(),
+    ensures clause_valid(singleton_clause(match replace_literal_at_position(
+        target_literal, slot, position, source_right,
+    ) {
+        Some(rewritten) => rewritten,
+        None => target_literal,
+    }), interp)
+{
+    let rewritten = match replace_literal_at_position(target_literal, slot, position, source_right) {
+        Some(rewritten) => rewritten,
+        None => target_literal,
+    };
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies literal_holds(rewritten, interp, valuation) by {
+        assert(clause_holds(singleton_clause(source_equality), interp, valuation));
+        assert(clause_holds(singleton_clause(target_literal), interp, valuation));
+        assert(literal_holds(source_equality, interp, valuation));
+        assert(literal_holds(target_literal, interp, valuation));
+        assert(atom_holds(source_equality.atom, interp, valuation));
+        assert(eval(source_left, interp, valuation) == eval(source_right, interp, valuation));
+        assert(eval(target_subterm, interp, valuation) == eval(source_left, interp, valuation));
+        literal_holds_after_position_replacement(
+            target_literal, slot, position, source_right, interp, valuation,
+        );
+        assert(replace_literal_at_position(target_literal, slot, position, source_right)
+            == Some(rewritten));
+        assert(literal_holds(rewritten, interp, valuation)
+            == literal_holds(target_literal, interp, valuation));
+    }
+    assert(clause_valid(singleton_clause(rewritten), interp)) by {
+        assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+            implies clause_holds(singleton_clause(rewritten), interp, valuation) by {
+            clause_holds_singleton(rewritten, interp, valuation);
+            assert(literal_holds(rewritten, interp, valuation));
+        }
+    }
+}
+
+proof fn clause_holds_after_appending_literal(
+    clause: Clause,
+    literal: Literal,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    ensures clause_holds(append_literal(clause, literal), interp, valuation)
+        == (clause_holds(clause, interp, valuation)
+            || literal_holds(literal, interp, valuation))
+{
+    let extended = append_literal(clause, literal);
+    if clause_holds(extended, interp, valuation) {
+        let index = choose|i: int| 0 <= i < extended.literals.len()
+            && literal_holds(extended.literals[i], interp, valuation);
+        assert(extended.literals.len() == clause.literals.len() + 1);
+        if index < clause.literals.len() {
+            assert(clause.literals[index] == extended.literals[index]);
+            assert(clause_holds(clause, interp, valuation));
+        } else {
+            assert(index == clause.literals.len());
+            assert(extended.literals[index] == literal);
+            assert(literal_holds(literal, interp, valuation));
+        }
+    } else {
+        if clause_holds(clause, interp, valuation) {
+            let index = choose|i: int| 0 <= i < clause.literals.len()
+                && literal_holds(clause.literals[i], interp, valuation);
+            assert(index < extended.literals.len());
+            assert(extended.literals[index] == clause.literals[index]);
+            assert(clause_holds(extended, interp, valuation));
+        } else if literal_holds(literal, interp, valuation) {
+            assert(extended.literals[clause.literals.len() as int] == literal);
+            assert(0 <= clause.literals.len() < extended.literals.len());
+            assert(clause_holds(extended, interp, valuation));
+        }
+    }
+}
+
+spec fn superposition_resolvent_holds(
+    source_context: Clause,
+    target_context: Clause,
+    rewritten_target: Literal,
+    interp: Interpretation,
+    valuation: Valuation,
+) -> bool {
+    clause_holds(source_context, interp, valuation)
+        || clause_holds(target_context, interp, valuation)
+        || literal_holds(rewritten_target, interp, valuation)
+}
+
+/// Clause-level semantic superposition theorem for an explicitly supplied
+/// simultaneous unifier. The source and target clauses consist of arbitrary
+/// context clauses plus the selected source equality / target literal. Both
+/// whole parents are instantiated with the same substitution. The syntactic
+/// unifier equation ensures the oriented source side and selected target
+/// subterm have the same denotation under every valuation. The result is the
+/// standard resolvent shape: both parent contexts plus the rewritten target
+/// literal.
+proof fn universally_closed_superposition_sound(
+    source_context: Clause,
+    source_equality: Literal,
+    target_context: Clause,
+    target_literal: Literal,
+    source_left: Term,
+    source_right: Term,
+    target_subterm: Term,
+    target_slot: nat,
+    target_position: TermPosition,
+    sigma: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interpretation_well_formed(interp),
+        valuation_well_formed(interp, valuation),
+        clause_valid(append_literal(source_context, source_equality), interp),
+        clause_valid(append_literal(target_context, target_literal), interp),
+        source_equality.positive,
+        source_equality.atom == Atom::Eq(source_left, source_right),
+        apply(source_left, sigma) == apply(target_subterm, sigma),
+        literal_at_position(
+            substitute_literal(target_literal, sigma), target_slot, target_position,
+        ) == Some(apply(target_subterm, sigma)),
+        replace_literal_at_position(
+            substitute_literal(target_literal, sigma),
+            target_slot,
+            target_position,
+            apply(source_right, sigma),
+        ).is_some(),
+    ensures superposition_resolvent_holds(
+        substitute_clause(source_context, sigma),
+        substitute_clause(target_context, sigma),
+        match replace_literal_at_position(
+            substitute_literal(target_literal, sigma),
+            target_slot,
+            target_position,
+            apply(source_right, sigma),
+        ) {
+            Some(rewritten) => rewritten,
+            None => target_literal,
+        },
+        interp,
+        valuation,
+    )
+{
+    let source_parent = append_literal(source_context, source_equality);
+    let target_parent = append_literal(target_context, target_literal);
+    universal_clause_substitution_instance(source_parent, sigma, interp, valuation);
+    universal_clause_substitution_instance(target_parent, sigma, interp, valuation);
+
+    let source_instance = substitute_clause(source_parent, sigma);
+    let target_instance = substitute_clause(target_parent, sigma);
+    assert(source_instance.literals
+        == substitute_clause(source_context, sigma).literals.push(
+            substitute_literal(source_equality, sigma)));
+    assert(target_instance.literals
+        == substitute_clause(target_context, sigma).literals.push(
+            substitute_literal(target_literal, sigma)));
+    clause_holds_after_appending_literal(
+        substitute_clause(source_context, sigma),
+        substitute_literal(source_equality, sigma),
+        interp,
+        valuation,
+    );
+    clause_holds_after_appending_literal(
+        substitute_clause(target_context, sigma),
+        substitute_literal(target_literal, sigma),
+        interp,
+        valuation,
+    );
+    assert(clause_holds(source_instance, interp, valuation));
+    assert(clause_holds(target_instance, interp, valuation));
+    assert(clause_holds(substitute_clause(source_context, sigma), interp, valuation)
+        || literal_holds(substitute_literal(source_equality, sigma), interp, valuation));
+    assert(clause_holds(substitute_clause(target_context, sigma), interp, valuation)
+        || literal_holds(substitute_literal(target_literal, sigma), interp, valuation));
+
+    assert(substitute_literal(source_equality, sigma).positive);
+    assert(substitute_literal(source_equality, sigma).atom
+        == Atom::Eq(apply(source_left, sigma), apply(source_right, sigma)));
+    assert(eval(apply(source_left, sigma), interp, valuation)
+        == eval(apply(target_subterm, sigma), interp, valuation));
+    if clause_holds(substitute_clause(source_context, sigma), interp, valuation) {
+    } else if clause_holds(substitute_clause(target_context, sigma), interp, valuation) {
+    } else {
+        assert(literal_holds(substitute_literal(source_equality, sigma), interp, valuation));
+        assert(literal_holds(substitute_literal(target_literal, sigma), interp, valuation));
+        assert(substitute_literal(source_equality, sigma).atom
+            == Atom::Eq(apply(source_left, sigma), apply(source_right, sigma)));
+        assert(eval(apply(source_left, sigma), interp, valuation)
+            == eval(apply(source_right, sigma), interp, valuation));
+        assert(eval(apply(target_subterm, sigma), interp, valuation)
+            == eval(apply(source_right, sigma), interp, valuation));
+        assert(literal_at_position(
+            substitute_literal(target_literal, sigma), target_slot, target_position,
+        ) == Some(apply(target_subterm, sigma)));
+        assert(match literal_at_position(
+            substitute_literal(target_literal, sigma), target_slot, target_position,
+        ) {
+            Some(found) => eval(found, interp, valuation)
+                == eval(apply(source_right, sigma), interp, valuation),
+            None => false,
+        });
+        literal_holds_after_position_replacement(
+            substitute_literal(target_literal, sigma),
+            target_slot,
+            target_position,
+            apply(source_right, sigma),
+            interp,
+            valuation,
+        );
+        assert(replace_literal_at_position(
+            substitute_literal(target_literal, sigma), target_slot, target_position,
+            apply(source_right, sigma),
+        ).is_some());
+        assert(match replace_literal_at_position(
+            substitute_literal(target_literal, sigma),
+            target_slot,
+            target_position,
+            apply(source_right, sigma),
+        ) {
+            Some(rewritten) => literal_holds(rewritten, interp, valuation),
+            None => false,
+        });
+    }
+}
+
+/// End-to-end semantic rule theorem for parent clauses that are first
+/// standardized independently and then instantiated by one supplied unifier.
+/// Freshening is proved as an instance of each universally closed parent;
+/// the unifier is then applied to both entire standardized clauses before the
+/// selected target occurrence is replaced.
+proof fn standardized_superposition_sound(
+    source_context: Clause,
+    source_equality: Literal,
+    target_context: Clause,
+    target_literal: Literal,
+    source_left: Term,
+    source_right: Term,
+    target_subterm: Term,
+    target_slot: nat,
+    target_position: TermPosition,
+    source_freshening: Substitution,
+    target_freshening: Substitution,
+    unifier: Substitution,
+    interp: Interpretation,
+    valuation: Valuation,
+)
+    requires
+        interpretation_well_formed(interp),
+        valuation_well_formed(interp, valuation),
+        clause_valid(append_literal(source_context, source_equality), interp),
+        clause_valid(append_literal(target_context, target_literal), interp),
+        source_equality.positive,
+        source_equality.atom == Atom::Eq(source_left, source_right),
+        apply(apply(source_left, source_freshening), unifier)
+            == apply(apply(target_subterm, target_freshening), unifier),
+        literal_at_position(
+            substitute_literal(
+                substitute_literal(target_literal, target_freshening),
+                unifier,
+            ),
+            target_slot,
+            target_position,
+        ) == Some(apply(apply(target_subterm, target_freshening), unifier)),
+        replace_literal_at_position(
+            substitute_literal(
+                substitute_literal(target_literal, target_freshening),
+                unifier,
+            ),
+            target_slot,
+            target_position,
+            apply(apply(source_right, source_freshening), unifier),
+        ).is_some(),
+    ensures superposition_resolvent_holds(
+        substitute_clause(
+            substitute_clause(source_context, source_freshening),
+            unifier,
+        ),
+        substitute_clause(
+            substitute_clause(target_context, target_freshening),
+            unifier,
+        ),
+        match replace_literal_at_position(
+            substitute_literal(
+                substitute_literal(target_literal, target_freshening),
+                unifier,
+            ),
+            target_slot,
+            target_position,
+            apply(apply(source_right, source_freshening), unifier),
+        ) {
+            Some(rewritten) => rewritten,
+            None => target_literal,
+        },
+        interp,
+        valuation,
+    )
+{
+    let source_parent = append_literal(source_context, source_equality);
+    let target_parent = append_literal(target_context, target_literal);
+    standardized_parent_valid(source_parent, source_freshening, interp);
+    standardized_parent_valid(target_parent, target_freshening, interp);
+
+    let fresh_source_context = substitute_clause(source_context, source_freshening);
+    let fresh_source_equality = substitute_literal(source_equality, source_freshening);
+    let fresh_target_context = substitute_clause(target_context, target_freshening);
+    let fresh_target_literal = substitute_literal(target_literal, target_freshening);
+    assert(substitute_clause(source_parent, source_freshening).literals
+        == fresh_source_context.literals.push(fresh_source_equality));
+    assert(substitute_clause(target_parent, target_freshening).literals
+        == fresh_target_context.literals.push(fresh_target_literal));
+    assert(clause_valid(
+        append_literal(fresh_source_context, fresh_source_equality), interp,
+    ));
+    assert(clause_valid(
+        append_literal(fresh_target_context, fresh_target_literal), interp,
+    ));
+
+    universally_closed_superposition_sound(
+        fresh_source_context,
+        fresh_source_equality,
+        fresh_target_context,
+        fresh_target_literal,
+        apply(source_left, source_freshening),
+        apply(source_right, source_freshening),
+        apply(target_subterm, target_freshening),
+        target_slot,
+        target_position,
+        unifier,
+        interp,
+        valuation,
+    );
+}
+
+/// Universal validity is preserved by simultaneous substitution. This covers
+/// the forward semantic direction of standardization apart: renaming a
+/// universally quantified clause to fresh variable IDs cannot invalidate it.
+/// (A converse requires an inverse renaming and is not needed for inference
+/// soundness.)
+proof fn clause_valid_after_substitution(
+    clause: Clause,
+    renaming: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(clause, interp),
+    ensures clause_valid(substitute_clause(clause, renaming), interp)
+{
+    assert forall|valuation: Valuation|
+        valuation_well_formed(interp, valuation)
+            implies clause_holds(substitute_clause(clause, renaming), interp, valuation) by {
+        universal_clause_substitution_instance(clause, renaming, interp, valuation);
+    }
+}
+
+/// Standardization-apart is a simultaneous substitution instance of a
+/// universally closed parent, so validity survives even when the two parents
+/// are renamed independently. Injectivity and disjointness are certificate
+/// hygiene properties checked separately; they do not need to be assumed as
+/// semantic axioms for this direction of the proof.
+proof fn standardized_parent_valid(
+    parent: Clause,
+    freshening: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(parent, interp),
+    ensures clause_valid(substitute_clause(parent, freshening), interp)
+{
+    clause_valid_after_substitution(parent, freshening, interp);
+}
+
+/// Soundness theorem for universal clause instantiation:
+/// from universally valid clause C and arbitrary simultaneous substitution sigma,
+/// the instantiated clause C sigma is universally valid.
+proof fn instantiation_sound(
+    clause: Clause,
+    substitution: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(clause, interp),
+    ensures clause_valid(substitute_clause(clause, substitution), interp)
+{
+    clause_valid_after_substitution(clause, substitution, interp);
+}
+
+/// Parent validity plus independent standardization maps and a common
+/// unifier yield valid standardized parents for the central step theorem. This
+/// is the semantic bridge for the front end of a checker; subsequent
+/// certificate refinement must connect its executable maps to these
+/// substitutions.
+proof fn standardized_superposition_parents_are_valid(
+    source_parent: Clause,
+    target_parent: Clause,
+    source_freshening: Substitution,
+    target_freshening: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(source_parent, interp),
+        clause_valid(target_parent, interp),
+    ensures clause_valid(substitute_clause(source_parent, source_freshening), interp)
+        && clause_valid(substitute_clause(target_parent, target_freshening), interp)
+{
+    standardized_parent_valid(source_parent, source_freshening, interp);
+    standardized_parent_valid(target_parent, target_freshening, interp);
+}
+
+/// Soundness theorem for first-order binary resolution with independent
+/// parent standardization and a common simultaneous one-step unifier.
+proof fn standardized_first_order_resolution_sound(
+    left: Clause,
+    right: Clause,
+    left_pivot: int,
+    right_pivot: int,
+    left_freshening: Substitution,
+    right_freshening: Substitution,
+    unifier: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(left, interp),
+        clause_valid(right, interp),
+        0 <= left_pivot < left.literals.len(),
+        0 <= right_pivot < right.literals.len(),
+        left.literals[left_pivot].positive,
+        !right.literals[right_pivot].positive,
+        substitute_atom(substitute_atom(left.literals[left_pivot].atom, left_freshening), unifier)
+            == substitute_atom(substitute_atom(right.literals[right_pivot].atom, right_freshening), unifier),
+    ensures
+        clause_valid(
+            resolution_conclusion(
+                substitute_clause(substitute_clause(left, left_freshening), unifier),
+                substitute_clause(substitute_clause(right, right_freshening), unifier),
+                left_pivot,
+                right_pivot,
+            ),
+            interp,
+        )
+{
+    let left_inst = substitute_clause(substitute_clause(left, left_freshening), unifier);
+    let right_inst = substitute_clause(substitute_clause(right, right_freshening), unifier);
+    standardized_parent_valid(left, left_freshening, interp);
+    clause_valid_after_substitution(substitute_clause(left, left_freshening), unifier, interp);
+    standardized_parent_valid(right, right_freshening, interp);
+    clause_valid_after_substitution(substitute_clause(right, right_freshening), unifier, interp);
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(resolution_conclusion(left_inst, right_inst, left_pivot, right_pivot),
+            interp, valuation) by {
+        assert(clause_holds(left_inst, interp, valuation));
+        assert(clause_holds(right_inst, interp, valuation));
+        assert(left_inst.literals[left_pivot].positive);
+        assert(!right_inst.literals[right_pivot].positive);
+        assert(left_inst.literals[left_pivot].atom == right_inst.literals[right_pivot].atom);
+        exact_atom_resolution_sound(left_inst, right_inst, left_pivot, right_pivot, interp, valuation);
+    }
+}
+
+/// Soundness theorem for equality resolution (reflexivity resolution):
+/// from C | (s != t), where s and t unify under unifier sigma, derive C sigma.
+proof fn equality_resolution_sound(
+    clause: Clause,
+    pivot: int,
+    unifier: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(clause, interp),
+        0 <= pivot < clause.literals.len(),
+        !clause.literals[pivot].positive,
+        match clause.literals[pivot].atom {
+            Atom::Eq(left, right) => apply(left, unifier) == apply(right, unifier),
+            _ => false,
+        },
+    ensures
+        clause_valid(
+            delete_literal(substitute_clause(clause, unifier), pivot),
+            interp,
+        )
+{
+    let inst = substitute_clause(clause, unifier);
+    clause_valid_after_substitution(clause, unifier, interp);
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(delete_literal(inst, pivot), interp, valuation) by {
+        assert(clause_holds(inst, interp, valuation));
+        let i = choose|i: int| 0 <= i < inst.literals.len()
+            && literal_holds(inst.literals[i], interp, valuation);
+        if i == pivot {
+            let atom = inst.literals[pivot].atom;
+            match clause.literals[pivot].atom {
+                Atom::Eq(left, right) => {
+                    assert(atom == Atom::Eq(apply(left, unifier), apply(right, unifier)));
+                    assert(apply(left, unifier) == apply(right, unifier));
+                    assert(atom_holds(atom, interp, valuation));
+                    assert(!literal_holds(inst.literals[pivot], interp, valuation));
+                },
+                _ => {},
+            }
+        }
+        assert(i != pivot);
+        let j = if i < pivot { i } else { i - 1 };
+        assert(delete_literal(inst, pivot).literals[j] == inst.literals[i]);
+        assert(literal_holds(delete_literal(inst, pivot).literals[j], interp, valuation));
+    }
+}
+
+/// Soundness theorem for first-order clause factoring:
+/// from C | L1 | L2, where L1 and L2 have the same polarity and their atoms
+/// unify under unifier sigma, derive (C | L1) sigma.
+proof fn clause_factoring_sound(
+    clause: Clause,
+    first: int,
+    second: int,
+    unifier: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(clause, interp),
+        0 <= first < second < clause.literals.len(),
+        clause.literals[first].positive == clause.literals[second].positive,
+        substitute_atom(clause.literals[first].atom, unifier)
+            == substitute_atom(clause.literals[second].atom, unifier),
+    ensures
+        clause_valid(
+            delete_literal(substitute_clause(clause, unifier), second),
+            interp,
+        )
+{
+    let inst = substitute_clause(clause, unifier);
+    clause_valid_after_substitution(clause, unifier, interp);
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(delete_literal(inst, second), interp, valuation) by {
+        assert(clause_holds(inst, interp, valuation));
+        let i = choose|i: int| 0 <= i < inst.literals.len()
+            && literal_holds(inst.literals[i], interp, valuation);
+        let target_i = if i == second { first } else { i };
+        assert(literal_holds(inst.literals[target_i], interp, valuation));
+        assert(target_i != second);
+        let j = if target_i < second { target_i } else { target_i - 1 };
+        assert(delete_literal(inst, second).literals[j] == inst.literals[target_i]);
+        assert(literal_holds(delete_literal(inst, second).literals[j], interp, valuation));
+    }
+}
+
+spec fn equality_factoring_conclusion(
+    clause: Clause,
+    first: int,
+    second: int,
+    right: Term,
+    other_right: Term,
+) -> Clause {
+    let ineq = Literal { positive: false, atom: Atom::Eq(right, other_right) };
+    let c1 = delete_literal(clause, second);
+    let c2 = delete_literal(c1, first);
+    clause_concat(
+        Clause { literals: seq![clause.literals[first], ineq] },
+        c2,
+    )
+}
+
+/// Soundness theorem for equality factoring:
+/// from C | s = t | u = v where s and u unify under sigma,
+/// derive (C | t != v | s = t) sigma.
+proof fn equality_factoring_sound(
+    clause: Clause,
+    first: int,
+    second: int,
+    unifier: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(clause, interp),
+        0 <= first < second < clause.literals.len(),
+        clause.literals[first].positive,
+        clause.literals[second].positive,
+        match (clause.literals[first].atom, clause.literals[second].atom) {
+            (Atom::Eq(s, t), Atom::Eq(u, v)) => apply(s, unifier) == apply(u, unifier),
+            _ => false,
+        },
+    ensures
+        clause_valid(
+            equality_factoring_conclusion(
+                substitute_clause(clause, unifier),
+                first,
+                second,
+                match clause.literals[first].atom { Atom::Eq(_, t) => apply(t, unifier), _ => Term::Var(0) },
+                match clause.literals[second].atom { Atom::Eq(_, v) => apply(v, unifier), _ => Term::Var(0) },
+            ),
+            interp,
+        )
+{
+    let inst = substitute_clause(clause, unifier);
+    clause_valid_after_substitution(clause, unifier, interp);
+    let (s_inst, t_inst, u_inst, v_inst) = match (clause.literals[first].atom, clause.literals[second].atom) {
+        (Atom::Eq(s, t), Atom::Eq(u, v)) => (apply(s, unifier), apply(t, unifier), apply(u, unifier), apply(v, unifier)),
+        _ => (Term::Var(0), Term::Var(0), Term::Var(0), Term::Var(0)),
+    };
+    let concl = equality_factoring_conclusion(inst, first, second, t_inst, v_inst);
+    let c1 = delete_literal(inst, second);
+    let c2 = delete_literal(c1, first);
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(concl, interp, valuation) by {
+        assert(clause_holds(inst, interp, valuation));
+        let i = choose|i: int| 0 <= i < inst.literals.len()
+            && literal_holds(inst.literals[i], interp, valuation);
+        if i == first {
+            assert(concl.literals[0] == inst.literals[first]);
+            assert(literal_holds(concl.literals[0], interp, valuation));
+            assert(clause_holds(concl, interp, valuation));
+        } else if i == second {
+            if eval(t_inst, interp, valuation) != eval(v_inst, interp, valuation) {
+                assert(literal_holds(concl.literals[1], interp, valuation));
+                assert(clause_holds(concl, interp, valuation));
+            } else {
+                assert(eval(s_inst, interp, valuation) == eval(u_inst, interp, valuation));
+                assert(eval(u_inst, interp, valuation) == eval(v_inst, interp, valuation));
+                assert(eval(s_inst, interp, valuation) == eval(t_inst, interp, valuation));
+                assert(literal_holds(concl.literals[0], interp, valuation));
+                assert(clause_holds(concl, interp, valuation));
+            }
+        } else {
+            let j1 = if i < second { i } else { i - 1 };
+            assert(c1.literals[j1] == inst.literals[i]);
+            let j2 = if j1 < first { j1 } else { j1 - 1 };
+            assert(c2.literals[j2] == c1.literals[j1]);
+            assert(literal_holds(c2.literals[j2], interp, valuation));
+            assert(clause_holds(c2, interp, valuation));
+            clause_holds_concat(Clause { literals: seq![inst.literals[first], Literal { positive: false, atom: Atom::Eq(t_inst, v_inst) }] }, c2, interp, valuation);
+            assert(clause_holds(concl, interp, valuation));
+        }
+    }
+}
+
+/// Soundness theorem for subsumption resolution (contextual literal elimination):
+/// from target clause C | L and active clause A | ~L sigma where (A sigma) is a subset of C,
+/// derive C.
+proof fn subsumption_resolution_sound(
+    target: Clause,
+    active: Clause,
+    target_pivot: int,
+    active_pivot: int,
+    active_freshening: Substitution,
+    unifier: Substitution,
+    matches: Seq<int>,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(target, interp),
+        clause_valid(active, interp),
+        0 <= target_pivot < target.literals.len(),
+        0 <= active_pivot < active.literals.len(),
+        matches.len() == active.literals.len(),
+        forall|j: int| 0 <= j < active.literals.len() && j != active_pivot ==> {
+            &&& 0 <= matches[j] < target.literals.len()
+            &&& matches[j] != target_pivot
+            &&& substitute_literal(substitute_literal(active.literals[j], active_freshening), unifier)
+                == target.literals[matches[j]]
+        },
+        substitute_literal(substitute_literal(active.literals[active_pivot], active_freshening), unifier).positive
+            != target.literals[target_pivot].positive,
+        substitute_literal(substitute_literal(active.literals[active_pivot], active_freshening), unifier).atom
+            == target.literals[target_pivot].atom,
+    ensures
+        clause_valid(delete_literal(target, target_pivot), interp),
+{
+    let active_inst = substitute_clause(substitute_clause(active, active_freshening), unifier);
+    standardized_parent_valid(active, active_freshening, interp);
+    clause_valid_after_substitution(substitute_clause(active, active_freshening), unifier, interp);
+    let concl = delete_literal(target, target_pivot);
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(concl, interp, valuation) by {
+        assert(clause_holds(target, interp, valuation));
+        assert(clause_holds(active_inst, interp, valuation));
+        let t_idx = choose|i: int| 0 <= i < target.literals.len()
+            && literal_holds(target.literals[i], interp, valuation);
+        if t_idx != target_pivot {
+            let j = if t_idx < target_pivot { t_idx } else { t_idx - 1 };
+            assert(concl.literals[j] == target.literals[t_idx]);
+            assert(literal_holds(concl.literals[j], interp, valuation));
+            assert(clause_holds(concl, interp, valuation));
+        } else {
+            let act_p_lit = active_inst.literals[active_pivot];
+            let tgt_p_lit = target.literals[target_pivot];
+            assert(act_p_lit.atom == tgt_p_lit.atom);
+            assert(act_p_lit.positive != tgt_p_lit.positive);
+            assert(literal_holds(tgt_p_lit, interp, valuation));
+            assert(!literal_holds(act_p_lit, interp, valuation));
+            let a_idx = choose|k: int| 0 <= k < active_inst.literals.len()
+                && literal_holds(active_inst.literals[k], interp, valuation);
+            assert(a_idx != active_pivot);
+            let m_idx = matches[a_idx];
+            assert(0 <= m_idx < target.literals.len());
+            assert(m_idx != target_pivot);
+            assert(active_inst.literals[a_idx] == target.literals[m_idx]);
+            assert(literal_holds(target.literals[m_idx], interp, valuation));
+            let j = if m_idx < target_pivot { m_idx } else { m_idx - 1 };
+            assert(concl.literals[j] == target.literals[m_idx]);
+            assert(literal_holds(concl.literals[j], interp, valuation));
+            assert(clause_holds(concl, interp, valuation));
+        }
+    }
+}
+
+/// Soundness theorem for clause weakening:
+/// from universally valid clause C, any clause D containing all literals of C is universally valid.
+proof fn clause_weakening_sound(
+    parent: Clause,
+    conclusion: Clause,
+    inclusions: Seq<int>,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(parent, interp),
+        inclusions.len() == parent.literals.len(),
+        forall|i: int| 0 <= i < parent.literals.len() ==> {
+            &&& 0 <= inclusions[i] < conclusion.literals.len()
+            &&& parent.literals[i] == conclusion.literals[inclusions[i]]
+        },
+    ensures
+        clause_valid(conclusion, interp),
+{
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(conclusion, interp, valuation) by {
+        assert(clause_holds(parent, interp, valuation));
+        let i = choose|i: int| 0 <= i < parent.literals.len()
+            && literal_holds(parent.literals[i], interp, valuation);
+        let k = inclusions[i];
+        assert(0 <= k < conclusion.literals.len());
+        assert(conclusion.literals[k] == parent.literals[i]);
+        assert(literal_holds(conclusion.literals[k], interp, valuation));
+        assert(clause_holds(conclusion, interp, valuation));
+    }
+}
+
+/// Soundness theorem for demodulation (unit equality rewriting):
+/// from universally valid target clause C and universally valid unit equality clause s = t (or t = s),
+/// replacing an occurrence of s\sigma (or t\sigma) at position p in literal k of C by t\sigma (or s\sigma)
+/// yields a universally valid conclusion clause without instantiating C.
+proof fn demodulation_sound(
+    target: Clause,
+    equality: Clause,
+    equality_freshening: Substitution,
+    unifier: Substitution,
+    target_literal_index: int,
+    slot: nat,
+    position: TermPosition,
+    reversed: bool,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(target, interp),
+        clause_valid(equality, interp),
+        equality.literals.len() == 1,
+        equality.literals[0].positive,
+        match equality.literals[0].atom {
+            Atom::Eq(_, _) => true,
+            _ => false,
+        },
+        0 <= target_literal_index < target.literals.len(),
+        literal_at_position(target.literals[target_literal_index], slot, position).is_some(),
+        {
+            let (lhs, rhs) = match equality.literals[0].atom {
+                Atom::Eq(l, r) => (apply(l, equality_freshening), apply(r, equality_freshening)),
+                _ => (Term::Var(0), Term::Var(0)),
+            };
+            let (from, to) = if !reversed { (lhs, rhs) } else { (rhs, lhs) };
+            let target_subterm = match literal_at_position(target.literals[target_literal_index], slot, position) {
+                Some(subterm) => subterm,
+                None => Term::Var(0),
+            };
+            apply(from, unifier) == target_subterm
+                && replace_clause_literal(
+                    target,
+                    target_literal_index,
+                    slot,
+                    position,
+                    apply(to, unifier),
+                ).is_some()
+        },
+    ensures
+        {
+            let (lhs, rhs) = match equality.literals[0].atom {
+                Atom::Eq(l, r) => (apply(l, equality_freshening), apply(r, equality_freshening)),
+                _ => (Term::Var(0), Term::Var(0)),
+            };
+            let to = if !reversed { rhs } else { lhs };
+            let concl = replace_clause_literal(
+                target,
+                target_literal_index,
+                slot,
+                position,
+                apply(to, unifier),
+            ).unwrap();
+            clause_valid(concl, interp)
+        },
+{
+    let (lhs, rhs) = match equality.literals[0].atom {
+        Atom::Eq(l, r) => (apply(l, equality_freshening), apply(r, equality_freshening)),
+        _ => (Term::Var(0), Term::Var(0)),
+    };
+    let (from, to) = if !reversed { (lhs, rhs) } else { (rhs, lhs) };
+    let to_inst = apply(to, unifier);
+    let concl = replace_clause_literal(
+        target,
+        target_literal_index,
+        slot,
+        position,
+        to_inst,
+    ).unwrap();
+
+    let fresh_eq = substitute_clause(equality, equality_freshening);
+    standardized_parent_valid(equality, equality_freshening, interp);
+    let inst_eq = substitute_clause(fresh_eq, unifier);
+    clause_valid_after_substitution(fresh_eq, unifier, interp);
+
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(concl, interp, valuation) by {
+        assert(clause_holds(target, interp, valuation));
+        assert(clause_holds(inst_eq, interp, valuation));
+        assert(inst_eq.literals.len() == 1);
+        assert(literal_holds(inst_eq.literals[0], interp, valuation));
+        assert(inst_eq.literals[0].positive);
+        assert(inst_eq.literals[0].atom == Atom::Eq(apply(lhs, unifier), apply(rhs, unifier)));
+        assert(eval(apply(lhs, unifier), interp, valuation) == eval(apply(rhs, unifier), interp, valuation));
+        assert(eval(apply(from, unifier), interp, valuation) == eval(apply(to, unifier), interp, valuation));
+
+        let t_subterm = literal_at_position(target.literals[target_literal_index], slot, position).unwrap();
+        assert(apply(from, unifier) == t_subterm);
+        assert(eval(t_subterm, interp, valuation) == eval(to_inst, interp, valuation));
+
+        literal_holds_after_position_replacement(
+            target.literals[target_literal_index],
+            slot,
+            position,
+            to_inst,
+            interp,
+            valuation,
+        );
+        let replaced_lit = replace_literal_at_position(
+            target.literals[target_literal_index],
+            slot,
+            position,
+            to_inst,
+        ).unwrap();
+        assert(literal_holds(replaced_lit, interp, valuation)
+            == literal_holds(target.literals[target_literal_index], interp, valuation));
+
+        let idx = choose|i: int| 0 <= i < target.literals.len()
+            && literal_holds(target.literals[i], interp, valuation);
+        assert(0 <= idx < concl.literals.len());
+        if idx == target_literal_index {
+            assert(concl.literals[idx] == replaced_lit);
+            assert(literal_holds(concl.literals[idx], interp, valuation));
+        } else {
+            assert(concl.literals[idx] == target.literals[idx]);
+            assert(literal_holds(concl.literals[idx], interp, valuation));
+        }
+        assert(clause_holds(concl, interp, valuation));
+    };
+}
+
+spec fn inverse_renamings(sigma: Substitution, inverse: Substitution) -> bool {
+    forall|x: u64|
+        apply(apply(Term::Var(x), sigma), inverse) == Term::Var(x)
+        && apply(apply(Term::Var(x), inverse), sigma) == Term::Var(x)
+}
+
+proof fn updated_valuation_composition_identity(
+    interp: Interpretation,
+    valuation: Valuation,
+    first: Substitution,
+    second: Substitution,
+)
+    requires
+        interp.functions.is_full(),
+        valuation.values.is_full(),
+        forall|x: u64| #[trigger] apply(apply(Term::Var(x), second), first) == Term::Var(x),
+    ensures update_valuation(
+        interp,
+        update_valuation(interp, valuation, first),
+        second,
+    ).values == valuation.values
+{
+    assert forall|x: u64| update_valuation(
+        interp,
+        update_valuation(interp, valuation, first),
+        second,
+    ).values[x] == valuation.values[x] by {
+        eval_after_substitution(
+            apply(Term::Var(x), second),
+            first,
+            interp,
+            valuation,
+        );
+        assert(eval(apply(Term::Var(x), second), interp,
+            update_valuation(interp, valuation, first))
+            == eval(apply(apply(Term::Var(x), second), first), interp, valuation));
+    }
+}
+
+/// A bijective variable renaming preserves universal clause meaning in both
+/// directions. This is the semantic standardization-apart theorem; freshness
+/// of the chosen IDs is an executable syntactic side condition for the caller.
+proof fn standardization_apart_preserves_clause_validity(
+    clause: Clause,
+    renaming: Substitution,
+    inverse: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        inverse_renamings(renaming, inverse),
+    ensures clause_valid(substitute_clause(clause, renaming), interp)
+        == clause_valid(clause, interp)
+{
+    if clause_valid(clause, interp) {
+        clause_valid_after_substitution(clause, renaming, interp);
+    } else {
+        assert(!clause_valid(clause, interp));
+    }
+
+    assert(clause_valid(substitute_clause(clause, renaming), interp)
+        ==> clause_valid(clause, interp)) by {
+        if clause_valid(substitute_clause(clause, renaming), interp) {
+            assert forall|valuation: Valuation|
+                valuation_well_formed(interp, valuation)
+                    implies clause_holds(clause, interp, valuation) by {
+                updated_valuation_well_formed(interp, valuation, inverse);
+                assert(clause_holds(
+                    substitute_clause(clause, renaming),
+                    interp,
+                    update_valuation(interp, valuation, inverse),
+                ));
+                clause_holds_after_substitution(
+                    clause,
+                    renaming,
+                    interp,
+                    update_valuation(interp, valuation, inverse),
+                );
+                updated_valuation_composition_identity(
+                    interp,
+                    valuation,
+                    inverse,
+                    renaming,
+                );
+                assert(clause_holds(clause, interp, valuation));
+            }
+        }
+    }
+}
+
+proof fn universal_clause_instance(p: IMap<u64, bool>, instance: u64)
+    requires forall|x: u64| p[x]
+    ensures p[instance]
+{
+    assert(p[instance]);
+}
+
+spec fn positive_clause_holds_after(
+    clause: Clause,
+    interp: Interpretation,
+    valuation: Valuation,
+) -> bool {
+    exists|i: int| 0 <= i < clause.literals.len()
+        && clause.literals[i].positive
+        && atom_holds(clause.literals[i].atom, interp, valuation)
+}
+
+/// A semantic superposition instance where the ground source equality
+/// `f(a)=b` rewrites `p(f(y))` in the universally closed target clause
+/// `q(y) | p(f(y))`. Unification binds the target variable `y` to `a`; applying
+/// that substitution to the *whole* target clause gives `q(a) | p(b)`. The
+/// other target literal is instantiated too. This proves the soundness of this
+/// instance, not the validity of archived c502 or of the general calculus.
+proof fn target_variable_superposition_instance(
+    f: IMap<u64, u64>,
+    p: IMap<u64, bool>,
+    q: IMap<u64, bool>,
+    a: u64,
+    b: u64,
+)
+    requires
+        f.dom().contains(a),
+        p.dom().contains(b),
+        q.dom().contains(a),
+        f[a] == b,
+        forall|y: u64| f.dom().contains(y) && q.dom().contains(y) && p.dom().contains(f[y])
+            ==> q[y] || p[f[y]],
+    ensures
+        q[a] || p[b],
+{
+    assert(q[a] || p[f[a]]);
+    assert(f[a] == b);
+    assert(p[f[a]] == p[b]);
+}
+
+spec fn domain_unique(sigma: Substitution) -> bool {
+    forall|i: int, j: int|
+        #![auto]
+        0 <= i < j < sigma.bindings.len() as int
+            ==> sigma.bindings[i].0 != sigma.bindings[j].0
+}
+
+/// Executable mirror of the mathematical term syntax.
+#[derive(PartialEq, Eq)]
+pub enum ExecTerm {
+    Var(u64),
+    Const(u64),
+    App1(u64, Box<ExecTerm>),
+    App2(u64, Box<ExecTerm>, Box<ExecTerm>),
+}
+
+spec fn exec_term_depth(term: ExecTerm) -> nat
+    decreases term
+{
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => 0,
+        ExecTerm::App1(_, child) => 1 + exec_term_depth(*child),
+        ExecTerm::App2(_, left, right) => if exec_term_depth(*left) > exec_term_depth(*right) {
+            1 + exec_term_depth(*left)
+        } else { 1 + exec_term_depth(*right) },
+    }
+}
+
+spec fn exec_atom_depth_below(atom: ExecAtom, bound: nat) -> bool {
+    match atom {
+        ExecAtom::Pred0(_) => true,
+        ExecAtom::Pred1(_, arg) => exec_term_depth(*arg) < bound,
+        ExecAtom::Pred2(_, left, right) => exec_term_depth(*left) < bound
+            && exec_term_depth(*right) < bound,
+        ExecAtom::Eq(left, right) => exec_term_depth(left) < bound
+            && exec_term_depth(right) < bound,
+    }
+}
+
+#[derive(PartialEq, Eq)]
+pub struct ExecBinding {
+    variable: u64,
+    replacement: ExecTerm,
+}
+
+#[derive(PartialEq, Eq)]
+pub enum ExecAtom {
+    Pred0(u64),
+    Pred1(u64, Box<ExecTerm>),
+    Pred2(u64, Box<ExecTerm>, Box<ExecTerm>),
+    Eq(ExecTerm, ExecTerm),
+}
+
+#[derive(PartialEq, Eq)]
+pub struct ExecLiteral {
+    positive: bool,
+    atom: ExecAtom,
+}
+
+#[derive(PartialEq, Eq)]
+pub struct ExecClause {
+    literals: Vec<ExecLiteral>,
+}
+
+pub struct SuperpositionCertificate {
+    source: ExecClause,
+    target: ExecClause,
+    source_freshening: Vec<ExecBinding>,
+    target_freshening: Vec<ExecBinding>,
+    source_equality_index: usize,
+    target_literal_index: usize,
+    target_argument_slot: u64,
+    target_path: Vec<u64>,
+    fresh_target_path: Vec<u64>,
+    unifier: Vec<ExecBinding>,
+    conclusion: ExecClause,
+}
+
+pub struct FirstOrderResolutionCertificate {
+    left: ExecClause,
+    right: ExecClause,
+    left_freshening: Vec<ExecBinding>,
+    right_freshening: Vec<ExecBinding>,
+    unifier: Vec<ExecBinding>,
+    left_pivot: usize,
+    right_pivot: usize,
+    conclusion: ExecClause,
+}
+
+pub struct EqualityResolutionCertificate {
+    clause: ExecClause,
+    pivot: usize,
+    unifier: Vec<ExecBinding>,
+    conclusion: ExecClause,
+}
+
+pub struct ClauseFactoringCertificate {
+    clause: ExecClause,
+    first: usize,
+    second: usize,
+    unifier: Vec<ExecBinding>,
+    conclusion: ExecClause,
+}
+
+pub struct EqualityFactoringCertificate {
+    clause: ExecClause,
+    first: usize,
+    second: usize,
+    unifier: Vec<ExecBinding>,
+    conclusion: ExecClause,
+}
+
+pub struct SubsumptionResolutionCertificate {
+    target: ExecClause,
+    active: ExecClause,
+    target_pivot: usize,
+    active_pivot: usize,
+    active_freshening: Vec<ExecBinding>,
+    unifier: Vec<ExecBinding>,
+    matches: Vec<usize>,
+    conclusion: ExecClause,
+}
+
+pub struct WeakeningCertificate {
+    parent: ExecClause,
+    inclusions: Vec<usize>,
+    conclusion: ExecClause,
+}
+
+pub struct DemodulationCertificate {
+    target: ExecClause,
+    equality: ExecClause,
+    equality_freshening: Vec<ExecBinding>,
+    unifier: Vec<ExecBinding>,
+    target_literal_index: usize,
+    target_argument_slot: u64,
+    raw_target_path: Vec<u64>,
+    fresh_target_path: Vec<u64>,
+    reversed: bool,
+    conclusion: ExecClause,
+}
+
+pub struct InstantiationCertificate {
+    parent: ExecClause,
+    substitution: Vec<ExecBinding>,
+    conclusion: ExecClause,
+}
+
+#[derive(PartialEq, Eq)]
+pub enum ProofNodeKind {
+    Input,
+    Superposition,
+    /// Positive-left/negative-right nullary-predicate resolution pivot indices.
+    Resolution(usize, usize),
+    /// Exact identical atom pivots, without unification or normalization.
+    ExactResolution(usize, usize),
+    /// Standardized first-order binary resolution with a unifier.
+    FirstOrderResolution,
+    /// Equality resolution (reflexivity resolution) on a negative equality literal.
+    EqualityResolution,
+    /// First-order clause factoring of two same-polarity literals under a unifier.
+    Factoring,
+    /// Equality factoring of two positive equality literals under a unifier.
+    EqualityFactoring,
+    /// Contextual literal elimination (subsumption resolution) of target literal by active clause.
+    SubsumptionResolution,
+    /// Clause weakening (superset clause conclusion).
+    Weakening,
+    /// Demodulation (unit equality rewriting).
+    Demodulation,
+    /// Clause instantiation (universal substitution instance).
+    Instantiation,
+    Unsupported,
+}
+
+spec fn supported_inference(kind: ProofNodeKind) -> bool {
+    kind == ProofNodeKind::Superposition || kind is Resolution
+        || kind is ExactResolution || kind == ProofNodeKind::FirstOrderResolution
+        || kind == ProofNodeKind::EqualityResolution || kind == ProofNodeKind::Factoring
+        || kind == ProofNodeKind::EqualityFactoring || kind == ProofNodeKind::SubsumptionResolution
+        || kind == ProofNodeKind::Weakening || kind == ProofNodeKind::Demodulation
+        || kind == ProofNodeKind::Instantiation
+}
+
+pub struct ProofNode {
+    id: u64,
+    clause: ExecClause,
+    kind: ProofNodeKind,
+    parents: Vec<usize>,
+    step: Option<SuperpositionCertificate>,
+    res_step: Option<FirstOrderResolutionCertificate>,
+    eq_step: Option<EqualityResolutionCertificate>,
+    fact_step: Option<ClauseFactoringCertificate>,
+    eq_fact_step: Option<EqualityFactoringCertificate>,
+    sub_step: Option<SubsumptionResolutionCertificate>,
+    weaken_step: Option<WeakeningCertificate>,
+    demod_step: Option<DemodulationCertificate>,
+    inst_step: Option<InstantiationCertificate>,
+}
+
+pub struct ProofDag {
+    nodes: Vec<ProofNode>,
+    input_clauses: Vec<ExecClause>,
+    root: usize,
+}
+
+#[derive(PartialEq, Eq)]
+pub enum DagVerdict {
+    Certified,
+    Inconclusive,
+    Rejected,
+    Unknown,
+}
+
+/// A checked node has earlier parents and either an exact input witness or a
+/// semantic local-step contract. No Boolean supplied by the proof is trusted.
+spec fn validated_dag_node(dag: ProofDag, i: int) -> bool {
+    0 <= i < dag.nodes@.len()
+        && (forall|j: int| 0 <= j < dag.nodes@[i].parents@.len()
+            ==> dag.nodes@[i].parents@[j] < i)
+        && (dag.nodes@[i].kind == ProofNodeKind::Input
+                && dag.nodes@[i].parents@.len() == 0
+                && input_leaf_is_validated(dag.nodes@[i], dag.input_clauses@)
+            || supported_inference(dag.nodes@[i].kind)
+                && (forall|interp: Interpretation| interpretation_well_formed(interp)
+                    ==> local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp)))
+}
+
+spec fn dag_inputs_unsatisfiable(dag: ProofDag) -> bool {
+    !exists|interp: Interpretation| interpretation_well_formed(interp)
+        && (forall|i: int| 0 <= i < dag.input_clauses@.len()
+            ==> clause_valid(view_clause(dag.input_clauses@[i]), interp))
+}
+
+spec fn node_parent_clauses_hold(
+    node: ProofNode,
+    nodes: Seq<ProofNode>,
+    interp: Interpretation,
+    valuation: Valuation,
+) -> bool {
+    forall|j: int| 0 <= j < node.parents@.len()
+        ==> clause_holds(view_clause(nodes[node.parents@[j] as int].clause), interp, valuation)
+}
+
+/// Inference consumes universally closed parents, not their truth at just one
+/// valuation: a supplied substitution can change the valuation at which a
+/// parent must hold.
+spec fn local_node_entails_from_parents(node: ProofNode, nodes: Seq<ProofNode>,
+    interp: Interpretation) -> bool {
+    (forall|j: int| 0 <= j < node.parents@.len()
+        ==> clause_valid(view_clause(nodes[node.parents@[j] as int].clause), interp))
+        ==> clause_valid(view_clause(node.clause), interp)
+}
+
+spec fn input_leaf_is_validated(node: ProofNode, inputs: Seq<ExecClause>) -> bool {
+    exists|i: int| 0 <= i < inputs.len()
+        && clause_equal(view_clause(node.clause), view_clause(inputs[i]))
+}
+
+spec fn empty_clause(clause: Clause) -> bool {
+    clause.literals.len() == 0
+}
+
+spec fn dag_proves_empty(dag: ProofDag) -> bool {
+    dag.nodes.len() > 0
+        && dag.root < dag.nodes.len()
+        && empty_clause(view_clause(dag.nodes@[dag.root as int].clause))
+}
+
+proof fn proof_dag_nodes_follow_from_local_rule_soundness(
+    nodes: Seq<ProofNode>,
+    inputs: Seq<ExecClause>,
+    interp: Interpretation,
+    count: nat,
+)
+    requires
+        interpretation_well_formed(interp),
+        count <= nodes.len(),
+        forall|i: int| 0 <= i < count as int
+            ==> (nodes[i].kind == ProofNodeKind::Input
+                    && input_leaf_is_validated(nodes[i], inputs)
+                || supported_inference(nodes[i].kind)
+                    && local_node_entails_from_parents(nodes[i], nodes, interp)),
+        forall|i: int, j: int| 0 <= i < count as int
+            && 0 <= j < nodes[i].parents@.len()
+            ==> nodes[i].parents@[j] < i as usize,
+        forall|i: int| 0 <= i < inputs.len()
+            ==> clause_valid(view_clause(inputs[i]), interp),
+    ensures forall|i: int| 0 <= i < count as int
+        ==> clause_valid(view_clause(nodes[i].clause), interp)
+    decreases count
+{
+    if count == 0 {
+    } else {
+        proof_dag_nodes_follow_from_local_rule_soundness(nodes, inputs, interp, (count - 1) as nat);
+        let last = count - 1;
+        let node = nodes[last as int];
+        if node.kind == ProofNodeKind::Input {
+            let input_index = choose|k: int| 0 <= k < inputs.len()
+                && clause_equal(view_clause(node.clause), view_clause(inputs[k]));
+            assert forall|valuation: Valuation|
+                valuation_well_formed(interp, valuation)
+                    implies clause_holds(view_clause(node.clause), interp, valuation) by {
+                assert(clause_holds(view_clause(inputs[input_index]), interp, valuation));
+            }
+        } else {
+            assert(supported_inference(node.kind));
+            assert forall|j: int| 0 <= j < node.parents@.len()
+                implies clause_valid(view_clause(nodes[node.parents@[j] as int].clause),
+                    interp) by {
+                let parent = node.parents@[j] as int;
+                assert(parent < last as int);
+            }
+            assert forall|valuation: Valuation|
+                valuation_well_formed(interp, valuation)
+                    implies clause_holds(view_clause(node.clause), interp, valuation) by {
+                assert forall|j: int| 0 <= j < node.parents@.len()
+                    implies clause_holds(view_clause(nodes[node.parents@[j] as int].clause),
+                        interp, valuation) by {
+                    let parent = node.parents@[j] as int;
+                    assert(parent < last as int);
+                    assert(clause_valid(view_clause(nodes[parent].clause), interp));
+                    assert(clause_holds(view_clause(nodes[parent].clause), interp, valuation));
+                }
+                assert(local_node_entails_from_parents(node, nodes, interp));
+            }
+        }
+    }
+}
+
+proof fn certified_empty_dag_implies_unsatisfiable(
+    nodes: Seq<ProofNode>,
+    inputs: Seq<ExecClause>,
+    interp: Interpretation,
+    root: nat,
+)
+    requires
+        interpretation_well_formed(interp),
+        root < nodes.len(),
+        empty_clause(view_clause(nodes[root as int].clause)),
+        forall|i: int| 0 <= i <= root as int
+            ==> (nodes[i].kind == ProofNodeKind::Input
+                    && input_leaf_is_validated(nodes[i], inputs)
+                || supported_inference(nodes[i].kind)
+                    && local_node_entails_from_parents(nodes[i], nodes, interp)),
+        forall|i: int, j: int| 0 <= i <= root as int
+            && 0 <= j < nodes[i].parents@.len()
+            ==> nodes[i].parents@[j] < i as usize,
+        forall|i: int| 0 <= i < inputs.len()
+            ==> clause_valid(view_clause(inputs[i]), interp),
+    ensures !exists|valuation: Valuation| valuation_well_formed(interp, valuation)
+        && forall|i: int| 0 <= i < inputs.len()
+            ==> clause_holds(view_clause(inputs[i]), interp, valuation)
+{
+    proof_dag_nodes_follow_from_local_rule_soundness(nodes, inputs, interp, root + 1);
+    assert(clause_valid(view_clause(nodes[root as int].clause), interp));
+    assert forall|valuation: Valuation|
+        valuation_well_formed(interp, valuation)
+            && forall|i: int| 0 <= i < inputs.len()
+                ==> clause_holds(view_clause(inputs[i]), interp, valuation)
+        implies false by {
+        assert(!clause_holds(view_clause(nodes[root as int].clause), interp, valuation));
+    }
+}
+
+pub struct Freshening {
+    bindings: Vec<ExecBinding>,
+}
+
+pub struct VariableBudget {
+    visited: usize,
+    limit: usize,
+}
+
+pub struct FreshenResult {
+    freshened: ExecClause,
+    mapping: Vec<ExecBinding>,
+}
+
+spec fn view(term: ExecTerm) -> Term
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => Term::Var(v),
+        ExecTerm::Const(c) => Term::Const(c),
+        ExecTerm::App1(f, child) => Term::App1(f, Box::new(view(*child))),
+        ExecTerm::App2(f, left, right) => Term::App2(
+            f,
+            Box::new(view(*left)),
+            Box::new(view(*right)),
+        ),
+    }
+}
+
+spec fn view_atom(atom: ExecAtom) -> Atom
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(p) => Atom::Pred0(p),
+        ExecAtom::Pred1(p, arg) => Atom::Pred1(p, Box::new(view(*arg))),
+        ExecAtom::Pred2(p, left, right) =>
+            Atom::Pred2(p, Box::new(view(*left)), Box::new(view(*right))),
+        ExecAtom::Eq(left, right) => Atom::Eq(view(left), view(right)),
+    }
+}
+
+spec fn view_literal(literal: ExecLiteral) -> Literal {
+    Literal { positive: literal.positive, atom: view_atom(literal.atom) }
+}
+
+spec fn view_clause(clause: ExecClause) -> Clause {
+    Clause {
+        literals: clause.literals@.map(|_i: int, literal: ExecLiteral| view_literal(literal)),
+    }
+}
+
+spec fn exec_term_variables(term: ExecTerm) -> Set<u64>
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => Set::empty().insert(v),
+        ExecTerm::Const(_) => Set::empty(),
+        ExecTerm::App1(_, child) => exec_term_variables(*child),
+        ExecTerm::App2(_, left, right) =>
+            exec_term_variables(*left).union(exec_term_variables(*right)),
+    }
+}
+
+spec fn variables_subset(term: ExecTerm, variables: Seq<u64>) -> bool {
+    forall|v: u64| exec_term_variables(term).contains(v) ==> variables.contains(v)
+}
+
+spec fn exec_term_node_count(term: ExecTerm) -> nat
+    decreases term
+{
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => 1,
+        ExecTerm::App1(_, child) => 1 + exec_term_node_count(*child),
+        ExecTerm::App2(_, left, right) => 1 + exec_term_node_count(*left)
+            + exec_term_node_count(*right),
+    }
+}
+
+spec fn exec_clause_node_count(clause: ExecClause) -> nat {
+    clause.literals@.len() as nat
+}
+
+spec fn exec_atom_variables(atom: ExecAtom) -> Set<u64>
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => Set::empty(),
+        ExecAtom::Pred1(_, arg) => exec_term_variables(*arg),
+        ExecAtom::Pred2(_, left, right) =>
+            exec_term_variables(*left).union(exec_term_variables(*right)),
+        ExecAtom::Eq(left, right) =>
+            exec_term_variables(left).union(exec_term_variables(right)),
+    }
+}
+
+spec fn term_clause_view_contains(clause: ExecClause, v: u64) -> bool {
+    exists|i: int| 0 <= i < clause.literals@.len()
+        && literal_variables(view_literal(clause.literals@[i])).contains(v)
+}
+
+spec fn exec_clause_variables(clause: ExecClause) -> Set<u64> {
+    exec_clause_variables_from_view(clause)
+}
+
+spec fn clause_collection_exact(clause: ExecClause, variables: Seq<u64>) -> bool {
+    (forall|v: u64| term_clause_view_contains(clause, v) ==> variables.contains(v))
+        && (forall|v: u64| variables.contains(v) ==> term_clause_view_contains(clause, v))
+}
+
+spec fn exec_clause_variables_from_view(clause: ExecClause) -> Set<u64> {
+    Set::new(|v: u64| term_clause_view_contains(clause, v)).unwrap()
+}
+
+spec fn clause_variable_sequence_view(clause: ExecClause) -> Seq<u64> {
+    Set::new(|v: u64| term_clause_view_contains(clause, v)).unwrap().to_seq()
+}
+
+proof fn term_variable_view(term: ExecTerm)
+    ensures term_variables(view(term)) == exec_term_variables(term)
+    decreases term
+{
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => {},
+        ExecTerm::App1(_, child) => term_variable_view(*child),
+        ExecTerm::App2(_, left, right) => {
+            term_variable_view(*left);
+            term_variable_view(*right);
+        },
+    }
+}
+
+proof fn atom_variable_view(atom: ExecAtom)
+    ensures atom_variables(view_atom(atom)) == exec_atom_variables(atom)
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => {},
+        ExecAtom::Pred1(_, arg) => term_variable_view(*arg),
+        ExecAtom::Pred2(_, left, right) => {
+            term_variable_view(*left);
+            term_variable_view(*right);
+        },
+        ExecAtom::Eq(left, right) => {
+            term_variable_view(left);
+            term_variable_view(right);
+        },
+    }
+}
+
+proof fn literal_variable_view(literal: ExecLiteral)
+    ensures literal_variables(view_literal(literal)) == exec_atom_variables(literal.atom)
+{
+    atom_variable_view(literal.atom);
+}
+
+proof fn atom_variable_membership_view(atom: ExecAtom, variable: u64)
+    requires exec_atom_variables(atom).contains(variable)
+    ensures literal_variables(view_literal(ExecLiteral { positive: true, atom })).contains(variable)
+{
+    atom_variable_view(atom);
+}
+
+proof fn clause_variable_view(clause: ExecClause)
+{}
+
+proof fn freshening_maps_clause_variables(
+    clause: ExecClause,
+    variables: Seq<u64>,
+    sigma: Substitution,
+    avoid: Seq<u64>,
+)
+    requires
+        clause_collection_exact(clause, variables),
+        freshening_sequence_valid(variables, avoid, sigma),
+    ensures forall|v: u64| term_clause_view_contains(clause, v)
+        && #[trigger] variables.contains(v)
+        ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
+{
+    assert forall|v: u64| term_clause_view_contains(clause, v)
+        && #[trigger] variables.contains(v)
+        && #[trigger] freshening_sequence_valid(variables, avoid, sigma)
+        implies exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh)) by {
+        assert(variables.contains(v)) by { reveal(clause_collection_exact); }
+        let i = choose|i: int| 0 <= i < variables.len() && variables[i] == v;
+        let fresh = renamed_variable(sigma, variables[i]).unwrap();
+        reveal(renamed_variable);
+        assert(lookup(sigma, v) == Some(Term::Var(fresh)));
+    }
+}
+
+proof fn freshening_maps_selected_literal(
+    clause: ExecClause,
+    literal_index: int,
+    variables: Seq<u64>,
+    bindings: Seq<ExecBinding>,
+)
+    requires
+        0 <= literal_index < clause.literals@.len(),
+        clause_collection_exact(clause, variables),
+        freshening_images_are_variable(bindings, variables),
+        forall|v: u64| term_clause_view_contains(clause, v)
+            && #[trigger] variables.contains(v)
+            ==> exists|fresh: u64| lookup(view_subst(bindings), v) == Some(Term::Var(fresh)),
+    ensures forall|v: u64|
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(v)
+        ==> exists|fresh: u64| lookup(view_subst(bindings), v) == Some(Term::Var(fresh))
+{
+    assert forall|v: u64|
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(v)
+        implies exists|fresh: u64|
+            lookup(view_subst(bindings), v) == Some(Term::Var(fresh)) by {
+        selected_literal_variables_are_clause_variables(clause, literal_index, v);
+        assert(variables.contains(v)) by { reveal(clause_collection_exact); }
+        assert(term_clause_view_contains(clause, v));
+        assert(variables.contains(v));
+        assert(exists|fresh: u64|
+            lookup(view_subst(bindings), v) == Some(Term::Var(fresh)));
+    }
+}
+
+proof fn selected_literal_variables_are_subset_of_clause_variables(
+    clause: ExecClause,
+    literal_index: int,
+    variable: u64,
+)
+    requires
+        0 <= literal_index < clause.literals@.len(),
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(variable),
+    ensures term_clause_view_contains(clause, variable)
+{}
+
+proof fn clause_variables_cover_exec_variables(clause: ExecClause, variables: Seq<u64>)
+    requires clause_collection_exact(clause, variables)
+    ensures exec_clause_variables(clause) == exec_clause_variables_from_view(clause)
+{}
+
+spec fn renamed_variable(sigma: Substitution, variable: u64) -> Option<u64> {
+    match lookup(sigma, variable) {
+        Some(Term::Var(v)) => Some(v),
+        _ => None,
+    }
+}
+
+spec fn finite_renaming_injective(sigma: Substitution) -> bool {
+    forall|x: u64, y: u64| x != y
+        && lookup(sigma, x).is_some()
+        && lookup(sigma, y).is_some()
+        ==> renamed_variable(sigma, x) != renamed_variable(sigma, y)
+}
+
+spec fn renames_variables_only_on(sigma: Substitution, variables: Set<u64>) -> bool {
+    forall|v: u64| variables.contains(v)
+        ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
+}
+
+spec fn sets_disjoint(left: Set<u64>, right: Set<u64>) -> bool {
+    forall|v: u64| left.contains(v) ==> !right.contains(v)
+}
+
+spec fn freshening_valid(
+    variables: Set<u64>,
+    sigma: Substitution,
+    avoid: Set<u64>,
+) -> bool {
+    domain_unique(sigma)
+        && finite_renaming_injective(sigma)
+        && renames_variables_only_on(sigma, variables)
+        && forall|v: u64| variables.contains(v)
+            ==> renamed_variable(sigma, v).is_some()
+        && forall|v: u64| variables.contains(v)
+            ==> !avoid.contains(renamed_variable(sigma, v).unwrap())
+}
+
+spec fn freshening_sequence_valid(
+    variables: Seq<u64>,
+    avoid: Seq<u64>,
+    sigma: Substitution,
+) -> bool {
+    domain_unique(sigma)
+        && forall|i: int| 0 <= i < variables.len()
+            ==> #[trigger] renamed_variable(sigma, variables[i]).is_some()
+                && exists|fresh: u64|
+                    lookup(sigma, variables[i]) == Some(Term::Var(fresh))
+                && !avoid.contains(renamed_variable(sigma, variables[i]).unwrap())
+        && forall|i: int, j: int| 0 <= i < j < variables.len()
+            && variables[i] != variables[j]
+            ==> exists|fresh_i: u64, fresh_j: u64|
+                lookup(sigma, variables[i]) == Some(Term::Var(fresh_i))
+                && lookup(sigma, variables[j]) == Some(Term::Var(fresh_j))
+                && fresh_i != fresh_j
+}
+
+spec fn freshening_images_are_variable(bindings: Seq<ExecBinding>, variables: Seq<u64>) -> bool {
+    forall|i: int| 0 <= i < variables.len()
+        ==> renamed_variable(view_subst(bindings), variables[i]).is_some()
+}
+
+proof fn renaming_images_cover_clause_variables(
+    clause: ExecClause,
+    variables: Seq<u64>,
+    bindings: Seq<ExecBinding>,
+    variable: u64,
+)
+    requires
+        clause_collection_exact(clause, variables),
+        term_clause_view_contains(clause, variable),
+        freshening_images_are_variable(bindings, variables),
+    ensures exists|fresh: u64|
+        lookup(view_subst(bindings), variable) == Some(Term::Var(fresh))
+{
+    assert(variables.contains(variable)) by { reveal(clause_collection_exact); }
+    let index = choose|i: int| 0 <= i < variables.len() && variables[i] == variable;
+    assert(renamed_variable(view_subst(bindings), variables[index]).is_some());
+    let fresh = renamed_variable(view_subst(bindings), variable).unwrap();
+    reveal(renamed_variable);
+    assert(lookup(view_subst(bindings), variable) == Some(Term::Var(fresh)));
+}
+
+proof fn collected_renaming_covers_selected_literal(
+    clause: ExecClause,
+    variables: Seq<u64>,
+    bindings: Seq<ExecBinding>,
+    literal_index: int,
+)
+    requires
+        clause_collection_exact(clause, variables),
+        freshening_images_are_variable(bindings, variables),
+        0 <= literal_index < clause.literals@.len(),
+    ensures renames_variables_on(
+        view_subst(bindings), literal_variables(view_literal(clause.literals@[literal_index])),
+    )
+{
+    assert forall|v: u64|
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(v)
+        implies exists|fresh: u64| lookup(view_subst(bindings), v) == Some(Term::Var(fresh)) by {
+        assert(term_clause_view_contains(clause, v));
+        renaming_images_cover_clause_variables(clause, variables, bindings, v);
+    }
+}
+
+proof fn freshening_maps_variables_in_selected_literal(
+    clause: ExecClause,
+    literal_index: int,
+    variables: Seq<u64>,
+    bindings: Seq<ExecBinding>,
+)
+    requires
+        0 <= literal_index < clause.literals@.len(),
+        clause_collection_exact(clause, variables),
+        freshening_images_are_variable(bindings, variables),
+    ensures forall|v: u64|
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(v)
+            ==> exists|fresh: u64|
+                lookup(view_subst(bindings), v) == Some(Term::Var(fresh))
+{
+    assert forall|v: u64|
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(v)
+        implies exists|fresh: u64|
+            lookup(view_subst(bindings), v) == Some(Term::Var(fresh)) by {
+        assert(term_clause_view_contains(clause, v)) by {
+            clause_variable_view(clause);
+            reveal(term_clause_view_contains);
+        }
+        assert(variables.contains(v));
+        assert(renamed_variable(view_subst(bindings), v).is_some());
+        let fresh = renamed_variable(view_subst(bindings), v).unwrap();
+        reveal(renamed_variable);
+        assert(lookup(view_subst(bindings), v) == Some(Term::Var(fresh)));
+    }
+}
+
+spec fn mapped_variable_set(variables: Set<u64>, sigma: Substitution) -> Set<u64> {
+    Set::new(|fresh: u64| exists|source: u64|
+        variables.contains(source) && renamed_variable(sigma, source) == Some(fresh)).unwrap()
+}
+
+spec fn standardized_apart_valid(left: ExecClause, right: ExecClause, sigma_left: Substitution,
+    sigma_right: Substitution) -> bool
+{
+    freshening_valid(exec_clause_variables(left), sigma_left, exec_clause_variables(right))
+        && freshening_valid(exec_clause_variables(right), sigma_right,
+            mapped_variable_set(exec_clause_variables(left), sigma_left))
+        && sets_disjoint(
+            mapped_variable_set(exec_clause_variables(left), sigma_left),
+            mapped_variable_set(exec_clause_variables(right), sigma_right),
+        )
+}
+
+spec fn collection_complete(variables: Seq<u64>, expected: Set<u64>) -> bool {
+    forall|v: u64| expected.contains(v) ==> variables.contains(v)
+}
+
+spec fn collection_exact(variables: Seq<u64>, expected: Set<u64>) -> bool {
+    collection_complete(variables, expected)
+        && forall|v: u64| variables.contains(v) ==> expected.contains(v)
+}
+
+proof fn append_keeps_set_member(values: Seq<u64>, value: u64, member: u64)
+    requires values.contains(member)
+    ensures values.push(value).contains(member)
+{
+    assert(exists|i: int| 0 <= i < values.len() && values[i] == member);
+    let i = choose|i: int| 0 <= i < values.len() && values[i] == member;
+    assert(i < values.push(value).len());
+    assert(values.push(value)[i] == member);
+}
+
+proof fn set_member_to_exec_seq(values: &Vec<u64>, member: u64)
+    requires values@.contains(member)
+    ensures exists|i: int| 0 <= i < values@.len() && values@[i] == member
+{}
+
+proof fn add_variable_keeps_old_members(values: Seq<u64>, variable: u64, member: u64)
+    requires values.contains(member)
+    ensures values.contains(variable)
+        || values.push(variable).contains(member)
+{
+    if values.contains(variable) {
+        assert(values.contains(variable));
+    } else {
+        append_keeps_set_member(values, variable, member);
+    }
+}
+
+fn contains_u64(values: &Vec<u64>, needle: u64) -> (found: bool)
+    ensures found == values@.contains(needle)
+{
+    let mut i: usize = 0;
+    while i < values.len()
+        invariant
+            i <= values.len(),
+            forall|k: int| 0 <= k < i as int ==> values@[k] != needle,
+        decreases values.len() - i
+    {
+        if values[i] == needle {
+            assert(values@.contains(needle));
+            return true;
+        }
+        assert(values@[i as int] != needle);
+        i += 1;
+    }
+    assert forall|k: int| 0 <= k < values@.len() implies values@[k] != needle by {
+        assert(k < i as int);
+    }
+    assert(!values@.contains(needle));
+    false
+}
+
+fn term_contains_variable(term: &ExecTerm, variable: u64) -> (found: bool)
+    ensures found == exec_term_variables(*term).contains(variable)
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => *v == variable,
+        ExecTerm::Const(_) => false,
+        ExecTerm::App1(_, child) => term_contains_variable(child, variable),
+        ExecTerm::App2(_, left, right) =>
+            term_contains_variable(left, variable) || term_contains_variable(right, variable),
+    }
+}
+
+fn atom_contains_variable(atom: &ExecAtom, variable: u64) -> (found: bool)
+    ensures found == exec_atom_variables(*atom).contains(variable)
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => false,
+        ExecAtom::Pred1(_, arg) => term_contains_variable(arg, variable),
+        ExecAtom::Pred2(_, left, right) =>
+            term_contains_variable(left, variable) || term_contains_variable(right, variable),
+        ExecAtom::Eq(left, right) =>
+            term_contains_variable(left, variable) || term_contains_variable(right, variable),
+    }
+}
+
+fn clause_view_contains_variable(clause: &ExecClause, variable: u64) -> (found: bool)
+    ensures found == term_clause_view_contains(*clause, variable)
+{
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant i <= clause.literals.len(),
+            forall|j: int| 0 <= j < i as int
+                ==> !literal_variables(view_literal(clause.literals@[j])).contains(variable)
+        decreases clause.literals.len() - i
+    {
+        let current = &clause.literals[i];
+        if atom_contains_variable(&current.atom, variable) {
+            assert(literal_variables(view_literal(*current)).contains(variable)) by {
+                literal_variable_view(*current);
+            }
+            assert(term_clause_view_contains(*clause, variable));
+            return true;
+        }
+        assert(!literal_variables(view_literal(*current)).contains(variable)) by {
+            literal_variable_view(*current);
+        }
+        i += 1;
+    }
+    false
+}
+
+fn term_variables_covered(term: &ExecTerm, variables: &Vec<u64>) -> (covered: bool)
+    ensures covered == variables_subset(*term, variables@)
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => contains_u64(variables, *v),
+        ExecTerm::Const(_) => true,
+        ExecTerm::App1(_, child) => term_variables_covered(child, variables),
+        ExecTerm::App2(_, left, right) =>
+            term_variables_covered(left, variables) && term_variables_covered(right, variables),
+    }
+}
+
+fn atom_variables_covered(atom: &ExecAtom, variables: &Vec<u64>) -> (covered: bool)
+    ensures covered == forall|v: u64| exec_atom_variables(*atom).contains(v)
+        ==> variables@.contains(v)
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => true,
+        ExecAtom::Pred1(_, arg) => term_variables_covered(arg, variables),
+        ExecAtom::Pred2(_, left, right) =>
+            term_variables_covered(left, variables) && term_variables_covered(right, variables),
+        ExecAtom::Eq(left, right) =>
+            term_variables_covered(left, variables) && term_variables_covered(right, variables),
+    }
+}
+
+fn literal_variables_covered(literal: &ExecLiteral, variables: &Vec<u64>) -> (covered: bool)
+    ensures covered == forall|v: u64| exec_atom_variables(literal.atom).contains(v)
+        ==> variables@.contains(v)
+{
+    atom_variables_covered(&literal.atom, variables)
+}
+
+fn clause_variables_covered(clause: &ExecClause, variables: &Vec<u64>) -> (covered: bool)
+    ensures covered ==> forall|v: u64| term_clause_view_contains(*clause, v)
+        ==> variables@.contains(v)
+{
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant i <= clause.literals.len(),
+            forall|v: u64, j: int| 0 <= j < i as int
+                && #[trigger] exec_atom_variables(clause.literals@[j].atom).contains(v)
+                ==> variables@.contains(v)
+        decreases clause.literals.len() - i
+    {
+        let lit_covered = literal_variables_covered(&clause.literals[i], variables);
+        if !lit_covered { return false; }
+        assert forall|v: u64|
+            exec_atom_variables(clause.literals@[i as int].atom).contains(v)
+        implies variables@.contains(v) by {
+            assert(lit_covered);
+        }
+        i += 1;
+    }
+    assert(i == clause.literals.len());
+    assert forall|v: u64| term_clause_view_contains(*clause, v)
+        implies variables@.contains(v) by {
+        let literal_index = choose|j: int| 0 <= j < clause.literals@.len()
+            && literal_variables(view_literal(clause.literals@[j])).contains(v);
+        assert(literal_variables(view_literal(clause.literals@[literal_index]))
+            == exec_atom_variables(clause.literals@[literal_index].atom)) by {
+            literal_variable_view(clause.literals@[literal_index]);
+        }
+        assert(exec_atom_variables(clause.literals@[literal_index].atom).contains(v));
+        assert(variables@.contains(v));
+    }
+    true
+}
+
+proof fn selected_literal_variables_are_clause_variables(
+    clause: ExecClause,
+    literal_index: int,
+    variable: u64,
+)
+    requires
+        0 <= literal_index < clause.literals@.len(),
+        literal_variables(view_literal(clause.literals@[literal_index])).contains(variable),
+    ensures term_clause_view_contains(clause, variable)
+{}
+
+fn consume_work(work: &mut usize, limit: usize) -> (ok: bool)
+    ensures
+        ok ==> *final(work) == old(work) + 1,
+        ok ==> old(work) < limit && *final(work) <= limit,
+        !ok ==> *final(work) == *old(work),
+{
+    if *work >= limit { false } else { *work += 1; true }
+}
+
+fn add_variable(values: &mut Vec<u64>, variable: u64)
+    ensures final(values)@.contains(variable),
+        forall|v: u64| old(values)@.contains(v) ==> final(values)@.contains(v),
+{
+    values.push(variable);
+    assert(values@ == old(values)@.push(variable));
+    assert(old(values)@.len() < values@.len());
+    assert(values@[old(values)@.len() as int] == variable);
+    assert(values@.contains(variable));
+    assert forall|v: u64| old(values)@.contains(v) implies values@.contains(v) by {
+        append_keeps_set_member(old(values)@, variable, v);
+    }
+}
+
+fn collect_term_variables_exec(
+    term: &ExecTerm,
+    variables: &mut Vec<u64>,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    ensures ok ==> forall|v: u64| exec_term_variables(*term).contains(v)
+            ==> final(variables)@.contains(v),
+        ok ==> forall|v: u64| old(variables)@.contains(v) ==> final(variables)@.contains(v),
+        ok ==> *old(work) <= limit && *final(work) <= limit,
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => {
+            if !consume_work(work, limit) { return false; }
+            add_variable(variables, *v);
+            true
+        },
+        ExecTerm::Const(_) => consume_work(work, limit),
+        ExecTerm::App1(_, child) => {
+            if !consume_work(work, limit) { return false; }
+            collect_term_variables_exec(child, variables, work, limit)
+        },
+        ExecTerm::App2(_, left, right) => {
+            if !consume_work(work, limit) { return false; }
+            if !collect_term_variables_exec(left, variables, work, limit) { return false; }
+            if !collect_term_variables_exec(right, variables, work, limit) { return false; }
+            true
+        },
+    }
+}
+
+fn collect_atom_variables_exec(
+    atom: &ExecAtom,
+    variables: &mut Vec<u64>,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *old(work) <= limit
+    ensures ok ==> forall|v: u64| exec_atom_variables(*atom).contains(v)
+            ==> final(variables)@.contains(v),
+        ok ==> forall|v: u64| old(variables)@.contains(v)
+            ==> final(variables)@.contains(v),
+        ok ==> *old(work) <= limit && *final(work) <= limit,
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => true,
+        ExecAtom::Pred1(_, arg) =>
+            collect_term_variables_exec(arg, variables, work, limit),
+        ExecAtom::Pred2(_, left, right) =>
+            collect_term_variables_exec(left, variables, work, limit)
+                && collect_term_variables_exec(right, variables, work, limit),
+        ExecAtom::Eq(left, right) =>
+            collect_term_variables_exec(left, variables, work, limit)
+                && collect_term_variables_exec(right, variables, work, limit),
+    }
+}
+
+fn collect_clause_variables_exec(
+    clause: &ExecClause,
+    variables: &mut Vec<u64>,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *old(work) <= limit
+    ensures ok ==> forall|v: u64, j: int|
+            0 <= j < clause.literals@.len()
+                && #[trigger] exec_atom_variables(clause.literals@[j].atom).contains(v)
+            ==> final(variables)@.contains(v),
+        ok ==> forall|v: u64| old(variables)@.contains(v)
+            ==> final(variables)@.contains(v),
+        ok ==> *old(work) <= limit && *final(work) <= limit,
+{
+    if !consume_work(work, limit) { return false; }
+    let mut literal_index: usize = 0;
+    while literal_index < clause.literals.len()
+        invariant literal_index <= clause.literals.len(),
+            *work <= limit,
+            forall|v: u64, j: int| 0 <= j < literal_index as int
+                && #[trigger] exec_atom_variables(clause.literals@[j].atom).contains(v)
+                ==> variables@.contains(v),
+            forall|v: u64| old(variables)@.contains(v) ==> variables@.contains(v),
+        decreases clause.literals.len() - literal_index
+    {
+        if !collect_atom_variables_exec(
+            &clause.literals[literal_index].atom, variables, work, limit,
+        ) { return false; }
+        assert forall|v: u64|
+            exec_atom_variables(clause.literals@[literal_index as int].atom).contains(v)
+            implies variables@.contains(v) by {}
+        literal_index += 1;
+    }
+    assert(*work <= limit);
+    true
+}
+
+fn collect_clause_variables_bounded(
+    clause: &ExecClause,
+    work_limit: usize,
+) -> (result: Option<Vec<u64>>)
+    ensures match result {
+        Some(variables) => clause_collection_exact(*clause, variables@),
+        None => true,
+    }
+{
+    if work_limit < 8 || clause.literals.len() > 64 { return None; }
+    let mut variables: Vec<u64> = Vec::new();
+    let mut work: usize = 0;
+    if collect_clause_variables_exec(clause, &mut variables, &mut work, work_limit) {
+        let covered = clause_variables_covered(clause, &variables);
+        if covered {
+            let mut i: usize = 0;
+            while i < variables.len()
+                invariant i <= variables.len(),
+                    forall|j: int| 0 <= j < i as int
+                        ==> term_clause_view_contains(*clause, variables@[j]),
+                decreases variables.len() - i
+            {
+                if !clause_view_contains_variable(clause, variables[i]) { return None; }
+                assert(term_clause_view_contains(*clause, variables@[i as int]));
+                i += 1;
+            }
+            assert forall|v: u64| variables@.contains(v)
+                implies term_clause_view_contains(*clause, v) by {
+                let index = choose|j: int| 0 <= j < variables@.len() && variables@[j] == v;
+                assert(index < i as int);
+            }
+            assert forall|v: u64| term_clause_view_contains(*clause, v)
+                implies variables@.contains(v) by {
+                let literal_index = choose|j: int| 0 <= j < clause.literals@.len()
+                    && literal_variables(view_literal(clause.literals@[j])).contains(v);
+                assert(exec_atom_variables(clause.literals@[literal_index].atom).contains(v)) by {
+                    literal_variable_view(clause.literals@[literal_index]);
+                }
+                assert(variables@.contains(v));
+            }
+            Some(variables)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn check_freshening(
+    original: &Vec<u64>,
+    avoid: &Vec<u64>,
+    bindings: &Vec<ExecBinding>,
+    work_limit: usize,
+) -> (valid: bool)
+    ensures
+        valid ==> freshening_sequence_valid(original@, avoid@, view_subst(bindings@)),
+        valid ==> freshening_images_are_variable(bindings@, original@),
+        valid ==> forall|v: u64| original@.contains(v)
+            ==> exists|fresh: u64|
+                lookup(view_subst(bindings@), v) == Some(Term::Var(fresh))
+{
+    if !check_domain_unique(bindings, work_limit) {
+        return false;
+    }
+    let mut i: usize = 0;
+    let mut work: usize = 0;
+    while i < original.len()
+        invariant
+            i <= original.len(),
+            work <= work_limit,
+            forall|k: int| 0 <= k < i as int
+                && #[trigger] renamed_variable(view_subst(bindings@), original@[k]).is_some()
+                ==> exists|fresh: u64|
+                    lookup(view_subst(bindings@), original@[k]) == Some(Term::Var(fresh)),
+            forall|k: int| 0 <= k < i as int
+                && #[trigger] renamed_variable(view_subst(bindings@), original@[k]).is_some()
+                ==> exists|fresh: u64|
+                    lookup(view_subst(bindings@), original@[k]) == Some(Term::Var(fresh)),
+            forall|k: int| 0 <= k < i as int
+                ==> renamed_variable(view_subst(bindings@), original@[k]).is_some()
+                    && !avoid@.contains(
+                        renamed_variable(view_subst(bindings@), original@[k]).unwrap()),
+            forall|k: int, l: int| 0 <= k < l < i as int
+                && original@[k] != original@[l]
+                ==> renamed_variable(view_subst(bindings@), original@[k])
+                    != renamed_variable(view_subst(bindings@), original@[l]),
+        decreases original.len() - i
+    {
+        if work >= work_limit { return false; }
+        work += 1;
+        if work >= work_limit && i + 1 < original.len() { return false; }
+        let Some(mapped) = lookup_exec(bindings, original[i]) else { return false; };
+        let ExecTerm::Var(fresh) = mapped else { return false; };
+        if contains_u64(avoid, fresh) { return false; }
+        assert(renamed_variable(view_subst(bindings@), original@[i as int]) == Some(fresh));
+        assert(lookup(view_subst(bindings@), original@[i as int]) == Some(Term::Var(fresh))) by {
+            reveal(renamed_variable);
+        }
+        assert(exists|fresh_id: u64|
+            lookup(view_subst(bindings@), original@[i as int]) == Some(Term::Var(fresh_id)));
+        assert(!avoid@.contains(fresh));
+        let mut j: usize = 0;
+        while j < i
+            invariant
+                j <= i, i < original.len(), work <= work_limit,
+                forall|k: int| 0 <= k < j as int && original@[k] != original@[i as int]
+                    ==> renamed_variable(view_subst(bindings@), original@[k])
+                        != Some(fresh),
+            decreases i - j
+        {
+            assert(j < original.len());
+            assert(i < original.len());
+            if work >= work_limit { return false; }
+            work += 1;
+            let same_source = original[j] == original[i];
+            let mut diff_image = false;
+            if !same_source {
+                let Some(previous) = lookup_exec(bindings, original[j]) else { return false; };
+                let ExecTerm::Var(previous_fresh) = previous else { return false; };
+                if fresh == previous_fresh { return false; }
+                diff_image = true;
+                assert(renamed_variable(view_subst(bindings@), original@[j as int])
+                    == Some(previous_fresh));
+            }
+            assert forall|k: int| 0 <= k < (j + 1) as int
+                && original@[k] != original@[i as int]
+                implies renamed_variable(view_subst(bindings@), original@[k])
+                    != Some(fresh) by {
+                if k < j as int {
+                } else {
+                    assert(k == j as int);
+                    assert(!same_source);
+                    assert(diff_image);
+                }
+            }
+            j += 1;
+        }
+        assert forall|k: int| 0 <= k < i as int
+            && original@[k] != original@[i as int]
+            implies renamed_variable(view_subst(bindings@), original@[k])
+                != renamed_variable(view_subst(bindings@), original@[i as int]) by {
+            assert(renamed_variable(view_subst(bindings@), original@[i as int]) == Some(fresh));
+        }
+        i += 1;
+    }
+    assert(i == original.len());
+    assert forall|k: int| 0 <= k < original@.len()
+        implies renamed_variable(view_subst(bindings@), original@[k]).is_some() by {
+        assert(k < i as int);
+    }
+    assert forall|v: u64| original@.contains(v)
+        implies exists|fresh: u64|
+            lookup(view_subst(bindings@), v) == Some(Term::Var(fresh)) by {
+        let position = choose|k: int| 0 <= k < original@.len() && original@[k] == v;
+        assert(exists|fresh: u64|
+            lookup(view_subst(bindings@), original@[position]) == Some(Term::Var(fresh)));
+        assert(original@[position] == v);
+    }
+    true
+}
+
+fn freshen_clause_apart(
+    clause: &ExecClause,
+    avoid: &Vec<u64>,
+    bindings: &Vec<ExecBinding>,
+    work_limit: usize,
+) -> (result: Option<ExecClause>)
+    ensures match result {
+        Some(fresh) => view_clause(fresh)
+            == substitute_clause(view_clause(*clause), view_subst(bindings@))
+            && (forall|v: u64| term_clause_view_contains(*clause, v)
+                ==> exists|fresh_id: u64|
+                    lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id))),
+        None => true,
+    },
+        result.is_some() ==> forall|i: int| 0 <= i < clause.literals@.len()
+            ==> renames_variables_on(view_subst(bindings@),
+                literal_variables(view_literal(clause.literals@[i])))
+{
+    let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
+        return None;
+    };
+    let freshening_ok = check_freshening(&variables, avoid, bindings, work_limit);
+    if !freshening_ok {
+        return None;
+    }
+    assert(clause_collection_exact(*clause, variables@));
+    assert(freshening_images_are_variable(bindings@, variables@));
+    proof {
+        assert forall|i: int| 0 <= i < clause.literals@.len()
+            implies renames_variables_on(view_subst(bindings@),
+                literal_variables(view_literal(clause.literals@[i]))) by {
+            collected_renaming_covers_selected_literal(*clause, variables@, bindings@, i);
+        }
+    }
+    let fresh = freshen_clause_with_variable_map(clause, &variables, bindings);
+    Some(fresh)
+}
+
+fn freshen_clause_with_variable_map(
+    clause: &ExecClause,
+    variables: &Vec<u64>,
+    bindings: &Vec<ExecBinding>,
+) -> (fresh: ExecClause)
+    requires
+        clause_collection_exact(*clause, variables@),
+        freshening_images_are_variable(bindings@, variables@),
+    ensures view_clause(fresh)
+            == substitute_clause(view_clause(*clause), view_subst(bindings@)),
+        forall|v: u64| term_clause_view_contains(*clause, v)
+            ==> exists|fresh_id: u64|
+                lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id))
+{
+    let fresh = substitute_clause_exec(clause, bindings);
+    assert(view_clause(fresh)
+        == substitute_clause(view_clause(*clause), view_subst(bindings@)));
+    assert forall|v: u64| term_clause_view_contains(*clause, v)
+        implies exists|fresh_id: u64|
+            lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id)) by {
+        renaming_images_cover_clause_variables(*clause, variables@, bindings@, v);
+    }
+    fresh
+}
+
+fn freshen_clause_refines_renaming(
+    clause: &ExecClause,
+    avoid: &Vec<u64>,
+    bindings: &Vec<ExecBinding>,
+    work_limit: usize,
+) -> (result: Option<ExecClause>)
+    ensures match result {
+        Some(fresh) => view_clause(fresh)
+            == substitute_clause(view_clause(*clause), view_subst(bindings@))
+            && (forall|v: u64| term_clause_view_contains(*clause, v)
+                ==> exists|fresh_id: u64|
+                    lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id))),
+        None => true,
+    }
+{
+    freshen_clause_apart(clause, avoid, bindings, work_limit)
+}
+
+fn check_standardized_apart_pair(
+    left: &ExecClause,
+    right: &ExecClause,
+    left_mapping: &Vec<ExecBinding>,
+    right_mapping: &Vec<ExecBinding>,
+    work_limit: usize,
+) -> (valid: bool)
+{
+    if work_limit == 0 { return false; }
+    let pair_budget = work_limit / 4;
+    let Some(left_variables) = collect_clause_variables_bounded(left, work_limit) else {
+        return false;
+    };
+    let Some(right_variables) = collect_clause_variables_bounded(right, work_limit) else {
+        return false;
+    };
+    if !check_freshening(&left_variables, &right_variables, left_mapping, pair_budget) {
+        return false;
+    }
+    let Some(fresh_left) = freshen_clause_apart(left, &right_variables, left_mapping, pair_budget) else {
+        return false;
+    };
+    let mut avoid: Vec<u64> = Vec::new();
+    let mut i: usize = 0;
+    while i < right_variables.len()
+        invariant i <= right_variables.len()
+        decreases right_variables.len() - i
+    {
+        let value = right_variables[i];
+        if !contains_u64(&avoid, value) { avoid.push(value); }
+        i += 1;
+    }
+    let Some(fresh_left_variables) = collect_clause_variables_bounded(&fresh_left, pair_budget) else {
+        return false;
+    };
+    let mut k: usize = 0;
+    while k < fresh_left_variables.len()
+        invariant k <= fresh_left_variables.len()
+        decreases fresh_left_variables.len() - k
+    {
+        let value = fresh_left_variables[k];
+        if !contains_u64(&avoid, value) { avoid.push(value); }
+        k += 1;
+    }
+    if !check_freshening(&right_variables, &avoid, right_mapping, pair_budget) {
+        return false;
+    }
+    let Some(fresh_right) = freshen_clause_apart(right, &avoid, right_mapping, pair_budget) else {
+        return false;
+    };
+    let Some(fresh_right_variables) = collect_clause_variables_bounded(&fresh_right, pair_budget) else {
+        return false;
+    };
+    let mut j: usize = 0;
+    while j < fresh_right_variables.len()
+        invariant j <= fresh_right_variables.len()
+        decreases fresh_right_variables.len() - j
+    {
+        if contains_u64(&fresh_left_variables, fresh_right_variables[j]) {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
+spec fn exec_terms_bound(term: ExecTerm, bound: nat) -> bool
+    decreases term
+{
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => true,
+        ExecTerm::App1(_, child) => exec_terms_bound(*child, bound),
+        ExecTerm::App2(_, left, right) =>
+            exec_terms_bound(*left, bound) && exec_terms_bound(*right, bound),
+    }
+}
+
+spec fn view_exec_position(slot: u64, path: Seq<u64>) -> (nat, TermPosition) {
+    (slot as nat, view_position(path))
+}
+
+spec fn view_subst(bindings: Seq<ExecBinding>) -> Substitution {
+    Substitution {
+        bindings: bindings.map(|_i: int, b: ExecBinding| (b.variable, view(b.replacement))),
+    }
+}
+
+spec fn apply_exec_model(term: ExecTerm, bindings: Seq<ExecBinding>) -> ExecTerm
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => match lookup(view_subst(bindings), v) {
+            Some(Term::Var(fresh)) => ExecTerm::Var(fresh),
+            Some(Term::Const(c)) => ExecTerm::Const(c),
+            Some(Term::App1(f, child)) => ExecTerm::App1(f, Box::new(view_to_exec(*child))),
+            Some(Term::App2(f, left, right)) => ExecTerm::App2(
+                f, Box::new(view_to_exec(*left)), Box::new(view_to_exec(*right)),
+            ),
+            None => ExecTerm::Var(v),
+        },
+        ExecTerm::Const(c) => ExecTerm::Const(c),
+        ExecTerm::App1(f, child) => ExecTerm::App1(f,
+            Box::new(apply_exec_model(*child, bindings))),
+        ExecTerm::App2(f, left, right) => ExecTerm::App2(
+            f,
+            Box::new(apply_exec_model(*left, bindings)),
+            Box::new(apply_exec_model(*right, bindings)),
+        ),
+    }
+}
+
+proof fn view_to_exec_roundtrip(term: Term)
+    ensures view(view_to_exec(term)) == term
+    decreases term
+{
+    match term {
+        Term::Var(_) | Term::Const(_) => {},
+        Term::App1(_, child) => view_to_exec_roundtrip(*child),
+        Term::App2(_, left, right) => {
+            view_to_exec_roundtrip(*left);
+            view_to_exec_roundtrip(*right);
+        },
+    }
+}
+
+spec fn view_to_exec(term: Term) -> ExecTerm
+    decreases term
+{
+    match term {
+        Term::Var(v) => ExecTerm::Var(v),
+        Term::Const(c) => ExecTerm::Const(c),
+        Term::App1(f, child) => ExecTerm::App1(f, Box::new(view_to_exec(*child))),
+        Term::App2(f, left, right) => ExecTerm::App2(
+            f, Box::new(view_to_exec(*left)), Box::new(view_to_exec(*right)),
+        ),
+    }
+}
+
+spec fn view_position(path: Seq<u64>) -> TermPosition {
+    TermPosition { path: path.map(|_i: int, child: u64| child as nat) }
+}
+
+/// Bounded-by-input executable traversal for an explicit term-tree path. An
+/// invalid child index, a path continuing below a variable/constant, or a
+/// depth beyond the path returns `None` rather than accepting a partial walk.
+fn subterm_at_exec(term: &ExecTerm, path: &Vec<u64>, depth: usize) -> (result: Option<ExecTerm>)
+    requires depth <= path.len()
+    ensures match result {
+        Some(found) => term_at_position(view(*term), view_position(path@), depth as nat)
+            == Some(view(found)),
+        None => term_at_position(view(*term), view_position(path@), depth as nat) == None,
+    },
+        result.is_some() == term_at_position(view(*term), view_position(path@), depth as nat).is_some()
+    decreases term
+{
+    if depth == path.len() {
+        return Some(copy_term(term));
+    }
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => None,
+        ExecTerm::App1(_, child) => {
+            if path[depth] == 0 {
+                subterm_at_exec(child, path, depth + 1)
+            } else {
+                None
+            }
+        },
+        ExecTerm::App2(_, left, right) => {
+            if path[depth] == 0 {
+                subterm_at_exec(left, path, depth + 1)
+            } else if path[depth] == 1 {
+                subterm_at_exec(right, path, depth + 1)
+            } else {
+                None
+            }
+        },
+    }
+}
+
+/// Executable replacement at an explicit position. The returned term refines
+/// the mathematical replay operation; all malformed paths fail closed.
+fn replace_at_exec(
+    term: &ExecTerm,
+    path: &Vec<u64>,
+    replacement: &ExecTerm,
+    depth: usize,
+) -> (result: Option<ExecTerm>)
+    requires depth <= path.len()
+    ensures match result {
+        Some(replaced) => replace_at_position(
+            view(*term), view_position(path@), view(*replacement), depth as nat,
+        ) == Some(view(replaced)),
+        None => replace_at_position(
+            view(*term), view_position(path@), view(*replacement), depth as nat,
+        ) == None,
+    },
+        result.is_some() == replace_at_position(
+            view(*term), view_position(path@), view(*replacement), depth as nat,
+        ).is_some()
+    decreases term
+{
+    if depth == path.len() {
+        return Some(copy_term(replacement));
+    }
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => None,
+        ExecTerm::App1(f, child) => {
+            if path[depth] == 0 {
+                match replace_at_exec(child, path, replacement, depth + 1) {
+                    Some(child2) => Some(ExecTerm::App1(*f, Box::new(child2))),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        },
+        ExecTerm::App2(f, left, right) => {
+            if path[depth] == 0 {
+                match replace_at_exec(left, path, replacement, depth + 1) {
+                    Some(left2) => Some(ExecTerm::App2(*f, Box::new(left2),
+                        Box::new(copy_term(right)))),
+                    None => None,
+                }
+            } else if path[depth] == 1 {
+                match replace_at_exec(right, path, replacement, depth + 1) {
+                    Some(right2) => Some(ExecTerm::App2(*f, Box::new(copy_term(left)),
+                        Box::new(right2))),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        },
+    }
+}
+
+fn substitute_atom_exec(atom: &ExecAtom, bindings: &Vec<ExecBinding>) -> (result: ExecAtom)
+    ensures view_atom(result) == substitute_atom(view_atom(*atom), view_subst(bindings@))
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(p) => ExecAtom::Pred0(*p),
+        ExecAtom::Pred1(p, arg) => ExecAtom::Pred1(
+            *p, Box::new(apply_exec(arg, bindings)),
+        ),
+        ExecAtom::Pred2(p, left, right) => ExecAtom::Pred2(
+            *p,
+            Box::new(apply_exec(left, bindings)),
+            Box::new(apply_exec(right, bindings)),
+        ),
+        ExecAtom::Eq(left, right) => ExecAtom::Eq(
+            apply_exec(left, bindings), apply_exec(right, bindings),
+        ),
+    }
+}
+
+fn substitute_literal_exec(literal: &ExecLiteral, bindings: &Vec<ExecBinding>)
+    -> (result: ExecLiteral)
+    ensures view_literal(result) == substitute_literal(view_literal(*literal), view_subst(bindings@))
+{
+    ExecLiteral {
+        positive: literal.positive,
+        atom: substitute_atom_exec(&literal.atom, bindings),
+    }
+}
+
+fn substitute_clause_exec(clause: &ExecClause, bindings: &Vec<ExecBinding>)
+    -> (result: ExecClause)
+    ensures view_clause(result)
+        == substitute_clause(view_clause(*clause), view_subst(bindings@))
+        && result.literals@.len() == clause.literals@.len()
+        && forall|j: int| 0 <= j < result.literals@.len()
+            ==> view_literal(result.literals@[j])
+                == substitute_literal(view_clause(*clause).literals[j], view_subst(bindings@))
+{
+    let mut literals: Vec<ExecLiteral> = Vec::new();
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant
+            i <= clause.literals.len(),
+            literals@.len() == i,
+            forall|j: int| 0 <= j < i as int
+                ==> view_literal(literals@[j])
+                    == substitute_literal(view_clause(*clause).literals[j], view_subst(bindings@)),
+        decreases clause.literals.len() - i
+    {
+        let literal = substitute_literal_exec(&clause.literals[i], bindings);
+        assert(view_literal(literal)
+            == substitute_literal(view_literal(clause.literals@[i as int]), view_subst(bindings@)));
+        literals.push(literal);
+        i += 1;
+    }
+    let result = ExecClause { literals };
+    assert(result.literals@.len() == clause.literals@.len());
+    assert forall|j: int| 0 <= j < result.literals@.len()
+        implies view_literal(result.literals@[j])
+            == substitute_literal(view_clause(*clause).literals[j], view_subst(bindings@)) by {
+        assert(result.literals@[j] == literals@[j]);
+    }
+    assert(view_clause(result).literals
+        == substitute_clause(view_clause(*clause), view_subst(bindings@)).literals);
+    result
+}
+
+fn replace_clause_literal_exec(
+    clause: &ExecClause,
+    literal_index: usize,
+    slot: u64,
+    path: &Vec<u64>,
+    replacement: &ExecTerm,
+) -> (result: Option<ExecClause>)
+    ensures match result {
+        Some(replaced) => replace_clause_literal(
+            view_clause(*clause), literal_index as int, slot as nat,
+            view_position(path@), view(*replacement),
+        ) == Some(view_clause(replaced))
+            && replaced.literals@.len() == clause.literals@.len()
+            && forall|j: int| 0 <= j < replaced.literals@.len()
+                ==> view_literal(replaced.literals@[j])
+                    == match replace_clause_literal(
+                        view_clause(*clause), literal_index as int, slot as nat,
+                        view_position(path@), view(*replacement),
+                    ) {
+                        Some(result) => result.literals[j],
+                        None => view_clause(*clause).literals[j],
+                    },
+        None => replace_clause_literal(
+            view_clause(*clause), literal_index as int, slot as nat,
+            view_position(path@), view(*replacement),
+        ) == None,
+    }
+{
+    if literal_index >= clause.literals.len() {
+        return None;
+    }
+    match replace_literal_position_exec(
+        &clause.literals[literal_index], slot, path, replacement,
+    ) {
+        None => None,
+        Some(rewritten) => {
+            let mut literals: Vec<ExecLiteral> = Vec::new();
+            let mut i: usize = 0;
+            while i < clause.literals.len()
+                invariant
+                    i <= clause.literals.len(),
+                    literals@.len() == i,
+                    literal_index < clause.literals.len(),
+                    forall|j: int| 0 <= j < i as int ==> if j == literal_index as int {
+                        view_literal(literals@[j]) == view_literal(rewritten)
+                    } else {
+                        view_literal(literals@[j]) == view_literal(clause.literals@[j])
+                    },
+                decreases clause.literals.len() - i
+            {
+                if i == literal_index {
+                    let copied = copy_literal(&rewritten);
+                    assert(view_literal(copied) == view_literal(rewritten));
+                    literals.push(copied);
+                } else {
+                    let copied = copy_literal(&clause.literals[i]);
+                    assert(view_literal(copied) == view_literal(clause.literals@[i as int]));
+                    literals.push(copied);
+                }
+                assert forall|j: int| 0 <= j < (i + 1) as int
+                    implies if j == literal_index as int {
+                        view_literal(literals@[j]) == view_literal(rewritten)
+                    } else {
+                        view_literal(literals@[j]) == view_literal(clause.literals@[j])
+                    } by {
+                    if j < i as int {
+                    } else if i == literal_index {
+                        assert(j == literal_index as int);
+                    } else {
+                        assert(j == i as int);
+                    }
+                }
+                i += 1;
+            }
+            let result = ExecClause { literals };
+            assert(result.literals@.len() == clause.literals@.len());
+            assert forall|j: int| 0 <= j < result.literals@.len()
+                implies if j == literal_index as int {
+                    view_literal(result.literals@[j]) == view_literal(rewritten)
+                } else {
+                    view_literal(result.literals@[j]) == view_literal(clause.literals@[j])
+                } by {
+                assert(j < i as int);
+            }
+            assert(view_clause(result).literals
+                == view_clause(*clause).literals.update(
+                    literal_index as int, view_literal(rewritten)));
+            Some(result)
+        },
+    }
+}
+
+proof fn clause_literal_replacement_is_pointwise(
+    clause: ExecClause,
+    literal_index: int,
+    slot: nat,
+    position: TermPosition,
+    replacement: Term,
+    replaced: Clause,
+)
+    requires
+        0 <= literal_index < clause.literals@.len(),
+        replace_clause_literal(view_clause(clause), literal_index, slot, position, replacement)
+            == Some(replaced),
+    ensures replaced.literals.len() == clause.literals@.len()
+        && forall|j: int| 0 <= j < replaced.literals.len()
+            ==> replaced.literals[j] == if j == literal_index {
+                match replace_literal_at_position(
+                    view_literal(clause.literals@[literal_index]), slot, position, replacement,
+                ) {
+                    Some(literal) => literal,
+                    None => view_literal(clause.literals@[j]),
+                }
+            } else { view_literal(clause.literals@[j]) }
+{}
+
+fn executable_clause_replay_example()
+{
+    let clause = ExecClause {
+        literals: vec![
+            ExecLiteral {
+                positive: true,
+                atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(17))),
+            },
+            ExecLiteral {
+                positive: false,
+                atom: ExecAtom::Pred2(
+                    3,
+                    Box::new(ExecTerm::Const(5)),
+                    Box::new(ExecTerm::Var(17)),
+                ),
+            },
+        ],
+    };
+    let bindings = vec![ExecBinding { variable: 17, replacement: ExecTerm::Const(8) }];
+    let instance = substitute_clause_exec(&clause, &bindings);
+    assert(view_clause(instance)
+        == substitute_clause(view_clause(clause), view_subst(bindings@)));
+
+    let path = Vec::<u64>::new();
+    let replacement = ExecTerm::Const(11);
+    let rewritten = replace_clause_literal_exec(&instance, 1, 0, &path, &replacement);
+    assert(rewritten.is_some());
+
+    let invalid_index = replace_clause_literal_exec(&instance, 2, 0, &path, &replacement);
+    assert(invalid_index.is_none());
+}
+
+/// Positive and negative examples for the supplied finite-unifier checker.
+/// Substitutions have simultaneous, one-step RHS semantics; cyclic RHS terms
+/// are permitted as substitutions, but are accepted only when that one-step
+/// application makes the selected terms equal. The checker does not compute
+/// MGUs and does not impose a separate occurs-check completeness policy.
+fn executable_unifier_certificate_examples()
+{
+    let left = ExecTerm::Var(11);
+    let right = ExecTerm::Const(7);
+    let valid = vec![ExecBinding { variable: 11, replacement: ExecTerm::Const(7) }];
+    assert(valid@.len() == 1);
+    let valid_domain_unique = check_domain_unique(&valid, 10);
+    assert(valid_domain_unique);
+    let valid_result = check_unifier(&left, &right, &valid, 10);
+    assert(domain_unique(view_subst(valid@)));
+    assert(lookup(view_subst(valid@), 11) == Some(Term::Const(7)));
+    assert(valid_result);
+
+    let wrong_instance = vec![ExecBinding {
+        variable: 11, replacement: ExecTerm::Const(8),
+    }];
+    let wrong_instance_result = check_unifier(&left, &right, &wrong_instance, 1);
+    assert(domain_unique(view_subst(wrong_instance@)));
+    assert(lookup(view_subst(wrong_instance@), 11) == Some(Term::Const(8)));
+    assert(!wrong_instance_result);
+
+    let wrong_shape = ExecTerm::App1(4, Box::new(ExecTerm::Const(7)));
+    let wrong_shape_result = check_unifier(&left, &wrong_shape, &valid, 1);
+    assert(!wrong_shape_result);
+
+    let duplicate_domain = vec![
+        ExecBinding { variable: 11, replacement: ExecTerm::Const(7) },
+        ExecBinding { variable: 11, replacement: ExecTerm::Const(8) },
+    ];
+    let duplicate_domain_result = check_unifier(&left, &right, &duplicate_domain, 4);
+    assert(duplicate_domain[0].variable == duplicate_domain[1].variable);
+    assert(!duplicate_domain_result);
+
+    let distinct_domain = vec![
+        ExecBinding { variable: 11, replacement: ExecTerm::Const(7) },
+        ExecBinding { variable: 12, replacement: ExecTerm::Const(8) },
+    ];
+    let insufficient_domain_budget = check_domain_unique(&distinct_domain, 0);
+    assert(!insufficient_domain_budget);
+
+    let cyclic = vec![ExecBinding {
+        variable: 11,
+        replacement: ExecTerm::App1(5, Box::new(ExecTerm::Var(11))),
+    }];
+    let cycle_left = ExecTerm::Var(11);
+    let cycle_right = ExecTerm::Var(11);
+    assert(apply(view(cycle_left), view_subst(cyclic@))
+        == apply(view(cycle_right), view_subst(cyclic@)));
+    let cyclic_result = check_unifier(&cycle_left, &cycle_right, &cyclic, 1);
+    assert(cyclic_result);
+
+    // Adversarial case: repeated variable on left with conflicting distinct constants on right.
+    let repeated_var_left = ExecTerm::App2(
+        3,
+        Box::new(ExecTerm::Var(11)),
+        Box::new(ExecTerm::Var(11)),
+    );
+    let distinct_right = ExecTerm::App2(
+        3,
+        Box::new(ExecTerm::Const(7)),
+        Box::new(ExecTerm::Const(8)),
+    );
+    let repeated_conflict_unifier = vec![ExecBinding { variable: 11, replacement: ExecTerm::Const(7) }];
+    assert(view_subst(repeated_conflict_unifier@).bindings[0] == (11, Term::Const(7)));
+    assert(lookup(view_subst(repeated_conflict_unifier@), 11) == Some(Term::Const(7)));
+    assert(apply(Term::Var(11), view_subst(repeated_conflict_unifier@)) == Term::Const(7));
+    assert(apply(Term::Const(7), view_subst(repeated_conflict_unifier@)) == Term::Const(7));
+    assert(apply(Term::Const(8), view_subst(repeated_conflict_unifier@)) == Term::Const(8));
+    assert(apply(view(repeated_var_left), view_subst(repeated_conflict_unifier@))
+        == Term::App2(3, Box::new(Term::Const(7)), Box::new(Term::Const(7))));
+    assert(apply(view(distinct_right), view_subst(repeated_conflict_unifier@))
+        == Term::App2(3, Box::new(Term::Const(7)), Box::new(Term::Const(8))));
+    let repeated_conflict_result = check_unifier(&repeated_var_left, &distinct_right, &repeated_conflict_unifier, 1);
+    assert(!repeated_conflict_result);
+
+    // Repeated variable on left matching identical constants on right succeeds.
+    let same_right = ExecTerm::App2(
+        3,
+        Box::new(ExecTerm::Const(7)),
+        Box::new(ExecTerm::Const(7)),
+    );
+    let d1 = check_domain_unique(&repeated_conflict_unifier, 1);
+    assert(d1);
+    let repeated_match_result = check_unifier(&repeated_var_left, &same_right, &repeated_conflict_unifier, 1);
+    assert(repeated_match_result);
+
+    // Variable-to-variable matching.
+    let var_to_var_left = ExecTerm::App1(3, Box::new(ExecTerm::Var(11)));
+    let var_to_var_right = ExecTerm::App1(3, Box::new(ExecTerm::Var(12)));
+    let var_to_var_subst = vec![ExecBinding { variable: 11, replacement: ExecTerm::Var(12) }];
+    assert(view_subst(var_to_var_subst@).bindings[0] == (11, Term::Var(12)));
+    assert(lookup(view_subst(var_to_var_subst@), 11) == Some(Term::Var(12)));
+    assert(lookup_rec(view_subst(var_to_var_subst@).bindings, 12, 0) == None);
+    assert(lookup_rec(view_subst(var_to_var_subst@).bindings, 12, 1) == None);
+    assert(lookup(view_subst(var_to_var_subst@), 12) == None);
+    assert(apply(Term::Var(11), view_subst(var_to_var_subst@)) == Term::Var(12));
+    assert(apply(Term::Var(12), view_subst(var_to_var_subst@)) == Term::Var(12));
+    assert(apply(view(var_to_var_left), view_subst(var_to_var_subst@))
+        == Term::App1(3, Box::new(Term::Var(12))));
+    assert(apply(view(var_to_var_right), view_subst(var_to_var_subst@))
+        == Term::App1(3, Box::new(Term::Var(12))));
+    let d2 = check_domain_unique(&var_to_var_subst, 1);
+    assert(d2);
+    let var_to_var_result = check_unifier(&var_to_var_left, &var_to_var_right, &var_to_var_subst, 1);
+    assert(var_to_var_result);
+
+    // Variable-to-variable mismatch where the other variable is left unbound.
+    let var_to_var_mismatch = vec![ExecBinding { variable: 11, replacement: ExecTerm::Var(13) }];
+    assert(view_subst(var_to_var_mismatch@).bindings[0] == (11, Term::Var(13)));
+    assert(lookup(view_subst(var_to_var_mismatch@), 11) == Some(Term::Var(13)));
+    assert(lookup_rec(view_subst(var_to_var_mismatch@).bindings, 12, 0) == None);
+    assert(lookup_rec(view_subst(var_to_var_mismatch@).bindings, 12, 1) == None);
+    assert(lookup(view_subst(var_to_var_mismatch@), 12) == None);
+    assert(apply(Term::Var(11), view_subst(var_to_var_mismatch@)) == Term::Var(13));
+    assert(apply(Term::Var(12), view_subst(var_to_var_mismatch@)) == Term::Var(12));
+    assert(apply(view(var_to_var_left), view_subst(var_to_var_mismatch@))
+        == Term::App1(3, Box::new(Term::Var(13))));
+    assert(apply(view(var_to_var_right), view_subst(var_to_var_mismatch@))
+        == Term::App1(3, Box::new(Term::Var(12))));
+    let var_to_var_mismatch_result = check_unifier(&var_to_var_left, &var_to_var_right, &var_to_var_mismatch, 1);
+    assert(!var_to_var_mismatch_result);
+
+    // Target variable occurring below a function symbol with simultaneous bindings.
+    let nested_var_right = ExecTerm::App1(3, Box::new(ExecTerm::Var(12)));
+    let nested_var_subst = vec![
+        ExecBinding { variable: 11, replacement: ExecTerm::App1(3, Box::new(ExecTerm::Const(9))) },
+        ExecBinding { variable: 12, replacement: ExecTerm::Const(9) },
+    ];
+    assert(view_subst(nested_var_subst@).bindings[0] == (11, Term::App1(3, Box::new(Term::Const(9)))));
+    assert(view_subst(nested_var_subst@).bindings[1] == (12, Term::Const(9)));
+    assert(view_subst(nested_var_subst@).bindings[0].0 != view_subst(nested_var_subst@).bindings[1].0);
+    assert(domain_unique(view_subst(nested_var_subst@)));
+    assert(lookup_rec(view_subst(nested_var_subst@).bindings, 11, 1) == Some(Term::App1(3, Box::new(Term::Const(9)))));
+    assert(lookup_rec(view_subst(nested_var_subst@).bindings, 11, 2) == Some(Term::App1(3, Box::new(Term::Const(9)))));
+    assert(lookup(view_subst(nested_var_subst@), 11) == Some(Term::App1(3, Box::new(Term::Const(9)))));
+    assert(lookup_rec(view_subst(nested_var_subst@).bindings, 12, 2) == Some(Term::Const(9)));
+    assert(lookup(view_subst(nested_var_subst@), 12) == Some(Term::Const(9)));
+    assert(apply(Term::Var(11), view_subst(nested_var_subst@)) == Term::App1(3, Box::new(Term::Const(9))));
+    assert(apply(Term::Var(12), view_subst(nested_var_subst@)) == Term::Const(9));
+    assert(apply(view(ExecTerm::Var(11)), view_subst(nested_var_subst@))
+        == apply(view(nested_var_right), view_subst(nested_var_subst@)));
+    assert(nested_var_subst@.len() == 2);
+    let d3 = check_domain_unique(&nested_var_subst, 10);
+    assert(d3);
+    let nested_var_result = check_unifier(&ExecTerm::Var(11), &nested_var_right, &nested_var_subst, 10);
+    assert(nested_var_result);
+}
+
+fn executable_standardization_apart_example() -> bool
+{
+    let left = ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))),
+        }],
+    };
+    let right = ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(2, Box::new(ExecTerm::App1(
+                3, Box::new(ExecTerm::Var(7)),
+            ))),
+        }],
+    };
+    let left_variables = collect_clause_variables_bounded(&left, 10000);
+    let right_variables = collect_clause_variables_bounded(&right, 10000);
+    let left_variables = match left_variables {
+        Some(vars) => vars,
+        None => Vec::new(),
+    };
+    let right_variables = match right_variables {
+        Some(vars) => vars,
+        None => Vec::new(),
+    };
+
+    let left_mapping = vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(100) }];
+    let right_mapping = vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(200) }];
+    let valid = check_standardized_apart_pair(
+        &left, &right, &left_mapping, &right_mapping, 100000,
+    );
+    let colliding_mapping = vec![ExecBinding {
+        variable: 7,
+        replacement: ExecTerm::Var(100),
+    }];
+    let collision = check_standardized_apart_pair(
+        &left, &right, &left_mapping, &colliding_mapping, 100000,
+    );
+
+    // Parent variable ID collision: target clause already contains variable 100,
+    // so mapping left's variable 7 to 100 is rejected by the avoid set.
+    let right_with_100 = ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(100))),
+        }],
+    };
+    let right_with_100_mapping = vec![ExecBinding { variable: 100, replacement: ExecTerm::Var(200) }];
+    let pre_existing_collision = check_standardized_apart_pair(
+        &left, &right_with_100, &left_mapping, &right_with_100_mapping, 100000,
+    );
+    valid && !collision && !pre_existing_collision
+}
+
+fn executable_superposition_certificate_example() -> bool
+{
+    let source = ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Eq(
+                ExecTerm::App1(4, Box::new(ExecTerm::Const(1))),
+                ExecTerm::Const(2),
+            ),
+        }],
+    };
+    let target = ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::App1(
+                4, Box::new(ExecTerm::Const(1)),
+            ))),
+        }],
+    };
+    let mut certificate = SuperpositionCertificate {
+        source,
+        target,
+        source_freshening: Vec::new(),
+        target_freshening: Vec::new(),
+        source_equality_index: 0,
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        target_path: Vec::new(),
+        fresh_target_path: Vec::new(),
+        unifier: Vec::new(),
+        conclusion: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::Const(2))),
+        }] },
+    };
+    if !check_superposition_and_replay(&certificate, 1000) { return false; }
+
+    // Differing raw/fresh paths must fail even when the structural path itself
+    // remains valid; an invalid continuation below a leaf must also fail.
+    certificate.fresh_target_path = vec![0u64];
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.target_path = vec![0u64, 0u64];
+    certificate.fresh_target_path = vec![0u64, 0u64];
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+
+    // Out-of-range atom slots and forged conclusions fail closed.
+    certificate.target_path = Vec::new();
+    certificate.fresh_target_path = Vec::new();
+    certificate.target_argument_slot = 1;
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.target_argument_slot = 0;
+
+    // Out-of-range literal and equality indices fail closed.
+    certificate.target_literal_index = 5;
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.target_literal_index = 0;
+    certificate.source_equality_index = 5;
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.source_equality_index = 0;
+
+    // Negative source equality literal fails closed.
+    certificate.source.literals[0].positive = false;
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.source.literals[0].positive = true;
+
+    // Non-equality source literal fails closed.
+    certificate.source.literals[0].atom = ExecAtom::Pred1(4, Box::new(ExecTerm::Const(1)));
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+
+    // Source equality with variable left-hand side fails closed.
+    certificate.source.literals[0].atom = ExecAtom::Eq(
+        ExecTerm::Var(1),
+        ExecTerm::Const(2),
+    );
+    if check_superposition_certificate(&certificate, 1000) { return false; }
+    certificate.source.literals[0].atom = ExecAtom::Eq(
+        ExecTerm::App1(4, Box::new(ExecTerm::Const(1))),
+        ExecTerm::Const(2),
+    );
+
+    certificate.conclusion.literals[0].atom = ExecAtom::Pred1(8,
+        Box::new(ExecTerm::Const(3)));
+    !check_superposition_and_replay(&certificate, 1000)
+}
+
+fn c502_exec_certificate(forge_conclusion: bool) -> SuperpositionCertificate {
+    fn variable(id: u64) -> ExecTerm { ExecTerm::Var(id) }
+    fn app2(symbol: u64, left: ExecTerm, right: ExecTerm) -> ExecTerm {
+        ExecTerm::App2(symbol, Box::new(left), Box::new(right))
+    }
+    fn insert_term(a: ExecTerm, b: ExecTerm, value: ExecTerm) -> ExecTerm {
+        app2(3, a, app2(4, b, value))
+    }
+    fn remove_insert(a: ExecTerm, b: ExecTerm, value: ExecTerm, key: ExecTerm) -> ExecTerm {
+        app2(2, insert_term(a, b, value), key)
+    }
+    fn eq_literal(left: ExecTerm, right: ExecTerm) -> ExecLiteral {
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(left, right) }
+    }
+    fn neg_eq_literal(left: ExecTerm, right: ExecTerm) -> ExecLiteral {
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(left, right) }
+    }
+    fn contains_literal(a: ExecTerm, key: ExecTerm) -> ExecLiteral {
+        ExecLiteral { positive: false,
+            atom: ExecAtom::Pred2(1, Box::new(a), Box::new(key)) }
+    }
+
+    // Archived c27, independently standardized to 100..103. Its positive
+    // equality is oriented right-to-left so that the selected source side is
+    // insert(remove(A,K), pair(B,V)).
+    let source = ExecClause { literals: vec![
+        contains_literal(variable(0), variable(2)),
+        eq_literal(variable(2), variable(1)),
+        eq_literal(
+            insert_term(
+                app2(2, variable(0), variable(2)),
+                variable(1), variable(3)),
+            remove_insert(variable(0), variable(1), variable(3), variable(2)),
+        ),
+    ] };
+
+    // Archived c39, standardized apart to 200..202. The selected occurrence
+    // is child 0 of the outer remove_slb in the left equality argument.
+    let target = ExecClause { literals: vec![eq_literal(
+        app2(2,
+            insert_term(variable(0), variable(1), variable(2)),
+            variable(1)),
+        variable(0),
+    )] };
+    let unifier = vec![
+        ExecBinding { variable: 200,
+            replacement: app2(2, variable(100), variable(102)) },
+        ExecBinding { variable: 201, replacement: variable(101) },
+        ExecBinding { variable: 202, replacement: variable(103) },
+    ];
+    let rewritten_target = eq_literal(
+        app2(2,
+            remove_insert(variable(100), variable(101), variable(103), variable(102)),
+            variable(101)),
+        app2(2, variable(100), variable(102)),
+    );
+    let conclusion = ExecClause { literals: vec![
+        contains_literal(variable(100), variable(102)),
+        eq_literal(variable(102), variable(101)),
+        if forge_conclusion {
+            ExecLiteral { positive: true,
+                atom: ExecAtom::Pred0(999) }
+        } else {
+            rewritten_target
+        },
+    ] };
+
+    SuperpositionCertificate {
+        source,
+        target,
+        source_freshening: vec![
+            ExecBinding { variable: 0, replacement: ExecTerm::Var(100) },
+            ExecBinding { variable: 2, replacement: ExecTerm::Var(102) },
+            ExecBinding { variable: 1, replacement: ExecTerm::Var(101) },
+            ExecBinding { variable: 3, replacement: ExecTerm::Var(103) },
+        ],
+        target_freshening: vec![
+            ExecBinding { variable: 0, replacement: ExecTerm::Var(200) },
+            ExecBinding { variable: 1, replacement: ExecTerm::Var(201) },
+            ExecBinding { variable: 2, replacement: ExecTerm::Var(202) },
+        ],
+        source_equality_index: 2,
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        target_path: vec![0u64],
+        fresh_target_path: vec![0u64],
+        unifier,
+        conclusion,
+    }
+}
+
+fn executable_c502_certificate_example() -> bool {
+    let certificate = c502_exec_certificate(false);
+    let accepted = check_superposition_and_replay(&certificate, 10000);
+    if !accepted { return false; }
+
+    // A forged c502 equality is rejected even though all parent and unifier
+    // data is unchanged.
+    let forged = c502_exec_certificate(true);
+    !check_superposition_and_replay(&forged, 10000)
+}
+
+fn executable_source_variable_superposition_example() -> bool {
+    let source = ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Eq(
+            ExecTerm::App1(40, Box::new(ExecTerm::Var(0))),
+            ExecTerm::Const(7),
+        ),
+    }] };
+    let target = ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Pred1(41,
+            Box::new(ExecTerm::App1(40, Box::new(ExecTerm::Const(8))))),
+    }] };
+    let certificate = SuperpositionCertificate {
+        source,
+        target,
+        source_freshening: vec![ExecBinding {
+            variable: 0, replacement: ExecTerm::Var(100),
+        }],
+        target_freshening: Vec::new(),
+        source_equality_index: 0,
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        target_path: Vec::new(),
+        fresh_target_path: Vec::new(),
+        unifier: vec![ExecBinding {
+            variable: 100, replacement: ExecTerm::Const(8),
+        }],
+        conclusion: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(41, Box::new(ExecTerm::Const(7))),
+        }] },
+    };
+    check_superposition_and_replay(&certificate, 1000)
+}
+
+fn copy_literal(literal: &ExecLiteral) -> (copy: ExecLiteral)
+    ensures view_literal(copy) == view_literal(*literal)
+{
+    ExecLiteral { positive: literal.positive, atom: copy_atom(&literal.atom) }
+}
+
+fn append_literal_copy(literals: &mut Vec<ExecLiteral>, literal: &ExecLiteral)
+    ensures final(literals)@.len() == old(literals)@.len() + 1,
+        forall|j: int| 0 <= j < old(literals)@.len()
+            ==> final(literals)@[j] == old(literals)@[j],
+        view_literal(final(literals)@[old(literals)@.len() as int]) == view_literal(*literal)
+{
+    literals.push(copy_literal(literal));
+    assert(literals@.len() == old(literals)@.len() + 1);
+    assert(view_literal(literals@[old(literals)@.len() as int]) == view_literal(*literal));
+}
+
+fn build_superposition_conclusion_exec(
+    source: &ExecClause,
+    source_equality_index: usize,
+    rewritten_target: &ExecClause,
+) -> (conclusion: ExecClause)
+    requires source_equality_index < source.literals.len(),
+        source.literals.len() - 1 + rewritten_target.literals.len() <= usize::MAX,
+    ensures view_clause(conclusion).literals.len()
+            == source.literals.len() - 1 + rewritten_target.literals.len(),
+        forall|k: int| 0 <= k < view_clause(conclusion).literals.len()
+            ==> view_clause(conclusion).literals[k]
+                == if k < source.literals.len() as int - 1 {
+                    view_literal(source.literals@[if k < source_equality_index as int {
+                        k
+                    } else {
+                        k + 1
+                    }])
+                } else {
+                    view_literal(rewritten_target.literals@[
+                        k - (source.literals.len() as int - 1)])
+                }
+{
+    let mut literals: Vec<ExecLiteral> = Vec::new();
+    let mut i: usize = 0;
+    while i < source.literals.len()
+        invariant i <= source.literals.len(),
+            literals@.len() == if i <= source_equality_index {
+                i as int
+            } else {
+                i as int - 1
+            },
+            forall|k: int| 0 <= k < literals@.len()
+                ==> view_literal(literals@[k])
+                    == view_literal(source.literals@[if k < source_equality_index as int {
+                        k
+                    } else {
+                        k + 1
+                    }]),
+        decreases source.literals.len() - i
+    {
+        if i != source_equality_index {
+            let before_len = literals.len();
+            append_literal_copy(&mut literals, &source.literals[i]);
+            assert forall|k: int| 0 <= k < literals@.len()
+                implies view_literal(literals@[k])
+                    == view_literal(source.literals@[if k < source_equality_index as int {
+                        k
+                    } else {
+                        k + 1
+                    }]) by {
+                if k < before_len as int {
+                } else {
+                    assert(k == before_len as int);
+                    assert(k == if i <= source_equality_index {
+                        i as int
+                    } else {
+                        i as int - 1
+                    });
+                    assert(i != source_equality_index);
+                    assert(if i < source_equality_index {
+                        k == i as int
+                    } else {
+                        k + 1 == i as int
+                    });
+                    assert(view_literal(literals@[k]) == view_literal(source.literals@[i as int]));
+                }
+            }
+        }
+        i += 1;
+    }
+    let mut j: usize = 0;
+    assert(literals@.len() == source.literals.len() as int - 1);
+    while j < rewritten_target.literals.len()
+        invariant j <= rewritten_target.literals.len(),
+            literals@.len() == source.literals.len() - 1 + j,
+            forall|k: int| 0 <= k < literals@.len()
+                ==> view_literal(literals@[k])
+                    == if k < source.literals.len() as int - 1 {
+                        view_literal(source.literals@[if k < source_equality_index as int {
+                            k
+                        } else {
+                            k + 1
+                        }])
+                    } else {
+                        view_literal(rewritten_target.literals@[
+                            k - (source.literals.len() as int - 1)])
+                    },
+        decreases rewritten_target.literals.len() - j
+    {
+        let before_len = literals.len();
+        append_literal_copy(&mut literals, &rewritten_target.literals[j]);
+        assert forall|k: int| 0 <= k < literals@.len()
+            implies view_literal(literals@[k])
+                == if k < source.literals.len() as int - 1 {
+                    view_literal(source.literals@[if k < source_equality_index as int {
+                        k
+                    } else {
+                        k + 1
+                    }])
+                } else {
+                    view_literal(rewritten_target.literals@[
+                        k - (source.literals.len() as int - 1)])
+                } by {
+            if k < before_len as int {
+            } else {
+                assert(k == before_len as int);
+                assert(k == source.literals.len() as int - 1 + j as int);
+                assert(k - (source.literals.len() as int - 1) == j as int);
+                assert(view_literal(literals@[k])
+                    == view_literal(rewritten_target.literals@[j as int]));
+            }
+        }
+        j += 1;
+    }
+    let conclusion = ExecClause { literals };
+    assert(view_clause(conclusion).literals.len() == source.literals.len() - 1
+        + rewritten_target.literals.len());
+    conclusion
+}
+
+proof fn exact_resolvent_width_decomposition(
+    source: Clause,
+    source_equality_index: int,
+    target: Clause,
+    target_literal_index: int,
+)
+    requires
+        0 <= source_equality_index < source.literals.len(),
+        0 <= target_literal_index < target.literals.len(),
+    ensures source.literals.subrange(0, source_equality_index)
+            + source.literals.subrange(source_equality_index + 1, source.literals.len() as int)
+            + target.literals
+        == source.literals.subrange(0, source_equality_index)
+            + source.literals.subrange(source_equality_index + 1, source.literals.len() as int)
+            + target.literals.update(target_literal_index,
+                target.literals[target_literal_index])
+{
+    assert(target.literals.update(target_literal_index,
+        target.literals[target_literal_index]) == target.literals);
+}
+
+fn copy_atom(atom: &ExecAtom) -> (copy: ExecAtom)
+    ensures view_atom(copy) == view_atom(*atom)
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(p) => ExecAtom::Pred0(*p),
+        ExecAtom::Pred1(p, arg) => ExecAtom::Pred1(*p, Box::new(copy_term(arg))),
+        ExecAtom::Pred2(p, left, right) => ExecAtom::Pred2(
+            *p, Box::new(copy_term(left)), Box::new(copy_term(right)),
+        ),
+        ExecAtom::Eq(left, right) => ExecAtom::Eq(copy_term(left), copy_term(right)),
+    }
+}
+
+fn replace_atom_position_exec(
+    atom: &ExecAtom,
+    slot: u64,
+    path: &Vec<u64>,
+    replacement: &ExecTerm,
+) -> (result: Option<ExecAtom>)
+    ensures match result {
+        Some(replaced) => replace_atom_at_position(
+            view_atom(*atom), slot as nat, view_position(path@), view(*replacement),
+        ) == Some(view_atom(replaced)),
+        None => replace_atom_at_position(
+            view_atom(*atom), slot as nat, view_position(path@), view(*replacement),
+        ) == None,
+    }
+    decreases atom
+{
+    match atom {
+        ExecAtom::Pred0(_) => None,
+        ExecAtom::Pred1(p, arg) => {
+            if slot == 0 {
+                match replace_at_exec(arg, path, replacement, 0) {
+                    Some(arg2) => Some(ExecAtom::Pred1(*p, Box::new(arg2))),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        },
+        ExecAtom::Pred2(p, left, right) => {
+            if slot == 0 {
+                match replace_at_exec(left, path, replacement, 0) {
+                    Some(left2) => Some(ExecAtom::Pred2(
+                        *p, Box::new(left2), Box::new(copy_term(right)),
+                    )),
+                    None => None,
+                }
+            } else if slot == 1 {
+                match replace_at_exec(right, path, replacement, 0) {
+                    Some(right2) => Some(ExecAtom::Pred2(
+                        *p, Box::new(copy_term(left)), Box::new(right2),
+                    )),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        },
+        ExecAtom::Eq(left, right) => {
+            if slot == 0 {
+                match replace_at_exec(left, path, replacement, 0) {
+                    Some(left2) => Some(ExecAtom::Eq(left2, copy_term(right))),
+                    None => None,
+                }
+            } else if slot == 1 {
+                match replace_at_exec(right, path, replacement, 0) {
+                    Some(right2) => Some(ExecAtom::Eq(copy_term(left), right2)),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        },
+    }
+}
+
+fn replace_literal_position_exec(
+    literal: &ExecLiteral,
+    slot: u64,
+    path: &Vec<u64>,
+    replacement: &ExecTerm,
+) -> (result: Option<ExecLiteral>)
+    ensures match result {
+        Some(replaced) => replace_literal_at_position(
+            view_literal(*literal), slot as nat, view_position(path@), view(*replacement),
+        ) == Some(view_literal(replaced)),
+        None => replace_literal_at_position(
+            view_literal(*literal), slot as nat, view_position(path@), view(*replacement),
+        ) == None,
+    }
+{
+    match replace_atom_position_exec(&literal.atom, slot, path, replacement) {
+        Some(atom2) => Some(ExecLiteral { positive: literal.positive, atom: atom2 }),
+        None => None,
+    }
+}
+
+fn executable_literal_replay_examples()
+{
+    let literal = ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Pred2(
+            12,
+            Box::new(ExecTerm::Const(1)),
+            Box::new(ExecTerm::App2(
+                3,
+                Box::new(ExecTerm::Var(4)),
+                Box::new(ExecTerm::Const(5)),
+            )),
+        ),
+    };
+    let bindings = vec![ExecBinding {
+        variable: 4,
+        replacement: ExecTerm::Const(9),
+    }];
+    let instance = substitute_literal_exec(&literal, &bindings);
+    assert(view_literal(instance) == substitute_literal(view_literal(literal), view_subst(bindings@)));
+
+    let path = Vec::<u64>::new();
+    let replacement = ExecTerm::Const(7);
+    let rewritten = replace_literal_position_exec(&literal, 1u64, &path, &replacement);
+    assert(rewritten.is_some());
+    assert(view_literal(rewritten.unwrap()) == Literal {
+        positive: true,
+        atom: Atom::Pred2(
+            12,
+            Box::new(Term::Const(1)),
+            Box::new(Term::Const(7)),
+        ),
+    });
+
+    let bad_slot = replace_literal_position_exec(&literal, 2u64, &path, &replacement);
+    assert(bad_slot.is_none());
+}
+
+fn check_domain_unique(bindings: &Vec<ExecBinding>, work_limit: usize) -> (unique: bool)
+    ensures unique == ((bindings.len() == 0
+        || bindings.len() <= work_limit / bindings.len())
+        && domain_unique(view_subst(bindings@)))
+{
+    // This nested scan performs at most n*n comparisons. Refuse before
+    // starting if that work cannot fit in the supplied budget.
+    if bindings.len() > 0 && bindings.len() > work_limit / bindings.len() {
+        return false;
+    }
+    let mut i: usize = 0;
+    while i < bindings.len()
+        invariant
+            i <= bindings.len(),
+            forall|p: int, q: int|
+                #![auto]
+                0 <= p < i as int && p < q < bindings@.len() as int
+                    ==> bindings@[p].variable != bindings@[q].variable,
+        decreases bindings.len() - i
+    {
+        assert(i < bindings.len());
+        let mut j: usize = i + 1;
+        while j < bindings.len()
+            invariant
+                i < bindings.len(),
+                i < j <= bindings.len(),
+                forall|p: int, q: int|
+                    #![auto]
+                    0 <= p < i as int && p < q < bindings@.len() as int
+                        ==> bindings@[p].variable != bindings@[q].variable,
+                forall|k: int| i < k < j as int
+                    ==> bindings@[i as int].variable != bindings@[k].variable,
+            decreases bindings.len() - j
+        {
+            assert(j < bindings.len());
+            assert forall|k: int| i < k < j as int
+                implies bindings@[i as int].variable != bindings@[k].variable by {
+                assert(k < bindings@.len());
+                assert(bindings@[i as int].variable != bindings@[k].variable);
+            }
+            if bindings[i].variable == bindings[j].variable {
+                proof {
+                    let p = i as int;
+                    let q = j as int;
+                    assert(0 <= p && p < q && q < bindings@.len());
+                    assert(bindings@[p].variable == bindings@[q].variable);
+                    assert(!domain_unique(view_subst(bindings@))) by {
+                        assert(!(view_subst(bindings@).bindings[p].0
+                            != view_subst(bindings@).bindings[q].0));
+                    }
+                }
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    assert(domain_unique(view_subst(bindings@)));
+    true
+}
+
+fn copy_term(term: &ExecTerm) -> (copy: ExecTerm)
+    ensures view(copy) == view(*term)
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => ExecTerm::Var(*v),
+        ExecTerm::Const(c) => ExecTerm::Const(*c),
+        ExecTerm::App1(f, child) => ExecTerm::App1(*f, Box::new(copy_term(child))),
+        ExecTerm::App2(f, left, right) => ExecTerm::App2(
+            *f,
+            Box::new(copy_term(left)),
+            Box::new(copy_term(right)),
+        ),
+    }
+}
+
+fn charge_term_structure(term: &ExecTerm, work: &mut usize, limit: usize) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+    decreases term
+{
+    if *work >= limit { return false; }
+    *work += 1;
+    match term {
+        ExecTerm::Var(_) | ExecTerm::Const(_) => true,
+        ExecTerm::App1(_, child) => charge_term_structure(child, work, limit),
+        ExecTerm::App2(_, left, right) => {
+            if !charge_term_structure(left, work, limit) { return false; }
+            charge_term_structure(right, work, limit)
+        },
+    }
+}
+
+fn charge_atom_structure(atom: &ExecAtom, work: &mut usize, limit: usize) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+    decreases atom
+{
+    if *work >= limit { return false; }
+    *work += 1;
+    match atom {
+        ExecAtom::Pred0(_) => true,
+        ExecAtom::Pred1(_, arg) => charge_term_structure(arg, work, limit),
+        ExecAtom::Pred2(_, left, right) => {
+            if !charge_term_structure(left, work, limit) { return false; }
+            charge_term_structure(right, work, limit)
+        },
+        ExecAtom::Eq(left, right) => {
+            if !charge_term_structure(left, work, limit) { return false; }
+            charge_term_structure(right, work, limit)
+        },
+    }
+}
+
+fn charge_clause_structure(clause: &ExecClause, work: &mut usize, limit: usize) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant i <= clause.literals.len(), *work <= limit
+        decreases clause.literals.len() - i
+    {
+        if *work >= limit { return false; }
+        *work += 1;
+        if !charge_atom_structure(&clause.literals[i].atom, work, limit) { return false; }
+        i += 1;
+    }
+    true
+}
+
+fn charge_binding_structure(bindings: &Vec<ExecBinding>, work: &mut usize, limit: usize)
+    -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    let mut i: usize = 0;
+    while i < bindings.len()
+        invariant i <= bindings.len(), *work <= limit
+        decreases bindings.len() - i
+    {
+        if *work >= limit { return false; }
+        *work += 1;
+        if !charge_term_structure(&bindings[i].replacement, work, limit) { return false; }
+        i += 1;
+    }
+    true
+}
+
+fn charge_u64_sequence(path: &Vec<u64>, work: &mut usize, limit: usize) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if path.len() > limit - *work { return false; }
+    *work += path.len();
+    true
+}
+
+fn charge_certificate_structure(
+    certificate: &SuperpositionCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.source, work, limit)
+        || !charge_clause_structure(&certificate.target, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+        || !charge_binding_structure(&certificate.source_freshening, work, limit)
+        || !charge_binding_structure(&certificate.target_freshening, work, limit)
+        || !charge_binding_structure(&certificate.unifier, work, limit)
+        || !charge_u64_sequence(&certificate.target_path, work, limit)
+        || !charge_u64_sequence(&certificate.fresh_target_path, work, limit)
+    {
+        return false;
+    }
+    true
+}
+
+fn charge_first_order_resolution_certificate(
+    certificate: &FirstOrderResolutionCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.left, work, limit)
+        || !charge_clause_structure(&certificate.right, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+        || !charge_binding_structure(&certificate.left_freshening, work, limit)
+        || !charge_binding_structure(&certificate.right_freshening, work, limit)
+        || !charge_binding_structure(&certificate.unifier, work, limit)
+    {
+        return false;
+    }
+    true
+}
+
+fn charge_equality_resolution_certificate(
+    certificate: &EqualityResolutionCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.clause, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+        || !charge_binding_structure(&certificate.unifier, work, limit)
+    {
+        return false;
+    }
+    true
+}
+
+fn charge_clause_factoring_certificate(
+    certificate: &ClauseFactoringCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.clause, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+        || !charge_binding_structure(&certificate.unifier, work, limit)
+    {
+        return false;
+    }
+    true
+}
+
+fn charge_equality_factoring_certificate(
+    certificate: &EqualityFactoringCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.clause, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+        || !charge_binding_structure(&certificate.unifier, work, limit)
+    {
+        return false;
+    }
+    true
+}
+
+fn charge_subsumption_resolution_certificate(
+    certificate: &SubsumptionResolutionCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.target, work, limit)
+        || !charge_clause_structure(&certificate.active, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+        || !charge_binding_structure(&certificate.active_freshening, work, limit)
+        || !charge_binding_structure(&certificate.unifier, work, limit)
+    {
+        return false;
+    }
+    if limit - *work < certificate.matches.len() {
+        return false;
+    }
+    *work += certificate.matches.len();
+    true
+}
+
+fn charge_weakening_certificate(
+    certificate: &WeakeningCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.parent, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+    {
+        return false;
+    }
+    if limit - *work < certificate.inclusions.len() {
+        return false;
+    }
+    *work += certificate.inclusions.len();
+    true
+}
+
+fn charge_demodulation_certificate(
+    certificate: &DemodulationCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.target, work, limit)
+        || !charge_clause_structure(&certificate.equality, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+        || !charge_binding_structure(&certificate.equality_freshening, work, limit)
+        || !charge_binding_structure(&certificate.unifier, work, limit)
+        || !charge_u64_sequence(&certificate.raw_target_path, work, limit)
+        || !charge_u64_sequence(&certificate.fresh_target_path, work, limit)
+    {
+        return false;
+    }
+    true
+}
+
+fn charge_instantiation_certificate(
+    certificate: &InstantiationCertificate,
+    work: &mut usize,
+    limit: usize,
+) -> (ok: bool)
+    requires *work <= limit
+    ensures *final(work) <= limit
+{
+    if !charge_clause_structure(&certificate.parent, work, limit)
+        || !charge_clause_structure(&certificate.conclusion, work, limit)
+        || !charge_binding_structure(&certificate.substitution, work, limit)
+    {
+        return false;
+    }
+    true
+}
+
+fn lookup_exec(bindings: &Vec<ExecBinding>, variable: u64) -> (result: Option<ExecTerm>)
+    ensures
+        match result {
+            Some(t) => Some(view(t)) == lookup(view_subst(bindings@), variable),
+            None => lookup(view_subst(bindings@), variable) == None,
+        }
+{
+    let mut i: usize = bindings.len();
+    while i > 0
+        invariant
+            i <= bindings.len(),
+            lookup_rec(view_subst(bindings@).bindings, variable, i as nat)
+                == lookup(view_subst(bindings@), variable),
+        decreases i,
+    {
+        i -= 1;
+        if bindings[i].variable == variable {
+            return Some(copy_term(&bindings[i].replacement));
+        }
+    }
+    None
+}
+
+fn apply_exec(term: &ExecTerm, bindings: &Vec<ExecBinding>) -> (result: ExecTerm)
+    ensures view(result) == apply(view(*term), view_subst(bindings@))
+    decreases term
+{
+    match term {
+        ExecTerm::Var(v) => match lookup_exec(bindings, *v) {
+            Some(t) => t,
+            None => ExecTerm::Var(*v),
+        },
+        ExecTerm::Const(c) => ExecTerm::Const(*c),
+        ExecTerm::App1(f, child) => ExecTerm::App1(
+            *f,
+            Box::new(apply_exec(child, bindings)),
+        ),
+        ExecTerm::App2(f, left, right) => ExecTerm::App2(
+            *f,
+            Box::new(apply_exec(left, bindings)),
+            Box::new(apply_exec(right, bindings)),
+        ),
+    }
+}
+
+/// Structural comparison refined to equality in the first-order model.
+fn same_term(left: &ExecTerm, right: &ExecTerm) -> (same: bool)
+    ensures same == (view(*left) == view(*right))
+    decreases left
+{
+    match (left, right) {
+        (ExecTerm::Var(x), ExecTerm::Var(y)) => x == y,
+        (ExecTerm::Const(x), ExecTerm::Const(y)) => x == y,
+        (ExecTerm::App1(f, l), ExecTerm::App1(g, r)) => *f == *g && same_term(l, r),
+        (ExecTerm::App2(f, ll, lr), ExecTerm::App2(g, rl, rr)) => {
+            *f == *g && same_term(ll, rl) && same_term(lr, rr)
+        },
+        _ => false,
+    }
+}
+
+fn same_atom(left: &ExecAtom, right: &ExecAtom) -> (same: bool)
+    ensures same == (view_atom(*left) == view_atom(*right))
+    decreases left
+{
+    match (left, right) {
+        (ExecAtom::Pred0(p), ExecAtom::Pred0(q)) => p == q,
+        (ExecAtom::Pred1(p, a), ExecAtom::Pred1(q, b)) => *p == *q && same_term(a, b),
+        (ExecAtom::Pred2(p, a1, a2), ExecAtom::Pred2(q, b1, b2)) =>
+            *p == *q && same_term(a1, b1) && same_term(a2, b2),
+        (ExecAtom::Eq(a1, a2), ExecAtom::Eq(b1, b2)) =>
+            same_term(a1, b1) && same_term(a2, b2),
+        _ => false,
+    }
+}
+
+fn same_literal(left: &ExecLiteral, right: &ExecLiteral) -> (same: bool)
+    ensures same == (view_literal(*left) == view_literal(*right))
+{
+    left.positive == right.positive && same_atom(&left.atom, &right.atom)
+}
+
+fn same_clause(left: &ExecClause, right: &ExecClause) -> (same: bool)
+    ensures same ==> clause_equal(view_clause(*left), view_clause(*right))
+{
+    if left.literals.len() != right.literals.len() { return false; }
+    let mut i: usize = 0;
+    while i < left.literals.len()
+        invariant
+            i <= left.literals.len(),
+            left.literals.len() == right.literals.len(),
+            forall|j: int| 0 <= j < i as int
+                ==> view_literal(left.literals@[j]) == view_literal(right.literals@[j]),
+        decreases left.literals.len() - i
+    {
+        if !same_literal(&left.literals[i], &right.literals[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    assert forall|j: int| 0 <= j < left.literals@.len()
+        implies view_literal(left.literals@[j]) == view_literal(right.literals@[j]) by {
+        assert(j < i as int);
+    }
+    true
+}
+
+fn same_clause_exact(left: &ExecClause, right: &ExecClause) -> (same: bool)
+    ensures same ==> clause_equal(view_clause(*left), view_clause(*right))
+{
+    if left.literals.len() != right.literals.len() { return false; }
+    let mut i: usize = 0;
+    while i < left.literals.len()
+        invariant
+            i <= left.literals.len(),
+            left.literals.len() == right.literals.len(),
+            forall|j: int| 0 <= j < i as int
+                ==> view_literal(left.literals@[j]) == view_literal(right.literals@[j]),
+        decreases left.literals.len() - i
+    {
+        let same = same_literal(&left.literals[i], &right.literals[i]);
+        if !same { return false; }
+        i += 1;
+    }
+    assert forall|j: int| 0 <= j < left.literals@.len()
+        implies view_literal(left.literals@[j]) == view_literal(right.literals@[j]) by {
+        assert(j < i as int);
+    }
+    true
+}
+
+fn build_nullary_resolution_conclusion(left: &ExecClause, right: &ExecClause,
+    left_pivot: usize, right_pivot: usize) -> (conclusion: ExecClause)
+    requires left_pivot < left.literals.len(), right_pivot < right.literals.len(),
+    ensures clause_equal(view_clause(conclusion), resolution_conclusion(view_clause(*left),
+        view_clause(*right), left_pivot as int, right_pivot as int)),
+{
+    let mut literals = Vec::new();
+    let mut i: usize = 0;
+    while i < left.literals.len()
+        invariant i <= left.literals.len(),
+            literals@.len() == if i <= left_pivot { i as int } else { i as int - 1 },
+            forall|j: int| 0 <= j < literals@.len()
+                ==> view_literal(literals@[j]) == view_literal(left.literals@[
+                    if j < left_pivot as int { j } else { j + 1 }]),
+        decreases left.literals.len() - i
+    {
+        if i != left_pivot { append_literal_copy(&mut literals, &left.literals[i]); }
+        i += 1;
+    }
+    let mut j: usize = 0;
+    while j < right.literals.len()
+        invariant j <= right.literals.len(),
+            literals@.len() == left.literals.len() - 1
+                + if j <= right_pivot { j as int } else { j as int - 1 },
+            forall|k: int| 0 <= k < literals@.len()
+                ==> view_literal(literals@[k]) == if k < left.literals.len() as int - 1 {
+                    view_literal(left.literals@[if k < left_pivot as int { k } else { k + 1 }])
+                } else {
+                    let r = k - (left.literals.len() as int - 1);
+                    view_literal(right.literals@[if r < right_pivot as int { r } else { r + 1 }])
+                },
+        decreases right.literals.len() - j
+    {
+        if j != right_pivot { append_literal_copy(&mut literals, &right.literals[j]); }
+        j += 1;
+    }
+    let conclusion = ExecClause { literals };
+    conclusion
+}
+
+fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
+    left_pivot: usize, right_pivot: usize, conclusion: &ExecClause, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> clause_equal(view_clause(*conclusion), resolution_conclusion(
+        view_clause(*left), view_clause(*right), left_pivot as int, right_pivot as int)),
+        accepted ==> match left.literals@[left_pivot as int].atom {
+            ExecAtom::Pred0(p) => right.literals@[right_pivot as int].atom
+                == ExecAtom::Pred0(p),
+            _ => false,
+        },
+        accepted ==> left.literals@[left_pivot as int].positive
+            && !right.literals@[right_pivot as int].positive,
+        accepted ==> left_pivot < left.literals.len() && right_pivot < right.literals.len(),
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(*left), interp)
+            && clause_valid(view_clause(*right), interp)
+            ==> clause_valid(view_clause(*conclusion), interp),
+{
+    let mut work: usize = 0;
+    if !charge_clause_structure(left, &mut work, work_limit)
+        || !charge_clause_structure(right, &mut work, work_limit)
+        || !charge_clause_structure(conclusion, &mut work, work_limit)
+    { return false; }
+    if left_pivot >= left.literals.len() || right_pivot >= right.literals.len() {
+        return false;
+    }
+    let ExecAtom::Pred0(predicate) = left.literals[left_pivot].atom else { return false; };
+    let right_literal = &right.literals[right_pivot];
+    let complementary = !left.literals[left_pivot].positive && right_literal.positive
+        || left.literals[left_pivot].positive && !right_literal.positive;
+    if !complementary { return false; }
+    let ExecAtom::Pred0(right_predicate) = right_literal.atom else { return false; };
+    if right_predicate != predicate { return false; }
+    if !left.literals[left_pivot].positive || right_literal.positive {
+        return false;
+    }
+    assert(right_literal.atom == ExecAtom::Pred0(predicate));
+    assert(left.literals@[left_pivot as int].atom == ExecAtom::Pred0(predicate));
+    let expected = build_nullary_resolution_conclusion(left, right, left_pivot, right_pivot);
+    let same = same_clause_exact(&expected, conclusion);
+    if !same { return false; }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(*left), interp)
+            && clause_valid(view_clause(*right), interp)
+            implies clause_valid(view_clause(*conclusion), interp) by {
+            assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+                implies clause_holds(view_clause(*conclusion), interp, valuation) by {
+                assert(clause_holds(view_clause(*left), interp, valuation));
+                assert(clause_holds(view_clause(*right), interp, valuation));
+                nullary_predicate_resolution_sound(view_clause(*left), view_clause(*right),
+                    left_pivot as int, right_pivot as int, interp, valuation);
+                assert(view_clause(*conclusion).literals =~=
+                    resolution_conclusion(view_clause(*left), view_clause(*right),
+                        left_pivot as int, right_pivot as int).literals);
+            }
+        }
+    }
+    true
+}
+
+fn check_exact_resolution(left: &ExecClause, right: &ExecClause,
+    lp: usize, rp: usize, conclusion: &ExecClause, work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        && clause_valid(view_clause(*left), interp) && clause_valid(view_clause(*right), interp)
+        ==> clause_valid(view_clause(*conclusion), interp),
+{
+    let mut work: usize = 0;
+    if !charge_clause_structure(left, &mut work, work_limit)
+        || !charge_clause_structure(right, &mut work, work_limit)
+        || !charge_clause_structure(conclusion, &mut work, work_limit) { return false; }
+    if lp >= left.literals.len() || rp >= right.literals.len() { return false; }
+    if !left.literals[lp].positive || right.literals[rp].positive { return false; }
+    if !same_atom(&left.literals[lp].atom, &right.literals[rp].atom) { return false; }
+    let expected = build_nullary_resolution_conclusion(left, right, lp, rp);
+    if !same_clause_exact(&expected, conclusion) { return false; }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(*left), interp) && clause_valid(view_clause(*right), interp)
+            implies clause_valid(view_clause(*conclusion), interp) by {
+            assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+                implies clause_holds(view_clause(*conclusion), interp, valuation) by {
+                exact_atom_resolution_sound(view_clause(*left), view_clause(*right), lp as int,
+                    rp as int, interp, valuation);
+                assert(view_clause(*conclusion).literals =~= resolution_conclusion(
+                    view_clause(*left), view_clause(*right), lp as int, rp as int).literals);
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_exact_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let ProofNodeKind::ExactResolution(lp, rp) = node.kind else { return false; };
+    if node.parents.len() != 2 { return false; }
+    if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() { return false; }
+    let mut work: usize = 0;
+    if !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    { return false; }
+    if !check_exact_resolution(&nodes[node.parents[0]].clause, &nodes[node.parents[1]].clause,
+        lp, rp, &node.clause, work_limit - work) { return false; }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
+                assert(clause_valid(view_clause(nodes@[node.parents@[1] as int].clause), interp));
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let ProofNodeKind::Resolution(lp, rp) = node.kind else { return false; };
+    if node.parents.len() != 2 { return false; }
+    if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() { return false; }
+    let mut work: usize = 0;
+    if !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    { return false; }
+    let checked = check_nullary_resolution(&nodes[node.parents[0]].clause,
+        &nodes[node.parents[1]].clause, lp, rp, &node.clause, work_limit - work);
+    if !checked { return false; }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
+                assert(clause_valid(view_clause(nodes@[node.parents@[1] as int].clause), interp));
+                assert(clause_valid(view_clause(node.clause), interp));
+            }
+        }
+    }
+    true
+}
+
+fn check_first_order_resolution_and_replay(
+    certificate: &FirstOrderResolutionCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.left.literals.len()
+            + certificate.right.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.left), interp)
+            && clause_valid(view_clause(certificate.right), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+{
+    let mut structural_work: usize = 0;
+    if !charge_first_order_resolution_certificate(certificate, &mut structural_work, work_limit) {
+        return false;
+    }
+    if certificate.left.literals.len() > work_limit
+        || certificate.right.literals.len() > work_limit - certificate.left.literals.len()
+    {
+        return false;
+    }
+    let replay_work = certificate.left.literals.len() + certificate.right.literals.len();
+    if certificate.conclusion.literals.len() > work_limit - replay_work {
+        return false;
+    }
+    let remaining_work = work_limit - structural_work;
+    if certificate.left_pivot >= certificate.left.literals.len()
+        || certificate.right_pivot >= certificate.right.literals.len()
+    {
+        return false;
+    }
+    if !certificate.left.literals[certificate.left_pivot].positive
+        || certificate.right.literals[certificate.right_pivot].positive
+    {
+        return false;
+    }
+    let Some(left_variables) = collect_clause_variables_bounded(&certificate.left, remaining_work) else {
+        return false;
+    };
+    let Some(right_variables) = collect_clause_variables_bounded(&certificate.right, remaining_work) else {
+        return false;
+    };
+    if !check_freshening(&left_variables, &right_variables, &certificate.left_freshening, remaining_work) {
+        return false;
+    }
+    let Some(fresh_left) = freshen_clause_apart(
+        &certificate.left, &right_variables, &certificate.left_freshening, remaining_work,
+    ) else { return false; };
+    let Some(fresh_left_variables) = collect_clause_variables_bounded(&fresh_left, remaining_work) else {
+        return false;
+    };
+    let mut target_avoid = Vec::new();
+    if !extend_unique(&mut target_avoid, &right_variables, remaining_work)
+        || !extend_unique(&mut target_avoid, &fresh_left_variables, remaining_work)
+    {
+        return false;
+    }
+    if !check_freshening(&right_variables, &target_avoid, &certificate.right_freshening, remaining_work) {
+        return false;
+    }
+    let Some(fresh_right) = freshen_clause_apart(
+        &certificate.right, &target_avoid, &certificate.right_freshening, remaining_work,
+    ) else { return false; };
+
+    if !check_domain_unique(&certificate.unifier, remaining_work) {
+        return false;
+    }
+    let inst_left = substitute_clause_exec(&fresh_left, &certificate.unifier);
+    let inst_right = substitute_clause_exec(&fresh_right, &certificate.unifier);
+    if certificate.left_pivot >= inst_left.literals.len()
+        || certificate.right_pivot >= inst_right.literals.len()
+    {
+        return false;
+    }
+    if !same_atom(&inst_left.literals[certificate.left_pivot].atom, &inst_right.literals[certificate.right_pivot].atom) {
+        return false;
+    }
+    let expected = build_nullary_resolution_conclusion(&inst_left, &inst_right, certificate.left_pivot, certificate.right_pivot);
+    if !same_clause_exact(&expected, &certificate.conclusion) {
+        return false;
+    }
+    proof {
+        assert(view_clause(inst_left)
+            == substitute_clause(
+                substitute_clause(view_clause(certificate.left),
+                    view_subst(certificate.left_freshening@)),
+                view_subst(certificate.unifier@)));
+        assert(view_clause(inst_right)
+            == substitute_clause(
+                substitute_clause(view_clause(certificate.right),
+                    view_subst(certificate.right_freshening@)),
+                view_subst(certificate.unifier@)));
+        assert(view_atom(inst_left.literals@[certificate.left_pivot as int].atom)
+            == view_atom(inst_right.literals@[certificate.right_pivot as int].atom));
+        assert(view_clause(inst_left).literals[certificate.left_pivot as int].atom
+            == view_atom(inst_left.literals@[certificate.left_pivot as int].atom));
+        assert(view_clause(inst_right).literals[certificate.right_pivot as int].atom
+            == view_atom(inst_right.literals@[certificate.right_pivot as int].atom));
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.left), interp)
+            && clause_valid(view_clause(certificate.right), interp)
+            implies clause_valid(view_clause(certificate.conclusion), interp) by {
+            standardized_first_order_resolution_sound(
+                view_clause(certificate.left),
+                view_clause(certificate.right),
+                certificate.left_pivot as int,
+                certificate.right_pivot as int,
+                view_subst(certificate.left_freshening@),
+                view_subst(certificate.right_freshening@),
+                view_subst(certificate.unifier@),
+                interp,
+            );
+            assert(clause_equal(view_clause(expected), resolution_conclusion(
+                view_clause(inst_left), view_clause(inst_right),
+                certificate.left_pivot as int, certificate.right_pivot as int)));
+            assert(clause_equal(view_clause(expected), view_clause(certificate.conclusion)));
+            assert(view_clause(certificate.conclusion).literals =~= view_clause(expected).literals);
+        }
+    }
+    true
+}
+
+fn delete_clause_literal_exec(clause: &ExecClause, pivot: usize) -> (result: ExecClause)
+    requires pivot < clause.literals.len()
+    ensures clause_equal(view_clause(result), delete_literal(view_clause(*clause), pivot as int))
+{
+    let mut literals = Vec::new();
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant i <= clause.literals.len(),
+            literals@.len() == if i <= pivot { i as int } else { i as int - 1 },
+            forall|j: int| 0 <= j < literals@.len()
+                ==> view_literal(literals@[j]) == view_literal(clause.literals@[
+                    if j < pivot as int { j } else { j + 1 }]),
+        decreases clause.literals.len() - i
+    {
+        if i != pivot { append_literal_copy(&mut literals, &clause.literals[i]); }
+        i += 1;
+    }
+    let result = ExecClause { literals };
+    assert(clause_equal(view_clause(result), delete_literal(view_clause(*clause), pivot as int)));
+    result
+}
+
+fn check_equality_resolution_and_replay(
+    certificate: &EqualityResolutionCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.clause.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.clause), interp)
+            && clause_valid(view_clause(certificate.conclusion), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.clause), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+{
+    let mut structural_work: usize = 0;
+    if !charge_equality_resolution_certificate(certificate, &mut structural_work, work_limit) {
+        return false;
+    }
+    if certificate.clause.literals.len() > work_limit
+        || certificate.conclusion.literals.len() > work_limit - certificate.clause.literals.len()
+    {
+        return false;
+    }
+    let remaining_work = work_limit - structural_work;
+    if certificate.pivot >= certificate.clause.literals.len() {
+        return false;
+    }
+    let pivot_lit = &certificate.clause.literals[certificate.pivot];
+    if pivot_lit.positive {
+        return false;
+    }
+    let ExecAtom::Eq(left, right) = &pivot_lit.atom else {
+        return false;
+    };
+    if !check_domain_unique(&certificate.unifier, remaining_work) {
+        return false;
+    }
+    let left_inst = apply_exec(left, &certificate.unifier);
+    let right_inst = apply_exec(right, &certificate.unifier);
+    if !same_term(&left_inst, &right_inst) {
+        return false;
+    }
+    let inst_clause = substitute_clause_exec(&certificate.clause, &certificate.unifier);
+    if certificate.pivot >= inst_clause.literals.len() {
+        return false;
+    }
+    let expected = delete_clause_literal_exec(&inst_clause, certificate.pivot);
+    if !same_clause_exact(&expected, &certificate.conclusion) {
+        return false;
+    }
+    proof {
+        assert(apply(view(*left), view_subst(certificate.unifier@))
+            == apply(view(*right), view_subst(certificate.unifier@)));
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.clause), interp)
+            implies clause_valid(view_clause(certificate.conclusion), interp) by {
+            equality_resolution_sound(
+                view_clause(certificate.clause),
+                certificate.pivot as int,
+                view_subst(certificate.unifier@),
+                interp,
+            );
+            assert(clause_equal(view_clause(expected), delete_literal(
+                substitute_clause(view_clause(certificate.clause), view_subst(certificate.unifier@)),
+                certificate.pivot as int)));
+            assert(clause_equal(view_clause(expected), view_clause(certificate.conclusion)));
+            assert(view_clause(certificate.conclusion).literals =~= view_clause(expected).literals);
+        }
+    }
+    true
+}
+
+fn check_clause_factoring_and_replay(
+    certificate: &ClauseFactoringCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.clause.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.clause), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+{
+    let mut structural_work: usize = 0;
+    if !charge_clause_factoring_certificate(certificate, &mut structural_work, work_limit) {
+        return false;
+    }
+    if certificate.clause.literals.len() > work_limit
+        || certificate.conclusion.literals.len() > work_limit - certificate.clause.literals.len()
+    {
+        return false;
+    }
+    let remaining_work = work_limit - structural_work;
+    if certificate.first >= certificate.second || certificate.second >= certificate.clause.literals.len() {
+        return false;
+    }
+    let first_lit = &certificate.clause.literals[certificate.first];
+    let second_lit = &certificate.clause.literals[certificate.second];
+    if first_lit.positive != second_lit.positive {
+        return false;
+    }
+    if !check_domain_unique(&certificate.unifier, remaining_work) {
+        return false;
+    }
+    let inst_clause = substitute_clause_exec(&certificate.clause, &certificate.unifier);
+    if certificate.second >= inst_clause.literals.len() {
+        return false;
+    }
+    if !same_atom(&inst_clause.literals[certificate.first].atom, &inst_clause.literals[certificate.second].atom) {
+        return false;
+    }
+    let expected = delete_clause_literal_exec(&inst_clause, certificate.second);
+    if !same_clause_exact(&expected, &certificate.conclusion) {
+        return false;
+    }
+    proof {
+        assert(view_atom(inst_clause.literals@[certificate.first as int].atom)
+            == view_atom(inst_clause.literals@[certificate.second as int].atom));
+        assert(view_clause(inst_clause).literals[certificate.first as int].atom
+            == view_atom(inst_clause.literals@[certificate.first as int].atom));
+        assert(view_clause(inst_clause).literals[certificate.second as int].atom
+            == view_atom(inst_clause.literals@[certificate.second as int].atom));
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.clause), interp)
+            implies clause_valid(view_clause(certificate.conclusion), interp) by {
+            clause_factoring_sound(
+                view_clause(certificate.clause),
+                certificate.first as int,
+                certificate.second as int,
+                view_subst(certificate.unifier@),
+                interp,
+            );
+            assert(clause_equal(view_clause(expected), delete_literal(
+                substitute_clause(view_clause(certificate.clause), view_subst(certificate.unifier@)),
+                certificate.second as int)));
+            assert(clause_equal(view_clause(expected), view_clause(certificate.conclusion)));
+            assert(view_clause(certificate.conclusion).literals =~= view_clause(expected).literals);
+        }
+    }
+    true
+}
+
+fn build_equality_factoring_conclusion_exec(
+    clause: &ExecClause,
+    first: usize,
+    second: usize,
+    right: &ExecTerm,
+    other_right: &ExecTerm,
+) -> (conclusion: ExecClause)
+    requires first < second < clause.literals.len()
+    ensures clause_equal(
+        view_clause(conclusion),
+        equality_factoring_conclusion(view_clause(*clause), first as int, second as int, view(*right), view(*other_right)),
+    )
+{
+    let ineq = ExecLiteral {
+        positive: false,
+        atom: ExecAtom::Eq(copy_term(right), copy_term(other_right)),
+    };
+    let c1 = delete_clause_literal_exec(clause, second);
+    let c2 = delete_clause_literal_exec(&c1, first);
+    let mut literals = Vec::new();
+    append_literal_copy(&mut literals, &clause.literals[first]);
+    literals.push(ineq);
+    let mut i: usize = 0;
+    while i < c2.literals.len()
+        invariant i <= c2.literals.len(),
+            literals@.len() == 2 + i as int,
+            view_literal(literals@[0]) == view_literal(clause.literals@[first as int]),
+            view_literal(literals@[1]) == (Literal { positive: false, atom: Atom::Eq(view(*right), view(*other_right)) }),
+            forall|j: int| 0 <= j < i as int ==> view_literal(literals@[2 + j]) == view_literal(c2.literals@[j]),
+        decreases c2.literals.len() - i
+    {
+        let before_len = literals.len();
+        append_literal_copy(&mut literals, &c2.literals[i]);
+        assert forall|j: int| 0 <= j < i as int + 1
+            implies view_literal(literals@[2 + j]) == view_literal(c2.literals@[j]) by {
+            if j < i as int {
+                assert(2 + j < before_len as int);
+            } else {
+                assert(2 + j == before_len as int);
+            }
+        };
+        i += 1;
+    }
+    let res = ExecClause { literals };
+    proof {
+        let expected = equality_factoring_conclusion(
+            view_clause(*clause), first as int, second as int, view(*right), view(*other_right),
+        );
+        let c2_spec = delete_literal(delete_literal(view_clause(*clause), second as int), first as int);
+        assert(expected.literals.len() == 2 + c2_spec.literals.len());
+        assert(c2.literals@.len() == c2_spec.literals.len());
+        assert(view_clause(res).literals.len() == expected.literals.len());
+        assert forall|k: int| 0 <= k < expected.literals.len()
+            implies view_clause(res).literals[k] == expected.literals[k] by {
+            if k == 0 {
+                assert(view_clause(res).literals[0] == view_literal(clause.literals@[first as int]));
+            } else if k == 1 {
+                assert(view_clause(res).literals[1] == (Literal { positive: false, atom: Atom::Eq(view(*right), view(*other_right)) }));
+            } else {
+                let j = k - 2;
+                assert(view_clause(res).literals[k] == view_literal(c2.literals@[j]));
+                assert(view_clause(c2).literals[j] == view_literal(c2.literals@[j]));
+                assert(delete_literal(view_clause(c1), first as int).literals[j] == view_clause(c2).literals[j]);
+                assert(view_clause(c1).literals =~= delete_literal(view_clause(*clause), second as int).literals);
+                assert(c2_spec.literals[j] == expected.literals[k]);
+            }
+        };
+        assert(seq_equal(view_clause(res).literals, expected.literals));
+    }
+    res
+}
+
+fn check_equality_factoring_and_replay(
+    certificate: &EqualityFactoringCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.clause.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.clause), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+{
+    let mut structural_work: usize = 0;
+    if !charge_equality_factoring_certificate(certificate, &mut structural_work, work_limit) {
+        return false;
+    }
+    if certificate.clause.literals.len() > work_limit
+        || certificate.conclusion.literals.len() > work_limit - certificate.clause.literals.len()
+    {
+        return false;
+    }
+    let remaining_work = work_limit - structural_work;
+    if certificate.first >= certificate.second || certificate.second >= certificate.clause.literals.len() {
+        return false;
+    }
+    let first_lit = &certificate.clause.literals[certificate.first];
+    let second_lit = &certificate.clause.literals[certificate.second];
+    if !first_lit.positive || !second_lit.positive {
+        return false;
+    }
+    let ExecAtom::Eq(s, t) = &first_lit.atom else { return false; };
+    let ExecAtom::Eq(u, v) = &second_lit.atom else { return false; };
+    if !check_domain_unique(&certificate.unifier, remaining_work) {
+        return false;
+    }
+    let s_inst = apply_exec(s, &certificate.unifier);
+    let u_inst = apply_exec(u, &certificate.unifier);
+    if !same_term(&s_inst, &u_inst) {
+        return false;
+    }
+    let t_inst = apply_exec(t, &certificate.unifier);
+    let v_inst = apply_exec(v, &certificate.unifier);
+    let inst_clause = substitute_clause_exec(&certificate.clause, &certificate.unifier);
+    if certificate.second >= inst_clause.literals.len() {
+        return false;
+    }
+    let expected = build_equality_factoring_conclusion_exec(
+        &inst_clause, certificate.first, certificate.second, &t_inst, &v_inst,
+    );
+    if !same_clause_exact(&expected, &certificate.conclusion) {
+        return false;
+    }
+    proof {
+        assert(apply(view(*s), view_subst(certificate.unifier@))
+            == apply(view(*u), view_subst(certificate.unifier@)));
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.clause), interp)
+            implies clause_valid(view_clause(certificate.conclusion), interp) by {
+            equality_factoring_sound(
+                view_clause(certificate.clause),
+                certificate.first as int,
+                certificate.second as int,
+                view_subst(certificate.unifier@),
+                interp,
+            );
+            assert(clause_equal(view_clause(expected), equality_factoring_conclusion(
+                substitute_clause(view_clause(certificate.clause), view_subst(certificate.unifier@)),
+                certificate.first as int,
+                certificate.second as int,
+                view(t_inst),
+                view(v_inst),
+            )));
+            assert(clause_equal(view_clause(expected), view_clause(certificate.conclusion)));
+            assert(view_clause(certificate.conclusion).literals =~= view_clause(expected).literals);
+        }
+    }
+    true
+}
+
+fn check_subsumption_resolution_and_replay(
+    certificate: &SubsumptionResolutionCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.target.literals.len()
+            + certificate.active.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.target), interp)
+            && clause_valid(view_clause(certificate.active), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+{
+    let mut structural_work: usize = 0;
+    if !charge_subsumption_resolution_certificate(certificate, &mut structural_work, work_limit) {
+        return false;
+    }
+    if certificate.target.literals.len() > work_limit
+        || certificate.active.literals.len() > work_limit - certificate.target.literals.len()
+        || certificate.conclusion.literals.len() > work_limit - certificate.target.literals.len() - certificate.active.literals.len()
+    {
+        return false;
+    }
+    let remaining_work = work_limit - structural_work;
+    if certificate.target_pivot >= certificate.target.literals.len()
+        || certificate.active_pivot >= certificate.active.literals.len()
+        || certificate.matches.len() != certificate.active.literals.len()
+    {
+        return false;
+    }
+    let Some(target_variables) = collect_clause_variables_bounded(&certificate.target, remaining_work) else {
+        return false;
+    };
+    let Some(active_variables) = collect_clause_variables_bounded(&certificate.active, remaining_work) else {
+        return false;
+    };
+    if !check_freshening(&active_variables, &target_variables, &certificate.active_freshening, remaining_work) {
+        return false;
+    }
+    let Some(fresh_active) = freshen_clause_apart(
+        &certificate.active, &target_variables, &certificate.active_freshening, remaining_work,
+    ) else { return false; };
+    if !check_domain_unique(&certificate.unifier, remaining_work) {
+        return false;
+    }
+    let inst_active = substitute_clause_exec(&fresh_active, &certificate.unifier);
+    if inst_active.literals.len() != certificate.active.literals.len() {
+        return false;
+    }
+
+    let target_pivot_lit = &certificate.target.literals[certificate.target_pivot];
+    let active_pivot_lit = &inst_active.literals[certificate.active_pivot];
+    if target_pivot_lit.positive == active_pivot_lit.positive {
+        return false;
+    }
+    if !same_atom(&target_pivot_lit.atom, &active_pivot_lit.atom) {
+        return false;
+    }
+
+    let mut j: usize = 0;
+    while j < inst_active.literals.len()
+        invariant
+            j <= inst_active.literals.len(),
+            inst_active.literals@.len() == certificate.active.literals@.len(),
+            certificate.matches@.len() == certificate.active.literals@.len(),
+            certificate.target_pivot < certificate.target.literals@.len(),
+            certificate.active_pivot < certificate.active.literals@.len(),
+            forall|k: int| 0 <= k < j && k != certificate.active_pivot as int ==> {
+                &&& certificate.matches@[k] < certificate.target.literals@.len()
+                &&& certificate.matches@[k] != certificate.target_pivot
+                &&& view_literal(inst_active.literals@[k]) == view_literal(certificate.target.literals@[certificate.matches@[k] as int])
+            },
+        decreases inst_active.literals.len() - j
+    {
+        if j != certificate.active_pivot {
+            let target_idx = certificate.matches[j];
+            if target_idx >= certificate.target.literals.len() || target_idx == certificate.target_pivot {
+                return false;
+            }
+            if !same_literal(&inst_active.literals[j], &certificate.target.literals[target_idx]) {
+                return false;
+            }
+        }
+        j += 1;
+    }
+
+    let expected = delete_clause_literal_exec(&certificate.target, certificate.target_pivot);
+    if !same_clause_exact(&expected, &certificate.conclusion) {
+        return false;
+    }
+
+    proof {
+        assert(view_clause(inst_active)
+            == substitute_clause(
+                substitute_clause(view_clause(certificate.active),
+                    view_subst(certificate.active_freshening@)),
+                view_subst(certificate.unifier@)));
+        let spec_matches = Seq::new(certificate.matches@.len(), |i: int| certificate.matches@[i] as int);
+        assert forall|k: int| 0 <= k < certificate.active.literals@.len() && k != certificate.active_pivot as int implies {
+            &&& 0 <= spec_matches[k] < view_clause(certificate.target).literals.len()
+            &&& spec_matches[k] != certificate.target_pivot as int
+            &&& substitute_literal(substitute_literal(view_clause(certificate.active).literals[k], view_subst(certificate.active_freshening@)), view_subst(certificate.unifier@))
+                == view_clause(certificate.target).literals[spec_matches[k]]
+        } by {
+            assert(0 <= spec_matches[k] < certificate.target.literals@.len());
+            assert(spec_matches[k] != certificate.target_pivot as int);
+            assert(view_literal(inst_active.literals@[k]) == view_literal(certificate.target.literals@[spec_matches[k]]));
+            assert(view_clause(inst_active).literals[k] == view_literal(inst_active.literals@[k]));
+            assert(view_clause(certificate.target).literals[spec_matches[k]] == view_literal(certificate.target.literals@[spec_matches[k]]));
+        };
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.target), interp)
+            && clause_valid(view_clause(certificate.active), interp)
+            implies clause_valid(view_clause(certificate.conclusion), interp) by {
+            subsumption_resolution_sound(
+                view_clause(certificate.target),
+                view_clause(certificate.active),
+                certificate.target_pivot as int,
+                certificate.active_pivot as int,
+                view_subst(certificate.active_freshening@),
+                view_subst(certificate.unifier@),
+                spec_matches,
+                interp,
+            );
+            assert(clause_equal(view_clause(expected), delete_literal(view_clause(certificate.target), certificate.target_pivot as int)));
+            assert(clause_equal(view_clause(expected), view_clause(certificate.conclusion)));
+            assert(view_clause(certificate.conclusion).literals =~= view_clause(expected).literals);
+        };
+    }
+    true
+}
+
+fn check_weakening_and_replay(
+    certificate: &WeakeningCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.parent.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.parent), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+{
+    let mut structural_work: usize = 0;
+    if !charge_weakening_certificate(certificate, &mut structural_work, work_limit) {
+        return false;
+    }
+    if certificate.parent.literals.len() > work_limit
+        || certificate.conclusion.literals.len() > work_limit - certificate.parent.literals.len()
+    {
+        return false;
+    }
+    if certificate.inclusions.len() != certificate.parent.literals.len() {
+        return false;
+    }
+    let mut i: usize = 0;
+    while i < certificate.parent.literals.len()
+        invariant
+            i <= certificate.parent.literals.len(),
+            certificate.inclusions@.len() == certificate.parent.literals@.len(),
+            forall|k: int| 0 <= k < i as int ==> {
+                &&& certificate.inclusions@[k] < certificate.conclusion.literals@.len()
+                &&& view_literal(certificate.parent.literals@[k])
+                    == view_literal(certificate.conclusion.literals@[certificate.inclusions@[k] as int])
+            },
+        decreases certificate.parent.literals.len() - i
+    {
+        let target_idx = certificate.inclusions[i];
+        if target_idx >= certificate.conclusion.literals.len() {
+            return false;
+        }
+        if !same_literal(&certificate.parent.literals[i], &certificate.conclusion.literals[target_idx]) {
+            return false;
+        }
+        i += 1;
+    }
+
+    proof {
+        let spec_inclusions = Seq::new(certificate.inclusions@.len(), |j: int| certificate.inclusions@[j] as int);
+        assert forall|k: int| 0 <= k < certificate.parent.literals@.len() implies {
+            &&& 0 <= spec_inclusions[k] < view_clause(certificate.conclusion).literals.len()
+            &&& view_clause(certificate.parent).literals[k] == view_clause(certificate.conclusion).literals[spec_inclusions[k]]
+        } by {
+            assert(0 <= spec_inclusions[k] < certificate.conclusion.literals@.len());
+            assert(view_literal(certificate.parent.literals@[k]) == view_literal(certificate.conclusion.literals@[spec_inclusions[k]]));
+            assert(view_clause(certificate.parent).literals[k] == view_literal(certificate.parent.literals@[k]));
+            assert(view_clause(certificate.conclusion).literals[spec_inclusions[k]] == view_literal(certificate.conclusion.literals@[spec_inclusions[k]]));
+        };
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.parent), interp)
+            implies clause_valid(view_clause(certificate.conclusion), interp) by {
+            clause_weakening_sound(
+                view_clause(certificate.parent),
+                view_clause(certificate.conclusion),
+                spec_inclusions,
+                interp,
+            );
+        };
+    }
+    true
+}
+
+fn check_demodulation_and_replay(
+    certificate: &DemodulationCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.target.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.target), interp)
+            && clause_valid(view_clause(certificate.equality), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+{
+    let mut structural_work: usize = 0;
+    if !charge_demodulation_certificate(certificate, &mut structural_work, work_limit) {
+        return false;
+    }
+    if certificate.target.literals.len() > work_limit
+        || certificate.conclusion.literals.len() > work_limit - certificate.target.literals.len()
+    {
+        return false;
+    }
+    let remaining_work = work_limit - structural_work;
+    if certificate.equality.literals.len() != 1 {
+        return false;
+    }
+    let eq_lit = &certificate.equality.literals[0];
+    if !eq_lit.positive {
+        return false;
+    }
+    let ExecAtom::Eq(s, t) = &eq_lit.atom else { return false; };
+    if certificate.target_literal_index >= certificate.target.literals.len() {
+        return false;
+    }
+    if !same_u64_sequence(&certificate.raw_target_path, &certificate.fresh_target_path) {
+        return false;
+    }
+    let Some(target_variables) = collect_clause_variables_bounded(&certificate.target, remaining_work) else {
+        return false;
+    };
+    let Some(eq_variables) = collect_clause_variables_bounded(&certificate.equality, remaining_work) else {
+        return false;
+    };
+    if !check_freshening(&eq_variables, &target_variables, &certificate.equality_freshening, remaining_work) {
+        return false;
+    }
+    let Some(fresh_eq) = freshen_clause_apart(
+        &certificate.equality, &target_variables, &certificate.equality_freshening, remaining_work,
+    ) else { return false; };
+    if fresh_eq.literals.len() != 1 {
+        return false;
+    }
+    let fresh_eq_lit = &fresh_eq.literals[0];
+    let ExecAtom::Eq(fresh_s, fresh_t) = &fresh_eq_lit.atom else { return false; };
+
+    if !check_domain_unique(&certificate.unifier, remaining_work) {
+        return false;
+    }
+
+    let (from_uninst, to_uninst) = if !certificate.reversed {
+        (fresh_s, fresh_t)
+    } else {
+        (fresh_t, fresh_s)
+    };
+    let from_inst = apply_exec(from_uninst, &certificate.unifier);
+    let to_inst = apply_exec(to_uninst, &certificate.unifier);
+
+    let target_lit = &certificate.target.literals[certificate.target_literal_index];
+    let Some(selected_subterm) = selected_atom_term_exec(
+        &target_lit.atom, certificate.target_argument_slot, &certificate.raw_target_path,
+    ) else {
+        return false;
+    };
+
+    if !same_term(&from_inst, &selected_subterm) {
+        return false;
+    }
+
+    let Some(expected) = replace_clause_literal_exec(
+        &certificate.target,
+        certificate.target_literal_index,
+        certificate.target_argument_slot,
+        &certificate.raw_target_path,
+        &to_inst,
+    ) else {
+        return false;
+    };
+
+    if !same_clause_exact(&expected, &certificate.conclusion) {
+        return false;
+    }
+
+    proof {
+        let spec_equality = view_clause(certificate.equality);
+        let spec_target = view_clause(certificate.target);
+        let spec_fresh_eq = view_clause(fresh_eq);
+        assert(spec_fresh_eq == substitute_clause(spec_equality, view_subst(certificate.equality_freshening@)));
+        assert(spec_equality.literals.len() == 1);
+        assert(spec_equality.literals[0].atom == Atom::Eq(view(*s), view(*t)));
+        assert(spec_fresh_eq.literals[0].atom == Atom::Eq(
+            apply(view(*s), view_subst(certificate.equality_freshening@)),
+            apply(view(*t), view_subst(certificate.equality_freshening@)),
+        ));
+        assert(view(*fresh_s) == apply(view(*s), view_subst(certificate.equality_freshening@)));
+        assert(view(*fresh_t) == apply(view(*t), view_subst(certificate.equality_freshening@)));
+        let lhs = apply(view(*s), view_subst(certificate.equality_freshening@));
+        let rhs = apply(view(*t), view_subst(certificate.equality_freshening@));
+        let from = if !certificate.reversed { lhs } else { rhs };
+        let to = if !certificate.reversed { rhs } else { lhs };
+        assert(view(*from_uninst) == from);
+        assert(view(*to_uninst) == to);
+        assert(view(from_inst) == apply(from, view_subst(certificate.unifier@)));
+        assert(view(to_inst) == apply(to, view_subst(certificate.unifier@)));
+
+        let ti = certificate.target_literal_index as int;
+        let slot = certificate.target_argument_slot as nat;
+        let path = view_position(certificate.raw_target_path@);
+        assert(spec_target.literals[ti] == view_literal(*target_lit));
+        assert(literal_at_position(spec_target.literals[ti], slot, path)
+            == atom_at_position(view_atom(target_lit.atom), slot, path));
+        assert(literal_at_position(spec_target.literals[ti], slot, path) == Some(view(selected_subterm)));
+        assert(view(from_inst) == view(selected_subterm));
+        assert(apply(from, view_subst(certificate.unifier@)) == view(selected_subterm));
+
+        assert(replace_clause_literal(
+            spec_target, ti, slot, path, view(to_inst),
+        ) == Some(view_clause(expected)));
+
+        assert(clause_equal(view_clause(expected), view_clause(certificate.conclusion)));
+        assert(view_clause(certificate.conclusion).literals =~= view_clause(expected).literals);
+
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(spec_target, interp)
+            && clause_valid(spec_equality, interp)
+            implies clause_valid(view_clause(certificate.conclusion), interp) by {
+            demodulation_sound(
+                spec_target,
+                spec_equality,
+                view_subst(certificate.equality_freshening@),
+                view_subst(certificate.unifier@),
+                ti,
+                slot,
+                path,
+                certificate.reversed,
+                interp,
+            );
+        };
+    }
+    true
+}
+
+fn check_instantiation_and_replay(
+    certificate: &InstantiationCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.parent.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.parent), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+{
+    let mut structural_work: usize = 0;
+    if !charge_instantiation_certificate(certificate, &mut structural_work, work_limit) {
+        return false;
+    }
+    if certificate.parent.literals.len() > work_limit
+        || certificate.conclusion.literals.len() > work_limit - certificate.parent.literals.len()
+    {
+        return false;
+    }
+    let remaining_work = work_limit - structural_work;
+    if !check_domain_unique(&certificate.substitution, remaining_work) {
+        return false;
+    }
+    let expected = substitute_clause_exec(&certificate.parent, &certificate.substitution);
+    if !same_clause_exact(&expected, &certificate.conclusion) {
+        return false;
+    }
+    proof {
+        assert(view_clause(expected)
+            == substitute_clause(view_clause(certificate.parent), view_subst(certificate.substitution@)));
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.parent), interp)
+            implies clause_valid(view_clause(certificate.conclusion), interp) by {
+            instantiation_sound(
+                view_clause(certificate.parent),
+                view_subst(certificate.substitution@),
+                interp,
+            );
+            assert(clause_equal(view_clause(expected), view_clause(certificate.conclusion)));
+            assert(view_clause(certificate.conclusion).literals =~= view_clause(expected).literals);
+        }
+    }
+    true
+}
+
+fn replace_literal_position_exec_refines_substitution(
+    literal: &ExecLiteral,
+    bindings: &Vec<ExecBinding>,
+    slot: u64,
+    path: &Vec<u64>,
+    replacement: &ExecTerm,
+) -> (result: Option<ExecLiteral>)
+    ensures result.is_some() ==> replace_literal_at_position(
+        substitute_literal(view_literal(*literal), view_subst(bindings@)),
+        slot as nat,
+        view_position(path@),
+        apply(view(*replacement), view_subst(bindings@)),
+    ).is_some()
+{
+    let substituted = substitute_literal_exec(literal, bindings);
+    let instantiated_replacement = apply_exec(replacement, bindings);
+    let replaced = replace_literal_position_exec(
+        &substituted, slot, path, &instantiated_replacement,
+    );
+    match replaced {
+        Some(value) => {
+            assert(replace_literal_at_position(
+                substitute_literal(view_literal(*literal), view_subst(bindings@)),
+                slot as nat, view_position(path@),
+                apply(view(*replacement), view_subst(bindings@)),
+            ) == Some(view_literal(value)));
+            Some(value)
+        },
+        None => None,
+    }
+}
+
+/// Validate a supplied finite simultaneous-unifier certificate. This does not
+/// compute an MGU; it verifies domain uniqueness and that applying the same
+/// substitution to both selected terms makes them equal.
+fn check_unifier(
+    left: &ExecTerm,
+    right: &ExecTerm,
+    bindings: &Vec<ExecBinding>,
+    work_limit: usize,
+) -> (unifies: bool)
+    ensures unifies == ((bindings.len() == 0
+        || bindings.len() <= work_limit / bindings.len())
+        && domain_unique(view_subst(bindings@))
+        && apply(view(*left), view_subst(bindings@))
+            == apply(view(*right), view_subst(bindings@)))
+{
+    if !check_domain_unique(bindings, work_limit) {
+        return false;
+    }
+    let left_instance = apply_exec(left, bindings);
+    let right_instance = apply_exec(right, bindings);
+    let same = same_term(&left_instance, &right_instance);
+    assert(same == (apply(view(*left), view_subst(bindings@))
+        == apply(view(*right), view_subst(bindings@))));
+    same
+}
+
+proof fn accepted_unifier_has_semantic_equal_instances(
+    left: ExecTerm,
+    right: ExecTerm,
+    bindings: Seq<ExecBinding>,
+)
+    requires domain_unique(view_subst(bindings)),
+        apply(view(left), view_subst(bindings)) == apply(view(right), view_subst(bindings)),
+    ensures apply(view(left), view_subst(bindings))
+        == apply(view(right), view_subst(bindings))
+{}
+
+fn selected_atom_term_exec(
+    atom: &ExecAtom,
+    slot: u64,
+    path: &Vec<u64>,
+) -> (result: Option<ExecTerm>)
+    ensures match result {
+        Some(term) => atom_at_position(view_atom(*atom), slot as nat, view_position(path@))
+            == Some(view(term)),
+        None => atom_at_position(view_atom(*atom), slot as nat, view_position(path@)) == None,
+    }
+{
+    let root = match atom {
+        ExecAtom::Pred0(_) => return None,
+        ExecAtom::Pred1(_, arg) => {
+            if slot != 0 { return None; }
+            copy_term(arg)
+        },
+        ExecAtom::Pred2(_, left, right) => {
+            if slot == 0 { copy_term(left) }
+            else if slot == 1 { copy_term(right) }
+            else { return None; }
+        },
+        ExecAtom::Eq(left, right) => {
+            if slot == 0 { copy_term(left) }
+            else if slot == 1 { copy_term(right) }
+            else { return None; }
+        },
+    };
+    let result = subterm_at_exec(&root, path, 0);
+    assert(match result {
+        Some(term) => atom_at_position(view_atom(*atom), slot as nat, view_position(path@))
+            == Some(view(term)),
+        None => atom_at_position(view_atom(*atom), slot as nat, view_position(path@)) == None,
+    });
+    result
+}
+
+proof fn proposed_unifier_certificate_sound(
+    left: ExecTerm,
+    right: ExecTerm,
+    bindings: Seq<ExecBinding>,
+)
+    requires domain_unique(view_subst(bindings)),
+        apply(view(left), view_subst(bindings)) == apply(view(right), view_subst(bindings)),
+    ensures view(apply_exec_model(left, bindings)) == view(apply_exec_model(right, bindings))
+{
+    apply_view_exec_term(left, bindings);
+    apply_view_exec_term(right, bindings);
+}
+
+spec fn selected_source_left(certificate: SuperpositionCertificate) -> Term {
+    match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(left, _) => apply(view(left), view_subst(certificate.source_freshening@)),
+        _ => Term::Var(0),
+    }
+}
+
+spec fn selected_source_left_after_freshening(certificate: SuperpositionCertificate) -> Term {
+    apply(selected_source_left(certificate), view_subst(certificate.unifier@))
+}
+
+spec fn certificate_selected_source_left(certificate: SuperpositionCertificate) -> Term {
+    match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(left, _) => apply(
+            apply(view(left), view_subst(certificate.source_freshening@)),
+            view_subst(certificate.unifier@),
+        ),
+        _ => Term::Var(0),
+    }
+}
+
+spec fn certificate_selected_source_right(certificate: SuperpositionCertificate) -> Term {
+    match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(_, right) => apply(
+            apply(view(right), view_subst(certificate.source_freshening@)),
+            view_subst(certificate.unifier@),
+        ),
+        _ => Term::Var(0),
+    }
+}
+
+spec fn source_right_exec(certificate: SuperpositionCertificate) -> ExecTerm {
+    match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(_, right) => right,
+        _ => ExecTerm::Var(0),
+    }
+}
+
+spec fn certificate_selected_target_raw_term(certificate: SuperpositionCertificate) -> Option<Term> {
+    atom_at_position(
+        view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
+        certificate.target_argument_slot as nat,
+        view_position(certificate.target_path@),
+    )
+}
+
+spec fn certificate_selected_target_fresh_term(certificate: SuperpositionCertificate) -> Option<Term> {
+    match atom_at_position(
+        view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
+        certificate.target_argument_slot as nat,
+        view_position(certificate.target_path@),
+    ) {
+        Some(term) => Some(apply(term, view_subst(certificate.target_freshening@))),
+        None => None,
+    }
+}
+
+spec fn selected_source_right(certificate: SuperpositionCertificate) -> Term {
+    match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(_, right) => view(right),
+        _ => Term::Var(0),
+    }
+}
+
+spec fn selected_target_subterm(certificate: SuperpositionCertificate) -> Term {
+    match atom_at_position(
+        view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
+        certificate.target_argument_slot as nat,
+        view_position(certificate.target_path@),
+    ) {
+        Some(term) => apply(term, view_subst(certificate.target_freshening@)),
+        None => Term::Var(0),
+    }
+}
+
+spec fn selected_target_subterm_after_freshening(certificate: SuperpositionCertificate) -> Term {
+    apply(selected_target_subterm(certificate), view_subst(certificate.unifier@))
+}
+
+spec fn selected_rewrite_rhs(certificate: SuperpositionCertificate) -> Term {
+    apply(apply(selected_source_right(certificate),
+        view_subst(certificate.source_freshening@)), view_subst(certificate.unifier@))
+}
+
+spec fn expected_superposition_conclusion(
+    certificate: SuperpositionCertificate,
+    work_limit: nat,
+) -> Seq<Literal> {
+    let source_fresh = substitute_clause(view_clause(certificate.source),
+        view_subst(certificate.source_freshening@));
+    let target_fresh = substitute_clause(view_clause(certificate.target),
+        view_subst(certificate.target_freshening@));
+    let source_instance = substitute_clause(source_fresh, view_subst(certificate.unifier@));
+    let target_instance = substitute_clause(target_fresh, view_subst(certificate.unifier@));
+    let right = match certificate.source.literals@[certificate.source_equality_index as int].atom {
+        ExecAtom::Eq(_, rhs) => apply(apply(view(rhs), view_subst(certificate.source_freshening@)),
+            view_subst(certificate.unifier@)),
+        _ => Term::Var(0),
+    };
+    let target_rewritten = match replace_literal_at_position(
+        target_instance.literals[certificate.target_literal_index as int],
+        certificate.target_argument_slot as nat,
+        view_position(certificate.fresh_target_path@),
+        right,
+    ) {
+        Some(literal) => literal,
+        None => target_instance.literals[certificate.target_literal_index as int],
+    };
+    source_instance.literals.subrange(0, certificate.source_equality_index as int)
+        + source_instance.literals.subrange(
+            certificate.source_equality_index as int + 1, source_instance.literals.len() as int)
+        + target_instance.literals.update(certificate.target_literal_index as int, target_rewritten)
+}
+
+fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> replay_semantic_premises(*certificate),
+        accepted ==> certificate.target_path@ == certificate.fresh_target_path@
+        && accepted ==> certificate.source.literals.len()
+            + certificate.target.literals.len()
+            + certificate.source_freshening.len()
+            + certificate.target_freshening.len()
+            + certificate.unifier.len()
+            + certificate.target_path.len()
+            + certificate.fresh_target_path.len()
+            + certificate.conclusion.literals.len() <= work_limit
+        && accepted ==> certificate.source_equality_index < certificate.source.literals.len()
+        && accepted ==> certificate.target_literal_index < certificate.target.literals.len()
+        && accepted ==> certificate.source.literals@[certificate.source_equality_index as int].positive
+        && accepted ==> match certificate.source.literals@[certificate.source_equality_index as int].atom {
+            ExecAtom::Eq(ExecTerm::Var(_), _) => false,
+            ExecAtom::Eq(_, _) => true,
+            _ => false,
+        }
+        && accepted ==> forall|v: u64| term_clause_view_contains(certificate.source, v)
+            ==> exists|fresh: u64| lookup(view_subst(certificate.source_freshening@), v)
+                == Some(Term::Var(fresh))
+        && accepted ==> forall|v: u64| term_clause_view_contains(certificate.target, v)
+            ==> exists|fresh: u64| lookup(view_subst(certificate.target_freshening@), v)
+                == Some(Term::Var(fresh))
+        && accepted ==> forall|v: u64|
+            literal_variables(view_literal(
+                certificate.target.literals@[certificate.target_literal_index as int]))
+                .contains(v)
+            ==> exists|fresh: u64|
+                lookup(view_subst(certificate.target_freshening@), v)
+                    == Some(Term::Var(fresh))
+        && accepted ==> forall|v: u64|
+            literal_variables(view_literal(
+                certificate.target.literals@[certificate.target_literal_index as int]))
+                .contains(v)
+            ==> term_clause_view_contains(certificate.target, v)
+        && accepted ==> certificate_selected_source_left(*certificate)
+            == selected_target_subterm_after_freshening(*certificate)
+        && accepted ==> selected_rewrite_rhs(*certificate)
+            == apply(apply(certificate_selected_source_right(*certificate),
+                view_subst(certificate.source_freshening@)), view_subst(certificate.unifier@))
+        && accepted ==> selected_source_left_after_freshening(*certificate)
+            == selected_target_subterm_after_freshening(*certificate)
+        && accepted ==> selected_rewrite_rhs(*certificate)
+            == apply(apply(selected_source_right(*certificate),
+                view_subst(certificate.source_freshening@)), view_subst(certificate.unifier@))
+        && accepted ==> certificate_selected_source_left(*certificate)
+            == apply(apply(selected_source_left(*certificate),
+                view_subst(certificate.source_freshening@)),
+                view_subst(certificate.unifier@))
+        && accepted ==> certificate_selected_source_right(*certificate)
+            == apply(apply(view(source_right_exec(*certificate)),
+                view_subst(certificate.source_freshening@)),
+                view_subst(certificate.unifier@))
+        && accepted ==> certificate_selected_target_fresh_term(*certificate)
+            == Some(selected_target_subterm(*certificate))
+        && accepted ==> match certificate_selected_target_raw_term(*certificate) {
+            Some(raw) => selected_target_subterm(*certificate)
+                == apply(raw, view_subst(certificate.target_freshening@)),
+            None => false,
+        }
+        && accepted ==> match certificate_selected_target_fresh_term(*certificate) {
+            Some(fresh) => apply(fresh, view_subst(certificate.unifier@))
+                == selected_target_subterm_after_freshening(*certificate),
+            None => false,
+        }
+        && accepted ==> literal_at_position(
+            substitute_literal(
+                substitute_literal(
+                    view_literal(certificate.target.literals@[
+                        certificate.target_literal_index as int]),
+                    view_subst(certificate.target_freshening@)),
+                view_subst(certificate.unifier@)),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+        ) == Some(selected_target_subterm_after_freshening(*certificate))
+        && accepted ==> replace_literal_at_position(
+            substitute_literal(
+                substitute_literal(
+                    view_literal(certificate.target.literals@[
+                        certificate.target_literal_index as int]),
+                    view_subst(certificate.target_freshening@)),
+                view_subst(certificate.unifier@)),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+            selected_rewrite_rhs(*certificate),
+        ).is_some()
+        && accepted ==> match replace_literal_at_position(
+            substitute_literal(
+                substitute_literal(
+                    view_literal(certificate.target.literals@[
+                        certificate.target_literal_index as int]),
+                    view_subst(certificate.target_freshening@)),
+                view_subst(certificate.unifier@)),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+            selected_rewrite_rhs(*certificate),
+        ) {
+            Some(rewritten) => rewritten == match replace_literal_at_position(
+                substitute_literal(
+                    substitute_literal(
+                        view_literal(certificate.target.literals@[
+                            certificate.target_literal_index as int]),
+                        view_subst(certificate.target_freshening@)),
+                    view_subst(certificate.unifier@)),
+                certificate.target_argument_slot as nat,
+                view_position(certificate.target_path@),
+                certificate_selected_source_right(*certificate),
+            ) {
+                Some(expected) => expected,
+                None => rewritten,
+            },
+            None => false,
+        }
+        && accepted ==> view_clause(certificate.conclusion).literals.len()
+            == certificate.source.literals.len() - 1 + certificate.target.literals.len()
+        && accepted ==> atom_at_position(
+            view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+        ).is_some()
+        && accepted ==> match atom_at_position(
+            view_atom(certificate.target.literals@[certificate.target_literal_index as int].atom),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+        ) {
+            Some(raw) => selected_target_subterm(*certificate)
+                == apply(raw, view_subst(certificate.target_freshening@)),
+            None => false,
+        }
+        && accepted ==> forall|i: int| 0 <= i < certificate.source.literals@.len()
+            ==> renames_variables_on(view_subst(certificate.source_freshening@),
+                literal_variables(view_literal(certificate.source.literals@[i]))),
+        accepted ==> forall|i: int| 0 <= i < certificate.target.literals@.len()
+            ==> renames_variables_on(view_subst(certificate.target_freshening@),
+                literal_variables(view_literal(certificate.target.literals@[i])))
+{
+    let mut structural_work: usize = 0;
+    if !charge_clause_structure(&certificate.source, &mut structural_work, work_limit)
+        || !charge_clause_structure(&certificate.target, &mut structural_work, work_limit)
+        || !charge_clause_structure(&certificate.conclusion, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.source_freshening, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.target_freshening, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.unifier, &mut structural_work, work_limit)
+    {
+        return false;
+    }
+    if certificate.source.literals.len() > work_limit
+        || certificate.target.literals.len() > work_limit - certificate.source.literals.len()
+    {
+        return false;
+    }
+    let mut remaining_work = work_limit - certificate.source.literals.len()
+        - certificate.target.literals.len();
+    if certificate.source_freshening.len() > remaining_work { return false; }
+    remaining_work -= certificate.source_freshening.len();
+    if certificate.target_freshening.len() > remaining_work { return false; }
+    remaining_work -= certificate.target_freshening.len();
+    if certificate.unifier.len() > remaining_work { return false; }
+    remaining_work -= certificate.unifier.len();
+    if certificate.target_path.len() > remaining_work { return false; }
+    remaining_work -= certificate.target_path.len();
+    if certificate.fresh_target_path.len() > remaining_work { return false; }
+    remaining_work -= certificate.fresh_target_path.len();
+    if certificate.conclusion.literals.len() > remaining_work { return false; }
+    if !same_u64_sequence(&certificate.target_path, &certificate.fresh_target_path) {
+        return false;
+    }
+
+    if certificate.source_equality_index >= certificate.source.literals.len()
+        || certificate.target_literal_index >= certificate.target.literals.len()
+    {
+        return false;
+    }
+
+    let source_literal = &certificate.source.literals[certificate.source_equality_index];
+    if !source_literal.positive { return false; }
+    let ExecAtom::Eq(source_left, source_right) = &source_literal.atom else { return false; };
+    if let ExecTerm::Var(_) = source_left { return false; }
+
+    let left_variables = match collect_clause_variables_bounded(&certificate.source, work_limit) {
+        Some(vars) => vars,
+        None => return false,
+    };
+    let right_variables = match collect_clause_variables_bounded(&certificate.target, work_limit) {
+        Some(vars) => vars,
+        None => return false,
+    };
+    if !check_freshening(
+        &left_variables, &right_variables, &certificate.source_freshening, work_limit,
+    ) {
+        return false;
+    }
+    if !is_variable_renaming(&left_variables, &certificate.source_freshening) {
+        return false;
+    }
+    let fresh_source = match freshen_clause_apart(
+        &certificate.source, &right_variables, &certificate.source_freshening, work_limit,
+    ) {
+        Some(clause) => clause,
+        None => return false,
+    };
+    assert(view_clause(fresh_source)
+        == substitute_clause(view_clause(certificate.source),
+            view_subst(certificate.source_freshening@)));
+    let fresh_source_variables = match collect_clause_variables_bounded(&fresh_source, work_limit) {
+        Some(vars) => vars,
+        None => return false,
+    };
+    let mut avoid_target: Vec<u64> = Vec::new();
+    if !extend_unique(&mut avoid_target, &right_variables, work_limit)
+        || !extend_unique(&mut avoid_target, &fresh_source_variables, work_limit)
+    {
+        return false;
+    }
+    if !check_freshening(
+        &right_variables, &avoid_target, &certificate.target_freshening, work_limit,
+    ) {
+        return false;
+    }
+    if !is_variable_renaming(&right_variables, &certificate.target_freshening) {
+        return false;
+    }
+    let target_literal_freshening_vars = match collect_clause_variables_bounded(
+        &ExecClause { literals: vec![copy_literal(
+            &certificate.target.literals[certificate.target_literal_index],
+        )] },
+        work_limit,
+    ) {
+        Some(vars) => vars,
+        None => return false,
+    };
+    if !is_variable_renaming(&target_literal_freshening_vars, &certificate.target_freshening) {
+        return false;
+    }
+    let fresh_target = match freshen_clause_apart(
+        &certificate.target, &avoid_target, &certificate.target_freshening, work_limit,
+    ) {
+        Some(clause) => clause,
+        None => return false,
+    };
+    assert(view_clause(fresh_target)
+        == substitute_clause(view_clause(certificate.target),
+            view_subst(certificate.target_freshening@)));
+    if certificate.source_equality_index >= fresh_source.literals.len()
+        || certificate.target_literal_index >= fresh_target.literals.len()
+    {
+        return false;
+    }
+
+    let target_subterm_result = selected_atom_term_exec(
+        &certificate.target.literals[certificate.target_literal_index].atom,
+        certificate.target_argument_slot,
+        &certificate.target_path,
+    );
+    let Some(target_subterm) = target_subterm_result else { return false; };
+    let source_eq_fresh = &fresh_source.literals[certificate.source_equality_index];
+    let ExecAtom::Eq(fresh_source_left, _) = &source_eq_fresh.atom else { return false; };
+    assert(view_clause(fresh_source).literals[certificate.source_equality_index as int]
+        == substitute_literal(view_literal(*source_literal),
+            view_subst(certificate.source_freshening@)));
+    let target_selected = &fresh_target.literals[certificate.target_literal_index];
+    let Some(fresh_target_subterm) = selected_atom_term_exec(
+        &target_selected.atom, certificate.target_argument_slot, &certificate.fresh_target_path,
+    ) else { return false; };
+    let raw_selected_after_freshening = apply_exec(&target_subterm, &certificate.target_freshening);
+    if !same_term(&raw_selected_after_freshening, &fresh_target_subterm) {
+        return false;
+    }
+    let unifies = check_unifier(
+        fresh_source_left, &fresh_target_subterm, &certificate.unifier, work_limit,
+    );
+    if !unifies {
+        return false;
+    }
+    assert(view(*fresh_source_left)
+        == apply(view(*source_left), view_subst(certificate.source_freshening@)));
+    assert(domain_unique(view_subst(certificate.unifier@)));
+    assert(apply(view(*fresh_source_left), view_subst(certificate.unifier@))
+        == apply(view(fresh_target_subterm), view_subst(certificate.unifier@)));
+    assert(certificate_selected_source_left(*certificate)
+        == apply(view(*fresh_source_left), view_subst(certificate.unifier@)));
+    assert(certificate_selected_target_fresh_term(*certificate)
+        == Some(view(fresh_target_subterm)));
+    assert(certificate_selected_target_raw_term(*certificate)
+        == Some(view(target_subterm)));
+    assert(apply(view(fresh_target_subterm), view_subst(certificate.unifier@))
+        == selected_target_subterm_after_freshening(*certificate));
+    assert(certificate_selected_source_left(*certificate)
+        == selected_target_subterm_after_freshening(*certificate));
+    proof {
+        let raw_target_literal = view_literal(
+            certificate.target.literals@[certificate.target_literal_index as int]);
+        assert(literal_at_position(raw_target_literal,
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@)).is_some());
+        literal_position_substitution_success(
+            raw_target_literal,
+            view_subst(certificate.target_freshening@),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+        );
+        let freshened_target_literal = substitute_literal(
+            raw_target_literal, view_subst(certificate.target_freshening@));
+        assert(literal_at_position(freshened_target_literal,
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@)).is_some());
+        literal_position_substitution_success(
+            freshened_target_literal,
+            view_subst(certificate.unifier@),
+            certificate.target_argument_slot as nat,
+            view_position(certificate.target_path@),
+        );
+    }
+    let source_right = match &source_eq_fresh.atom {
+        ExecAtom::Eq(_, right) => right,
+        _ => return false,
+    };
+    let instantiated_source_left = apply_exec(fresh_source_left, &certificate.unifier);
+    let instantiated_source_right = apply_exec(source_right, &certificate.unifier);
+    assert(view(*source_right)
+        == apply(view(source_right_exec(*certificate)),
+            view_subst(certificate.source_freshening@)));
+    assert(view(instantiated_source_right)
+        == certificate_selected_source_right(*certificate));
+    assert(view(*source_right)
+        == apply(view(source_right_exec(*certificate)),
+            view_subst(certificate.source_freshening@)));
+    assert(view(instantiated_source_right)
+        == apply(view(*source_right), view_subst(certificate.unifier@)));
+    assert(view(instantiated_source_right) == certificate_selected_source_right(*certificate));
+    let raw_selected_after_freshening = apply_exec(&target_subterm, &certificate.target_freshening);
+    if !same_term(&raw_selected_after_freshening, &fresh_target_subterm) {
+        return false;
+    }
+    let selected_after_unification = apply_exec(&fresh_target_subterm, &certificate.unifier);
+    if !same_term(&instantiated_source_left, &selected_after_unification) {
+        return false;
+    }
+    // Ensure both oriented source sides were instantiated by the same unifier;
+    // the semantic theorem uses this exact RHS when constructing the resolvent.
+    let _rewritten_rhs = instantiated_source_right;
+    proof {
+        let target_literal = view_literal(certificate.target.literals@[
+            certificate.target_literal_index as int]);
+        let tf = view_subst(certificate.target_freshening@);
+        let u = view_subst(certificate.unifier@);
+        let slot = certificate.target_argument_slot as nat;
+        let path = view_position(certificate.target_path@);
+        let raw = view(target_subterm);
+        assert(literal_at_position(target_literal, slot, path) == Some(raw));
+        literal_position_substitution_success(target_literal, tf, slot, path);
+        literal_position_substitution_success(substitute_literal(target_literal, tf),
+            u, slot, path);
+        assert(literal_at_position(substitute_literal(substitute_literal(target_literal,
+            tf), u), slot, path) == Some(apply(apply(raw, tf), u)));
+        literal_position_replacement_exists(
+            substitute_literal(substitute_literal(target_literal, tf), u),
+            slot, path, selected_rewrite_rhs(*certificate));
+        assert(replay_semantic_premises(*certificate));
+    }
+    true
+}
+
+fn is_variable_renaming(variables: &Vec<u64>, bindings: &Vec<ExecBinding>) -> (valid: bool)
+    ensures valid == freshening_images_are_variable(bindings@, variables@)
+{
+    let mut i: usize = 0;
+    while i < variables.len()
+        invariant i <= variables.len(),
+            forall|k: int| 0 <= k < i as int
+                ==> renamed_variable(view_subst(bindings@), variables@[k]).is_some()
+        decreases variables.len() - i
+    {
+        match lookup_exec(bindings, variables[i]) {
+            Some(ExecTerm::Var(fresh)) => {
+                assert(renamed_variable(view_subst(bindings@), variables@[i as int])
+                    == Some(fresh));
+            },
+            Some(_) => {
+                assert(renamed_variable(view_subst(bindings@), variables@[i as int]).is_none());
+                return false;
+            },
+            None => {
+                assert(renamed_variable(view_subst(bindings@), variables@[i as int]).is_none());
+                return false;
+            },
+        }
+        i += 1;
+    }
+    assert(i == variables.len());
+    assert forall|k: int| 0 <= k < variables@.len()
+        implies renamed_variable(view_subst(bindings@), variables@[k]).is_some() by {
+        assert(k < i as int);
+    }
+    assert(i == variables.len());
+    assert forall|k: int| 0 <= k < variables@.len()
+        implies renamed_variable(view_subst(bindings@), variables@[k]).is_some() by {
+        assert(k < i as int);
+    }
+    true
+}
+
+spec fn renames_all_variables(sigma: Substitution) -> bool {
+    forall|v: u64| #[trigger] lookup(sigma, v).is_some()
+        ==> exists|fresh: u64| lookup(sigma, v) == Some(Term::Var(fresh))
+}
+
+proof fn renaming_on_all_implies_finite_renaming(sigma: Substitution)
+    requires renames_all_variables(sigma)
+    ensures renaming_substitution(sigma)
+{}
+
+fn extend_unique(destination: &mut Vec<u64>, source: &Vec<u64>, work_limit: usize) -> (ok: bool)
+{
+    let mut i: usize = 0;
+    while i < source.len()
+        invariant i <= source.len()
+        decreases source.len() - i
+    {
+        if destination.len() >= work_limit { return false; }
+        let value = source[i];
+        if !contains_u64(destination, value) {
+            destination.push(value);
+        }
+        i += 1;
+    }
+    true
+}
+
+fn same_u64_sequence(left: &Vec<u64>, right: &Vec<u64>) -> (same: bool)
+    ensures same == (left@ == right@)
+{
+    if left.len() != right.len() { return false; }
+    let mut i: usize = 0;
+    while i < left.len()
+        invariant
+            i <= left.len(),
+            left.len() == right.len(),
+            forall|j: int| 0 <= j < i as int ==> left@[j] == right@[j],
+        decreases left.len() - i
+    {
+        if left[i] != right[i] { return false; }
+        assert(left@[i as int] == right@[i as int]);
+        i += 1;
+    }
+    assert forall|j: int| 0 <= j < left@.len() implies left@[j] == right@[j] by {
+        assert(j < i as int);
+    }
+    assert(left@ == right@);
+    true
+}
+
+/// Remove exactly one occurrence; duplicates in either context are preserved.
+spec fn parent_context(parent: Clause, selected: int) -> Clause {
+    Clause { literals: parent.literals.subrange(0, selected)
+        + parent.literals.subrange(selected + 1, parent.literals.len() as int) }
+}
+
+proof fn parent_context_facts(parent: Clause, selected: int, sigma: Substitution,
+    interp: Interpretation)
+    requires 0 <= selected < parent.literals.len(),
+    ensures
+        parent_context(substitute_clause(parent, sigma), selected)
+            == substitute_clause(parent_context(parent, selected), sigma),
+        clause_valid(parent, interp)
+            ==> clause_valid(append_literal(parent_context(parent, selected),
+                parent.literals[selected]), interp),
+{
+    let context = parent_context(parent, selected);
+    assert(parent_context(substitute_clause(parent, sigma), selected).literals
+        =~= substitute_clause(context, sigma).literals);
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        && clause_valid(parent, interp)
+        implies clause_holds(append_literal(context, parent.literals[selected]),
+            interp, valuation) by {
+        let i = choose|i: int| 0 <= i < parent.literals.len()
+            && literal_holds(parent.literals[i], interp, valuation);
+        if i == selected {
+            assert(append_literal(context, parent.literals[selected]).literals[
+                context.literals.len() as int] == parent.literals[i]);
+        } else {
+            let j = if i < selected { i } else { i - 1 };
+            assert(0 <= j < context.literals.len());
+            assert(context.literals[j] == parent.literals[i]);
+            assert(append_literal(context, parent.literals[selected]).literals[j]
+                == parent.literals[i]);
+        }
+    }
+}
+
+/// Exactly the semantic premises exported by successful certificate checking.
+spec fn replay_semantic_premises(c: SuperpositionCertificate) -> bool {
+    let source = view_clause(c.source);
+    let target = view_clause(c.target);
+    let si = c.source_equality_index as int;
+    let ti = c.target_literal_index as int;
+    let sf = view_subst(c.source_freshening@);
+    let tf = view_subst(c.target_freshening@);
+    let u = view_subst(c.unifier@);
+    0 <= si < source.literals.len() && 0 <= ti < target.literals.len()
+        && c.target_path@ == c.fresh_target_path@
+        && source.literals[si].positive
+        && match source.literals[si].atom {
+            Atom::Eq(left, right) => match certificate_selected_target_raw_term(c) {
+                Some(raw) => apply(apply(left, sf), u) == apply(apply(raw, tf), u)
+                    && literal_at_position(substitute_literal(
+                        substitute_literal(target.literals[ti], tf), u),
+                        c.target_argument_slot as nat, view_position(c.target_path@))
+                        == Some(apply(apply(raw, tf), u))
+                    && replace_literal_at_position(substitute_literal(
+                        substitute_literal(target.literals[ti], tf), u),
+                        c.target_argument_slot as nat, view_position(c.target_path@),
+                        apply(apply(right, sf), u)).is_some(),
+                None => false,
+            },
+            _ => false,
+        }
+}
+
+/// Bridge arbitrary selected indices and exact executable sequence order to
+/// the context-based standardized superposition theorem.
+proof fn accepted_replay_preserves_validity(c: SuperpositionCertificate,
+    work_limit: nat, interp: Interpretation)
+    requires interpretation_well_formed(interp), replay_semantic_premises(c),
+        view_clause(c.conclusion).literals == expected_superposition_conclusion(c, work_limit),
+        clause_valid(view_clause(c.source), interp),
+        clause_valid(view_clause(c.target), interp),
+    ensures clause_valid(view_clause(c.conclusion), interp)
+{
+    let source = view_clause(c.source);
+    let target = view_clause(c.target);
+    let si = c.source_equality_index as int;
+    let ti = c.target_literal_index as int;
+    let sf = view_subst(c.source_freshening@);
+    let tf = view_subst(c.target_freshening@);
+    let u = view_subst(c.unifier@);
+    let sc = parent_context(source, si);
+    let tc = parent_context(target, ti);
+    let source_instance = substitute_clause(substitute_clause(source, sf), u);
+    let target_instance = substitute_clause(substitute_clause(target, tf), u);
+    parent_context_facts(source, si, sf, interp);
+    parent_context_facts(target, ti, tf, interp);
+    parent_context_facts(substitute_clause(source, sf), si, u, interp);
+    parent_context_facts(substitute_clause(target, tf), ti, u, interp);
+    let (left, right) = match source.literals[si].atom {
+        Atom::Eq(left, right) => (left, right),
+        _ => { assert(false); return; },
+    };
+    let raw = certificate_selected_target_raw_term(c).unwrap();
+    let rewritten = replace_literal_at_position(target_instance.literals[ti],
+        c.target_argument_slot as nat, view_position(c.target_path@),
+        apply(apply(right, sf), u)).unwrap();
+    let sci = substitute_clause(substitute_clause(sc, sf), u);
+    let tci = substitute_clause(substitute_clause(tc, tf), u);
+    let conclusion = view_clause(c.conclusion);
+    assert(conclusion.literals == parent_context(source_instance, si).literals
+        + target_instance.literals.update(ti, rewritten));
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(conclusion, interp, valuation) by {
+        standardized_superposition_sound(sc, source.literals[si], tc,
+            target.literals[ti], left, right, raw, c.target_argument_slot as nat,
+            view_position(c.target_path@), sf, tf, u, interp, valuation);
+        if clause_holds(sci, interp, valuation) {
+            let i = choose|i: int| 0 <= i < sci.literals.len()
+                && literal_holds(sci.literals[i], interp, valuation);
+            assert(conclusion.literals[i] == sci.literals[i]);
+        } else if clause_holds(tci, interp, valuation) {
+            let i = choose|i: int| 0 <= i < tci.literals.len()
+                && literal_holds(tci.literals[i], interp, valuation);
+            let j = if i < ti { i } else { i + 1 };
+            assert(0 <= j < target_instance.literals.len() && j != ti);
+            assert(tci.literals[i] == target_instance.literals[j]);
+            assert(conclusion.literals[sci.literals.len() + j] == tci.literals[i]);
+        } else {
+            assert(literal_holds(rewritten, interp, valuation));
+            assert(conclusion.literals[sci.literals.len() + ti] == rewritten);
+        }
+    }
+}
+
+fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> certificate.source.literals.len()
+            + certificate.target.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit
+        && accepted ==> clause_equal(view_clause(certificate.conclusion),
+            Clause { literals: expected_superposition_conclusion(
+                *certificate, work_limit as nat) }),
+        accepted ==> replay_semantic_premises(*certificate),
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.source), interp)
+            && clause_valid(view_clause(certificate.target), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp),
+{
+    let mut structural_work: usize = 0;
+    if !charge_clause_structure(&certificate.source, &mut structural_work, work_limit)
+        || !charge_clause_structure(&certificate.target, &mut structural_work, work_limit)
+        || !charge_clause_structure(&certificate.conclusion, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.source_freshening, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.target_freshening, &mut structural_work, work_limit)
+        || !charge_binding_structure(&certificate.unifier, &mut structural_work, work_limit)
+    {
+        return false;
+    }
+    assert(structural_work <= work_limit);
+    if certificate.source.literals.len() > work_limit
+        || certificate.target.literals.len() > work_limit - certificate.source.literals.len()
+    {
+        return false;
+    }
+    let replay_work = certificate.source.literals.len() + certificate.target.literals.len();
+    if certificate.conclusion.literals.len() > work_limit - replay_work {
+        return false;
+    }
+    let remaining_work = work_limit - structural_work;
+    if !check_superposition_certificate(certificate, remaining_work) {
+        return false;
+    }
+    if certificate.source_equality_index >= certificate.source.literals.len()
+        || certificate.target_literal_index >= certificate.target.literals.len()
+    {
+        return false;
+    }
+    let Some(target_variables) = collect_clause_variables_bounded(&certificate.target, remaining_work) else {
+        return false;
+    };
+    let Some(fresh_source) = freshen_clause_apart(
+        &certificate.source, &target_variables, &certificate.source_freshening, remaining_work,
+    ) else { return false; };
+    let Some(fresh_source_variables) = collect_clause_variables_bounded(&fresh_source, remaining_work) else {
+        return false;
+    };
+    let mut target_avoid = Vec::new();
+    if !extend_unique(&mut target_avoid, &target_variables, remaining_work)
+        || !extend_unique(&mut target_avoid, &fresh_source_variables, remaining_work)
+    {
+        return false;
+    }
+    let Some(fresh_target) = freshen_clause_apart(
+        &certificate.target, &target_avoid, &certificate.target_freshening, remaining_work,
+    ) else { return false; };
+    let instantiated_source = substitute_clause_exec(&fresh_source, &certificate.unifier);
+    let instantiated_target = substitute_clause_exec(&fresh_target, &certificate.unifier);
+    if certificate.source_equality_index >= instantiated_source.literals.len()
+        || certificate.target_literal_index >= instantiated_target.literals.len()
+    {
+        return false;
+    }
+
+    let source_literal = &instantiated_source.literals[certificate.source_equality_index];
+    let ExecAtom::Eq(_, source_right) = &source_literal.atom else { return false; };
+    assert(view_clause(instantiated_source)
+        == substitute_clause(
+            substitute_clause(view_clause(certificate.source),
+                view_subst(certificate.source_freshening@)),
+            view_subst(certificate.unifier@)));
+    assert(view_clause(instantiated_target)
+        == substitute_clause(
+            substitute_clause(view_clause(certificate.target),
+                view_subst(certificate.target_freshening@)),
+            view_subst(certificate.unifier@)));
+    assert(view(*source_right) == certificate_selected_source_right(*certificate));
+    assert(view(*source_right) == selected_rewrite_rhs(*certificate));
+    let Some(rewritten_target) = replace_clause_literal_exec(
+        &instantiated_target,
+        certificate.target_literal_index,
+        certificate.target_argument_slot,
+        &certificate.fresh_target_path,
+        source_right,
+    ) else { return false; };
+
+    let replayed_conclusion = build_superposition_conclusion_exec(
+        &instantiated_source, certificate.source_equality_index, &rewritten_target,
+    );
+    assert(view_clause(replayed_conclusion).literals
+        == expected_superposition_conclusion(*certificate, work_limit as nat));
+    let conclusion = &certificate.conclusion;
+    let same = same_clause_exact(&replayed_conclusion, conclusion);
+    if !same { return false; }
+    assert(clause_equal(view_clause(replayed_conclusion), view_clause(*conclusion)));
+    assert(clause_equal(view_clause(*conclusion), Clause {
+        literals: expected_superposition_conclusion(*certificate, work_limit as nat),
+    }));
+    assert(view_clause(certificate.conclusion).literals
+        =~= expected_superposition_conclusion(*certificate, work_limit as nat));
+    assert(replay_semantic_premises(*certificate));
+    assert forall|interp: Interpretation| interpretation_well_formed(interp)
+        && clause_valid(view_clause(certificate.source), interp)
+        && clause_valid(view_clause(certificate.target), interp)
+        implies clause_valid(view_clause(certificate.conclusion), interp) by {
+        accepted_replay_preserves_validity(*certificate, work_limit as nat, interp);
+    }
+    true
+}
+
+/// An executable DAG-step boundary: bind the certificate to the actual two
+/// parent nodes and conclusion, then consume the proved replay postcondition.
+fn check_dag_superposition_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::Superposition || node.parents.len() != 2 {
+        return false;
+    }
+    let Some(step) = &node.step else { return false; };
+    if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() {
+        return false;
+    }
+    // Bound recursive comparisons before traversing untrusted clause syntax.
+    let mut work: usize = 0;
+    if !charge_certificate_structure(step, &mut work, work_limit)
+        || !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !same_clause_exact(&step.source, &nodes[node.parents[0]].clause)
+        || !same_clause_exact(&step.target, &nodes[node.parents[1]].clause)
+        || !same_clause_exact(&step.conclusion, &node.clause)
+        || !check_superposition_and_replay(step, remaining_work)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.source).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.target).literals
+            =~= view_clause(nodes@[node.parents@[1] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.source), interp));
+                assert(clause_valid(view_clause(step.target), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_first_order_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::FirstOrderResolution || node.parents.len() != 2 {
+        return false;
+    }
+    let Some(step) = &node.res_step else { return false; };
+    if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_first_order_resolution_certificate(step, &mut work, work_limit)
+        || !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !same_clause_exact(&step.left, &nodes[node.parents[0]].clause)
+        || !same_clause_exact(&step.right, &nodes[node.parents[1]].clause)
+        || !same_clause_exact(&step.conclusion, &node.clause)
+        || !check_first_order_resolution_and_replay(step, remaining_work)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.left).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.right).literals
+            =~= view_clause(nodes@[node.parents@[1] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.left), interp));
+                assert(clause_valid(view_clause(step.right), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_equality_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::EqualityResolution || node.parents.len() != 1 {
+        return false;
+    }
+    let Some(step) = &node.eq_step else { return false; };
+    if node.parents[0] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_equality_resolution_certificate(step, &mut work, work_limit)
+        || !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !same_clause_exact(&step.clause, &nodes[node.parents[0]].clause)
+        || !same_clause_exact(&step.conclusion, &node.clause)
+        || !check_equality_resolution_and_replay(step, remaining_work)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.clause).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.clause), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::Factoring || node.parents.len() != 1 {
+        return false;
+    }
+    let Some(step) = &node.fact_step else { return false; };
+    if node.parents[0] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_clause_factoring_certificate(step, &mut work, work_limit)
+        || !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !same_clause_exact(&step.clause, &nodes[node.parents[0]].clause)
+        || !same_clause_exact(&step.conclusion, &node.clause)
+        || !check_clause_factoring_and_replay(step, remaining_work)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.clause).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.clause), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_equality_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::EqualityFactoring || node.parents.len() != 1 {
+        return false;
+    }
+    let Some(step) = &node.eq_fact_step else { return false; };
+    if node.parents[0] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_equality_factoring_certificate(step, &mut work, work_limit)
+        || !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !same_clause_exact(&step.clause, &nodes[node.parents[0]].clause)
+        || !same_clause_exact(&step.conclusion, &node.clause)
+        || !check_equality_factoring_and_replay(step, remaining_work)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.clause).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.clause), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_subsumption_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::SubsumptionResolution || node.parents.len() != 2 {
+        return false;
+    }
+    let Some(step) = &node.sub_step else { return false; };
+    if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_subsumption_resolution_certificate(step, &mut work, work_limit)
+        || !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !same_clause_exact(&step.target, &nodes[node.parents[0]].clause)
+        || !same_clause_exact(&step.active, &nodes[node.parents[1]].clause)
+        || !same_clause_exact(&step.conclusion, &node.clause)
+        || !check_subsumption_resolution_and_replay(step, remaining_work)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.target).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.active).literals
+            =~= view_clause(nodes@[node.parents@[1] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.target), interp));
+                assert(clause_valid(view_clause(step.active), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_weakening_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::Weakening || node.parents.len() != 1 {
+        return false;
+    }
+    let Some(step) = &node.weaken_step else { return false; };
+    if node.parents[0] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_weakening_certificate(step, &mut work, work_limit)
+        || !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !same_clause_exact(&step.parent, &nodes[node.parents[0]].clause)
+        || !same_clause_exact(&step.conclusion, &node.clause)
+        || !check_weakening_and_replay(step, remaining_work)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.parent).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.parent), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_demodulation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::Demodulation || node.parents.len() != 2 {
+        return false;
+    }
+    let Some(step) = &node.demod_step else { return false; };
+    if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_demodulation_certificate(step, &mut work, work_limit)
+        || !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !same_clause_exact(&step.target, &nodes[node.parents[0]].clause)
+        || !same_clause_exact(&step.equality, &nodes[node.parents[1]].clause)
+        || !same_clause_exact(&step.conclusion, &node.clause)
+        || !check_demodulation_and_replay(step, remaining_work)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.target).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.equality).literals
+            =~= view_clause(nodes@[node.parents@[1] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.target), interp));
+                assert(clause_valid(view_clause(step.equality), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_instantiation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::Instantiation || node.parents.len() != 1 {
+        return false;
+    }
+    let Some(step) = &node.inst_step else { return false; };
+    if node.parents[0] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_instantiation_certificate(step, &mut work, work_limit)
+        || !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !same_clause_exact(&step.parent, &nodes[node.parents[0]].clause)
+        || !same_clause_exact(&step.conclusion, &node.clause)
+        || !check_instantiation_and_replay(step, remaining_work)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.parent).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.parent), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
+    true
+}
+
+proof fn replayed_conclusion_has_source_target_context_split(
+    certificate: SuperpositionCertificate,
+    work_limit: nat,
+)
+    requires
+        certificate.source_equality_index < certificate.source.literals.len(),
+        certificate.target_literal_index < certificate.target.literals.len(),
+        view_clause(certificate.conclusion).literals
+            == expected_superposition_conclusion(certificate, work_limit),
+    ensures exists|source_context: Clause, target_context: Clause|
+        #![trigger source_context.literals, target_context.literals]
+        source_context.literals.len() + target_context.literals.len() + 1
+            == view_clause(certificate.conclusion).literals.len()
+{
+    let source_instance = substitute_clause(
+        substitute_clause(view_clause(certificate.source),
+            view_subst(certificate.source_freshening@)),
+        view_subst(certificate.unifier@));
+    let target_instance = substitute_clause(
+        substitute_clause(view_clause(certificate.target),
+            view_subst(certificate.target_freshening@)),
+        view_subst(certificate.unifier@));
+    let source_context = Clause { literals:
+        source_instance.literals.subrange(0, certificate.source_equality_index as int)
+            + source_instance.literals.subrange(
+                certificate.source_equality_index as int + 1,
+                source_instance.literals.len() as int) };
+    let target_context = Clause { literals:
+        target_instance.literals.subrange(0, certificate.target_literal_index as int)
+            + target_instance.literals.subrange(
+                certificate.target_literal_index as int + 1,
+                target_instance.literals.len() as int) };
+    let rewritten = match replace_literal_at_position(
+        target_instance.literals[certificate.target_literal_index as int],
+        certificate.target_argument_slot as nat,
+        view_position(certificate.fresh_target_path@),
+        selected_rewrite_rhs(certificate),
+    ) {
+        Some(literal) => literal,
+        None => target_instance.literals[certificate.target_literal_index as int],
+    };
+    assert(view_clause(certificate.conclusion).literals.len()
+        == source_context.literals.len() + target_context.literals.len() + 1);
+}
+
+fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
+    -> (verdict: DagVerdict)
+    ensures (verdict == DagVerdict::Unknown || verdict == DagVerdict::Rejected)
+        && (dag.nodes.len() == 0 || dag.nodes.len() > node_limit
+            || dag.input_clauses.len() > node_limit || dag.root >= dag.nodes.len())
+            ==> verdict == DagVerdict::Rejected
+        && verdict == DagVerdict::Unknown ==> dag.nodes.len() > 0
+            && dag.nodes.len() <= node_limit
+            && dag.input_clauses.len() <= node_limit
+            && dag.root < dag.nodes.len()
+        && verdict == DagVerdict::Unknown ==> forall|i: int| 0 <= i < dag.nodes.len()
+            ==> dag.nodes[i].kind == ProofNodeKind::Input && dag.nodes[i].parents@.len() == 0
+                || dag.nodes[i].kind == ProofNodeKind::Superposition
+                    && dag.nodes[i].parents@.len() == 2 && dag.nodes[i].step.is_some()
+                || dag.nodes[i].kind is Resolution && dag.nodes[i].parents@.len() == 2
+                || dag.nodes[i].kind is ExactResolution && dag.nodes[i].parents@.len() == 2
+                || dag.nodes[i].kind == ProofNodeKind::FirstOrderResolution
+                    && dag.nodes[i].parents@.len() == 2 && dag.nodes[i].res_step.is_some()
+                || dag.nodes[i].kind == ProofNodeKind::EqualityResolution
+                    && dag.nodes[i].parents@.len() == 1 && dag.nodes[i].eq_step.is_some()
+                || dag.nodes[i].kind == ProofNodeKind::Factoring
+                    && dag.nodes[i].parents@.len() == 1 && dag.nodes[i].fact_step.is_some()
+                || dag.nodes[i].kind == ProofNodeKind::EqualityFactoring
+                    && dag.nodes[i].parents@.len() == 1 && dag.nodes[i].eq_fact_step.is_some()
+                || dag.nodes[i].kind == ProofNodeKind::SubsumptionResolution
+                    && dag.nodes[i].parents@.len() == 2 && dag.nodes[i].sub_step.is_some()
+                || dag.nodes[i].kind == ProofNodeKind::Weakening
+                    && dag.nodes[i].parents@.len() == 1 && dag.nodes[i].weaken_step.is_some()
+                || dag.nodes[i].kind == ProofNodeKind::Demodulation
+                    && dag.nodes[i].parents@.len() == 2 && dag.nodes[i].demod_step.is_some()
+                || dag.nodes[i].kind == ProofNodeKind::Instantiation
+                    && dag.nodes[i].parents@.len() == 1 && dag.nodes[i].inst_step.is_some()
+        && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
+            0 <= i < j < dag.nodes.len() ==> dag.nodes[i].id != dag.nodes[j].id
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::Input
+            ==> exists|input_index: int| 0 <= input_index < dag.input_clauses.len()
+                && clause_equal(view_clause(dag.nodes[i].clause),
+                    view_clause(dag.input_clauses[input_index]))
+        && verdict == DagVerdict::Unknown ==> dag.nodes@[dag.root as int]
+            .clause.literals.len() == 0
+        && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
+            0 <= i < dag.nodes.len() && 0 <= j < dag.nodes[i].parents@.len()
+            ==> dag.nodes[i].parents@[j] < i as usize
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::Superposition
+            ==> match dag.nodes[i].step {
+                Some(step) => clause_equal(view_clause(step.source),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
+                    && clause_equal(view_clause(step.target),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[1] as int].clause))
+                    && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
+                None => false,
+            }
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::FirstOrderResolution
+            ==> match dag.nodes[i].res_step {
+                Some(step) => clause_equal(view_clause(step.left),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
+                    && clause_equal(view_clause(step.right),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[1] as int].clause))
+                    && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
+                None => false,
+            }
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::EqualityResolution
+            ==> match dag.nodes[i].eq_step {
+                Some(step) => clause_equal(view_clause(step.clause),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
+                    && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
+                None => false,
+            }
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::Factoring
+            ==> match dag.nodes[i].fact_step {
+                Some(step) => clause_equal(view_clause(step.clause),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
+                    && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
+                None => false,
+            }
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::EqualityFactoring
+            ==> match dag.nodes[i].eq_fact_step {
+                Some(step) => clause_equal(view_clause(step.clause),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
+                    && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
+                None => false,
+            }
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::SubsumptionResolution
+            ==> match dag.nodes[i].sub_step {
+                Some(step) => clause_equal(view_clause(step.target),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
+                    && clause_equal(view_clause(step.active),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[1] as int].clause))
+                    && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
+                None => false,
+            }
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::Weakening
+            ==> match dag.nodes[i].weaken_step {
+                Some(step) => clause_equal(view_clause(step.parent),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
+                    && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
+                None => false,
+            }
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::Demodulation
+            ==> match dag.nodes[i].demod_step {
+                Some(step) => clause_equal(view_clause(step.target),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
+                    && clause_equal(view_clause(step.equality),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[1] as int].clause))
+                    && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
+                None => false,
+            }
+        && verdict == DagVerdict::Unknown ==> forall|i: int|
+            0 <= i < dag.nodes.len() && dag.nodes[i].kind == ProofNodeKind::Instantiation
+            ==> match dag.nodes[i].inst_step {
+                Some(step) => clause_equal(view_clause(step.parent),
+                        view_clause(dag.nodes[dag.nodes[i].parents@[0] as int].clause))
+                    && clause_equal(view_clause(step.conclusion), view_clause(dag.nodes[i].clause)),
+                None => false,
+            }
+{
+    // This bounded pass checks global shape and budgets only. Local inference
+    // replay belongs to validate_dag_node, where each node receives its share
+    // of the certifier's replay budget.
+    if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
+        return DagVerdict::Rejected;
+    }
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    if node_limit == 0 { return DagVerdict::Rejected; }
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() {
+        return DagVerdict::Rejected;
+    }
+    let mut total_literals: usize = 0;
+    let mut total_parents: usize = 0;
+    let mut structural_work: usize = 0;
+    let mut i: usize = 0;
+    while i < dag.nodes.len()
+        invariant
+            i <= dag.nodes.len(),
+            dag.nodes.len() <= node_limit,
+            total_literals <= literal_limit,
+            total_parents <= node_limit,
+            structural_work <= literal_limit,
+            decreases dag.nodes.len() - i
+    {
+        let node = &dag.nodes[i];
+        if node.kind == ProofNodeKind::Superposition && node.parents.len() != 2 {
+            return DagVerdict::Rejected;
+        }
+        let mut prior: usize = 0;
+        while prior < i
+            invariant
+                prior <= i,
+                i <= dag.nodes.len(),
+                structural_work <= literal_limit,
+                total_parents <= node_limit,
+                total_literals <= literal_limit,
+                forall|j: int| 0 <= j < prior as int
+                    ==> dag.nodes[j].id != node.id,
+            decreases i - prior
+        {
+            if structural_work >= literal_limit {
+                return DagVerdict::Rejected;
+            }
+            structural_work += 1;
+            if dag.nodes[prior].id == node.id {
+                return DagVerdict::Rejected;
+            }
+            prior += 1;
+        }
+        assert forall|j: int| 0 <= j < i as int
+            implies dag.nodes[j].id != node.id by {
+            assert(j < prior as int);
+        }
+        if node.kind == ProofNodeKind::Input && node.parents.len() != 0
+            || node.kind == ProofNodeKind::Superposition && node.step.is_none()
+            || node.kind == ProofNodeKind::Unsupported
+            || node.clause.literals.len() > literal_limit - total_literals
+        {
+            return DagVerdict::Rejected;
+        }
+        if node.kind == ProofNodeKind::Superposition {
+            let Some(step) = &node.step else { return DagVerdict::Rejected; };
+            if !charge_certificate_structure(step, &mut structural_work, literal_limit) {
+                return DagVerdict::Rejected;
+            }
+            let mut step_parents: usize = 0;
+            while step_parents < node.parents.len()
+                invariant
+                    step_parents <= node.parents.len(),
+                    total_parents <= node_limit,
+                decreases node.parents.len() - step_parents
+            {
+                if step_parents >= 2 || step_parents >= node_limit - total_parents {
+                    return DagVerdict::Rejected;
+                }
+                total_parents += 1;
+                step_parents += 1;
+            }
+            if step_parents != 2 { return DagVerdict::Rejected; }
+        }
+            total_literals += node.clause.literals.len();
+        if node.kind != ProofNodeKind::Superposition {
+            if node.parents.len() > node_limit - total_parents {
+                return DagVerdict::Rejected;
+            }
+            total_parents += node.parents.len();
+        }
+        if !charge_clause_structure(&node.clause, &mut structural_work, literal_limit) {
+            return DagVerdict::Rejected;
+        }
+        let mut parent_index: usize = 0;
+        while parent_index < node.parents.len()
+            invariant
+                parent_index <= node.parents.len(),
+                total_parents <= node_limit,
+                forall|j: int| 0 <= j < parent_index as int
+                    ==> node.parents@[j] < dag.nodes.len() && node.parents@[j] < i,
+            decreases node.parents.len() - parent_index
+        {
+            if node.parents[parent_index] >= dag.nodes.len()
+                || node.parents[parent_index] >= i
+            {
+                return DagVerdict::Rejected;
+            }
+            parent_index += 1;
+        }
+        assert forall|j: int| 0 <= j < node.parents@.len()
+            implies node.parents@[j] < dag.nodes.len() by {
+            assert(j < parent_index as int);
+        }
+        if node.kind == ProofNodeKind::Superposition {
+            let Some(step) = &node.step else { return DagVerdict::Rejected; };
+            if node.parents.len() != 2 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            assert(node.parents[1] < dag.nodes.len());
+            if !same_clause_exact(&step.source, &dag.nodes[node.parents[0]].clause)
+                || !same_clause_exact(&step.target, &dag.nodes[node.parents[1]].clause)
+                || !same_clause_exact(&step.conclusion, &node.clause)
+            {
+                return DagVerdict::Rejected;
+            }
+        }
+        if node.kind == ProofNodeKind::FirstOrderResolution {
+            let Some(step) = &node.res_step else { return DagVerdict::Rejected; };
+            if node.parents.len() != 2 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            assert(node.parents[1] < dag.nodes.len());
+            if !same_clause_exact(&step.left, &dag.nodes[node.parents[0]].clause)
+                || !same_clause_exact(&step.right, &dag.nodes[node.parents[1]].clause)
+                || !same_clause_exact(&step.conclusion, &node.clause)
+            {
+                return DagVerdict::Rejected;
+            }
+        }
+        if node.kind == ProofNodeKind::EqualityResolution {
+            let Some(step) = &node.eq_step else { return DagVerdict::Rejected; };
+            if node.parents.len() != 1 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            if !same_clause_exact(&step.clause, &dag.nodes[node.parents[0]].clause)
+                || !same_clause_exact(&step.conclusion, &node.clause)
+            {
+                return DagVerdict::Rejected;
+            }
+        }
+        if node.kind == ProofNodeKind::Factoring {
+            let Some(step) = &node.fact_step else { return DagVerdict::Rejected; };
+            if node.parents.len() != 1 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            if !same_clause_exact(&step.clause, &dag.nodes[node.parents[0]].clause)
+                || !same_clause_exact(&step.conclusion, &node.clause)
+            {
+                return DagVerdict::Rejected;
+            }
+        }
+        if node.kind == ProofNodeKind::EqualityFactoring {
+            let Some(step) = &node.eq_fact_step else { return DagVerdict::Rejected; };
+            if node.parents.len() != 1 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            if !same_clause_exact(&step.clause, &dag.nodes[node.parents[0]].clause)
+                || !same_clause_exact(&step.conclusion, &node.clause)
+            {
+                return DagVerdict::Rejected;
+            }
+        }
+        if node.kind == ProofNodeKind::SubsumptionResolution {
+            let Some(step) = &node.sub_step else { return DagVerdict::Rejected; };
+            if node.parents.len() != 2 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            assert(node.parents[1] < dag.nodes.len());
+            if !same_clause_exact(&step.target, &dag.nodes[node.parents[0]].clause)
+                || !same_clause_exact(&step.active, &dag.nodes[node.parents[1]].clause)
+                || !same_clause_exact(&step.conclusion, &node.clause)
+            {
+                return DagVerdict::Rejected;
+            }
+        }
+        if node.kind == ProofNodeKind::Weakening {
+            let Some(step) = &node.weaken_step else { return DagVerdict::Rejected; };
+            if node.parents.len() != 1 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            if !same_clause_exact(&step.parent, &dag.nodes[node.parents[0]].clause)
+                || !same_clause_exact(&step.conclusion, &node.clause)
+            {
+                return DagVerdict::Rejected;
+            }
+        }
+        if node.kind == ProofNodeKind::Demodulation {
+            let Some(step) = &node.demod_step else { return DagVerdict::Rejected; };
+            if node.parents.len() != 2 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            assert(node.parents[1] < dag.nodes.len());
+            if !same_clause_exact(&step.target, &dag.nodes[node.parents[0]].clause)
+                || !same_clause_exact(&step.equality, &dag.nodes[node.parents[1]].clause)
+                || !same_clause_exact(&step.conclusion, &node.clause)
+            {
+                return DagVerdict::Rejected;
+            }
+        }
+        if node.kind == ProofNodeKind::Instantiation {
+            let Some(step) = &node.inst_step else { return DagVerdict::Rejected; };
+            if node.parents.len() != 1 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            if !same_clause_exact(&step.parent, &dag.nodes[node.parents[0]].clause)
+                || !same_clause_exact(&step.conclusion, &node.clause)
+            {
+                return DagVerdict::Rejected;
+            }
+        }
+        i += 1;
+    }
+    let mut input_index: usize = 0;
+    while input_index < dag.input_clauses.len()
+        invariant
+            input_index <= dag.input_clauses.len(),
+            total_literals <= literal_limit,
+            structural_work <= literal_limit,
+        decreases dag.input_clauses.len() - input_index
+    {
+        let input_clause = &dag.input_clauses[input_index];
+        if input_clause.literals.len() > literal_limit - total_literals {
+            return DagVerdict::Rejected;
+        }
+        total_literals += input_clause.literals.len();
+        if !charge_clause_structure(input_clause, &mut structural_work, literal_limit) {
+            return DagVerdict::Rejected;
+        }
+        input_index += 1;
+    }
+    let mut node_index: usize = 0;
+    while node_index < dag.nodes.len()
+        invariant
+            node_index <= dag.nodes.len(),
+            dag.nodes.len() <= node_limit,
+            input_index == dag.input_clauses.len(),
+            structural_work <= literal_limit,
+        decreases dag.nodes.len() - node_index
+    {
+        let node = &dag.nodes[node_index];
+        if node.kind == ProofNodeKind::Input {
+            let mut found: bool = false;
+            let mut candidate: usize = 0;
+            while candidate < dag.input_clauses.len()
+                invariant
+                    candidate <= dag.input_clauses.len(),
+                    structural_work <= literal_limit,
+                decreases dag.input_clauses.len() - candidate
+            {
+                if structural_work >= literal_limit { return DagVerdict::Rejected; }
+                structural_work += 1;
+                // Exact clause comparison traverses both clauses. The
+                // candidate is charged below; charge the node again for
+                // each candidate rather than treating its one-time global
+                // shape charge as payment for repeated comparisons.
+                if !charge_clause_structure(&node.clause, &mut structural_work, literal_limit) {
+                    return DagVerdict::Rejected;
+                }
+                if !charge_clause_structure(&dag.input_clauses[candidate],
+                    &mut structural_work, literal_limit) {
+                    return DagVerdict::Rejected;
+                }
+                if same_clause_exact(&node.clause, &dag.input_clauses[candidate]) {
+                    found = true;
+                    break;
+                }
+                candidate += 1;
+            }
+    if !found { return DagVerdict::Rejected; }
+        }
+        node_index += 1;
+    }
+    let root = &dag.nodes[dag.root];
+    if root.clause.literals.len() != 0 { return DagVerdict::Rejected; }
+    DagVerdict::Unknown
+}
+
+/// Check one node with a postcondition that survives loop boundaries.
+fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bool)
+    requires index < dag.nodes.len(),
+    ensures ok ==> validated_dag_node(*dag, index as int),
+{
+    let node = &dag.nodes[index];
+    let mut work: usize = 0;
+    let mut parent: usize = 0;
+    while parent < node.parents.len()
+        invariant parent <= node.parents.len(),
+            index < dag.nodes.len(),
+            work <= work_limit,
+            forall|j: int| 0 <= j < parent as int ==> node.parents@[j] < index,
+        decreases node.parents.len() - parent
+    {
+        if work >= work_limit { return false; }
+        work += 1;
+        if node.parents[parent] >= index { return false; }
+        parent += 1;
+    }
+    assert(forall|j: int| 0 <= j < node.parents@.len() ==> node.parents@[j] < index);
+    match node.kind {
+        ProofNodeKind::Input => {
+        if node.parents.len() != 0 { return false; }
+        let mut k: usize = 0;
+        while k < dag.input_clauses.len()
+            invariant k <= dag.input_clauses.len(), work <= work_limit,
+                index < dag.nodes.len(), node == &dag.nodes@[index as int],
+                node.kind == ProofNodeKind::Input, node.parents@.len() == 0,
+            decreases dag.input_clauses.len() - k
+        {
+            if work >= work_limit { return false; }
+            work += 1;
+            // This leaf may be compared against many supplied inputs, so
+            // include both sides of every exact comparison in this node's
+            // shared meter. A single upfront charge for the node would let
+            // repeated comparisons evade the per-node ceiling.
+            if !charge_clause_structure(&node.clause, &mut work, work_limit) {
+                return false;
+            }
+            if !charge_clause_structure(&dag.input_clauses[k], &mut work, work_limit) {
+                return false;
+            }
+            if same_clause_exact(&node.clause, &dag.input_clauses[k]) {
+                assert(input_leaf_is_validated(*node, dag.input_clauses@));
+                return true;
+            }
+            k += 1;
+        }
+        false
+        },
+        ProofNodeKind::Superposition => {
+        if node.parents.len() != 2 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        let checked = check_dag_superposition_step(node, &dag.nodes,
+            work_limit - work);
+        checked
+        },
+        ProofNodeKind::Resolution(_, _) => {
+        if node.parents.len() != 2 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_resolution_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::ExactResolution(_, _) => {
+        if node.parents.len() != 2 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_exact_resolution_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::FirstOrderResolution => {
+        if node.parents.len() != 2 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_first_order_resolution_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::EqualityResolution => {
+        if node.parents.len() != 1 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_equality_resolution_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::Factoring => {
+        if node.parents.len() != 1 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_factoring_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::EqualityFactoring => {
+        if node.parents.len() != 1 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_equality_factoring_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::SubsumptionResolution => {
+        if node.parents.len() != 2 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_subsumption_resolution_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::Weakening => {
+        if node.parents.len() != 1 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_weakening_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::Demodulation => {
+        if node.parents.len() != 2 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_demodulation_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::Instantiation => {
+        if node.parents.len() != 1 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_instantiation_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::Unsupported => false,
+    }
+}
+
+proof fn validated_dag_has_no_model(dag: ProofDag)
+    requires dag_proves_empty(dag),
+        forall|i: int| 0 <= i < dag.nodes@.len() ==> validated_dag_node(dag, i),
+    ensures dag_inputs_unsatisfiable(dag),
+{
+    assert forall|interp: Interpretation| interpretation_well_formed(interp)
+        && (forall|i: int| 0 <= i < dag.input_clauses@.len()
+            ==> clause_valid(view_clause(dag.input_clauses@[i]), interp))
+        implies false by {
+        assert forall|i: int| 0 <= i < dag.nodes@.len()
+            implies (dag.nodes@[i].kind == ProofNodeKind::Input
+                    && input_leaf_is_validated(dag.nodes@[i], dag.input_clauses@)
+                || supported_inference(dag.nodes@[i].kind)
+                    && local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp)) by {
+            assert(validated_dag_node(dag, i));
+        }
+        assert forall|i: int, j: int| 0 <= i < dag.nodes@.len()
+            && 0 <= j < dag.nodes@[i].parents@.len()
+            implies dag.nodes@[i].parents@[j] < i as usize by {
+            assert(validated_dag_node(dag, i));
+        }
+        proof_dag_nodes_follow_from_local_rule_soundness(
+            dag.nodes@, dag.input_clauses@, interp, dag.nodes@.len(),
+        );
+        let element = choose|element: u64| interp.domain.contains(element);
+        let valuation = Valuation { values: IMap::total(|v: u64| element) };
+        assert(valuation.values.is_full());
+        assert forall|v: u64| interp.domain.contains(valuation.values[v]) by {
+            assert(valuation.values[v] == element);
+        }
+        assert(valuation_well_formed(interp, valuation));
+        assert(clause_valid(view_clause(dag.nodes@[dag.root as int].clause), interp));
+        assert(clause_holds(view_clause(dag.nodes@[dag.root as int].clause), interp, valuation));
+    }
+}
+
+/// Certification is relative to the supplied finite input clause set. No
+/// interpretation or semantic validity decision is an executable argument.
+fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict: DagVerdict)
+    ensures verdict == DagVerdict::Certified ==> dag_inputs_unsatisfiable(*dag),
+{
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
+        return DagVerdict::Rejected;
+    }
+    // Divide the caller's work ceiling among the global shape pass, root
+    // closure traversal, and local node replay. Every validation receives a
+    // disjoint per-node share, so one expensive node cannot borrow the budget
+    // reserved for the remaining proof nodes.
+    let structural_budget = work_limit / 3;
+    let closure_budget = work_limit / 3;
+    let node_validation_budget = work_limit - structural_budget - closure_budget;
+    let per_node_budget = node_validation_budget / dag.nodes.len();
+    if per_node_budget == 0 { return DagVerdict::Unknown; }
+    match check_dag_structure(dag, node_limit, structural_budget) {
+        DagVerdict::Rejected => return DagVerdict::Rejected,
+        DagVerdict::Unknown | DagVerdict::Inconclusive | DagVerdict::Certified => {},
+    }
+    if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    if dag.nodes[dag.root].clause.literals.len() != 0 { return DagVerdict::Rejected; }
+    match check_root_ancestor_closure(dag, closure_budget) {
+        Some(true) => {},
+        Some(false) => return DagVerdict::Rejected,
+        None => return DagVerdict::Unknown,
+    }
+    let mut i: usize = 0;
+    while i < dag.nodes.len()
+        invariant i <= dag.nodes.len(), dag_proves_empty(*dag),
+            forall|j: int| 0 <= j < i as int ==> validated_dag_node(*dag, j),
+        decreases dag.nodes.len() - i
+    {
+        if !validate_dag_node(dag, i, per_node_budget) { return DagVerdict::Unknown; }
+        i += 1;
+    }
+    proof { validated_dag_has_no_model(*dag); }
+    DagVerdict::Certified
+}
+
+/// Require the proof to contain exactly the root's backward dependency closure.
+/// A false result is a malformed/disconnected graph; None means the explicit
+/// traversal budget was exhausted. Parent order was checked by the structural
+/// preflight, so a reverse topological walk visits every newly discovered parent
+/// only after its children have been processed.
+fn check_root_ancestor_closure(dag: &ProofDag, work_limit: usize) -> (closed: Option<bool>)
+    requires dag.nodes.len() > 0, dag.root < dag.nodes.len(),
+{
+    let mut reachable: Vec<bool> = Vec::new();
+    let mut work: usize = 0;
+    let mut initialized: usize = 0;
+    while initialized < dag.nodes.len()
+        invariant initialized <= dag.nodes.len(),
+            reachable@.len() == initialized as int,
+            work <= work_limit,
+            work == initialized,
+        decreases dag.nodes.len() - initialized
+    {
+        if work >= work_limit { return None; }
+        work += 1;
+        reachable.push(false);
+        initialized += 1;
+    }
+    reachable[dag.root] = true;
+
+    let mut cursor: usize = dag.root + 1;
+    while cursor > 0
+        invariant cursor <= dag.root + 1,
+            dag.root < dag.nodes.len(),
+            reachable@.len() == dag.nodes.len(),
+            work <= work_limit,
+        decreases cursor
+    {
+        cursor -= 1;
+        if work >= work_limit { return None; }
+        work += 1;
+        if reachable[cursor] {
+            let node = &dag.nodes[cursor];
+            let mut parent_index: usize = 0;
+            while parent_index < node.parents.len()
+                invariant parent_index <= node.parents.len(),
+                    cursor < dag.nodes.len(),
+                    reachable@.len() == dag.nodes.len(),
+                    work <= work_limit,
+                decreases node.parents.len() - parent_index
+            {
+                if work >= work_limit { return None; }
+                work += 1;
+                let parent = node.parents[parent_index];
+                if parent >= cursor { return Some(false); }
+                reachable[parent] = true;
+                parent_index += 1;
+            }
+        }
+    }
+
+    let mut i: usize = 0;
+    while i < dag.nodes.len()
+        invariant i <= dag.nodes.len(),
+            reachable@.len() == dag.nodes.len(),
+            work <= work_limit,
+            forall|j: int| 0 <= j < i as int ==> reachable@[j],
+        decreases dag.nodes.len() - i
+    {
+        if work >= work_limit { return None; }
+        work += 1;
+        if !reachable[i] { return Some(false); }
+        i += 1;
+    }
+    Some(true)
+}
+
+fn executable_dag_certification_examples() -> bool {
+    let mut dag = ProofDag {
+        nodes: vec![ProofNode { id: 1, clause: ExecClause { literals: Vec::new() },
+            kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None }],
+        input_clauses: vec![ExecClause { literals: Vec::new() }],
+        root: 0,
+    };
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified {
+        return false;
+    }
+    if check_root_ancestor_closure(&dag, 2) != None
+        || check_root_ancestor_closure(&dag, 3) != Some(true) {
+        return false;
+    }
+    // Use a nontrivial refutation: an unrelated input must not be accepted as
+    // part of the certified proof graph even though the root still refutes the
+    // actual input set.
+    let positive = resolution_unit(17, true);
+    let negative = resolution_unit(17, false);
+    dag.nodes = vec![
+        ProofNode { id: 10, clause: resolution_unit(17, true), kind: ProofNodeKind::Input,
+            parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ProofNode { id: 11, clause: resolution_unit(17, false), kind: ProofNodeKind::Input,
+            parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ProofNode { id: 12, clause: ExecClause { literals: Vec::new() },
+            kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+    ];
+    dag.input_clauses = vec![positive, negative];
+    dag.root = 2;
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
+    // Node IDs are producer-facing identities; duplicate IDs must fail closed
+    // even when the vector-index parent graph itself is otherwise valid.
+    dag.nodes[1].id = dag.nodes[0].id;
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Rejected { return false; }
+    dag.nodes[1].id = 11;
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
+    if certify_dag(&dag, 10, 2) == DagVerdict::Certified { return false; }
+    dag.nodes.push(ProofNode { id: 2, clause: resolution_unit(17, true),
+        kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None });
+    dag.input_clauses.push(resolution_unit(17, true));
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Rejected { return false; }
+    dag.nodes.pop();
+    dag.input_clauses.pop();
+    if certify_dag(&dag, 10, 1000) != DagVerdict::Certified { return false; }
+    dag.nodes = vec![ProofNode { id: 1, clause: ExecClause { literals: Vec::new() },
+        kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None }];
+    dag.input_clauses = vec![ExecClause { literals: Vec::new() }];
+    dag.root = 0;
+    if check_root_ancestor_closure(&dag, 0) != None { return false; }
+    if certify_dag(&dag, 0, 1000) == DagVerdict::Certified
+        || certify_dag(&dag, 10, 0) == DagVerdict::Certified {
+        return false;
+    }
+    dag.input_clauses = Vec::new();
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified {
+        return false;
+    }
+    dag.input_clauses = vec![ExecClause { literals: Vec::new() }];
+    dag.nodes[0].parents = vec![0usize];
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified {
+        return false;
+    }
+    dag.nodes[0].parents = Vec::new();
+    dag.nodes[0].kind = ProofNodeKind::Unsupported;
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified {
+        return false;
+    }
+    dag.nodes[0].kind = ProofNodeKind::Input;
+    dag.nodes[0].clause.literals = vec![ExecLiteral {
+        positive: true, atom: ExecAtom::Pred0(1),
+    }];
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified { return false; }
+    dag.nodes[0].clause.literals = Vec::new();
+    dag.root = 1;
+    if certify_dag(&dag, 10, 1000) == DagVerdict::Certified {
+        return false;
+    }
+    true
+}
+
+fn executable_input_leaf_comparison_budget_example() -> bool {
+    let accepted = resolution_unit(9, true);
+    let empty = ExecClause { literals: Vec::new() };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: accepted, kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 2, clause: empty, kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ],
+        input_clauses: vec![
+            resolution_unit(9, false),
+            resolution_unit(10, true),
+            resolution_unit(9, true),
+            ExecClause { literals: Vec::new() },
+        ],
+        root: 1,
+    };
+    // Two failed comparisons and a matching third candidate charge one
+    // candidate and both one-literal clauses: 3 * 5 = 15. Without the repeated
+    // node charge, that scan would fit in 9.
+    let node_cutoff = !validate_dag_node(&dag, 0, 14) && validate_dag_node(&dag, 0, 15);
+    if !node_cutoff { return false; }
+    check_dag_structure(&dag, 10, 1000) == DagVerdict::Unknown
+}
+
+fn executable_nullary_resolution_examples() -> bool {
+    let positive = ExecClause { literals: vec![ExecLiteral {
+        positive: true, atom: ExecAtom::Pred0(9),
+    }] };
+    let negative = ExecClause { literals: vec![ExecLiteral {
+        positive: false, atom: ExecAtom::Pred0(9),
+    }] };
+    let empty = ExecClause { literals: Vec::new() };
+    if !check_nullary_resolution(&positive, &negative, 0, 0, &empty, 100) {
+        return false;
+    }
+    let wrong_pivot = ExecClause { literals: vec![ExecLiteral {
+        positive: false, atom: ExecAtom::Pred0(10),
+    }] };
+    if check_nullary_resolution(&positive, &wrong_pivot, 0, 0, &empty, 100) {
+        return false;
+    }
+    let wrong_conclusion = ExecClause { literals: vec![ExecLiteral {
+        positive: true, atom: ExecAtom::Pred0(9),
+    }] };
+    if check_nullary_resolution(&positive, &negative, 0, 0, &wrong_conclusion, 100) {
+        return false;
+    }
+    let out_of_range = ExecClause { literals: Vec::new() };
+    if check_nullary_resolution(&positive, &negative, 1, 0, &out_of_range, 100) {
+        return false;
+    }
+    true
+}
+
+fn executable_first_order_resolution_examples() -> bool {
+    // left: p(X) | q(X)
+    let left = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] };
+    // right: ~p(a) | r(b)
+    let right = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(2))) },
+    ] };
+    // conclusion: q(a) | r(b)
+    let conclusion = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(2))) },
+    ] };
+    let mut cert = FirstOrderResolutionCertificate {
+        left: left,
+        right: right,
+        left_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(10) }],
+        right_freshening: Vec::new(),
+        unifier: vec![ExecBinding { variable: 10, replacement: ExecTerm::Const(1) }],
+        left_pivot: 0,
+        right_pivot: 0,
+        conclusion: conclusion,
+    };
+    if !check_first_order_resolution_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Forged conclusion (wrong constant 99) fails closed.
+    cert.conclusion = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(99))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(2))) },
+    ] };
+    if check_first_order_resolution_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Atom predicate mismatch fails closed.
+    cert.conclusion = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(2))) },
+    ] };
+    cert.right.literals[0].atom = ExecAtom::Pred1(99, Box::new(ExecTerm::Const(1)));
+    if check_first_order_resolution_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Wrong polarity (right pivot positive) fails closed.
+    cert.right.literals[0].atom = ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1)));
+    cert.right.literals[0].positive = true;
+    if check_first_order_resolution_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn resolution_unit(predicate: u64, positive: bool) -> ExecClause {
+    ExecClause { literals: vec![ExecLiteral { positive, atom: ExecAtom::Pred0(predicate) }] }
+}
+
+fn resolution_pair(p: u64, positive: bool, q: u64) -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive, atom: ExecAtom::Pred0(p) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(q) },
+    ] }
+}
+
+fn executable_resolution_chain_examples() -> bool {
+    // p | q, ~p, ~q -> q -> empty. The first pivot is not a unit parent.
+    let mut dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: resolution_pair(9, true, 10),
+                kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 2, clause: resolution_unit(9, false),
+                kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 3, clause: resolution_unit(10, false),
+                kind: ProofNodeKind::Input, parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 4, clause: resolution_unit(10, true),
+                kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 5, clause: ExecClause { literals: Vec::new() },
+                kind: ProofNodeKind::Resolution(0, 0), parents: vec![3usize, 2usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ],
+        input_clauses: vec![resolution_pair(9, true, 10), resolution_unit(9, false),
+            resolution_unit(10, false)], root: 4,
+    };
+    if certify_dag(&dag, 10, 10000) != DagVerdict::Certified { return false; }
+    // Omitting the surviving context must not certify, even with an empty root.
+    dag.nodes[3].clause = ExecClause { literals: Vec::new() };
+    if certify_dag(&dag, 10, 10000) == DagVerdict::Certified { return false; }
+    let left = resolution_pair(9, true, 9);
+    let right = resolution_unit(9, false);
+    let empty = ExecClause { literals: Vec::new() };
+    if check_nullary_resolution(&left, &right, 0, 0, &empty, 1000) { return false; }
+    check_nullary_resolution(&left, &right, 1, 0, &resolution_unit(9, true), 1000)
+}
+
+fn executable_resolution_dag_examples() -> bool {
+    let mut dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: resolution_unit(9, true), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 2, clause: resolution_unit(9, false), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 3, clause: ExecClause { literals: Vec::new() },
+                kind: ProofNodeKind::Resolution(0, 0), parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ],
+        input_clauses: vec![resolution_unit(9, true), resolution_unit(9, false)], root: 2,
+    };
+    if certify_dag(&dag, 10, 10000) != DagVerdict::Certified { return false; }
+    dag.nodes[2].kind = ProofNodeKind::Resolution(1, 0);
+    if certify_dag(&dag, 10, 10000) == DagVerdict::Certified { return false; }
+    dag.nodes[2].kind = ProofNodeKind::Resolution(0, 0);
+    dag.nodes[1].clause = resolution_unit(10, false);
+    dag.input_clauses[1] = resolution_unit(10, false);
+    if certify_dag(&dag, 10, 10000) == DagVerdict::Certified { return false; }
+    dag.nodes[1].clause = resolution_unit(9, false);
+    dag.input_clauses[1] = resolution_unit(9, false);
+    dag.nodes[2].parents = vec![1usize, 0usize];
+    if certify_dag(&dag, 10, 10000) == DagVerdict::Certified { return false; }
+    dag.nodes[2].parents = vec![0usize, 2usize];
+    if certify_dag(&dag, 10, 10000) == DagVerdict::Certified { return false; }
+    dag.nodes[2].parents = vec![0usize, 1usize];
+    if certify_dag(&dag, 10, 0) == DagVerdict::Certified { return false; }
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn res_fo_in1() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] }
+}
+
+fn res_fo_in2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn res_fo_in3() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn res_fo_n4() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn executable_first_order_resolution_dag_examples() -> bool {
+    let cert = FirstOrderResolutionCertificate {
+        left: res_fo_in1(),
+        right: res_fo_in2(),
+        left_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(10) }],
+        right_freshening: Vec::new(),
+        unifier: vec![ExecBinding { variable: 10, replacement: ExecTerm::Const(1) }],
+        left_pivot: 0,
+        right_pivot: 0,
+        conclusion: res_fo_n4(),
+    };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: res_fo_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 2, clause: res_fo_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 3, clause: res_fo_in3(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 4, clause: res_fo_n4(), kind: ProofNodeKind::FirstOrderResolution,
+                parents: vec![0usize, 1usize], step: None, res_step: Some(cert), eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 5, clause: ExecClause { literals: Vec::new() }, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![3usize, 2usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ],
+        input_clauses: vec![res_fo_in1(), res_fo_in2(), res_fo_in3()],
+        root: 4,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn eq_res_in1() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(ExecTerm::Var(7), ExecTerm::Const(1)) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] }
+}
+
+fn eq_res_in2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn eq_res_n3() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn executable_equality_resolution_examples() -> bool {
+    let cert = EqualityResolutionCertificate {
+        clause: eq_res_in1(),
+        pivot: 0,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: eq_res_n3(),
+    };
+    if !check_equality_resolution_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Forged conclusion (wrong constant 99) fails closed.
+    let forged_cert = EqualityResolutionCertificate {
+        clause: eq_res_in1(),
+        pivot: 0,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: ExecClause { literals: vec![
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(99))) },
+        ] },
+    };
+    if check_equality_resolution_and_replay(&forged_cert, 1000) {
+        return false;
+    }
+
+    // Positive pivot fails closed.
+    let pos_pivot_clause = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Var(7), ExecTerm::Const(1)) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let pos_cert = EqualityResolutionCertificate {
+        clause: pos_pivot_clause,
+        pivot: 0,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: eq_res_n3(),
+    };
+    if check_equality_resolution_and_replay(&pos_cert, 1000) {
+        return false;
+    }
+
+    // Non-equality pivot fails closed.
+    let pred_pivot_clause = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let pred_cert = EqualityResolutionCertificate {
+        clause: pred_pivot_clause,
+        pivot: 0,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: eq_res_n3(),
+    };
+    if check_equality_resolution_and_replay(&pred_cert, 1000) {
+        return false;
+    }
+
+    // Non-unifying substitution fails closed.
+    let non_unifying_cert = EqualityResolutionCertificate {
+        clause: eq_res_in1(),
+        pivot: 0,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(99) }],
+        conclusion: eq_res_n3(),
+    };
+    if check_equality_resolution_and_replay(&non_unifying_cert, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn executable_equality_resolution_dag_examples() -> bool {
+    let cert = EqualityResolutionCertificate {
+        clause: eq_res_in1(),
+        pivot: 0,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: eq_res_n3(),
+    };
+    let empty = ExecClause { literals: Vec::new() };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: eq_res_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 2, clause: eq_res_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 3, clause: eq_res_n3(), kind: ProofNodeKind::EqualityResolution,
+                parents: vec![0usize], step: None, res_step: None, eq_step: Some(cert), fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 4, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![2usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ],
+        input_clauses: vec![eq_res_in1(), eq_res_in2()],
+        root: 3,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn fact_in1() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] }
+}
+
+fn fact_n2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn executable_clause_factoring_examples() -> bool {
+    let cert = ClauseFactoringCertificate {
+        clause: fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: fact_n2(),
+    };
+    if !check_clause_factoring_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Forged conclusion (wrong constant 99) fails closed.
+    let forged_cert = ClauseFactoringCertificate {
+        clause: fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: ExecClause { literals: vec![
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(99))) },
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+        ] },
+    };
+    if check_clause_factoring_and_replay(&forged_cert, 1000) {
+        return false;
+    }
+
+    // Opposite polarity fails closed.
+    let opp_clause = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let opp_cert = ClauseFactoringCertificate {
+        clause: opp_clause,
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: fact_n2(),
+    };
+    if check_clause_factoring_and_replay(&opp_cert, 1000) {
+        return false;
+    }
+
+    // Atom predicate mismatch fails closed.
+    let mismatch_clause = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(99, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let mismatch_cert = ClauseFactoringCertificate {
+        clause: mismatch_clause,
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: fact_n2(),
+    };
+    if check_clause_factoring_and_replay(&mismatch_cert, 1000) {
+        return false;
+    }
+
+    // Non-unifying substitution fails closed.
+    let non_unifying_cert = ClauseFactoringCertificate {
+        clause: fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(99) }],
+        conclusion: fact_n2(),
+    };
+    if check_clause_factoring_and_replay(&non_unifying_cert, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn fact_in2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn fact_in3() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn executable_clause_factoring_dag_examples() -> bool {
+    let empty = ExecClause { literals: Vec::new() };
+
+    let cert = ClauseFactoringCertificate {
+        clause: fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: fact_n2(),
+    };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: fact_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 2, clause: fact_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 3, clause: fact_in3(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 4, clause: fact_n2(), kind: ProofNodeKind::Factoring,
+                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: Some(cert), eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 5, clause: ExecClause { literals: vec![
+                ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+            ] }, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![3usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 6, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![4usize, 2usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ],
+        input_clauses: vec![fact_in1(), fact_in2(), fact_in3()],
+        root: 5,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn eq_fact_in1() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(5, Box::new(ExecTerm::Var(7))),
+            ExecTerm::Const(1),
+        ) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(5, Box::new(ExecTerm::Const(2))),
+            ExecTerm::Const(3),
+        ) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(9, Box::new(ExecTerm::Var(7))) },
+    ] }
+}
+
+fn eq_fact_n2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(5, Box::new(ExecTerm::Const(2))),
+            ExecTerm::Const(1),
+        ) },
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(
+            ExecTerm::Const(1),
+            ExecTerm::Const(3),
+        ) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(9, Box::new(ExecTerm::Const(2))) },
+    ] }
+}
+
+fn executable_equality_factoring_examples() -> bool {
+    let cert = EqualityFactoringCertificate {
+        clause: eq_fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(2) }],
+        conclusion: eq_fact_n2(),
+    };
+    if !check_equality_factoring_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Negative literal fails closed.
+    let neg_clause = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(
+            ExecTerm::App1(5, Box::new(ExecTerm::Var(7))),
+            ExecTerm::Const(1),
+        ) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(5, Box::new(ExecTerm::Const(2))),
+            ExecTerm::Const(3),
+        ) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(9, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let neg_cert = EqualityFactoringCertificate {
+        clause: neg_clause,
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(2) }],
+        conclusion: eq_fact_n2(),
+    };
+    if check_equality_factoring_and_replay(&neg_cert, 1000) {
+        return false;
+    }
+
+    // Left side term mismatch fails closed.
+    let mismatch_clause = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(5, Box::new(ExecTerm::Var(7))),
+            ExecTerm::Const(1),
+        ) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(99, Box::new(ExecTerm::Const(2))),
+            ExecTerm::Const(3),
+        ) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(9, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let mismatch_cert = EqualityFactoringCertificate {
+        clause: mismatch_clause,
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(2) }],
+        conclusion: eq_fact_n2(),
+    };
+    if check_equality_factoring_and_replay(&mismatch_cert, 1000) {
+        return false;
+    }
+
+    // Non-equality literal fails closed.
+    let non_eq_clause = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(5, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(5, Box::new(ExecTerm::Const(2))),
+            ExecTerm::Const(3),
+        ) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(9, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let non_eq_cert = EqualityFactoringCertificate {
+        clause: non_eq_clause,
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(2) }],
+        conclusion: eq_fact_n2(),
+    };
+    if check_equality_factoring_and_replay(&non_eq_cert, 1000) {
+        return false;
+    }
+
+    // Out of order indices fails closed.
+    let out_of_order_cert = EqualityFactoringCertificate {
+        clause: eq_fact_in1(),
+        first: 1,
+        second: 0,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(2) }],
+        conclusion: eq_fact_n2(),
+    };
+    if check_equality_factoring_and_replay(&out_of_order_cert, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn eq_fact_in2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(
+            ExecTerm::App1(5, Box::new(ExecTerm::Const(2))),
+            ExecTerm::Const(1),
+        ) },
+    ] }
+}
+
+fn eq_fact_in3() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::Const(1),
+            ExecTerm::Const(3),
+        ) },
+    ] }
+}
+
+fn eq_fact_in4() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(9, Box::new(ExecTerm::Const(2))) },
+    ] }
+}
+
+fn executable_equality_factoring_dag_examples() -> bool {
+    let empty = ExecClause { literals: Vec::new() };
+
+    let cert = EqualityFactoringCertificate {
+        clause: eq_fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(2) }],
+        conclusion: eq_fact_n2(),
+    };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: eq_fact_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 2, clause: eq_fact_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 3, clause: eq_fact_in3(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 4, clause: eq_fact_in4(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 5, clause: eq_fact_n2(), kind: ProofNodeKind::EqualityFactoring,
+                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: Some(cert), sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 6, clause: ExecClause { literals: vec![
+                ExecLiteral { positive: false, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(3)) },
+                ExecLiteral { positive: true, atom: ExecAtom::Pred1(9, Box::new(ExecTerm::Const(2))) },
+            ] }, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![4usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 7, clause: ExecClause { literals: vec![
+                ExecLiteral { positive: true, atom: ExecAtom::Pred1(9, Box::new(ExecTerm::Const(2))) },
+            ] }, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![2usize, 5usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 8, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![6usize, 3usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ],
+        input_clauses: vec![eq_fact_in1(), eq_fact_in2(), eq_fact_in3(), eq_fact_in4()],
+        root: 7,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn sub_res_in1() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn sub_res_in2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] }
+}
+
+fn sub_res_in3() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn sub_res_in4() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn sub_res_concl() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn executable_subsumption_resolution_examples() -> bool {
+    let cert = SubsumptionResolutionCertificate {
+        target: sub_res_in1(),
+        active: sub_res_in2(),
+        target_pivot: 0,
+        active_pivot: 0,
+        active_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(77) }],
+        unifier: vec![ExecBinding { variable: 77, replacement: ExecTerm::Const(1) }],
+        matches: vec![0, 1],
+        conclusion: sub_res_concl(),
+    };
+    if !check_subsumption_resolution_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Forged conclusion fails closed.
+    let forged_cert = SubsumptionResolutionCertificate {
+        target: sub_res_in1(),
+        active: sub_res_in2(),
+        target_pivot: 0,
+        active_pivot: 0,
+        active_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(77) }],
+        unifier: vec![ExecBinding { variable: 77, replacement: ExecTerm::Const(1) }],
+        matches: vec![0, 1],
+        conclusion: ExecClause { literals: vec![
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(2))) },
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(1))) },
+        ] },
+    };
+    if check_subsumption_resolution_and_replay(&forged_cert, 1000) {
+        return false;
+    }
+
+    // Pivot polarity mismatch fails closed (same positive polarity).
+    let same_polarity_cert = SubsumptionResolutionCertificate {
+        target: sub_res_concl(),
+        active: sub_res_in2(),
+        target_pivot: 0,
+        active_pivot: 0,
+        active_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(77) }],
+        unifier: vec![ExecBinding { variable: 77, replacement: ExecTerm::Const(1) }],
+        matches: vec![0, 0],
+        conclusion: ExecClause { literals: vec![
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(1))) },
+        ] },
+    };
+    if check_subsumption_resolution_and_replay(&same_polarity_cert, 1000) {
+        return false;
+    }
+
+    // Pivot atom mismatch fails closed.
+    let atom_mismatch_active = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(99, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let atom_mismatch_cert = SubsumptionResolutionCertificate {
+        target: sub_res_in1(),
+        active: atom_mismatch_active,
+        target_pivot: 0,
+        active_pivot: 0,
+        active_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(77) }],
+        unifier: vec![ExecBinding { variable: 77, replacement: ExecTerm::Const(1) }],
+        matches: vec![0, 1],
+        conclusion: sub_res_concl(),
+    };
+    if check_subsumption_resolution_and_replay(&atom_mismatch_cert, 1000) {
+        return false;
+    }
+
+    // Non-pivot literal polarity mismatch fails closed.
+    let non_pivot_neg_active = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let non_pivot_neg_cert = SubsumptionResolutionCertificate {
+        target: sub_res_in1(),
+        active: non_pivot_neg_active,
+        target_pivot: 0,
+        active_pivot: 0,
+        active_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(77) }],
+        unifier: vec![ExecBinding { variable: 77, replacement: ExecTerm::Const(1) }],
+        matches: vec![0, 1],
+        conclusion: sub_res_concl(),
+    };
+    if check_subsumption_resolution_and_replay(&non_pivot_neg_cert, 1000) {
+        return false;
+    }
+
+    // Non-pivot literal atom mismatch fails closed.
+    let non_pivot_mismatch_active = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(99, Box::new(ExecTerm::Var(7))) },
+    ] };
+    let non_pivot_mismatch_cert = SubsumptionResolutionCertificate {
+        target: sub_res_in1(),
+        active: non_pivot_mismatch_active,
+        target_pivot: 0,
+        active_pivot: 0,
+        active_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(77) }],
+        unifier: vec![ExecBinding { variable: 77, replacement: ExecTerm::Const(1) }],
+        matches: vec![0, 1],
+        conclusion: sub_res_concl(),
+    };
+    if check_subsumption_resolution_and_replay(&non_pivot_mismatch_cert, 1000) {
+        return false;
+    }
+
+    // Out of bounds pivot fails closed.
+    let out_of_bounds_cert = SubsumptionResolutionCertificate {
+        target: sub_res_in1(),
+        active: sub_res_in2(),
+        target_pivot: 5,
+        active_pivot: 0,
+        active_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(77) }],
+        unifier: vec![ExecBinding { variable: 77, replacement: ExecTerm::Const(1) }],
+        matches: vec![0, 1],
+        conclusion: sub_res_concl(),
+    };
+    if check_subsumption_resolution_and_replay(&out_of_bounds_cert, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn executable_subsumption_resolution_dag_examples() -> bool {
+    let empty = ExecClause { literals: Vec::new() };
+
+    let cert = SubsumptionResolutionCertificate {
+        target: sub_res_in1(),
+        active: sub_res_in2(),
+        target_pivot: 0,
+        active_pivot: 0,
+        active_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(77) }],
+        unifier: vec![ExecBinding { variable: 77, replacement: ExecTerm::Const(1) }],
+        matches: vec![0, 1],
+        conclusion: sub_res_concl(),
+    };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: sub_res_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 2, clause: sub_res_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 3, clause: sub_res_in3(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 4, clause: sub_res_in4(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 5, clause: sub_res_concl(), kind: ProofNodeKind::SubsumptionResolution,
+                parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: Some(cert), weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 6, clause: ExecClause { literals: vec![
+                ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(1))) },
+            ] }, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![4usize, 2usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 7, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![5usize, 3usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ],
+        input_clauses: vec![sub_res_in1(), sub_res_in2(), sub_res_in3(), sub_res_in4()],
+        root: 6,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn weaken_in1() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn weaken_in2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn weaken_in3() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn weaken_concl() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn executable_weakening_examples() -> bool {
+    let cert = WeakeningCertificate {
+        parent: weaken_in1(),
+        inclusions: vec![0],
+        conclusion: weaken_concl(),
+    };
+    if !check_weakening_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Forged conclusion (literal mismatch) fails closed.
+    let forged_cert = WeakeningCertificate {
+        parent: weaken_in1(),
+        inclusions: vec![0],
+        conclusion: ExecClause { literals: vec![
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(99, Box::new(ExecTerm::Const(1))) },
+        ] },
+    };
+    if check_weakening_and_replay(&forged_cert, 1000) {
+        return false;
+    }
+
+    // Out of bounds inclusion fails closed.
+    let out_of_bounds_cert = WeakeningCertificate {
+        parent: weaken_in1(),
+        inclusions: vec![5],
+        conclusion: weaken_concl(),
+    };
+    if check_weakening_and_replay(&out_of_bounds_cert, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn executable_weakening_dag_examples() -> bool {
+    let empty = ExecClause { literals: Vec::new() };
+
+    let cert = WeakeningCertificate {
+        parent: weaken_in1(),
+        inclusions: vec![0],
+        conclusion: weaken_concl(),
+    };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: weaken_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 2, clause: weaken_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 3, clause: weaken_in3(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 4, clause: weaken_concl(), kind: ProofNodeKind::Weakening,
+                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: Some(cert), demod_step: None, inst_step: None },
+            ProofNode { id: 5, clause: ExecClause { literals: vec![
+                ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
+            ] }, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![3usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 6, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![4usize, 2usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ],
+        input_clauses: vec![weaken_in1(), weaken_in2(), weaken_in3()],
+        root: 5,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn demod_in_target() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::App1(10, Box::new(ExecTerm::Const(1))))) },
+    ] }
+}
+
+fn demod_in_eq() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] }
+}
+
+fn demod_in_neg() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::App1(10, Box::new(ExecTerm::Const(2))))) },
+    ] }
+}
+
+fn demod_concl() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::App1(10, Box::new(ExecTerm::Const(2))))) },
+    ] }
+}
+
+fn executable_demodulation_examples() -> bool {
+    let cert = DemodulationCertificate {
+        target: demod_in_target(),
+        equality: demod_in_eq(),
+        equality_freshening: Vec::new(),
+        unifier: Vec::new(),
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        raw_target_path: vec![0],
+        fresh_target_path: vec![0],
+        reversed: false,
+        conclusion: demod_concl(),
+    };
+    if !check_demodulation_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Reversed equality (b = a with reversed: true).
+    let rev_eq = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)) },
+    ] };
+    let rev_cert = DemodulationCertificate {
+        target: demod_in_target(),
+        equality: rev_eq,
+        equality_freshening: Vec::new(),
+        unifier: Vec::new(),
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        raw_target_path: vec![0],
+        fresh_target_path: vec![0],
+        reversed: true,
+        conclusion: demod_concl(),
+    };
+    if !check_demodulation_and_replay(&rev_cert, 1000) {
+        return false;
+    }
+
+    // Forged conclusion fails closed.
+    let forged_cert = DemodulationCertificate {
+        target: demod_in_target(),
+        equality: demod_in_eq(),
+        equality_freshening: Vec::new(),
+        unifier: Vec::new(),
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        raw_target_path: vec![0],
+        fresh_target_path: vec![0],
+        reversed: false,
+        conclusion: ExecClause { literals: vec![
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(99, Box::new(ExecTerm::Const(1))) },
+        ] },
+    };
+    if check_demodulation_and_replay(&forged_cert, 1000) {
+        return false;
+    }
+
+    // Negative equality parent fails closed.
+    let neg_eq = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] };
+    let neg_cert = DemodulationCertificate {
+        target: demod_in_target(),
+        equality: neg_eq,
+        equality_freshening: Vec::new(),
+        unifier: Vec::new(),
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        raw_target_path: vec![0],
+        fresh_target_path: vec![0],
+        reversed: false,
+        conclusion: demod_concl(),
+    };
+    if check_demodulation_and_replay(&neg_cert, 1000) {
+        return false;
+    }
+
+    // Out of bounds literal index fails closed.
+    let out_of_bounds_cert = DemodulationCertificate {
+        target: demod_in_target(),
+        equality: demod_in_eq(),
+        equality_freshening: Vec::new(),
+        unifier: Vec::new(),
+        target_literal_index: 5,
+        target_argument_slot: 0,
+        raw_target_path: vec![0],
+        fresh_target_path: vec![0],
+        reversed: false,
+        conclusion: demod_concl(),
+    };
+    if check_demodulation_and_replay(&out_of_bounds_cert, 1000) {
+        return false;
+    }
+
+    // Mismatched raw/fresh path fails closed.
+    let mismatched_path_cert = DemodulationCertificate {
+        target: demod_in_target(),
+        equality: demod_in_eq(),
+        equality_freshening: Vec::new(),
+        unifier: Vec::new(),
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        raw_target_path: vec![0],
+        fresh_target_path: vec![1],
+        reversed: false,
+        conclusion: demod_concl(),
+    };
+    if check_demodulation_and_replay(&mismatched_path_cert, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn executable_demodulation_dag_examples() -> bool {
+    let empty = ExecClause { literals: Vec::new() };
+
+    let cert = DemodulationCertificate {
+        target: demod_in_target(),
+        equality: demod_in_eq(),
+        equality_freshening: Vec::new(),
+        unifier: Vec::new(),
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        raw_target_path: vec![0],
+        fresh_target_path: vec![0],
+        reversed: false,
+        conclusion: demod_concl(),
+    };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: demod_in_target(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 2, clause: demod_in_eq(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 3, clause: demod_in_neg(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 4, clause: demod_concl(), kind: ProofNodeKind::Demodulation,
+                parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: Some(cert), inst_step: None },
+            ProofNode { id: 5, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![3usize, 2usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ],
+        input_clauses: vec![demod_in_target(), demod_in_eq(), demod_in_neg()],
+        root: 4,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn inst_in1() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(2))) },
+    ] }
+}
+
+fn inst_in2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn inst_in3() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(2))) },
+    ] }
+}
+
+fn inst_concl() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(2))) },
+    ] }
+}
+
+fn executable_instantiation_examples() -> bool {
+    let subst = vec![
+        ExecBinding { variable: 1, replacement: ExecTerm::Const(1) },
+        ExecBinding { variable: 2, replacement: ExecTerm::Const(2) },
+    ];
+    let cert = InstantiationCertificate {
+        parent: inst_in1(),
+        substitution: subst,
+        conclusion: inst_concl(),
+    };
+    if !check_instantiation_and_replay(&cert, 1000) {
+        return false;
+    }
+
+    // Forged conclusion fails closed.
+    let forged_cert = InstantiationCertificate {
+        parent: inst_in1(),
+        substitution: vec![
+            ExecBinding { variable: 1, replacement: ExecTerm::Const(1) },
+            ExecBinding { variable: 2, replacement: ExecTerm::Const(2) },
+        ],
+        conclusion: ExecClause { literals: vec![
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(99))) },
+            ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(2))) },
+        ] },
+    };
+    if check_instantiation_and_replay(&forged_cert, 1000) {
+        return false;
+    }
+
+    // Duplicate substitution domain fails closed.
+    let dup_cert = InstantiationCertificate {
+        parent: inst_in1(),
+        substitution: vec![
+            ExecBinding { variable: 1, replacement: ExecTerm::Const(1) },
+            ExecBinding { variable: 1, replacement: ExecTerm::Const(2) },
+        ],
+        conclusion: inst_concl(),
+    };
+    if check_instantiation_and_replay(&dup_cert, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn executable_instantiation_dag_examples() -> bool {
+    let empty = ExecClause { literals: Vec::new() };
+
+    let cert = InstantiationCertificate {
+        parent: inst_in1(),
+        substitution: vec![
+            ExecBinding { variable: 1, replacement: ExecTerm::Const(1) },
+            ExecBinding { variable: 2, replacement: ExecTerm::Const(2) },
+        ],
+        conclusion: inst_concl(),
+    };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: inst_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 2, clause: inst_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 3, clause: inst_in3(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 4, clause: inst_concl(), kind: ProofNodeKind::Instantiation,
+                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: Some(cert) },
+            ProofNode { id: 5, clause: ExecClause { literals: vec![
+                ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(2))) },
+            ] }, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![3usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+            ProofNode { id: 6, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![4usize, 2usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None },
+        ],
+        input_clauses: vec![inst_in1(), inst_in2(), inst_in3()],
+        root: 5,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn check_dag_with_local_soundness(
+    dag: &ProofDag,
+    node_limit: usize,
+    literal_limit: usize,
+    local_soundness: &Vec<bool>,
+) -> (verdict: DagVerdict)
+{
+    match check_dag_structure(dag, node_limit, literal_limit) {
+        DagVerdict::Certified => DagVerdict::Unknown,
+        DagVerdict::Rejected => DagVerdict::Rejected,
+        DagVerdict::Unknown => DagVerdict::Unknown,
+        DagVerdict::Inconclusive => {
+            if local_soundness.len() != dag.nodes.len() {
+                return DagVerdict::Unknown;
+            }
+            let mut i: usize = 0;
+            while i < dag.nodes.len()
+                invariant i <= dag.nodes.len(), local_soundness.len() == dag.nodes.len()
+                decreases dag.nodes.len() - i
+            {
+                if dag.nodes[i].kind == ProofNodeKind::Superposition && !local_soundness[i] {
+                    return DagVerdict::Unknown;
+                }
+                i += 1;
+            }
+            DagVerdict::Inconclusive
+        },
+    }
+}
+
+spec fn dag_all_local_steps_sound(dag: ProofDag, local_soundness: Seq<bool>) -> bool {
+    local_soundness.len() == dag.nodes.len()
+        && forall|i: int| 0 <= i < dag.nodes.len()
+            && dag.nodes[i].kind == ProofNodeKind::Superposition
+            ==> local_soundness[i]
+}
+
+proof fn dag_local_soundness_postcondition(
+    dag: ProofDag,
+    local_soundness: Seq<bool>,
+)
+    requires
+        local_soundness.len() == dag.nodes.len(),
+        forall|i: int| 0 <= i < dag.nodes.len()
+            && dag.nodes[i].kind == ProofNodeKind::Superposition
+            ==> local_soundness[i],
+    ensures dag_all_local_steps_sound(dag, local_soundness)
+{}
+
+spec fn dag_root_valid(dag: ProofDag, interp: Interpretation) -> bool {
+    dag.root < dag.nodes.len()
+        && clause_valid(view_clause(dag.nodes@[dag.root as int].clause), interp)
+}
+
+proof fn dag_semantic_result_from_local_postcondition(
+    dag: ProofDag,
+    inputs: Seq<ExecClause>,
+    interp: Interpretation,
+    local_soundness: Seq<bool>,
+)
+    requires
+        interpretation_well_formed(interp),
+        dag.nodes.len() > 0,
+        dag.root < dag.nodes.len(),
+        dag.nodes@[dag.root as int].clause.literals.len() == 0,
+        local_soundness.len() == dag.nodes.len(),
+        forall|i: int| 0 <= i < dag.nodes.len()
+            && dag.nodes[i].kind == ProofNodeKind::Superposition
+            ==> local_soundness[i],
+        forall|i: int| 0 <= i < dag.nodes.len()
+            && dag.nodes[i].kind == ProofNodeKind::Superposition
+            ==> local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp),
+        forall|i: int| 0 <= i < dag.nodes.len()
+            ==> (dag.nodes[i].kind == ProofNodeKind::Input
+                ==> input_leaf_is_validated(dag.nodes[i], inputs)),
+        forall|i: int| 0 <= i < dag.nodes.len()
+            ==> dag.nodes[i].kind == ProofNodeKind::Input
+                || dag.nodes[i].kind == ProofNodeKind::Superposition,
+        forall|i: int| 0 <= i < inputs.len()
+            ==> clause_valid(view_clause(inputs[i]), interp),
+        forall|i: int, j: int| 0 <= i < dag.nodes.len()
+            && 0 <= j < dag.nodes[i].parents@.len()
+            ==> dag.nodes[i].parents@[j] < i as usize,
+    ensures dag_root_valid(dag, interp)
+        && !exists|valuation: Valuation| valuation_well_formed(interp, valuation)
+            && forall|i: int| 0 <= i < inputs.len()
+                ==> clause_holds(view_clause(inputs[i]), interp, valuation)
+{
+    assert forall|i: int| 0 <= i < dag.nodes.len()
+        implies (dag.nodes[i].kind == ProofNodeKind::Input
+                && input_leaf_is_validated(dag.nodes[i], inputs)
+            || dag.nodes[i].kind == ProofNodeKind::Superposition
+                && local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp)) by {
+        if dag.nodes[i].kind == ProofNodeKind::Input {
+            assert(input_leaf_is_validated(dag.nodes[i], inputs));
+        } else {
+            assert(dag.nodes[i].kind == ProofNodeKind::Superposition);
+            assert(local_node_entails_from_parents(dag.nodes@[i], dag.nodes@, interp));
+        }
+    }
+    proof_dag_nodes_follow_from_local_rule_soundness(
+        dag.nodes@, inputs, interp, dag.nodes.len() as nat,
+    );
+    assert(clause_valid(view_clause(dag.nodes@[dag.root as int].clause), interp));
+    certified_empty_dag_implies_unsatisfiable(dag.nodes@, inputs, interp, dag.root as nat);
+}
+
+/// The semantic fact behind instance substitution for a universally closed
+/// clause: any term substitution maps a term variable to its chosen instance.
+spec fn variable_instance() -> bool {
+    let sigma = Substitution { bindings: seq![(7u64, Term::Const(19u64))] };
+    apply(Term::Var(7), sigma) == Term::Const(19)
+}
+
+proof fn variable_substitution_is_an_instance()
+    ensures variable_instance()
+{
+    let sigma = Substitution { bindings: seq![(7u64, Term::Const(19u64))] };
+    assert(lookup(sigma, 7) == Some(Term::Const(19)));
+    assert(apply(Term::Var(7), sigma) == Term::Const(19));
+}
+
+fn wire_number(tokens: &Vec<u64>, cursor: &mut usize) -> (value: Option<u64>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(),
+        value.is_some() ==> *final(cursor) == *old(cursor) + 1,
+        value.is_some() ==> value.unwrap() == tokens@[(*old(cursor)) as int],
+        value.is_none() ==> *final(cursor) == *old(cursor)
+{
+    if *cursor >= tokens.len() { return None; }
+    let value = tokens[*cursor];
+    *cursor += 1;
+    Some(value)
+}
+
+fn wire_count(tokens: &Vec<u64>, cursor: &mut usize, maximum: usize) -> (value: Option<usize>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(),
+        value.is_some() ==> *final(cursor) == *old(cursor) + 1,
+        value.is_some() ==> value.unwrap() <= maximum
+{
+    let Some(value) = wire_number(tokens, cursor) else { return None; };
+    match usize::try_from(value) { Ok(n) if n <= maximum => Some(n), _ => None }
+}
+
+fn wire_term(tokens: &Vec<u64>, cursor: &mut usize, depth: usize) -> (term: Option<ExecTerm>)
+    requires *old(cursor) <= tokens.len(), depth <= 64
+    ensures *final(cursor) <= tokens.len(), term.is_some() ==> *final(cursor) > *old(cursor),
+        term.is_some() ==> depth + exec_term_depth(term.unwrap()) < 64
+    decreases 64 - depth
+{
+    if depth >= 64 { return None; }
+    let Some(tag) = wire_number(tokens, cursor) else { return None; };
+    let Some(symbol) = wire_number(tokens, cursor) else { return None; };
+    match tag {
+        0 => Some(ExecTerm::Var(symbol)),
+        1 => Some(ExecTerm::Const(symbol)),
+        2 => match wire_term(tokens, cursor, depth + 1) {
+            Some(child) => Some(ExecTerm::App1(symbol, Box::new(child))), None => None,
+        },
+        3 => match wire_term(tokens, cursor, depth + 1) {
+            Some(left) => match wire_term(tokens, cursor, depth + 1) {
+                Some(right) => Some(ExecTerm::App2(symbol, Box::new(left), Box::new(right))),
+                None => None,
+            }, None => None,
+        },
+        _ => None,
+    }
+}
+
+fn wire_clause(tokens: &Vec<u64>, cursor: &mut usize) -> (clause: Option<ExecClause>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(),
+        clause.is_some() ==> clause.unwrap().literals@.len() <= 64,
+        clause.is_some() ==> forall|i: int| 0 <= i < clause.unwrap().literals@.len()
+            ==> #[trigger] exec_atom_depth_below(clause.unwrap().literals@[i].atom, 64)
+{
+    let Some(count) = wire_count(tokens, cursor, 64) else { return None; };
+    let mut literals: Vec<ExecLiteral> = Vec::new();
+    let mut i: usize = 0;
+    while i < count
+        invariant i <= count, literals@.len() == i, *cursor <= tokens.len(),
+            forall|j: int| 0 <= j < i ==> exec_atom_depth_below(literals@[j].atom, 64)
+        decreases count - i
+    {
+        let Some(polarity) = wire_number(tokens, cursor) else { return None; };
+        let positive = match polarity { 0 => false, 1 => true, _ => return None };
+        let Some(tag) = wire_number(tokens, cursor) else { return None; };
+        let atom = match tag {
+            0 => match wire_number(tokens, cursor) { Some(p) => ExecAtom::Pred0(p), None => return None },
+            1 => {
+                let Some(p) = wire_number(tokens, cursor) else { return None; };
+                let Some(arg) = wire_term(tokens, cursor, 0) else { return None; };
+                ExecAtom::Pred1(p, Box::new(arg))
+            },
+            2 => {
+                let Some(p) = wire_number(tokens, cursor) else { return None; };
+                let Some(a) = wire_term(tokens, cursor, 0) else { return None; };
+                let Some(b) = wire_term(tokens, cursor, 0) else { return None; };
+                ExecAtom::Pred2(p, Box::new(a), Box::new(b))
+            },
+            3 => {
+                let Some(a) = wire_term(tokens, cursor, 0) else { return None; };
+                let Some(b) = wire_term(tokens, cursor, 0) else { return None; };
+                ExecAtom::Eq(a, b)
+            },
+            _ => return None,
+        };
+        literals.push(ExecLiteral { positive, atom });
+        i += 1;
+    }
+    Some(ExecClause { literals })
+}
+
+fn wire_bindings(tokens: &Vec<u64>, cursor: &mut usize) -> (bindings: Option<Vec<ExecBinding>>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(),
+        bindings.is_some() ==> bindings.unwrap()@.len() <= 256
+{
+    let Some(count) = wire_count(tokens, cursor, 256) else { return None; };
+    let mut bindings: Vec<ExecBinding> = Vec::new();
+    let mut i: usize = 0;
+    while i < count
+        invariant i <= count, bindings@.len() == i, *cursor <= tokens.len()
+        decreases count - i
+    {
+        let Some(variable) = wire_number(tokens, cursor) else { return None; };
+        let Some(replacement) = wire_term(tokens, cursor, 0) else { return None; };
+        bindings.push(ExecBinding { variable, replacement });
+        i += 1;
+    }
+    Some(bindings)
+}
+
+fn wire_path(tokens: &Vec<u64>, cursor: &mut usize) -> (path: Option<Vec<u64>>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(), path.is_some() ==> path.unwrap()@.len() <= 64
+{
+    let Some(count) = wire_count(tokens, cursor, 64) else { return None; };
+    let mut path: Vec<u64> = Vec::new();
+    let mut i: usize = 0;
+    while i < count
+        invariant i <= count, path@.len() == i, *cursor <= tokens.len()
+        decreases count - i
+    {
+        let Some(child) = wire_number(tokens, cursor) else { return None; };
+        path.push(child);
+        i += 1;
+    }
+    Some(path)
+}
+
+fn wire_certificate(tokens: &Vec<u64>, cursor: &mut usize)
+    -> (certificate: Option<SuperpositionCertificate>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len()
+{
+    let Some(source) = wire_clause(tokens, cursor) else { return None; };
+    let Some(target) = wire_clause(tokens, cursor) else { return None; };
+    let Some(conclusion) = wire_clause(tokens, cursor) else { return None; };
+    let Some(source_freshening) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(target_freshening) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(unifier) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(si) = wire_count(tokens, cursor, 63) else { return None; };
+    let Some(ti) = wire_count(tokens, cursor, 63) else { return None; };
+    let Some(slot) = wire_number(tokens, cursor) else { return None; };
+    let Some(path) = wire_path(tokens, cursor) else { return None; };
+    let Some(fresh_path) = wire_path(tokens, cursor) else { return None; };
+    Some(SuperpositionCertificate { source, target, conclusion, source_freshening,
+        target_freshening, unifier, source_equality_index: si, target_literal_index: ti,
+        target_argument_slot: slot, target_path: path, fresh_target_path: fresh_path })
+}
+
+fn wire_first_order_resolution_certificate(tokens: &Vec<u64>, cursor: &mut usize)
+    -> (certificate: Option<FirstOrderResolutionCertificate>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len()
+{
+    let Some(left) = wire_clause(tokens, cursor) else { return None; };
+    let Some(right) = wire_clause(tokens, cursor) else { return None; };
+    let Some(conclusion) = wire_clause(tokens, cursor) else { return None; };
+    let Some(left_freshening) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(right_freshening) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(unifier) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(lp) = wire_count(tokens, cursor, 63) else { return None; };
+    let Some(rp) = wire_count(tokens, cursor, 63) else { return None; };
+    Some(FirstOrderResolutionCertificate { left, right, left_freshening,
+        right_freshening, unifier, left_pivot: lp, right_pivot: rp, conclusion })
+}
+
+fn wire_equality_resolution_certificate(tokens: &Vec<u64>, cursor: &mut usize)
+    -> (certificate: Option<EqualityResolutionCertificate>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len()
+{
+    let Some(clause) = wire_clause(tokens, cursor) else { return None; };
+    let Some(conclusion) = wire_clause(tokens, cursor) else { return None; };
+    let Some(unifier) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(pivot) = wire_count(tokens, cursor, 63) else { return None; };
+    Some(EqualityResolutionCertificate { clause, pivot, unifier, conclusion })
+}
+
+fn wire_clause_factoring_certificate(tokens: &Vec<u64>, cursor: &mut usize)
+    -> (certificate: Option<ClauseFactoringCertificate>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len()
+{
+    let Some(clause) = wire_clause(tokens, cursor) else { return None; };
+    let Some(conclusion) = wire_clause(tokens, cursor) else { return None; };
+    let Some(unifier) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(first) = wire_count(tokens, cursor, 63) else { return None; };
+    let Some(second) = wire_count(tokens, cursor, 63) else { return None; };
+    Some(ClauseFactoringCertificate { clause, first, second, unifier, conclusion })
+}
+
+fn wire_equality_factoring_certificate(tokens: &Vec<u64>, cursor: &mut usize)
+    -> (certificate: Option<EqualityFactoringCertificate>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len()
+{
+    let Some(clause) = wire_clause(tokens, cursor) else { return None; };
+    let Some(conclusion) = wire_clause(tokens, cursor) else { return None; };
+    let Some(unifier) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(first) = wire_count(tokens, cursor, 63) else { return None; };
+    let Some(second) = wire_count(tokens, cursor, 63) else { return None; };
+    Some(EqualityFactoringCertificate { clause, first, second, unifier, conclusion })
+}
+
+fn wire_subsumption_resolution_certificate(tokens: &Vec<u64>, cursor: &mut usize)
+    -> (certificate: Option<SubsumptionResolutionCertificate>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len()
+{
+    let Some(target) = wire_clause(tokens, cursor) else { return None; };
+    let Some(active) = wire_clause(tokens, cursor) else { return None; };
+    let Some(conclusion) = wire_clause(tokens, cursor) else { return None; };
+    let Some(active_freshening) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(unifier) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(target_pivot) = wire_count(tokens, cursor, 63) else { return None; };
+    let Some(active_pivot) = wire_count(tokens, cursor, 63) else { return None; };
+    let Some(matches_count) = wire_count(tokens, cursor, 64) else { return None; };
+    let mut matches = Vec::new();
+    let mut i: usize = 0;
+    while i < matches_count
+        invariant i <= matches_count, matches@.len() == i, *cursor <= tokens.len()
+        decreases matches_count - i
+    {
+        let Some(idx) = wire_count(tokens, cursor, 63) else { return None; };
+        matches.push(idx);
+        i += 1;
+    }
+    Some(SubsumptionResolutionCertificate {
+        target,
+        active,
+        target_pivot,
+        active_pivot,
+        active_freshening,
+        unifier,
+        matches,
+        conclusion,
+    })
+}
+
+fn wire_weakening_certificate(tokens: &Vec<u64>, cursor: &mut usize)
+    -> (certificate: Option<WeakeningCertificate>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len()
+{
+    let Some(parent) = wire_clause(tokens, cursor) else { return None; };
+    let Some(conclusion) = wire_clause(tokens, cursor) else { return None; };
+    let Some(inclusions_count) = wire_count(tokens, cursor, 64) else { return None; };
+    let mut inclusions = Vec::new();
+    let mut i: usize = 0;
+    while i < inclusions_count
+        invariant i <= inclusions_count, inclusions@.len() == i, *cursor <= tokens.len()
+        decreases inclusions_count - i
+    {
+        let Some(idx) = wire_count(tokens, cursor, 63) else { return None; };
+        inclusions.push(idx);
+        i += 1;
+    }
+    Some(WeakeningCertificate { parent, inclusions, conclusion })
+}
+
+fn wire_demodulation_certificate(tokens: &Vec<u64>, cursor: &mut usize)
+    -> (certificate: Option<DemodulationCertificate>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len()
+{
+    let Some(target) = wire_clause(tokens, cursor) else { return None; };
+    let Some(equality) = wire_clause(tokens, cursor) else { return None; };
+    let Some(conclusion) = wire_clause(tokens, cursor) else { return None; };
+    let Some(equality_freshening) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(unifier) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(ti) = wire_count(tokens, cursor, 63) else { return None; };
+    let Some(slot) = wire_number(tokens, cursor) else { return None; };
+    let Some(raw_path) = wire_path(tokens, cursor) else { return None; };
+    let Some(fresh_path) = wire_path(tokens, cursor) else { return None; };
+    let Some(rev) = wire_count(tokens, cursor, 1) else { return None; };
+    let reversed = rev == 1;
+    Some(DemodulationCertificate {
+        target,
+        equality,
+        equality_freshening,
+        unifier,
+        target_literal_index: ti,
+        target_argument_slot: slot,
+        raw_target_path: raw_path,
+        fresh_target_path: fresh_path,
+        reversed,
+        conclusion,
+    })
+}
+
+fn wire_instantiation_certificate(tokens: &Vec<u64>, cursor: &mut usize)
+    -> (certificate: Option<InstantiationCertificate>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len()
+{
+    let Some(parent) = wire_clause(tokens, cursor) else { return None; };
+    let Some(substitution) = wire_bindings(tokens, cursor) else { return None; };
+    let Some(conclusion) = wire_clause(tokens, cursor) else { return None; };
+    Some(InstantiationCertificate { parent, substitution, conclusion })
+}
+
+fn wire_dag(tokens: &Vec<u64>, cursor: &mut usize) -> (dag: Option<ProofDag>)
+    requires *old(cursor) <= tokens.len()
+    ensures *final(cursor) <= tokens.len(),
+        dag.is_some() ==> dag.unwrap().nodes@.len() <= 512,
+        dag.is_some() ==> dag.unwrap().input_clauses@.len() <= 512,
+        dag.is_some() ==> dag.unwrap().root <= 511,
+        dag.is_some() ==> forall|i: int| 0 <= i < dag.unwrap().nodes@.len()
+            ==> dag.unwrap().nodes@[i].parents@.len() <= 2,
+        dag.is_some() ==> forall|i: int, j: int| 0 <= i < dag.unwrap().nodes@.len()
+            && 0 <= j < dag.unwrap().nodes@[i].parents@.len()
+            ==> dag.unwrap().nodes@[i].parents@[j] <= 511
+{
+    let Some(count) = wire_count(tokens, cursor, 512) else { return None; };
+    let Some(root) = wire_count(tokens, cursor, 511) else { return None; };
+    let Some(input_count) = wire_count(tokens, cursor, 512) else { return None; };
+    let mut inputs: Vec<ExecClause> = Vec::new();
+    let mut i: usize = 0;
+    while i < input_count
+        invariant i <= input_count, inputs@.len() == i, *cursor <= tokens.len()
+        decreases input_count - i
+    {
+        let Some(c) = wire_clause(tokens, cursor) else { return None; };
+        inputs.push(c); i += 1;
+    }
+    let mut nodes: Vec<ProofNode> = Vec::new();
+    let mut n: usize = 0;
+    while n < count
+        invariant n <= count, nodes@.len() == n, *cursor <= tokens.len(),
+            forall|j: int| 0 <= j < n ==> nodes@[j].parents@.len() <= 2,
+            forall|j: int, k: int| 0 <= j < n && 0 <= k < nodes@[j].parents@.len()
+                ==> nodes@[j].parents@[k] <= 511
+        decreases count - n
+    {
+        let Some(id) = wire_number(tokens, cursor) else { return None; };
+        let Some(clause) = wire_clause(tokens, cursor) else { return None; };
+        let Some(tag) = wire_number(tokens, cursor) else { return None; };
+        let Some(parent_count) = wire_count(tokens, cursor, 2) else { return None; };
+        let mut parents: Vec<usize> = Vec::new();
+        let mut p: usize = 0;
+        while p < parent_count
+            invariant p <= parent_count, parents@.len() == p, *cursor <= tokens.len(),
+                forall|j: int| 0 <= j < p ==> parents@[j] <= 511
+            decreases parent_count - p
+        {
+            let Some(parent) = wire_count(tokens, cursor, 511) else { return None; };
+            parents.push(parent); p += 1;
+        }
+        let (kind, step, res_step, eq_step, fact_step, eq_fact_step, sub_step, weaken_step, demod_step, inst_step) = match tag {
+            0 => (ProofNodeKind::Input, None, None, None, None, None, None, None, None, None),
+            1 => {
+                let Some(c) = wire_certificate(tokens, cursor) else { return None; };
+                (ProofNodeKind::Superposition, Some(c), None, None, None, None, None, None, None, None)
+            },
+            2 => {
+                let Some(lp) = wire_count(tokens, cursor, 63) else { return None; };
+                let Some(rp) = wire_count(tokens, cursor, 63) else { return None; };
+                (ProofNodeKind::Resolution(lp, rp), None, None, None, None, None, None, None, None, None)
+            },
+            3 => {
+                let Some(lp) = wire_count(tokens, cursor, 63) else { return None; };
+                let Some(rp) = wire_count(tokens, cursor, 63) else { return None; };
+                (ProofNodeKind::ExactResolution(lp, rp), None, None, None, None, None, None, None, None, None)
+            },
+            4 => {
+                let Some(c) = wire_first_order_resolution_certificate(tokens, cursor) else { return None; };
+                (ProofNodeKind::FirstOrderResolution, None, Some(c), None, None, None, None, None, None, None)
+            },
+            5 => {
+                let Some(c) = wire_equality_resolution_certificate(tokens, cursor) else { return None; };
+                (ProofNodeKind::EqualityResolution, None, None, Some(c), None, None, None, None, None, None)
+            },
+            6 => {
+                let Some(c) = wire_clause_factoring_certificate(tokens, cursor) else { return None; };
+                (ProofNodeKind::Factoring, None, None, None, Some(c), None, None, None, None, None)
+            },
+            7 => {
+                let Some(c) = wire_equality_factoring_certificate(tokens, cursor) else { return None; };
+                (ProofNodeKind::EqualityFactoring, None, None, None, None, Some(c), None, None, None, None)
+            },
+            8 => {
+                let Some(c) = wire_subsumption_resolution_certificate(tokens, cursor) else { return None; };
+                (ProofNodeKind::SubsumptionResolution, None, None, None, None, None, Some(c), None, None, None)
+            },
+            9 => {
+                let Some(c) = wire_weakening_certificate(tokens, cursor) else { return None; };
+                (ProofNodeKind::Weakening, None, None, None, None, None, None, Some(c), None, None)
+            },
+            10 => {
+                let Some(c) = wire_demodulation_certificate(tokens, cursor) else { return None; };
+                (ProofNodeKind::Demodulation, None, None, None, None, None, None, None, Some(c), None)
+            },
+            11 => {
+                let Some(c) = wire_instantiation_certificate(tokens, cursor) else { return None; };
+                (ProofNodeKind::Instantiation, None, None, None, None, None, None, None, None, Some(c))
+            },
+            _ => return None,
+        };
+        nodes.push(ProofNode { id, clause, kind, parents, step, res_step, eq_step, fact_step, eq_fact_step, sub_step, weaken_step, demod_step, inst_step }); n += 1;
+    }
+    Some(ProofDag { nodes, input_clauses: inputs, root })
+}
+
+fn check_wire_tokens(tokens: &Vec<u64>) -> (response: u64)
+    ensures response <= 4
+{
+    let mut cursor: usize = 0;
+    let Some(version) = wire_number(tokens, &mut cursor) else { return 4; };
+    if version != 1 { return 4; }
+    let Some(command) = wire_number(tokens, &mut cursor) else { return 4; };
+    let Some(work) = wire_count(tokens, &mut cursor, 10_000_000) else { return 4; };
+    let response = match command {
+        0 => 0,
+        1 => {
+            let Some(c) = wire_certificate(tokens, &mut cursor) else { return 4; };
+            if check_superposition_and_replay(&c, work) { 1 } else { 4 }
+        },
+        2 => {
+            let Some(dag) = wire_dag(tokens, &mut cursor) else { return 4; };
+            match certify_dag(&dag, 512, work) {
+                DagVerdict::Certified => 2,
+                DagVerdict::Rejected => 3,
+                _ => 4,
+            }
+        },
+        3 => {
+            let Some(c) = wire_first_order_resolution_certificate(tokens, &mut cursor) else { return 4; };
+            if check_first_order_resolution_and_replay(&c, work) { 1 } else { 4 }
+        },
+        4 => {
+            let Some(c) = wire_equality_resolution_certificate(tokens, &mut cursor) else { return 4; };
+            if check_equality_resolution_and_replay(&c, work) { 1 } else { 4 }
+        },
+        5 => {
+            let Some(c) = wire_clause_factoring_certificate(tokens, &mut cursor) else { return 4; };
+            if check_clause_factoring_and_replay(&c, work) { 1 } else { 4 }
+        },
+        6 => {
+            let Some(c) = wire_equality_factoring_certificate(tokens, &mut cursor) else { return 4; };
+            if check_equality_factoring_and_replay(&c, work) { 1 } else { 4 }
+        },
+        7 => {
+            let Some(c) = wire_subsumption_resolution_certificate(tokens, &mut cursor) else { return 4; };
+            if check_subsumption_resolution_and_replay(&c, work) { 1 } else { 4 }
+        },
+        8 => {
+            let Some(c) = wire_weakening_certificate(tokens, &mut cursor) else { return 4; };
+            if check_weakening_and_replay(&c, work) { 1 } else { 4 }
+        },
+        9 => {
+            let Some(c) = wire_demodulation_certificate(tokens, &mut cursor) else { return 4; };
+            if check_demodulation_and_replay(&c, work) { 1 } else { 4 }
+        },
+        10 => {
+            let Some(c) = wire_instantiation_certificate(tokens, &mut cursor) else { return 4; };
+            if check_instantiation_and_replay(&c, work) { 1 } else { 4 }
+        },
+        _ => return 4,
+    };
+    if cursor != tokens.len() { return 4; }
+    response
+}
+
+fn wire_is_space(byte: u8) -> (space: bool)
+    ensures space == (byte == 32 || byte == 9 || byte == 10 || byte == 11 || byte == 12 || byte == 13)
+{
+    byte == 32 || byte == 9 || byte == 10 || byte == 11 || byte == 12 || byte == 13
+}
+
+fn wire_decimal_append(value: u64, digit: u64) -> (next: Option<u64>)
+    requires digit < 10
+    ensures next.is_some() ==> next.unwrap() as int == value as int * 10 + digit as int
+{
+    let Some(times_ten) = value.checked_mul(10) else { return None; };
+    let Some(next) = times_ten.checked_add(digit) else { return None; };
+    Some(next)
+}
+
+spec fn is_ascii_digit(byte: u8) -> bool {
+    48 <= byte <= 57
+}
+
+spec fn decimal_digit_value(byte: u8) -> int {
+    (byte - 48) as int
+}
+
+spec fn decimal_digits_value(bytes: Seq<u8>) -> int
+    decreases bytes.len()
+{
+    if bytes.len() == 0 {
+        0
+    } else {
+        decimal_digits_value(bytes.subrange(0, bytes.len() - 1 as int)) * 10
+            + decimal_digit_value(bytes[bytes.len() - 1 as int])
+    }
+}
+
+spec fn all_ascii_digits(bytes: Seq<u8>) -> bool {
+    forall|i: int| 0 <= i < bytes.len() ==> is_ascii_digit(bytes[i])
+}
+
+spec fn wire_tokens_span_correspondence(
+    bytes: Seq<u8>,
+    tokens: Seq<u64>,
+    spans: Seq<(usize, usize)>,
+) -> bool {
+    &&& spans.len() == tokens.len()
+    &&& forall|i: int| #![trigger spans[i]] 0 <= i < spans.len() ==> {
+        &&& spans[i].0 < spans[i].1 <= bytes.len()
+        &&& all_ascii_digits(bytes.subrange(spans[i].0 as int, spans[i].1 as int))
+        &&& tokens[i] as int == decimal_digits_value(
+            bytes.subrange(spans[i].0 as int, spans[i].1 as int))
+    }
+}
+
+proof fn lemma_decimal_digits_value_append(prefix: Seq<u8>, d: u8)
+    ensures decimal_digits_value(prefix.push(d))
+        == decimal_digits_value(prefix) * 10 + decimal_digit_value(d)
+{
+    let combined = prefix.push(d);
+    assert(combined.subrange(0, combined.len() - 1 as int) =~= prefix);
+}
+
+proof fn lemma_all_ascii_digits_append(prefix: Seq<u8>, d: u8)
+    requires all_ascii_digits(prefix), is_ascii_digit(d)
+    ensures all_ascii_digits(prefix.push(d))
+{
+    let combined = prefix.push(d);
+    assert forall|i: int| 0 <= i < combined.len() implies is_ascii_digit(combined[i]) by {
+        if i < prefix.len() {
+            assert(combined[i] == prefix[i]);
+        }
+    }
+}
+
+proof fn lemma_subrange_extend_one(bytes: Seq<u8>, start: int, end: int)
+    requires 0 <= start <= end < bytes.len()
+    ensures bytes.subrange(start, end + 1) =~= bytes.subrange(start, end).push(bytes[end])
+{
+}
+
+// Verified ASCII whitespace/decimal-u64 tokenizer. UTF-8 is unnecessary for
+// this numeric protocol: every non-ASCII byte is rejected as a malformed token.
+fn wire_tokenize(bytes: &Vec<u8>) -> (tokens: Option<Vec<u64>>)
+    ensures
+        tokens.is_some() ==> tokens.unwrap()@.len() <= 500_000,
+        tokens.is_some() ==> exists|spans: Seq<(usize, usize)>|
+            #![trigger wire_tokens_span_correspondence(bytes@, tokens.unwrap()@, spans)]
+            wire_tokens_span_correspondence(bytes@, tokens.unwrap()@, spans),
+{
+    if bytes.len() > 4 * 1024 * 1024 { return None; }
+    let mut tokens: Vec<u64> = Vec::new();
+    let mut cursor: usize = 0;
+    let mut value: u64 = 0;
+    let mut in_token = false;
+    let mut token_start: usize = 0;
+    let mut spans: Ghost<Seq<(usize, usize)>> = Ghost(Seq::empty());
+    while cursor < bytes.len()
+        invariant
+            cursor <= bytes.len(),
+            tokens@.len() <= 500_000,
+            tokens@.len() == spans@.len(),
+            forall|i: int| #![trigger spans@[i]]
+                0 <= i < spans@.len() ==> {
+                    &&& spans@[i].0 < spans@[i].1 <= cursor
+                    &&& all_ascii_digits(bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+                    &&& tokens@[i] as int == decimal_digits_value(
+                        bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+                },
+            in_token ==> {
+                &&& token_start < cursor
+                &&& all_ascii_digits(bytes@.subrange(token_start as int, cursor as int))
+                &&& value as int == decimal_digits_value(
+                    bytes@.subrange(token_start as int, cursor as int))
+            },
+        decreases bytes.len() - cursor
+    {
+        let byte = bytes[cursor];
+        if wire_is_space(byte) {
+            if in_token {
+                if tokens.len() >= 500_000 { return None; }
+                tokens.push(value);
+                let ghost old_spans = spans@;
+                let ghost old_tokens = tokens@;
+                spans = Ghost(spans@.push((token_start, cursor)));
+                proof {
+                    let last = (spans@.len() - 1) as int;
+                    assert(spans@[last] == (token_start, cursor));
+                    assert(tokens@[last] == value);
+                    assert forall|i: int| 0 <= i < spans@.len() implies {
+                        &&& spans@[i].0 < spans@[i].1 <= (cursor + 1)
+                        &&& all_ascii_digits(bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+                        &&& tokens@[i] as int == decimal_digits_value(
+                            bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+                    } by {
+                        if i < last {
+                            assert(spans@[i] == old_spans[i]);
+                            assert(tokens@[i] == old_tokens[i]);
+                        }
+                    }
+                }
+                value = 0;
+                in_token = false;
+            }
+        } else {
+            if byte < 48 || byte > 57 { return None; }
+            let digit = (byte - 48) as u64;
+            if in_token {
+                let Some(next) = wire_decimal_append(value, digit) else { return None; };
+                proof {
+                    lemma_subrange_extend_one(bytes@, token_start as int, cursor as int);
+                    lemma_decimal_digits_value_append(
+                        bytes@.subrange(token_start as int, cursor as int), byte);
+                    lemma_all_ascii_digits_append(
+                        bytes@.subrange(token_start as int, cursor as int), byte);
+                    assert(token_start < cursor + 1);
+                    assert(next as int == decimal_digits_value(
+                        bytes@.subrange(token_start as int, (cursor + 1) as int)));
+                    assert(all_ascii_digits(
+                        bytes@.subrange(token_start as int, (cursor + 1) as int)));
+                }
+                value = next;
+            } else {
+                let Some(next) = wire_decimal_append(0, digit) else { return None; };
+                token_start = cursor;
+                in_token = true;
+                proof {
+                    assert(bytes@.subrange(cursor as int, cursor as int) =~= Seq::empty());
+                    lemma_subrange_extend_one(bytes@, cursor as int, cursor as int);
+                    lemma_decimal_digits_value_append(Seq::empty(), byte);
+                    assert(all_ascii_digits(bytes@.subrange(cursor as int, cursor as int + 1)));
+                    assert(cursor < cursor + 1);
+                    assert(next as int == decimal_digits_value(
+                        bytes@.subrange(cursor as int, (cursor + 1) as int)));
+                }
+                value = next;
+            }
+        }
+        cursor += 1;
+    }
+    if in_token {
+        if tokens.len() >= 500_000 { return None; }
+        tokens.push(value);
+        let ghost old_spans = spans@;
+        let ghost old_tokens = tokens@;
+        spans = Ghost(spans@.push((token_start, cursor)));
+        proof {
+            let last = (spans@.len() - 1) as int;
+            assert(spans@[last] == (token_start, cursor));
+            assert(tokens@[last] == value);
+            assert forall|i: int| #![trigger spans@[i]] 0 <= i < spans@.len() implies {
+                &&& spans@[i].0 < spans@[i].1 <= cursor
+                &&& all_ascii_digits(bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+                &&& tokens@[i] as int == decimal_digits_value(
+                    bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+            } by {
+                if i < last {
+                    assert(spans@[i] == old_spans[i]);
+                    assert(tokens@[i] == old_tokens[i]);
+                }
+            }
+        }
+    }
+    let res = Some(tokens);
+    proof {
+        assert forall|i: int| #![trigger spans@[i]] 0 <= i < spans@.len() implies {
+            &&& spans@[i].0 < spans@[i].1 <= bytes@.len()
+            &&& all_ascii_digits(bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+            &&& tokens@[i] as int == decimal_digits_value(
+                bytes@.subrange(spans@[i].0 as int, spans@[i].1 as int))
+        } by {
+            assert(spans@[i].1 <= cursor);
+        }
+        assert(res.unwrap()@ =~= tokens@);
+        assert(wire_tokens_span_correspondence(bytes@, res.unwrap()@, spans@));
+    }
+    res
+}
+
+fn wire_dispatch_regressions() -> bool {
+    let ready = vec![1u64, 0, 0];
+    let wrong_version = vec![2u64, 0, 0];
+    let unknown_command = vec![1u64, 9, 0];
+    let truncated = vec![1u64, 2];
+    let trailing = vec![1u64, 0, 0, 7];
+    let decimal = wire_tokenize(&vec![49u8, 32, 50, 32, 48]);
+    let attached = wire_tokenize(&vec![49u8, 32, 49, 50, 51]);
+    let whitespace = wire_tokenize(&vec![49u8, 9, 10, 50]);
+    let decimal_ok = match decimal {
+        Some(tokens) => tokens.len() == 3 && tokens[0] == 1 && tokens[1] == 2 && tokens[2] == 0,
+        None => false,
+    };
+    let attached_ok = match attached {
+        Some(tokens) => tokens.len() == 2 && tokens[0] == 1 && tokens[1] == 123,
+        None => false,
+    };
+    let whitespace_ok = match whitespace {
+        Some(tokens) => tokens.len() == 2 && tokens[0] == 1 && tokens[1] == 2,
+        None => false,
+    };
+    let empty: Vec<u8> = Vec::new();
+    let spaces = vec![32u8, 9, 10, 13, 12, 11];
+    check_wire_tokens(&ready) == 0
+        && check_wire_tokens(&wrong_version) == 4
+        && check_wire_tokens(&unknown_command) == 4
+        && check_wire_tokens(&truncated) == 4
+        && check_wire_tokens(&trailing) == 4
+        && decimal_ok && attached_ok && whitespace_ok
+        && wire_tokenize(&vec![49u8, 46, 50]).is_none()
+        && wire_tokenize(&vec![45u8, 49]).is_none()
+        && wire_tokenize(&vec![49u8, 32, 255]).is_none()
+        && wire_tokenize(&vec![49u8; 21]).is_none()
+        && wire_tokenize(&vec![50u8; 20]).is_none()
+        && match wire_tokenize(&empty) { Some(tokens) => tokens.len() == 0, None => false }
+        && match wire_tokenize(&spaces) { Some(tokens) => tokens.len() == 0, None => false }
+}
+
+fn wire_tokenizer_boundary_regression() -> bool {
+    let maximum_u64 = vec![49u8, 56, 52, 52, 54, 55, 52, 52, 48, 55, 51, 55, 48,
+        57, 53, 53, 49, 54, 49, 53];
+    let max_value_ok = match wire_tokenize(&maximum_u64) {
+        Some(tokens) => tokens.len() == 1 && tokens[0] == u64::MAX,
+        None => false,
+    };
+    let mut max_tokens: Vec<u8> = Vec::new();
+    let mut i: usize = 0;
+    while i < 500_000
+        invariant i <= 500_000,
+            max_tokens@.len() == i * 2,
+        decreases 500_000 - i
+    {
+        max_tokens.push(48u8);
+        max_tokens.push(32u8);
+        i += 1;
+    }
+    let exact_count_ok = match wire_tokenize(&max_tokens) {
+        Some(tokens) => tokens.len() == 500_000 && tokens[0] == 0
+            && tokens[499_999] == 0,
+        None => false,
+    };
+    // Check both shortest/longest encodings of zero and leading-zero decimal
+    // forms. These are regression examples; semantic byte-span correspondence
+    // remains a separate quantified proof obligation.
+    let zeros = wire_tokenize(&vec![48u8, 32, 48, 48, 48]);
+    let zeros_ok = match zeros {
+        Some(tokens) => tokens.len() == 2 && tokens[0] == 0 && tokens[1] == 0,
+        None => false,
+    };
+    max_tokens.push(48u8);
+    max_tokens.push(32u8);
+    let over_count_rejected = wire_tokenize(&max_tokens).is_none();
+
+    let decimal_append_max = match wire_decimal_append(u64::MAX / 10, u64::MAX % 10) {
+        Some(value) => value == u64::MAX,
+        None => false,
+    };
+    let decimal_append_overflow = wire_decimal_append(u64::MAX / 10, u64::MAX % 10 + 1).is_none()
+        && wire_decimal_append(u64::MAX, 0).is_none();
+
+    let mut max_bytes: Vec<u8> = Vec::new();
+    let mut j: usize = 0;
+    while j < 4 * 1024 * 1024
+        invariant j <= 4 * 1024 * 1024, max_bytes@.len() == j as int,
+        decreases 4 * 1024 * 1024 - j
+    {
+        max_bytes.push(32u8);
+        j += 1;
+    }
+    let exact_byte_limit_ok = match wire_tokenize(&max_bytes) {
+        Some(tokens) => tokens.len() == 0,
+        None => false,
+    };
+    max_bytes.push(32u8);
+    let over_byte_limit_rejected = wire_tokenize(&max_bytes).is_none();
+
+    let mut too_many_tokens: Vec<u8> = Vec::new();
+    let mut token_index: usize = 0;
+    while token_index < 500_001
+        invariant token_index <= 500_001,
+            too_many_tokens@.len() == token_index * 2,
+        decreases 500_001 - token_index
+    {
+        too_many_tokens.push(48u8);
+        too_many_tokens.push(32u8);
+        token_index += 1;
+    }
+    let too_many_tokens_rejected = wire_tokenize(&too_many_tokens).is_none();
+    max_value_ok && zeros_ok && exact_count_ok && over_count_rejected
+        && decimal_append_max && decimal_append_overflow
+        && exact_byte_limit_ok && over_byte_limit_rejected && too_many_tokens_rejected
+}
+
+fn run_examples() -> bool {
+    proof { variable_substitution_is_an_instance(); }
+    executable_literal_replay_examples();
+    executable_clause_replay_example();
+    executable_unifier_certificate_examples();
+    if !executable_standardization_apart_example() { return false; }
+    if !executable_superposition_certificate_example() { return false; }
+
+    // Supplied unifier certificate binding target-side variable 42 to
+    // constant 9. Domain validity and simultaneous application are checked.
+    if !executable_dag_certification_examples() { return false; }
+    if !executable_input_leaf_comparison_budget_example() { return false; }
+    if !executable_nullary_resolution_examples() { return false; }
+    if !executable_first_order_resolution_examples() { return false; }
+    if !executable_equality_resolution_examples() { return false; }
+    if !executable_clause_factoring_examples() { return false; }
+    if !executable_equality_factoring_examples() { return false; }
+    if !executable_resolution_dag_examples() { return false; }
+    if !executable_first_order_resolution_dag_examples() { return false; }
+    if !executable_equality_resolution_dag_examples() { return false; }
+    if !executable_clause_factoring_dag_examples() { return false; }
+    if !executable_equality_factoring_dag_examples() { return false; }
+    if !executable_subsumption_resolution_examples() { return false; }
+    if !executable_subsumption_resolution_dag_examples() { return false; }
+    if !executable_weakening_examples() { return false; }
+    if !executable_weakening_dag_examples() { return false; }
+    if !executable_demodulation_examples() { return false; }
+    if !executable_demodulation_dag_examples() { return false; }
+    if !executable_instantiation_examples() { return false; }
+    if !executable_instantiation_dag_examples() { return false; }
+    if !executable_resolution_chain_examples() { return false; }
+    if !wire_dispatch_regressions() { return false; }
+    if !wire_tokenizer_boundary_regression() { return false; }
+    true
+}
+
+} // verus!
+
+fn regression_main() {
+    assert!(executable_c502_certificate_example(), "c502 replay regression failed");
+    assert!(executable_source_variable_superposition_example(),
+        "source-variable unification regression failed");
+    assert!(executable_standardization_apart_example(),
+        "standardization-apart collision regression failed");
+    assert!(executable_superposition_certificate_example(),
+        "superposition path regression failed");
+    assert!(executable_dag_certification_examples(), "base DAG certification regression failed");
+    assert!(executable_input_leaf_comparison_budget_example(),
+        "input leaf comparison budget regression failed");
+    assert!(executable_nullary_resolution_examples(), "nullary resolution regression failed");
+    assert!(executable_first_order_resolution_examples(),
+        "first-order resolution regression failed");
+    assert!(executable_equality_resolution_examples(),
+        "equality resolution regression failed");
+    assert!(executable_clause_factoring_examples(),
+        "clause factoring regression failed");
+    assert!(executable_equality_factoring_examples(),
+        "equality factoring regression failed");
+    assert!(executable_resolution_dag_examples(), "resolution DAG regression failed");
+    assert!(executable_first_order_resolution_dag_examples(),
+        "first-order resolution DAG regression failed");
+    assert!(executable_equality_resolution_dag_examples(),
+        "equality resolution DAG regression failed");
+    assert!(executable_clause_factoring_dag_examples(),
+        "clause factoring DAG regression failed");
+    assert!(executable_equality_factoring_dag_examples(),
+        "equality factoring DAG regression failed");
+    assert!(executable_subsumption_resolution_examples(),
+        "subsumption resolution regression failed");
+    assert!(executable_subsumption_resolution_dag_examples(),
+        "subsumption resolution DAG regression failed");
+    assert!(executable_weakening_examples(),
+        "weakening regression failed");
+    assert!(executable_weakening_dag_examples(),
+        "weakening DAG regression failed");
+    assert!(executable_demodulation_examples(),
+        "demodulation regression failed");
+    assert!(executable_demodulation_dag_examples(),
+        "demodulation DAG regression failed");
+    assert!(executable_instantiation_examples(),
+        "instantiation regression failed");
+    assert!(executable_instantiation_dag_examples(),
+        "instantiation DAG regression failed");
+    assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
+    assert!(wire_dispatch_regressions(), "verified wire-dispatch regression failed");
+    assert!(wire_tokenizer_boundary_regression(), "verified wire-tokenizer boundary failed");
+    assert!(run_examples(), "DAG certification regression failed");
+}
+
+mod wire {
+    use super::*;
+    use std::io::{Read, Write};
+
+    const MAX_BYTES: u64 = 4 * 1024 * 1024;
+    pub fn run() {
+        let mut bytes = Vec::new();
+        let result = std::io::stdin().take(MAX_BYTES + 1).read_to_end(&mut bytes);
+        let code = if result.is_err() || bytes.len() as u64 > MAX_BYTES { 4 }
+            else { wire_tokenize(&bytes).map(|tokens| check_wire_tokens(&tokens)).unwrap_or(4) };
+        let verdict = match code { 0 => "Ready", 1 => "Accepted", 2 => "CertifiedIR",
+            3 => "Rejected", _ => "Unknown" };
+        let _ = writeln!(std::io::stdout(), "MRS_VERUS 1 {}", verdict);
+    }
+}
+
+fn main() {
+    if std::env::args().skip(1).eq(["--wire-v1"]) { wire::run(); }
+    else if std::env::args().len() == 1 { regression_main(); }
+    else { std::process::exit(2); }
+}

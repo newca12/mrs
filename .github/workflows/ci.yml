@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check
+      - name: Clippy
+        run: cargo clippy --all -- -D warnings
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Test
+        run: cargo test --workspace
+
+  formal-superposition-checker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Install pinned Verus toolchain
+        env:
+          VERUS_INSTALL_DIR: ${{ runner.temp }}/mrs-verus
+          RUSTUP_HOME: ${{ runner.temp }}/mrs-verus-rustup
+        run: formal/superposition-checker/install-verus.sh
+      - name: Verify superposition checker specifications and executable refinements
+        env:
+          VERUS: ${{ runner.temp }}/mrs-verus/0.2026.10.18.7d82994/verus
+          RUSTUP_HOME: ${{ runner.temp }}/mrs-verus-rustup
+          VERUS_LOG: ${{ runner.temp }}/superposition-verus.log
+          MRS_VERUS_BRIDGE_TESTS: "1"
+        run: formal/superposition-checker/verify.sh
+      - name: Upload pinned Verus evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: superposition-verus-evidence
+          path: ${{ runner.temp }}/superposition-verus.log
+          if-no-files-found: ignore

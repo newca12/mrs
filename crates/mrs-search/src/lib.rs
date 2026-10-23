@@ -25,31 +25,83 @@
 //! let mut state = SearchState::new(vec![], id_gen, config_arc, symbols_arc, true);
 //! let config = SearchConfig::default();
 //! let result = search(&mut state, &config);
-//! assert!(matches!(result, SearchResult::Saturated));
+//! assert!(matches!(result, SearchResult::GaveUp));
 //! ```
 
 pub(crate) use rustc_hash::FxHashMap as HashMap;
 pub(crate) use rustc_hash::FxHashSet as HashSet;
 
 pub mod avatar;
+pub(crate) mod certified;
+pub(crate) mod certified_eq;
+pub(crate) mod certified_sat;
+pub mod condensed_detachment;
 pub mod cwa;
+pub mod der;
+pub mod epr_ground;
 pub mod fvo;
 pub mod given_clause;
+pub mod goal_distance;
 pub mod instgen;
+pub mod prephase;
+
+pub use mrs_prephase::preprocessing;
+pub use mrs_prephase::{Analysis, MetaInput};
+pub mod resource;
 pub mod select;
 pub mod sine;
 pub mod state;
 pub mod strategy;
+pub mod symbol_config;
 pub mod unprocessed;
 pub mod weight;
 
 use std::time::Duration;
 
-use mrs_core::clause::ClauseId;
+use mrs_core::clause::{Clause, ClauseId};
 
+pub use goal_distance::GoalDistanceMap;
+
+pub use epr_ground::{EprBudget, EprTelemetry, epr_budget, try_epr_ground_refutation};
+pub use instgen::{
+    InstGenTelemetry, classify_epr_profile, is_epr, is_pure_relational_epr, try_instgen_epr,
+    try_instgen_epr_with_telemetry,
+};
 pub use mrs_calculus::literal_selection::LiteralSelection;
-pub use mrs_calculus::ordering::TermOrdering;
-pub use select::SelectionStrategy;
+pub use mrs_calculus::ordering::{LpoBudgetGuard, TermOrdering, lpo_budget_expired};
+
+/// Default step budget for one LPO comparison.
+///
+/// The memo in `mrs_calculus::ordering` bounds an LPO comparison by the number
+/// of distinct `(s, t)` pairs, which is finite but not related to the wall
+/// clock: `|subterms(s)| x |subterms(t)|` can still be large enough that one
+/// comparison overruns the search's deadline, and every deadline check in the
+/// given-clause loop sits at the *top* of an iteration, so none of them can fire
+/// once a comparison is running. This caps the work per comparison as a
+/// backstop against a term shape larger than any seen so far.
+///
+/// Set well above what real comparisons need. A deliberately pathological
+/// wide-against-narrow pair costs 280 steps at depth 4, 172 016 at depth 12 and
+/// 3 538 924 at depth 16 — all completed in milliseconds once memoized, and all
+/// far below this limit. The backstop is therefore meant to bite only on a shape
+/// whose pair count is orders of magnitude larger still, where a single
+/// comparison would otherwise run for minutes.
+///
+/// On expiry the comparison returns no answer and the search returns `Timeout`.
+/// LPO orients superposition inferences, so it must never invent an answer to
+/// stay inside a budget.
+pub const LPO_STEP_BUDGET: u64 = 64_000_000;
+pub use mrs_cnf::goal_transform::GoalTransformMode;
+pub use preprocessing::{PreprocessingConfig, PreprocessingStats, preprocess_clauses};
+pub use resource::{
+    AddressSpaceLimit, CASC_MEMORY_MB, CASC_PHYSICAL_CORES, CpuPinning, HardwareMode,
+    HardwareProfile, RAM_PER_WORKER_MB, ResourceLimits, current_memory_mb, default_worker_count,
+    limit_address_space_mb, memory_budget_mb, pin_to_physical_cores, resolve_profile,
+    usable_physical_cores,
+};
+pub use select::{QueueType, SelectionStrategy};
+pub use strategy::{CandidateReceiver, CandidateRefutation, run_schedule_with_candidate_receiver};
+pub use symbol_config::{PrecedenceScheme, SymbolWeightScheme, compute_symbol_config};
 
 /// Per-strategy counters for failure diagnosis and throughput analysis.
 ///
@@ -73,6 +125,40 @@ pub struct SearchStats {
     pub backward_deleted: u64,
     /// Clauses discarded by the Limited Resource Strategy (LRS) passive pruning.
     pub lrs_discarded: u64,
+    /// Shared unit-equality chains published by this strategy.
+    pub shared_published: u64,
+    /// Shared unit-equality chains imported by this strategy.
+    pub shared_imported: u64,
+    /// Inference parent pairs omitted by experimental guidance.
+    pub parent_guidance_pruned: u64,
+    /// Parent pairs sampled for offline training.
+    pub parent_guidance_sampled: u64,
+    /// Times the demodulation memo was asked whether a term is irreducible.
+    ///
+    /// The pair with [`SearchStats::demod_memo_hits`] reads as a hit rate, which
+    /// is the only way to tell a working memo from one that is invalidated as
+    /// fast as it is filled.
+    pub demod_memo_lookups: u64,
+    /// Terms the demodulation memo already knew to be irreducible.
+    pub demod_memo_hits: u64,
+    /// Times the demodulation memo hit its entry cap and was cleared.
+    pub demod_memo_evictions: u64,
+    /// Where the run stood when it crossed the CASC reference wall clock.
+    /// Recorded only in `casc-sim`, which searches past that point on purpose:
+    /// without it a later resource stop and a plain timeout are indistinguishable
+    /// in the report, and only one of them says anything about the hardware.
+    pub casc_limit_state: Option<CascLimitState>,
+}
+
+/// Where a run stood when it passed the CASC reference wall clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CascLimitState {
+    /// Milliseconds since the search started.
+    pub elapsed_ms: u64,
+    pub iterations: u64,
+    pub processed: u64,
+    pub generated: u64,
+    pub passive: u64,
 }
 
 /// Summary for one strategy in the portfolio run.
@@ -80,6 +166,9 @@ pub struct SearchStats {
 pub struct StrategyReport {
     /// Zero-based strategy index within the schedule.
     pub strategy_idx: usize,
+    /// Base strategy ID (1-based) when this schedule came from the named CASC
+    /// portfolio; zero for ad-hoc schedules that do not assign one.
+    pub strategy_id: usize,
     /// The result of this strategy's search.
     pub result: SearchResult,
     /// Counters collected during the search.
@@ -95,10 +184,207 @@ pub struct StrategyReport {
 /// never launched because a winner was found first are absent).
 #[derive(Clone, Debug, Default)]
 pub struct ScheduleReport {
+    /// Number of search workers actually spawned for the schedule.
+    pub workers: usize,
+    /// Wall-clock duration of the schedule run in milliseconds.
+    pub elapsed_ms: u64,
     pub strategies: Vec<StrategyReport>,
+    /// Telemetry collected from the InstGen pre-pass, if run.
+    pub instgen: Option<InstGenTelemetry>,
+    /// Telemetry collected from the EPR grounding pre-pass, if run. This is the
+    /// pre-pass that searches `epr_equality` problems, which InstGen refuses.
+    pub epr: Option<EprTelemetry>,
+    /// Certification tier that produced this schedule's result (`1`, `2`,
+    /// or `3`), set only by the `--certify-ordered` path on success.
+    /// Lets benchmark harnesses attribute coverage without TRACE output.
+    pub cert_tier: Option<String>,
+    /// Ordering the certifier ran under (`kbo`, `lpo`, or `ac-kbo`),
+    /// recorded whenever the `--certify-ordered` path runs — including
+    /// fail-closed runs, so remote analysis can tabulate attempts.
+    pub cert_ordering: Option<String>,
 }
 
 impl ScheduleReport {
+    /// Return stable machine-readable telemetry for one completed schedule.
+    pub fn telemetry_detail(&self, result: &str) -> String {
+        let total_processed: u64 = self.strategies.iter().map(|s| s.stats.processed).sum();
+        let total_generated: u64 = self.strategies.iter().map(|s| s.stats.generated).sum();
+        let total_passive: u64 = self.strategies.iter().map(|s| s.stats.passive_size).sum();
+        let total_weight_discarded: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.weight_discarded)
+            .sum();
+        let total_lrs_discarded: u64 = self.strategies.iter().map(|s| s.stats.lrs_discarded).sum();
+        let total_forward_subsumed: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.forward_subsumed)
+            .sum();
+        let total_shared_published: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.shared_published)
+            .sum();
+        let total_shared_imported: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.shared_imported)
+            .sum();
+        let parent_guidance_pruned: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.parent_guidance_pruned)
+            .sum();
+        let demod_memo_lookups: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.demod_memo_lookups)
+            .sum();
+        let demod_memo_hits: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.demod_memo_hits)
+            .sum();
+        let demod_memo_evictions: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.demod_memo_evictions)
+            .sum();
+        let parent_guidance_sampled: u64 = self
+            .strategies
+            .iter()
+            .map(|s| s.stats.parent_guidance_sampled)
+            .sum();
+        let timeout = self
+            .strategies
+            .iter()
+            .filter(|s| matches!(s.result, SearchResult::Timeout))
+            .count();
+        let saturated = self
+            .strategies
+            .iter()
+            .filter(|s| matches!(s.result, SearchResult::Saturated(_)))
+            .count();
+
+        let mut detail = format!(
+            "strategies={} workers={} strategy_ids={} result={} elapsed_ms={} timeout={} saturated={} \
+             processed={} generated={} passive={} weight_discarded={} lrs_discarded={} \
+             fwd_subsumed={} shared_published={} shared_imported={} parent_guidance_pruned={} parent_guidance_sampled={} \
+             demod_memo_lookups={} demod_memo_hits={} demod_memo_evictions={}",
+            self.strategies.len(),
+            self.workers,
+            {
+                let mut strategy_ids = self
+                    .strategies
+                    .iter()
+                    .map(|s| (s.strategy_idx, s.strategy_id))
+                    .collect::<Vec<_>>();
+                strategy_ids.sort_unstable_by_key(|(slot, _)| *slot);
+                strategy_ids
+                    .into_iter()
+                    .map(|(slot, id)| format!("{slot}:{id}"))
+                    .collect::<Vec<_>>()
+                    .join(";")
+            },
+            result,
+            self.elapsed_ms,
+            timeout,
+            saturated,
+            total_processed,
+            total_generated,
+            total_passive,
+            total_weight_discarded,
+            total_lrs_discarded,
+            total_forward_subsumed,
+            total_shared_published,
+            total_shared_imported,
+            parent_guidance_pruned,
+            parent_guidance_sampled,
+            demod_memo_lookups,
+            demod_memo_hits,
+            demod_memo_evictions,
+        );
+
+        if let Some(ig) = &self.instgen {
+            detail.push_str(&format!(
+                " instgen_attempted={} instgen_route={} instgen_rounds={} instgen_instances={} instgen_vars={} instgen_clauses={} instgen_ms={} instgen_est={} instgen_budget_ms={} instgen_budget_rounds={} instgen_budget_instances={}",
+                ig.attempted, ig.route, ig.rounds, ig.generated_instances, ig.sat_vars, ig.sat_clauses, ig.elapsed_ms,
+                ig.est_instances, ig.budget_ms, ig.budget_rounds, ig.budget_instances
+            ));
+            if let Some(result) = ig.return_reason {
+                detail.push_str(&format!(" instgen_result={}", result));
+            }
+            if let Some(reason) = ig.fallback_reason {
+                detail.push_str(&format!(" instgen_fallback={}", reason));
+            }
+        }
+
+        if let Some(epr) = &self.epr {
+            detail.push_str(&format!(
+                " epr_attempted={} epr_route={} epr_domain={} epr_est={} epr_full_grounding={} \
+                 epr_generated={} epr_vars={} epr_clauses={} epr_rounds={} epr_falsifying={} \
+                 epr_ms={} epr_proof_nodes={} epr_ematch_instances={} epr_pivots={} epr_splitting={} epr_split_clauses={} \
+                 epr_solves={} epr_solver_entries={} epr_solve_ms={} \
+                 epr_model_verified={} epr_model_assignments={} epr_extraction_ms={} epr_extraction={}",
+                epr.attempted,
+                epr.route,
+                epr.domain,
+                epr.est_instances,
+                epr.full_grounding,
+                epr.generated,
+                epr.sat_vars,
+                epr.sat_clauses,
+                epr.rounds,
+                epr.falsifying,
+                epr.elapsed_ms,
+                epr.proof_nodes,
+                epr.ematch_instances,
+                epr.pivots,
+                epr.splitting,
+                epr.split_clauses,
+                epr.solves,
+                epr.solve_entries,
+                epr.solve_ms,
+                epr.model_verified,
+                epr.model_assignments,
+                epr.extraction_ms,
+                epr.extraction
+            ));
+            if epr.result != "none" {
+                detail.push_str(&format!(" epr_result={}", epr.result));
+            }
+            if let Some(reason) = epr.fallback {
+                detail.push_str(&format!(" epr_fallback={}", reason));
+            }
+        }
+
+        if let Some(state) = self
+            .strategies
+            .iter()
+            .filter_map(|s| s.stats.casc_limit_state)
+            .min_by_key(|state| state.elapsed_ms)
+        {
+            detail.push_str(&format!(
+                " casc_limit_passed_ms={} state_at_casc_limit=iterations:{},processed:{},generated:{},passive:{}",
+                state.elapsed_ms,
+                state.iterations,
+                state.processed,
+                state.generated,
+                state.passive
+            ));
+        }
+
+        if let Some(tier) = &self.cert_tier {
+            detail.push_str(&format!(" cert_tier={tier}"));
+        }
+        if let Some(ordering) = &self.cert_ordering {
+            detail.push_str(&format!(" cert_ordering={ordering}"));
+        }
+
+        detail
+    }
+
     /// Human-readable one-line summary of the failure mode seen across all
     /// strategies.  Returns `None` when the search succeeded (Refutation).
     ///
@@ -137,17 +423,40 @@ impl ScheduleReport {
             .iter()
             .filter(|s| matches!(s.result, SearchResult::Timeout))
             .count();
+        let n_resource_out = self
+            .strategies
+            .iter()
+            .filter(|s| matches!(s.result, SearchResult::ResourceOut(_)))
+            .count();
         let n_saturated = self
             .strategies
             .iter()
-            .filter(|s| matches!(s.result, SearchResult::Saturated))
+            .filter(|s| matches!(s.result, SearchResult::Saturated(_)))
             .count();
 
+        // Which limit fired, aggregated across strategies. `memory` is reported
+        // separately from the clause-shaped ceilings because a memory-bound run
+        // is a statement about the hardware, not about the search.
+        let mut out_reasons: std::collections::BTreeMap<&'static str, usize> =
+            std::collections::BTreeMap::new();
+        for strategy in &self.strategies {
+            if let SearchResult::ResourceOut(reason) = strategy.result {
+                *out_reasons.entry(reason.as_str()).or_default() += 1;
+            }
+        }
+        let reason_detail = out_reasons
+            .iter()
+            .map(|(name, count)| format!("{name}={count}"))
+            .collect::<Vec<_>>()
+            .join(",");
+
         Some(format!(
-            "strategies={} timeout={} saturated={} \
-             processed={} generated={} passive={} weight_discarded={} lrs_discarded={} fwd_subsumed={}",
+            "strategies={} timeout={} resource_out={} saturated={} \
+             processed={} generated={} passive={} weight_discarded={} lrs_discarded={} fwd_subsumed={} \
+             resource_reasons={reason_detail}",
             self.strategies.len(),
             n_timeout,
+            n_resource_out,
             n_saturated,
             total_processed,
             total_generated,
@@ -157,6 +466,129 @@ impl ScheduleReport {
             total_fwd_sub,
         ))
     }
+
+    /// Returns the raw search result seen across all strategies in the schedule,
+    /// before any post-search certification filtering.
+    pub fn raw_search_result(&self) -> SearchResult {
+        for s in &self.strategies {
+            if matches!(s.result, SearchResult::Refutation(..)) {
+                return s.result.clone();
+            }
+        }
+        for s in &self.strategies {
+            if matches!(s.result, SearchResult::Saturated(_)) {
+                return s.result.clone();
+            }
+        }
+        for s in &self.strategies {
+            if matches!(s.result, SearchResult::ResourceOut(_)) {
+                return s.result.clone();
+            }
+        }
+        for s in &self.strategies {
+            if matches!(s.result, SearchResult::GaveUp) {
+                return s.result.clone();
+            }
+        }
+        SearchResult::Timeout
+    }
+}
+
+/// Detailed reason why a search configuration cannot soundly claim saturation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IncompletenessReason {
+    /// Generated clauses were discarded by a maximum term-weight cap.
+    MaxTermWeightDiscarded {
+        /// Configured maximum clause weight.
+        cap: u32,
+        /// Number of discarded generated clauses.
+        discarded: u64,
+    },
+    /// Set-of-Support restricts inference generation.
+    SosRestricted(u32),
+    /// Only unit-resolution inferences are generated.
+    UnitOnlyResolution,
+    /// SInE removed input axioms.
+    SineFiltered,
+    /// ML premise pruning removed input axioms.
+    MlPremisePruned,
+    /// Experimental parent guidance omitted candidate inferences.
+    ParentGuidancePruned,
+    /// A non-standard clause weight changes the simplification/search order.
+    NonStandardWeightFn,
+    /// Literal selection does not preserve complete inference generation.
+    IncompleteLiteralSelection,
+    /// LRS discarded passive clauses.
+    LrsDiscarded(u64),
+    /// Ordered maximal-literal restriction is not certified for this engine.
+    OrderedInferenceRestriction,
+}
+
+/// Category of completeness evidence carried by a saturation result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaturationReason {
+    /// A purely ground clause set was checked by the exact ground model path.
+    Ground,
+    /// A finite ground ordered-resolution closure agreed with its unrestricted reference closure.
+    GroundOrderedResolution,
+    /// A large EPR grounding was decided satisfiable by CaDiCaL and the
+    /// model was independently re-verified clause by clause (Tier 2,
+    /// SAT-direction only; unsatisfiable outcomes fail closed).
+    SatBackedGrounding,
+}
+
+/// Evidence that a saturation result was produced by a complete search path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletenessWitness {
+    reason: SaturationReason,
+    /// A complete finite model of the input, when the certifying tier produced
+    /// one. CASC credits a satisfiability result only when the system also
+    /// outputs a model, so the model travels with the verdict instead of
+    /// being verified and dropped. `None` means the claim rests on the
+    /// completeness argument alone, which is sound but earns no model credit.
+    model: Option<mrs_core::model::ModelCertificate>,
+}
+
+impl CompletenessWitness {
+    /// Create evidence for the exact ground model path.
+    pub(crate) fn ground() -> Self {
+        Self {
+            reason: SaturationReason::Ground,
+            model: None,
+        }
+    }
+
+    /// Create evidence for the bounded ground ordered-resolution certificate.
+    pub(crate) fn ground_ordered_resolution() -> Self {
+        Self {
+            reason: SaturationReason::GroundOrderedResolution,
+            model: None,
+        }
+    }
+
+    /// Create evidence for the SAT-backed Tier-2 satisfiability certificate.
+    pub(crate) fn sat_backed_grounding() -> Self {
+        Self {
+            reason: SaturationReason::SatBackedGrounding,
+            model: None,
+        }
+    }
+
+    /// Attach a finite model certificate produced by the certifying tier.
+    pub(crate) fn with_model(mut self, model: Option<mrs_core::model::ModelCertificate>) -> Self {
+        self.model = model;
+        self
+    }
+
+    /// Return the evidence category.
+    pub fn reason(&self) -> SaturationReason {
+        self.reason
+    }
+
+    /// The finite model certificate, when the certifying tier produced one.
+    pub fn model(&self) -> Option<&mrs_core::model::ModelCertificate> {
+        self.model.as_ref()
+    }
 }
 
 /// Result of a proof search.
@@ -164,12 +596,94 @@ impl ScheduleReport {
 pub enum SearchResult {
     /// A refutation was found. Contains the ID of the empty clause and the proof TSTP string.
     Refutation(ClauseId, String),
-    /// All clauses were processed without finding a contradiction.
-    Saturated,
+    /// All clauses were processed without finding a contradiction and the
+    /// search path supplied completeness evidence.
+    Saturated(CompletenessWitness),
     /// The time limit was exceeded.
     Timeout,
     /// The search gave up (e.g. saturated with an incomplete strategy).
     GaveUp,
+    /// The search exceeded a resource limit. The reason travels with the result
+    /// because "hit a limit" and "ran out of memory" call for different
+    /// responses: one is a tuning question, the other decides whether the
+    /// problem is reachable on the target hardware at all.
+    ResourceOut(ResourceReason),
+}
+
+/// Which resource limit stopped the search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceReason {
+    /// The memory watchdog: resident set size reached the configured ceiling.
+    Memory { limit_mb: u64, rss_mb: u64 },
+    /// The term bank exceeded its ceiling.
+    TermBank { limit: usize, len: usize },
+    /// Too many clauses were processed.
+    MaxProcessed { limit: u64, processed: u64 },
+    /// The passive queue exceeded its ceiling.
+    MaxPassive { limit: u64, passive: u64 },
+    /// A limit was reached whose origin was not recorded.
+    Unknown,
+}
+
+impl ResourceReason {
+    /// A stable slug, for telemetry keys and report bucketing.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Memory { .. } => "memory",
+            Self::TermBank { .. } => "term_bank",
+            Self::MaxProcessed { .. } => "max_processed",
+            Self::MaxPassive { .. } => "max_passive",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// One-line explanation, with the numbers that fired it.
+    pub fn describe(self) -> String {
+        match self {
+            Self::Memory { limit_mb, rss_mb } => {
+                format!("memory limit {limit_mb} MB reached (rss {rss_mb} MB)")
+            }
+            Self::TermBank { limit, len } => {
+                format!("term bank limit {limit} reached ({len} interned terms)")
+            }
+            Self::MaxProcessed { limit, processed } => {
+                format!("processed-clause limit {limit} reached ({processed} processed)")
+            }
+            Self::MaxPassive { limit, passive } => {
+                format!("passive-queue limit {limit} reached ({passive} queued)")
+            }
+            Self::Unknown => "resource limit reached (origin unrecorded)".to_string(),
+        }
+    }
+}
+
+/// Policy used by the Limited Resource Strategy (LRS) passive-queue pruner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LrsPolicy {
+    /// Estimate remaining iterations from wall-clock throughput.
+    #[default]
+    WallClock,
+    /// Use a fixed logical iteration budget, independent of CPU scheduling.
+    FixedIterations {
+        /// Total logical iterations available to the search.
+        budget: u64,
+    },
+    /// Disable LRS passive queue pruning completely.
+    Disabled,
+}
+
+/// A proof-preserving unit-equality chain shared between portfolio workers.
+#[derive(Clone, Debug)]
+pub struct SharedClauseChain {
+    /// Logical epoch in which the chain was published.
+    pub epoch: u64,
+    /// Stable content key used for deterministic ordering and deduplication.
+    pub key: String,
+    /// Publisher symbol names in `SymbolId` index order.  Workers own private
+    /// symbol tables, so raw symbol IDs cannot be shared without this mapping.
+    pub symbol_names: Vec<String>,
+    /// Ancestor chain, with the shared unit equality last.
+    pub chain: Vec<Clause>,
 }
 
 /// How clause weights are computed for the passive-queue priority heaps.
@@ -223,11 +737,16 @@ pub enum ClauseWeightFn {
     /// `ConjSymbolBoost` rewards goal-symbol overlap, `SymbolWeight` penalises
     /// rare symbols regardless of whether they appear in the conjecture.
     SymbolWeight,
+    /// Goal distance: scales the clause weight by its distance from the conjecture
+    /// in the symbol reachability graph and derivation DAG.
+    GoalDistance,
 }
 
 /// Configuration for the search engine.
 #[derive(Clone, Debug)]
 pub struct SearchConfig {
+    /// Base strategy identity for benchmark telemetry; zero means ad hoc.
+    pub strategy_id: usize,
     /// Maximum wall-clock time for the search.
     pub time_limit: Duration,
     /// Clause selection strategy.
@@ -243,8 +762,33 @@ pub struct SearchConfig {
     /// This prevents unbounded term growth during superposition.
     /// `None` means no limit.
     pub max_term_weight: Option<u32>,
+    /// Maximum number of literals for which subsumption resolution is attempted.
+    ///
+    /// `subsumption_resolution_id` builds a modified copy of the target clause
+    /// for every literal it tries to remove, so one attempt against a target of
+    /// width `w` costs `O(w^2)` literal copies, and a forward pass repeats that
+    /// for every candidate in the index. On a wide clause that is quadratic work
+    /// to remove a single literal, which is a negligible simplification gain.
+    ///
+    /// Subsumption resolution is a redundancy criterion, so skipping it on wide
+    /// clauses only weakens redundancy elimination: the clause is still
+    /// generated and the calculus stays refutationally complete. `None` means no
+    /// width limit.
+    pub max_subsumption_resolution_literals: Option<usize>,
+    /// Maximum number of literals for which condensation is attempted.
+    ///
+    /// `condense_id` tries every pair of literals and, for each pair, runs a
+    /// backtracking subsumption test, so the cost is quadratic in the clause
+    /// width with an expensive constant. Condensation is a redundancy
+    /// criterion, so skipping it on wide clauses only weakens redundancy
+    /// elimination; the clause is still generated and the calculus stays
+    /// refutationally complete. `None` means no width limit.
+    pub max_condensation_literals: Option<usize>,
     /// Whether to enable AVATAR clause splitting via an embedded SAT solver.
     pub use_avatar: bool,
+    /// Emit a replayable CaDiCaL SAT trace for the final AVATAR certificate.
+    /// Disabled by default because trace generation is a verification cost.
+    pub emit_avatar_trace: bool,
     /// If true, only generate resolvents where at least one parent is a unit
     /// (single-literal clause).  This restricts the inference to unit resolution,
     /// which dramatically reduces passive-set growth on FNE-encoded problems whose
@@ -273,27 +817,374 @@ pub struct SearchConfig {
     /// a sound literal ordering. Kept behind the flag for future, correct work.
     /// Enable for experiments via the `MRS_ORDERED` env var.
     pub ordered_inferences: bool,
+    /// Run the bounded, independently cross-checked ground ordered-resolution
+    /// certifier instead of the heuristic given-clause path. Unsupported
+    /// non-ground/equality inputs fail closed as `GaveUp`.
+    pub certify_ordered_inferences: bool,
     /// SInE tolerance level. `None` means SInE is disabled.
     pub sine_tolerance: Option<f64>,
     /// SInE depth limit.
     pub sine_depth_limit: Option<usize>,
+    /// LRS target calculation policy.
+    pub lrs_policy: LrsPolicy,
+    /// Optional Twee-style goal-directed preprocessing transformation.
+    pub goal_transformation: Option<GoalTransformMode>,
+    /// Number of given-clause iterations between shared-pool polls.
+    /// `0` disables cross-strategy clause sharing (the default: every named
+    /// `casc_*` schedule inherits this unless it sets an explicit interval).
+    /// Set `MRS_SHARED_POOL_INTERVAL=<N>` to re-enable sharing experimentally.
+    pub shared_pool_poll_interval: u64,
+    /// Scheme used to compute problem-specific symbol precedence for reduction orderings.
+    pub precedence_scheme: PrecedenceScheme,
+    /// Scheme used to compute symbol weights for reduction orderings (KBO).
+    pub symbol_weight_scheme: SymbolWeightScheme,
+    /// Resource containment limits (clause ceilings, term bank ceiling, memory watchdog).
+    pub resource_limits: ResourceLimits,
+    /// The CASC wall clock, when simulating it. `casc-sim` searches past this
+    /// point so a resource-bound failure surfaces instead of being recorded as a
+    /// timeout; the search records where it stood here so the two verdicts can
+    /// be told apart afterwards. `None` in every other mode.
+    pub casc_reference_limit: Option<Duration>,
+}
+
+impl SearchConfig {
+    /// Whether ordered inference is enabled for this search, including the
+    /// process-wide diagnostic override.
+    pub fn ordered_inferences_enabled(&self) -> bool {
+        effective_ordered_inferences(
+            self.ordered_inferences,
+            std::env::var_os("MRS_ORDERED").is_some(),
+        )
+    }
+
+    /// Check whether this configuration avoids known incomplete restrictions.
+    /// This is only a configuration audit; it is not by itself a completeness
+    /// proof for the full given-clause implementation.
+    pub fn check_completeness(
+        &self,
+        weight_discarded: u64,
+        lrs_discarded: u64,
+        ml_pruned: bool,
+        parent_guidance_pruned: u64,
+    ) -> Result<(), IncompletenessReason> {
+        if let Some(cap) = self.max_term_weight
+            && weight_discarded > 0
+        {
+            return Err(IncompletenessReason::MaxTermWeightDiscarded {
+                cap,
+                discarded: weight_discarded,
+            });
+        }
+        if self.sos_depth < u32::MAX {
+            return Err(IncompletenessReason::SosRestricted(self.sos_depth));
+        }
+        if self.unit_only_resolution {
+            return Err(IncompletenessReason::UnitOnlyResolution);
+        }
+        if self.sine_tolerance.is_some() {
+            return Err(IncompletenessReason::SineFiltered);
+        }
+        if ml_pruned {
+            return Err(IncompletenessReason::MlPremisePruned);
+        }
+        if parent_guidance_pruned > 0 {
+            return Err(IncompletenessReason::ParentGuidancePruned);
+        }
+        if self.weight_fn != ClauseWeightFn::Standard {
+            return Err(IncompletenessReason::NonStandardWeightFn);
+        }
+        if matches!(
+            self.literal_selection,
+            LiteralSelection::MaxNegativeOrMaxPositive
+        ) {
+            return Err(IncompletenessReason::IncompleteLiteralSelection);
+        }
+        if lrs_discarded > 0 {
+            return Err(IncompletenessReason::LrsDiscarded(lrs_discarded));
+        }
+        if self.ordered_inferences_enabled() {
+            return Err(IncompletenessReason::OrderedInferenceRestriction);
+        }
+        Ok(())
+    }
+}
+
+fn effective_ordered_inferences(configured: bool, environment_override: bool) -> bool {
+    configured || environment_override
 }
 
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
+            strategy_id: 0,
             time_limit: Duration::from_secs(5),
             selection: SelectionStrategy::AgeWeight(5),
             literal_selection: LiteralSelection::AllNegative,
             ordering: TermOrdering::KBO,
             max_term_weight: Some(200),
+            max_subsumption_resolution_literals: Some(20),
+            max_condensation_literals: Some(10),
             use_avatar: true,
+            emit_avatar_trace: false,
             unit_only_resolution: false,
             weight_fn: ClauseWeightFn::Standard,
             sos_depth: u32::MAX, // disabled
-            ordered_inferences: true,
+            // Ordered maximal-literal inference remains available for
+            // refutation search, but is not certified for positive results.
+            ordered_inferences: false,
+            certify_ordered_inferences: false,
             sine_tolerance: None,
             sine_depth_limit: None,
+            goal_transformation: None,
+            lrs_policy: LrsPolicy::WallClock,
+            // Default: no cross-strategy clause sharing. Sharing stays
+            // available opt-in via `MRS_SHARED_POOL_INTERVAL=<N>` or an
+            // explicit per-schedule `shared_pool_poll_interval`.
+            shared_pool_poll_interval: 0,
+            precedence_scheme: PrecedenceScheme::InvFreq,
+            symbol_weight_scheme: SymbolWeightScheme::Uniform,
+            resource_limits: ResourceLimits::default(),
+            casc_reference_limit: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    // ---- resource-limit reasons ----
+
+    #[test]
+    fn resource_reasons_name_the_limit_that_fired() {
+        // Each reason must be self-describing: a benchmark sweep reads only
+        // `failure_detail`, so it has to be able to tell a memory-bound run from
+        // a clause-bound one without consulting anything else.
+        let cases = [
+            (
+                ResourceReason::Memory {
+                    limit_mb: 131_072,
+                    rss_mb: 131_100,
+                },
+                "memory",
+                "131072",
+            ),
+            (
+                ResourceReason::TermBank {
+                    limit: 4096,
+                    len: 4100,
+                },
+                "term_bank",
+                "4096",
+            ),
+            (
+                ResourceReason::MaxProcessed {
+                    limit: 1000,
+                    processed: 1001,
+                },
+                "max_processed",
+                "1000",
+            ),
+            (
+                ResourceReason::MaxPassive {
+                    limit: 500,
+                    passive: 640,
+                },
+                "max_passive",
+                "500",
+            ),
+        ];
+        for (reason, slug, needle) in cases {
+            assert_eq!(reason.as_str(), slug);
+            let described = reason.describe();
+            assert!(
+                described.contains(needle),
+                "{slug} description must carry its limit: {described}"
+            );
+        }
+        assert_eq!(ResourceReason::Unknown.as_str(), "unknown");
+        assert!(ResourceReason::Unknown.describe().contains("unrecorded"));
+    }
+
+    #[test]
+    fn resource_out_results_compare_by_their_reason() {
+        let memory = SearchResult::ResourceOut(ResourceReason::Memory {
+            limit_mb: 1,
+            rss_mb: 2,
+        });
+        let clauses = SearchResult::ResourceOut(ResourceReason::MaxProcessed {
+            limit: 1,
+            processed: 2,
+        });
+        // `SearchResult` deliberately is not `PartialEq` -- it carries proof
+        // text -- so the payload is inspected rather than compared.
+        assert!(matches!(
+            memory,
+            SearchResult::ResourceOut(ResourceReason::Memory { .. })
+        ));
+        assert!(matches!(
+            clauses,
+            SearchResult::ResourceOut(ResourceReason::MaxProcessed { .. })
+        ));
+    }
+
+    use super::*;
+
+    #[test]
+    fn completeness_audit_accepts_unpruned_default_configuration() {
+        let config = SearchConfig::default();
+        config
+            .check_completeness(0, 0, false, 0)
+            .expect("default configuration should pass the configuration audit");
+    }
+
+    #[test]
+    fn completeness_audit_rejects_parent_guidance_pruning() {
+        assert_eq!(
+            SearchConfig::default().check_completeness(0, 0, false, 1),
+            Err(IncompletenessReason::ParentGuidancePruned)
+        );
+    }
+
+    #[test]
+    fn default_configuration_disables_cross_strategy_sharing() {
+        assert_eq!(SearchConfig::default().shared_pool_poll_interval, 0);
+    }
+
+    #[test]
+    fn completeness_audit_rejects_ordered_inference() {
+        let config = SearchConfig {
+            ordered_inferences: true,
+            ..SearchConfig::default()
+        };
+        assert_eq!(
+            config.check_completeness(0, 0, false, 0),
+            Err(IncompletenessReason::OrderedInferenceRestriction)
+        );
+    }
+
+    #[test]
+    fn effective_ordered_inference_includes_environment_override() {
+        assert!(!effective_ordered_inferences(false, false));
+        assert!(effective_ordered_inferences(true, false));
+        assert!(effective_ordered_inferences(false, true));
+        assert!(effective_ordered_inferences(true, true));
+    }
+
+    #[test]
+    fn completeness_audit_rejects_each_known_pruning_source() {
+        let base = SearchConfig {
+            max_term_weight: Some(10),
+            ..SearchConfig::default()
+        };
+        assert_eq!(
+            base.check_completeness(1, 0, false, 0),
+            Err(IncompletenessReason::MaxTermWeightDiscarded {
+                cap: 10,
+                discarded: 1,
+            })
+        );
+
+        let sos = SearchConfig {
+            sos_depth: 10,
+            ..base.clone()
+        };
+        assert_eq!(
+            sos.check_completeness(0, 0, false, 0),
+            Err(IncompletenessReason::SosRestricted(10))
+        );
+
+        let unit_only = SearchConfig {
+            unit_only_resolution: true,
+            ..base.clone()
+        };
+        assert_eq!(
+            unit_only.check_completeness(0, 0, false, 0),
+            Err(IncompletenessReason::UnitOnlyResolution)
+        );
+
+        let sine = SearchConfig {
+            sine_tolerance: Some(2.0),
+            ..base.clone()
+        };
+        assert_eq!(
+            sine.check_completeness(0, 0, false, 0),
+            Err(IncompletenessReason::SineFiltered)
+        );
+
+        assert_eq!(
+            base.check_completeness(0, 0, true, 0),
+            Err(IncompletenessReason::MlPremisePruned)
+        );
+        assert_eq!(
+            base.check_completeness(0, 0, false, 1),
+            Err(IncompletenessReason::ParentGuidancePruned)
+        );
+        assert_eq!(
+            base.check_completeness(0, 42, false, 0),
+            Err(IncompletenessReason::LrsDiscarded(42))
+        );
+        assert_eq!(
+            SearchConfig {
+                weight_fn: ClauseWeightFn::FunctionDepth,
+                ..base.clone()
+            }
+            .check_completeness(0, 0, false, 0),
+            Err(IncompletenessReason::NonStandardWeightFn)
+        );
+        assert_eq!(
+            SearchConfig {
+                literal_selection: LiteralSelection::MaxNegativeOrMaxPositive,
+                ..base
+            }
+            .check_completeness(0, 0, false, 0),
+            Err(IncompletenessReason::IncompleteLiteralSelection)
+        );
+    }
+
+    #[test]
+    fn parent_guidance_telemetry_marks_experimental_run() {
+        let mut report = ScheduleReport::default();
+        report.strategies.push(StrategyReport {
+            strategy_idx: 7,
+            strategy_id: 8,
+            result: SearchResult::GaveUp,
+            stats: SearchStats {
+                parent_guidance_pruned: 3,
+                parent_guidance_sampled: 40,
+                ..SearchStats::default()
+            },
+            elapsed_ms: 1,
+        });
+        let detail = report.telemetry_detail("GaveUp");
+        assert!(detail.contains("parent_guidance_pruned=3"));
+        assert!(detail.contains("parent_guidance_sampled=40"));
+    }
+
+    #[test]
+    fn epr_solver_entry_counters_are_reported_in_telemetry() {
+        let report = ScheduleReport {
+            epr: Some(EprTelemetry {
+                attempted: true,
+                solves: 3,
+                solve_entries: 2,
+                solve_ms: 17,
+                ..EprTelemetry::default()
+            }),
+            ..ScheduleReport::default()
+        };
+
+        let detail = report.telemetry_detail("GaveUp");
+        assert!(detail.contains("epr_solves=3"));
+        assert!(detail.contains("epr_solver_entries=2"));
+        assert!(detail.contains("epr_solve_ms=17"));
+    }
+
+    #[cfg(feature = "parent-guidance")]
+    #[test]
+    fn parent_guidance_pruned_search_fails_completeness_audit() {
+        assert_eq!(
+            SearchConfig::default().check_completeness(0, 0, false, 1),
+            Err(IncompletenessReason::ParentGuidancePruned)
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! greedy_set_cover — Select the most complementary portfolio of strategies.
+//! greedy_set_cover — Select a diagnostic portfolio from solo strategy coverage.
 //!
 //! Usage:
 //!     greedy_set_cover <run.csv> [K] [--division DIVISION]
@@ -25,12 +25,14 @@
 //!
 //! The algorithm is greedy: at each step it picks the strategy that maximises
 //! the number of *newly* covered problems.  Ties are broken alphabetically by
-//! strategy name for deterministic output.
+//! strategy name for deterministic output. This is a solo-coverage diagnostic;
+//! final CASC portfolio decisions must be evaluated with cooperative 8-worker
+//! runs and the shared equality pool enabled.
 //!
-//! Why K=8?  CASC competition hardware has exactly 8 cores.  The optimal
-//! per-division portfolio for CASC is the 8-strategy set identified by this
-//! tool run with K=8 and --division matching the CASC division under study.
-//! See AGENTS.md §"CASC Hardware & --casc Decision Rule" for the full workflow.
+//! Why K=8? CASC competition hardware has exactly 8 cores. This tool can
+//! generate candidate sets for that many slots, but its output is not the
+//! cooperative objective because it only sees solo coverage. Validate any
+//! candidate with `cooperative_portfolio_sweep.sh` before changing a schedule.
 
 use std::collections::{HashMap, HashSet};
 use std::env;

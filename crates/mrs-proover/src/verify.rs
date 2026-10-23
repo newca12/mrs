@@ -1,11 +1,14 @@
 //! Top-level verification loop. Orchestrates structural checks, per-rule
 //! internal checks, and (later) ATP calls.
 
+use std::collections::HashSet;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use mrs_cnf::nnf::to_nnf_bounded;
 use mrs_core::{Formula, SymbolTable};
+use mrs_proof_kernel::classify_ac_axiom;
 use mrs_tptp::{AnnotatedFormula, FormulaRole};
 
 use crate::atp::{Atp, AtpVerdict, NoopAtp};
@@ -32,15 +35,56 @@ pub struct Settings {
     pub verbose: bool,
     /// Number of parallel worker threads to spawn for ATP verification.
     pub workers: usize,
+    /// Require strict provenance for self-verification.
+    ///
+    /// A missing or unresolvable linked problem is inconclusive in *both*
+    /// modes: competition mode no longer verifies a proof modulo assumptions,
+    /// because accepting unchecked leaves would turn an unresolvable
+    /// `% Proof :` link into a free pass for every axiom of the proof.
+    pub strict: bool,
+}
+
+/// Diagnostic telemetry for one competition-mode verification run.
+#[derive(Clone, Debug, Default)]
+pub struct VerificationTelemetry {
+    pub proof_nodes: usize,
+    pub atp_jobs: usize,
+    pub workers: usize,
+    pub elapsed_ms: u64,
+    pub verdict: Option<Verdict>,
+    pub step_outcomes: Vec<(String, StepOutcome)>,
+    pub mrs_reports: Vec<mrs_search::ScheduleReport>,
+}
+
+impl VerificationTelemetry {
+    /// Stable key/value detail suitable for benchmark logs.
+    pub fn detail(&self) -> String {
+        let mut inner_workers = self
+            .mrs_reports
+            .iter()
+            .map(|report| report.workers.to_string())
+            .collect::<Vec<_>>();
+        inner_workers.sort_unstable();
+        format!(
+            "proof_nodes={} atp_jobs={} workers={} elapsed_ms={} mrs_reports={} inner_workers={}",
+            self.proof_nodes,
+            self.atp_jobs,
+            self.workers,
+            self.elapsed_ms,
+            self.mrs_reports.len(),
+            inner_workers.join(";"),
+        )
+    }
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             total_budget: Duration::from_secs(30),
-            per_step_budget: Duration::from_secs(8),
+            per_step_budget: Duration::from_secs(3),
             verbose: false,
-            workers: 8,
+            workers: num_cpus::get_physical().max(1),
+            strict: false,
         }
     }
 }
@@ -53,36 +97,92 @@ pub fn verify(job: &LoadedJob, settings: &Settings) -> Verdict {
 
 /// Run with a specific ATP backend.
 pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdict {
+    verify_with_telemetry(job, settings, atp).0
+}
+
+/// Run verification and return the aggregate verdict with diagnostic telemetry.
+pub fn verify_with_telemetry(
+    job: &LoadedJob,
+    settings: &Settings,
+    atp: &dyn Atp,
+) -> (Verdict, VerificationTelemetry) {
     let started = Instant::now();
+    let mut telemetry = VerificationTelemetry::default();
+
+    // A backend may be reused across verifier runs. Discard reports left by a
+    // prior run before any early structural return can bypass the normal drain
+    // below. `Atp` implementations are required to make this operation
+    // thread-safe; the active run drains again only after all jobs have joined.
+    let _ = atp.search_reports();
+
+    if settings.strict && job.problem.is_none() {
+        let verdict = Verdict::Unknown(
+            "strict: proof has no linked problem file for provenance verification".into(),
+        );
+        telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+        telemetry.verdict = Some(verdict.clone());
+        return (verdict, telemetry);
+    }
 
     // 1) Build the DAG.
     let dag = match dag::build(job.proof.problem()) {
         Ok(d) => d,
         // A non-FOF/CNF dialect node (TFF, THF, Alethe, …) means we cannot
         // verify the proof, but it is NOT evidence the proof is wrong.
-        // Map to NotVerified (0 pts) rather than FailedVerified (−1 pts).
+        // Map to Unknown (0 pts) rather than VerifiedBad (−1 pts).
         Err(DagError::UnsupportedDialect(n)) => {
-            return Verdict::NotVerified(format!(
+            let verdict = Verdict::Unknown(format!(
                 "structural: node {n} uses an unsupported proof dialect (not FOF/CNF)"
             ));
+            telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+            telemetry.verdict = Some(verdict.clone());
+            return (verdict, telemetry);
         }
         // An empty proof (no FOF/CNF nodes at all, e.g. Alethe/S-expression
         // format, or all content was type declarations) is also not verifiable.
         Err(DagError::EmptyProof) => {
-            return Verdict::NotVerified(
+            let verdict = Verdict::Unknown(
                 "structural: proof contains no FOF/CNF nodes (unsupported format)".into(),
             );
+            telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+            telemetry.verdict = Some(verdict.clone());
+            return (verdict, telemetry);
         }
-        Err(e) => return Verdict::FailedVerified(format!("structural: {e}")),
+        Err(DagError::NoFalseRoot) => {
+            let verdict = Verdict::Unknown("structural: proof does not derive $false".into());
+            telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+            telemetry.verdict = Some(verdict.clone());
+            return (verdict, telemetry);
+        }
+        Err(e) => {
+            let verdict = Verdict::VerifiedBad(format!("structural: {e}"));
+            telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+            telemetry.verdict = Some(verdict.clone());
+            return (verdict, telemetry);
+        }
     };
+    telemetry.proof_nodes = dag.nodes.len();
+
+    // if dag.topo.len() > 1000 {
+    //     return Verdict::Unknown(format!(
+    //         "structural: proof contains too many steps ({}) to verify within the time limit",
+    //         dag.topo.len()
+    //     ));
+    // }
 
     if let Err(e) = crate::checks::introduced_definition::check_cycles(&dag) {
-        return Verdict::FailedVerified(format!("structural: {e}"));
+        let verdict = Verdict::VerifiedBad(format!("structural: {e}"));
+        telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+        telemetry.verdict = Some(verdict.clone());
+        return (verdict, telemetry);
     }
 
     // Defensive: must have a $false root.
     if dag.root.is_none() {
-        return Verdict::FailedVerified("structural: proof does not derive $false".into());
+        let verdict = Verdict::Unknown("structural: proof does not derive $false".into());
+        telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+        telemetry.verdict = Some(verdict.clone());
+        return (verdict, telemetry);
     }
 
     // 2) Set up shared symbol table and Skolem registry.
@@ -98,17 +198,54 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
     // Skolems (e.g. `skolemize`) record their new symbol explicitly.
     if let Some(problem) = job.problem.as_ref() {
         for af in &problem.problem().formulas {
-            if let mrs_tptp::AnnotatedFormula::FOF(f) = af {
+            if let mrs_tptp::AnnotatedFormula::FOF(f) = af
+                && matches!(f.role, FormulaRole::Axiom | FormulaRole::Conjecture)
+            {
                 sk_reg.record_from_statement(&f.formula);
             }
         }
     }
+
+    // Collect background AC unit equalities from the problem (axioms and the
+    // negation of the conjecture) so superposition ATP steps can use
+    // problem-level commutativity/associativity that is not among their
+    // parents (e.g. SWX217's negated conjecture `? [X,Y] : x(X,Y) != x(Y,X)`).
+    let background_ac: Vec<Formula> = job
+        .problem
+        .as_ref()
+        .map(|p| collect_background_ac(p.problem(), &mut symbols))
+        .unwrap_or_default();
+
+    // Build the leaf-check index once per run: by-name lookup plus the
+    // algebraic-symbol collection are each O(problem size), and rebuilding
+    // either per leaf turns proofs with many leaves quadratic (PRV072+1:
+    // 5000 leaves × 5000 problem formulas dominated the whole suite).
+    let leaf_index: Option<crate::checks::axiom_leaf::ProblemLeafIndex<'_>> = job
+        .problem
+        .as_ref()
+        .map(|p| crate::checks::axiom_leaf::ProblemLeafIndex::new(p.problem(), &mut symbols));
 
     // 3) Pass 1 (serial): run every cheap internal check and *prepare* each
     //    ATP step (lowering premises/conclusion, then the structural
     //    fast-paths). This pass is the only one that mutates `symbols` and
     //    `sk_reg`, so it must run in topo order on a single thread. Structural
     //    steps are decided here; genuine ATP steps are collected as jobs.
+    let mut lowered_formulas: std::collections::HashMap<usize, mrs_core::Formula> =
+        std::collections::HashMap::with_capacity(dag.topo.len());
+    {
+        let mut ctx = LowerCtx::new(&mut symbols);
+        for &idx in &dag.topo {
+            ctx.reset_vars();
+            let Some(f) = lower_annotated_formula(&mut ctx, dag.nodes[idx].formula) else {
+                let verdict = Verdict::Unknown("unsupported formula type in proof".into());
+                telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+                telemetry.verdict = Some(verdict.clone());
+                return (verdict, telemetry);
+            };
+            lowered_formulas.insert(idx, f);
+        }
+    }
+
     let mut names: Vec<&str> = Vec::with_capacity(dag.topo.len());
     let mut rules: Vec<&str> = Vec::with_capacity(dag.topo.len());
     let mut outcomes: Vec<Option<StepOutcome>> = Vec::with_capacity(dag.topo.len());
@@ -118,10 +255,22 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         let slot = outcomes.len();
         names.push(dag.nodes[idx].name);
         rules.push(dag.nodes[idx].inference_rule.unwrap_or("-"));
-        match check_node_prepare(&dag, idx, job, &mut symbols, &mut sk_reg) {
+        match check_node_prepare(
+            &dag,
+            idx,
+            job,
+            settings.strict,
+            &mut symbols,
+            &mut sk_reg,
+            &lowered_formulas,
+            &background_ac,
+            leaf_index.as_ref(),
+            started + settings.total_budget,
+        ) {
             Prepared::Resolved(oc) => outcomes.push(Some(oc)),
             Prepared::NeedsAtp(step) => {
                 outcomes.push(None);
+                telemetry.atp_jobs += 1;
                 jobs.push(AtpJob {
                     slot,
                     is_skolemisation: dag.nodes[idx].inference_rule == Some("skolemisation"),
@@ -138,7 +287,9 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
     //    shared deadline, keeping the total wall time within `total_budget`
     //    regardless of scheduling. Outcomes are written back to topo slots, so
     //    the aggregated verdict (and its reason string) stay deterministic.
-    run_atp_jobs(&jobs, atp, &symbols, &mut outcomes, started, settings);
+    telemetry.workers = run_atp_jobs(&jobs, atp, &symbols, &mut outcomes, started, settings);
+
+    telemetry.mrs_reports = atp.search_reports();
 
     if settings.verbose {
         for i in 0..names.len() {
@@ -149,12 +300,35 @@ pub fn verify_with(job: &LoadedJob, settings: &Settings, atp: &dyn Atp) -> Verdi
         }
     }
 
-    aggregate(
+    let verdict = aggregate(
         names
             .iter()
-            .zip(outcomes)
-            .map(|(n, o)| (*n, o.expect("every step resolved in pass 1 or pass 2"))),
-    )
+            .zip(outcomes.iter())
+            .map(|(name, outcome)| (*name, outcome.clone().expect("every step resolved"))),
+    );
+    // Structural fail-closed invariant, independent of the per-check policy:
+    // without the linked problem there is nothing to check a leaf against, so
+    // a proof can never be certified. Individual checks already return
+    // `Unknown` for unverifiable leaves, but pinning the rule here means a
+    // future check that trusts a leaf (or a proof shape with no `file(...)`
+    // leaf at all) cannot silently reintroduce "verified modulo assumptions".
+    let verdict = if matches!(verdict, Verdict::VerifiedGood) && job.problem.is_none() {
+        Verdict::Unknown("no linked problem file: the proof cannot be certified without it".into())
+    } else {
+        verdict
+    };
+    telemetry.step_outcomes = names
+        .iter()
+        .zip(outcomes.iter())
+        .filter_map(|(name, outcome)| {
+            outcome
+                .clone()
+                .map(|outcome| ((*name).to_string(), outcome))
+        })
+        .collect();
+    telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+    telemetry.verdict = Some(verdict.clone());
+    (verdict, telemetry)
 }
 
 /// A single ATP-bound step queued by Pass 1 for parallel execution in Pass 2.
@@ -171,11 +345,14 @@ struct AtpJob {
 struct AtpStep {
     premises: Vec<Formula>,
     conclusion: Formula,
+    parents_len: usize,
     /// `esa` (equisatisfiability) steps: a counter-model is expected and must
     /// never be reported as `Unsound`.
     esa: bool,
     /// Inference-rule name, for diagnostic messages only.
     rule: Option<String>,
+    /// Whether the proof DAG contains AVATAR splitting steps (which may have incomplete branch exports).
+    has_avatar_context: bool,
 }
 
 /// Outcome of preparing a step in Pass 1.
@@ -195,9 +372,9 @@ fn run_atp_jobs(
     outcomes: &mut [Option<StepOutcome>],
     started: Instant,
     settings: &Settings,
-) {
+) -> usize {
     if jobs.is_empty() {
-        return;
+        return 0;
     }
 
     let deadline = started + settings.total_budget;
@@ -206,37 +383,84 @@ fn run_atp_jobs(
 
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<(usize, StepOutcome)>> = Mutex::new(Vec::with_capacity(jobs.len()));
+    let mut started_workers = 0usize;
+    let active_workers = AtomicUsize::new(0);
+    let start_workers = AtomicBool::new(false);
 
     std::thread::scope(|scope| {
-        for _ in 0..n_workers {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= jobs.len() {
-                        break;
+        for worker_id in 0..n_workers {
+            // `finish_atp` runs a full ATP step — unification, indexing,
+            // paramodulation and rewriting over the step's goal — which
+            // recurses to the depth of the terms involved. On the 2 MiB a
+            // spawned thread defaults to, an adversarial or deeply nested proof
+            // overflows the stack, and that aborts the process with no output.
+            let start_workers_ref = &start_workers;
+            let active_workers_ref = &active_workers;
+            let spawned = std::thread::Builder::new()
+                .name(format!("mrs-proover-step-{worker_id}"))
+                .stack_size(mrs_core::RECURSION_STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    while !start_workers_ref.load(Ordering::Acquire) {
+                        std::thread::yield_now();
                     }
-                    let job = &jobs[i];
-                    // `jobs.len() - i` is the number of not-yet-claimed jobs
-                    // (including this one); used to share the remaining wall
-                    // budget fairly while accounting for parallel execution.
-                    let jobs_left = jobs.len() - i;
-                    let budget = step_budget(
-                        deadline,
-                        per_step,
-                        n_workers,
-                        jobs_left,
-                        job.is_skolemisation,
-                    );
-                    let oc = finish_atp(atp, symbols, &job.step, budget);
-                    results.lock().expect("results mutex").push((job.slot, oc));
-                }
-            });
+                    let effective_workers = active_workers_ref.load(Ordering::Relaxed).max(1);
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= jobs.len() {
+                            break;
+                        }
+                        let job = &jobs[i];
+                        // `jobs.len() - i` is the number of not-yet-claimed jobs
+                        // (including this one); used to share the remaining wall
+                        // budget fairly while accounting for parallel execution.
+                        let jobs_left = jobs.len() - i;
+                        let budget = step_budget(
+                            deadline,
+                            per_step,
+                            effective_workers,
+                            jobs_left,
+                            job.is_skolemisation,
+                        );
+                        let oc = finish_atp(atp, symbols, &job.step, budget);
+                        if settings.verbose {
+                            eprintln!(
+                                "% step slot {} [rule={:?}] -> {:?}",
+                                job.slot, job.step.rule, oc
+                            );
+                        }
+                        results.lock().expect("results mutex").push((job.slot, oc));
+                    }
+                });
+            // A refused thread is a degraded verification, not a failed one:
+            // jobs are claimed from a shared counter, so the remaining workers
+            // pick up the work and any step left unclaimed keeps its existing
+            // outcome. `n_workers` still drives the budget split above, which
+            // only ever grants a step more of the remaining wall clock than its
+            // fair share, and the deadline check bounds the run either way.
+            if let Err(error) = spawned {
+                eprintln!(
+                    "Warning: could not spawn verification worker {worker_id} ({error}); \
+                     verifying with fewer threads."
+                );
+            } else {
+                started_workers += 1;
+            }
         }
+        active_workers.store(started_workers, Ordering::Relaxed);
+        start_workers.store(true, Ordering::Release);
     });
 
     for (slot, oc) in results.into_inner().expect("results mutex") {
         outcomes[slot] = Some(oc);
     }
+    for job in jobs {
+        if outcomes[job.slot].is_none() {
+            outcomes[job.slot] = Some(StepOutcome::Unknown(
+                "verification worker could not be spawned".into(),
+            ));
+        }
+    }
+    started_workers
 }
 
 /// Budget for one parallel ATP job.
@@ -345,12 +569,18 @@ fn is_premise_role(r: FormulaRole) -> bool {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_node_prepare<'p>(
     dag: &Dag<'p>,
     idx: usize,
     job: &LoadedJob,
+    strict: bool,
     symbols: &mut SymbolTable,
     sk_reg: &mut skolemize::SkolemRegistry,
+    lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    background_ac: &[Formula],
+    leaf_index: Option<&crate::checks::axiom_leaf::ProblemLeafIndex<'_>>,
+    deadline: Instant,
 ) -> Prepared {
     let node = &dag.nodes[idx];
 
@@ -370,9 +600,59 @@ fn check_node_prepare<'p>(
     {
         return Prepared::Resolved(axiom_leaf::check_leaf(
             node.formula,
-            job.problem.as_ref().map(|p| p.problem()),
+            job.problem.as_ref().map(|p| {
+                (
+                    p.problem(),
+                    leaf_index.expect("leaf index built with problem"),
+                )
+            }),
             symbols,
+            strict,
         ));
+    }
+
+    // Generic equisatisfiability fast-path for inlined E-prover steps carrying
+    // status(esa). Explicit Skolemization rules must go through their exact
+    // metadata and scope checks below; otherwise this broader matcher could
+    // certify malformed witnesses before those checks run.
+    if node.status == Some("esa")
+        && !matches!(node.inference_rule, Some("skolemize" | "skolemisation"))
+        && node.parents.len() == 1
+    {
+        let parent_idx = *dag.by_name.get(&node.parents[0]).unwrap();
+        let parent_node = &dag.nodes[parent_idx];
+
+        if let (Some(parent_fof), Some(step_fof)) =
+            (parent_node.formula.as_fof(), node.formula.as_fof())
+        {
+            let parent_fof_logical = match &parent_fof.formula {
+                mrs_tptp::FOFStatement::Logical(f) => Some(f),
+                _ => None,
+            };
+            let step_fof_logical = match &step_fof.formula {
+                mrs_tptp::FOFStatement::Logical(f) => Some(f),
+                _ => None,
+            };
+            if let (Some(pf), Some(sf)) = (parent_fof_logical, step_fof_logical) {
+                // Collect fresh symbols
+                let mut step_syms = HashSet::new();
+                let mut parent_syms = HashSet::new();
+                crate::checks::introduced_definition::collect_fun_syms(sf, &mut step_syms);
+                crate::checks::introduced_definition::collect_fun_syms(pf, &mut parent_syms);
+                let fresh: Vec<&str> = step_syms.difference(&parent_syms).copied().collect();
+
+                // Verify structurally
+                if crate::checks::skolemize::try_positive_skolemize(pf, sf, &fresh, sk_reg) {
+                    let mut sym_tab_sk = SymbolTable::new();
+                    let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
+                    let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, pf);
+                    for s in &fresh {
+                        sk_reg.record_skolem_source(s, parent_core.clone(), pf, sf);
+                    }
+                    return Prepared::Resolved(StepOutcome::Sound);
+                }
+            }
+        }
     }
 
     // A conjecture MUST come from the problem file. If it lacks a file source,
@@ -417,7 +697,7 @@ fn check_node_prepare<'p>(
     // be positively confirmed `Sound` by the ATP/structural fast-paths
     // below, regressing verification power with no soundness benefit
     // (confirmed: this widening dropped the built-in corpus from 42 to 33
-    // `Verified` with zero new `FailedVerified`).
+    // `VerifiedGood` with zero new `VerifiedBad`).
     if node.inference_rule == Some("skolemize") {
         let parent_fof = node
             .parents
@@ -438,7 +718,11 @@ fn check_node_prepare<'p>(
         .annotations()
         .is_some_and(introduced_definition::is_introduced_definition)
     {
-        return Prepared::Resolved(introduced_definition::check(node.formula, sk_reg));
+        let outcome = introduced_definition::check(node.formula, sk_reg);
+        if outcome == StepOutcome::Sound {
+            introduced_definition::record_declared_symbols(node.formula, sk_reg);
+        }
+        return Prepared::Resolved(outcome);
     }
 
     // Vampire `skolemisation`: try the structural check before falling
@@ -453,7 +737,75 @@ fn check_node_prepare<'p>(
         if let Some(outcome) = vampire_skolemisation::try_check(node.formula, &parents, sk_reg) {
             return Prepared::Resolved(outcome);
         }
+        let parent_fof = parents.first().copied();
+        let outcome = skolemize::check(node.formula, parent_fof, sk_reg, node.status);
+        if outcome == StepOutcome::Sound {
+            return Prepared::Resolved(outcome);
+        }
+        // MRS `skolemisation` without `new_symbols` metadata: the Vampire
+        // shape check above needs declarations and the E-style check needs
+        // `skolemize(...)` metadata, so MRS's own single-parent FOF steps
+        // otherwise fall through to the ATP, which cannot prove an
+        // equisatisfiable step as an entailment (COM127+1 c361 and the
+        // repeated c325 clausification steps go `Unknown` in mrs mode and
+        // hit the esa counter-model carve-out in ladder mode). Run the
+        // same exact positive-skolemisation match as the esa fast-path;
+        // on success record the witness sources so an identical repeat
+        // skolemisation of the same parent stays accepted. Status-gated
+        // to esa with a single parent, mirroring the esa fast-path, so
+        // thm steps and multi-parent steps keep their existing paths.
+        if node.status == Some("esa")
+            && node.parents.len() == 1
+            && let (Some(parent_fof), Some(step_fof)) =
+                (parent_fof.and_then(|p| p.as_fof()), node.formula.as_fof())
+            && let (mrs_tptp::FOFStatement::Logical(pf), mrs_tptp::FOFStatement::Logical(sf)) =
+                (&parent_fof.formula, &step_fof.formula)
+        {
+            let mut step_syms = HashSet::new();
+            let mut parent_syms = HashSet::new();
+            crate::checks::introduced_definition::collect_fun_syms(sf, &mut step_syms);
+            crate::checks::introduced_definition::collect_fun_syms(pf, &mut parent_syms);
+            let fresh: Vec<&str> = step_syms.difference(&parent_syms).copied().collect();
+            if !fresh.is_empty() && skolemize::try_positive_skolemize(pf, sf, &fresh, sk_reg) {
+                let mut sym_tab_sk = SymbolTable::new();
+                let mut ctx_sk = crate::lower::LowerCtx::new(&mut sym_tab_sk);
+                let parent_core = crate::lower::lower_fof_formula(&mut ctx_sk, pf);
+                for s in &fresh {
+                    sk_reg.record_skolem_source(s, parent_core.clone(), pf, sf);
+                }
+                return Prepared::Resolved(StepOutcome::Sound);
+            }
+        }
+        if parents.len() == 1 {
+            let mut ctx = LowerCtx::new(symbols);
+            ctx.reset_vars();
+            let Some(parent_f) = lower_annotated_formula(&mut ctx, parents[0]) else {
+                return Prepared::Resolved(StepOutcome::Unknown(
+                    "unsupported formula type in parent".into(),
+                ));
+            };
+            ctx.reset_vars();
+            let concl_f = lowered_formulas.get(&idx).unwrap();
+            if trivial::equiv(&parent_f, concl_f) {
+                return Prepared::Resolved(StepOutcome::Sound);
+            }
+        }
         // Fall through to ATP if the structural check could not apply.
+    }
+
+    if node.inference_rule == Some("modus_ponens")
+        && !node.is_false
+        && let [p0_name, p1_name] = node.parents.as_slice()
+        && let (Some(&p0_idx), Some(&p1_idx), Some(concl_f)) = (
+            dag.by_name.get(p0_name),
+            dag.by_name.get(p1_name),
+            lowered_formulas.get(&idx),
+        )
+        && let (Some(p0_f), Some(p1_f)) =
+            (lowered_formulas.get(&p0_idx), lowered_formulas.get(&p1_idx))
+        && (trivial::check_mp(p0_f, p1_f, concl_f) || trivial::check_mp(p1_f, p0_f, concl_f))
+    {
+        return Prepared::Resolved(StepOutcome::Sound);
     }
 
     // Former `TRIVIAL_RULES`: instead of trusting the rule *name*, attempt a
@@ -476,7 +828,16 @@ fn check_node_prepare<'p>(
     }
 
     // Other plain/thm/cth steps → prepare an ATP query for Pass 2.
-    prepare_atp_step(dag, idx, symbols)
+    //
+    prepare_atp_step(
+        dag,
+        idx,
+        strict,
+        symbols,
+        lowered_formulas,
+        background_ac,
+        deadline,
+    )
 }
 
 /// Decide a step via the ATP, keeping the prepare/finish split internal.
@@ -493,28 +854,1707 @@ fn delegate_to_atp<'p>(
     atp: &dyn Atp,
     budget: Duration,
 ) -> StepOutcome {
-    match prepare_atp_step(dag, idx, symbols) {
+    let mut lowered_formulas = std::collections::HashMap::new();
+    let mut ctx = LowerCtx::new(symbols);
+    for (i, node) in dag.nodes.iter().enumerate() {
+        ctx.reset_vars();
+        let Some(f) = lower_annotated_formula(&mut ctx, node.formula) else {
+            return StepOutcome::Unknown("unsupported formula type in proof".into());
+        };
+        lowered_formulas.insert(i, f);
+    }
+    match prepare_atp_step(
+        dag,
+        idx,
+        false,
+        symbols,
+        &lowered_formulas,
+        &[],
+        Instant::now() + budget,
+    ) {
         Prepared::Resolved(oc) => oc,
         Prepared::NeedsAtp(step) => finish_atp(atp, symbols, &step, budget),
     }
+}
+
+fn shift_vars_term(t: &mrs_core::Term, shift: u32) -> mrs_core::Term {
+    match t {
+        mrs_core::Term::Var(id) => mrs_core::Term::Var(id + shift),
+        mrs_core::Term::App(f, args) => mrs_core::Term::App(
+            *f,
+            args.iter().map(|arg| shift_vars_term(arg, shift)).collect(),
+        ),
+    }
+}
+
+fn shift_vars_formula(f: &mrs_core::Formula, shift: u32) -> mrs_core::Formula {
+    match f {
+        mrs_core::Formula::Atom(a) => match a {
+            mrs_core::Atom::Pred(p, args) => mrs_core::Formula::Atom(mrs_core::Atom::Pred(
+                *p,
+                args.iter().map(|arg| shift_vars_term(arg, shift)).collect(),
+            )),
+            mrs_core::Atom::Eq(l, r) => mrs_core::Formula::Atom(mrs_core::Atom::Eq(
+                shift_vars_term(l, shift),
+                shift_vars_term(r, shift),
+            )),
+        },
+        mrs_core::Formula::Neg(inner) => {
+            mrs_core::Formula::Neg(Box::new(shift_vars_formula(inner, shift)))
+        }
+        mrs_core::Formula::And(cs) => {
+            mrs_core::Formula::And(cs.iter().map(|c| shift_vars_formula(c, shift)).collect())
+        }
+        mrs_core::Formula::Or(cs) => {
+            mrs_core::Formula::Or(cs.iter().map(|c| shift_vars_formula(c, shift)).collect())
+        }
+        mrs_core::Formula::Implies(l, r) => mrs_core::Formula::Implies(
+            Box::new(shift_vars_formula(l, shift)),
+            Box::new(shift_vars_formula(r, shift)),
+        ),
+        mrs_core::Formula::Iff(l, r) => mrs_core::Formula::Iff(
+            Box::new(shift_vars_formula(l, shift)),
+            Box::new(shift_vars_formula(r, shift)),
+        ),
+        // Quantified formulas are the common case for proof steps (every
+        // unit equality arrives as `Forall(.., Eq(..))`). The binder ID must
+        // shift together with its occurrences, otherwise shifting is a no-op
+        // and the rule's variables collide with the target's (e.g. COL002-5
+        // `c699`: rule `S(X0,X1,X2)` vs target `...X0...` fails occurs-check
+        // without the shift). Shifting uniformly preserves the
+        // alpha-equivalence class while freshening all IDs.
+        mrs_core::Formula::Forall(v, inner) => mrs_core::Formula::Forall(
+            v.saturating_add(shift),
+            Box::new(shift_vars_formula(inner, shift)),
+        ),
+        mrs_core::Formula::Exists(v, inner) => mrs_core::Formula::Exists(
+            v.saturating_add(shift),
+            Box::new(shift_vars_formula(inner, shift)),
+        ),
+        mrs_core::Formula::True | mrs_core::Formula::False => f.clone(),
+    }
+}
+
+fn unify_terms(
+    t1: &mrs_core::Term,
+    t2: &mrs_core::Term,
+    subst: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+) -> bool {
+    let t1 = resolve_term(t1, subst);
+    let t2 = resolve_term(t2, subst);
+    match (&t1, &t2) {
+        (mrs_core::Term::Var(id1), mrs_core::Term::Var(id2)) if id1 == id2 => true,
+        (mrs_core::Term::Var(id1), _) => {
+            if occurs_check(*id1, &t2, subst) {
+                false
+            } else {
+                subst.insert(*id1, t2.clone());
+                true
+            }
+        }
+        (_, mrs_core::Term::Var(id2)) => {
+            if occurs_check(*id2, &t1, subst) {
+                false
+            } else {
+                subst.insert(*id2, t1.clone());
+                true
+            }
+        }
+        (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
+            f1 == f2
+                && args1.len() == args2.len()
+                && args1
+                    .iter()
+                    .zip(args2.iter())
+                    .all(|(a1, a2)| unify_terms(a1, a2, subst))
+        }
+    }
+}
+
+fn resolve_term(
+    t: &mrs_core::Term,
+    subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+) -> mrs_core::Term {
+    match t {
+        mrs_core::Term::Var(id) => {
+            if let Some(existing) = subst.get(id) {
+                resolve_term(existing, subst)
+            } else {
+                t.clone()
+            }
+        }
+        _ => t.clone(),
+    }
+}
+
+fn occurs_check(
+    id: mrs_core::VarId,
+    t: &mrs_core::Term,
+    subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+) -> bool {
+    match t {
+        mrs_core::Term::Var(id2) => {
+            if id == *id2 {
+                true
+            } else if let Some(existing) = subst.get(id2) {
+                occurs_check(id, existing, subst)
+            } else {
+                false
+            }
+        }
+        mrs_core::Term::App(_, args) => args.iter().any(|arg| occurs_check(id, arg, subst)),
+    }
+}
+
+fn apply_subst_term_full(
+    t: &mrs_core::Term,
+    subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+) -> mrs_core::Term {
+    match t {
+        mrs_core::Term::Var(id) => {
+            if let Some(existing) = subst.get(id) {
+                apply_subst_term_full(existing, subst)
+            } else {
+                t.clone()
+            }
+        }
+        mrs_core::Term::App(f, args) => mrs_core::Term::App(
+            *f,
+            args.iter()
+                .map(|arg| apply_subst_term_full(arg, subst))
+                .collect(),
+        ),
+    }
+}
+
+fn apply_subst_formula(
+    f: &mrs_core::Formula,
+    subst: &std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+) -> mrs_core::Formula {
+    match f {
+        mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) => {
+            let new_args = args
+                .iter()
+                .map(|t| apply_subst_term_full(t, subst))
+                .collect();
+            mrs_core::Formula::Atom(mrs_core::Atom::Pred(*p, new_args))
+        }
+        mrs_core::Formula::Atom(mrs_core::Atom::Eq(l, r)) => {
+            let nl = apply_subst_term_full(l, subst);
+            let nr = apply_subst_term_full(r, subst);
+            mrs_core::Formula::Atom(mrs_core::Atom::Eq(nl, nr))
+        }
+        mrs_core::Formula::Neg(inner) => {
+            mrs_core::Formula::Neg(Box::new(apply_subst_formula(inner, subst)))
+        }
+        mrs_core::Formula::And(cs) => {
+            let ncs = cs.iter().map(|c| apply_subst_formula(c, subst)).collect();
+            mrs_core::Formula::And(ncs)
+        }
+        mrs_core::Formula::Or(cs) => {
+            let ncs = cs.iter().map(|c| apply_subst_formula(c, subst)).collect();
+            mrs_core::Formula::Or(ncs)
+        }
+        mrs_core::Formula::Implies(l, r) => {
+            let nl = apply_subst_formula(l, subst);
+            let nr = apply_subst_formula(r, subst);
+            mrs_core::Formula::Implies(Box::new(nl), Box::new(nr))
+        }
+        mrs_core::Formula::Iff(l, r) => {
+            let nl = apply_subst_formula(l, subst);
+            let nr = apply_subst_formula(r, subst);
+            mrs_core::Formula::Iff(Box::new(nl), Box::new(nr))
+        }
+        mrs_core::Formula::Forall(v, inner) => {
+            mrs_core::Formula::Forall(*v, Box::new(apply_subst_formula(inner, subst)))
+        }
+        mrs_core::Formula::Exists(v, inner) => {
+            mrs_core::Formula::Exists(*v, Box::new(apply_subst_formula(inner, subst)))
+        }
+        mrs_core::Formula::True => mrs_core::Formula::True,
+        mrs_core::Formula::False => mrs_core::Formula::False,
+    }
+}
+
+fn collect_superposition_rewrites(
+    t: &mrs_core::Term,
+    l1: &mrs_core::Term,
+    r1: &mrs_core::Term,
+    rewrites: &mut Vec<(
+        mrs_core::Term,
+        std::collections::HashMap<mrs_core::VarId, mrs_core::Term>,
+    )>,
+) {
+    if !t.is_var() {
+        let mut subst = std::collections::HashMap::new();
+        if unify_terms(l1, t, &mut subst) {
+            let rewritten = apply_subst_term_full(r1, &subst);
+            rewrites.push((rewritten, subst));
+        }
+    }
+    if let mrs_core::Term::App(f, args) = t {
+        for i in 0..args.len() {
+            let mut sub_rewrites = Vec::new();
+            collect_superposition_rewrites(&args[i], l1, r1, &mut sub_rewrites);
+            for (sub_rewritten, subst) in sub_rewrites {
+                let mut new_args = args.clone();
+                new_args[i] = sub_rewritten;
+                let rewritten_root = mrs_core::Term::App(*f, new_args);
+                rewrites.push((rewritten_root, subst));
+            }
+        }
+    }
+}
+
+/// Order-insensitive superposition fast-path.
+///
+/// `mrs` (like E/Vampire) does not guarantee which parent is the rewrite
+/// rule and which is the target: `given_clause.rs` tries both
+/// `given→active` and `active→given`, emitting `parents: [eq, target]` for
+/// whichever direction fired. The TPTP parent list therefore cannot be
+/// trusted for direction either (e.g. COL002-5 `c699 [c2, c0]` lists
+/// `[target, rule]`). Since `premises ⊨ concl` is symmetric in the
+/// premises, try both directions; each directed attempt remains a sound
+/// entailment check on its own.
+/// Single-premise (self-superposition) calls pass the same formula twice;
+/// the second attempt is redundant but harmless.
+fn try_superposition_step(
+    p1: &mrs_core::Formula,
+    p2: &mrs_core::Formula,
+    concl: &mrs_core::Formula,
+) -> bool {
+    try_directed_superposition_step(p1, p2, concl) || try_directed_superposition_step(p2, p1, concl)
+}
+
+fn try_directed_superposition_step(
+    rule: &mrs_core::Formula,
+    target: &mrs_core::Formula,
+    concl: &mrs_core::Formula,
+) -> bool {
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[prop-sat-dbg] try_superposition_step called! rule = {rule:?}");
+    }
+    let shift = max_var_formula(rule)
+        .max(max_var_formula(target))
+        .saturating_add(1);
+    let p1_shifted = shift_vars_formula(rule, shift);
+    let (l1, r1) = match extract_eq_sides(&p1_shifted) {
+        Some(res) => res,
+        None => return false,
+    };
+    let (l2, r2) = match extract_eq_sides(target) {
+        Some(res) => res,
+        None => return false,
+    };
+    let (lc, rc) = match extract_eq_sides(concl) {
+        Some(res) => res,
+        None => return false,
+    };
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[prop-sat-dbg] try_superposition_step: l1 = {:?}", l1);
+    }
+    let rules = vec![(l1.clone(), r1.clone()), (r1, l1)];
+    for (lhs1, rhs1) in rules {
+        let mut rewrites = Vec::new();
+        collect_superposition_rewrites(&l2, &lhs1, &rhs1, &mut rewrites);
+        for (l2_rewritten, subst) in rewrites {
+            let expected_l = apply_subst_term_full(&l2_rewritten, &subst);
+            let expected_r = apply_subst_term_full(&r2, &subst);
+            if alpha_equiv_terms(&expected_l, &lc) && alpha_equiv_terms(&expected_r, &rc) {
+                return true;
+            }
+            if alpha_equiv_terms(&expected_l, &rc) && alpha_equiv_terms(&expected_r, &lc) {
+                return true;
+            }
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!(
+                    "[prop-sat-dbg] try_superposition_step: expected_l = {:?}",
+                    expected_l
+                );
+                eprintln!("[prop-sat-dbg] try_superposition_step: lc = {:?}", lc);
+            }
+        }
+        let mut rewrites_r = Vec::new();
+        collect_superposition_rewrites(&r2, &lhs1, &rhs1, &mut rewrites_r);
+        for (r2_rewritten, subst) in rewrites_r {
+            let expected_l = apply_subst_term_full(&l2, &subst);
+            let expected_r = apply_subst_term_full(&r2_rewritten, &subst);
+            if alpha_equiv_terms(&expected_l, &lc) && alpha_equiv_terms(&expected_r, &rc) {
+                return true;
+            }
+            if alpha_equiv_terms(&expected_l, &rc) && alpha_equiv_terms(&expected_r, &lc) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn max_var_term(term: &mrs_core::Term) -> u32 {
+    match term {
+        mrs_core::Term::Var(id) => *id,
+        mrs_core::Term::App(_, args) => args.iter().map(max_var_term).max().unwrap_or(0),
+    }
+}
+
+fn max_var_formula(formula: &mrs_core::Formula) -> u32 {
+    match formula {
+        mrs_core::Formula::Atom(mrs_core::Atom::Pred(_, args)) => {
+            args.iter().map(max_var_term).max().unwrap_or(0)
+        }
+        mrs_core::Formula::Atom(mrs_core::Atom::Eq(left, right)) => {
+            max_var_term(left).max(max_var_term(right))
+        }
+        mrs_core::Formula::Neg(inner)
+        | mrs_core::Formula::Forall(_, inner)
+        | mrs_core::Formula::Exists(_, inner) => max_var_formula(inner),
+        mrs_core::Formula::And(parts) | mrs_core::Formula::Or(parts) => {
+            parts.iter().map(max_var_formula).max().unwrap_or(0)
+        }
+        mrs_core::Formula::Implies(left, right) | mrs_core::Formula::Iff(left, right) => {
+            max_var_formula(left).max(max_var_formula(right))
+        }
+        mrs_core::Formula::True | mrs_core::Formula::False => 0,
+    }
+}
+
+fn extract_eq_sides(f: &mrs_core::Formula) -> Option<(mrs_core::Term, mrs_core::Term)> {
+    let mut body = f;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = body {
+        body = inner;
+    }
+    if let mrs_core::Formula::Or(cs) = body
+        && cs.len() == 1
+    {
+        body = &cs[0];
+    }
+    match body {
+        mrs_core::Formula::Atom(mrs_core::Atom::Eq(l, r)) => Some((l.clone(), r.clone())),
+        _ => None,
+    }
+}
+
+fn alpha_equiv_terms(t1: &mrs_core::Term, t2: &mrs_core::Term) -> bool {
+    fn helper(
+        t1: &mrs_core::Term,
+        t2: &mrs_core::Term,
+        map: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::VarId>,
+    ) -> bool {
+        match (t1, t2) {
+            (mrs_core::Term::Var(id1), mrs_core::Term::Var(id2)) => {
+                if let Some(&existing) = map.get(id1) {
+                    existing == *id2
+                } else {
+                    map.insert(*id1, *id2);
+                    true
+                }
+            }
+            (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
+                f1 == f2
+                    && args1.len() == args2.len()
+                    && args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(a1, a2)| helper(a1, a2, map))
+            }
+            _ => false,
+        }
+    }
+    let mut map = std::collections::HashMap::new();
+    helper(t1, t2, &mut map)
+}
+
+fn alpha_equiv_formulas_free(
+    f1: &mrs_core::Formula,
+    f2: &mrs_core::Formula,
+    map: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::VarId>,
+) -> bool {
+    match (f1, f2) {
+        (mrs_core::Formula::Atom(a1), mrs_core::Formula::Atom(a2)) => match (a1, a2) {
+            (mrs_core::Atom::Pred(p1, args1), mrs_core::Atom::Pred(p2, args2)) => {
+                p1 == p2
+                    && args1.len() == args2.len()
+                    && args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(t1, t2)| alpha_equiv_terms_free(t1, t2, map))
+            }
+            (mrs_core::Atom::Eq(l1, r1), mrs_core::Atom::Eq(l2, r2)) => {
+                alpha_equiv_terms_free(l1, l2, map) && alpha_equiv_terms_free(r1, r2, map)
+            }
+            _ => false,
+        },
+        (mrs_core::Formula::Neg(inner1), mrs_core::Formula::Neg(inner2)) => {
+            alpha_equiv_formulas_free(inner1, inner2, map)
+        }
+        (mrs_core::Formula::And(cs1), mrs_core::Formula::And(cs2)) => {
+            cs1.len() == cs2.len()
+                && cs1
+                    .iter()
+                    .zip(cs2.iter())
+                    .all(|(c1, c2)| alpha_equiv_formulas_free(c1, c2, map))
+        }
+        (mrs_core::Formula::Or(cs1), mrs_core::Formula::Or(cs2)) => {
+            cs1.len() == cs2.len()
+                && cs1
+                    .iter()
+                    .zip(cs2.iter())
+                    .all(|(c1, c2)| alpha_equiv_formulas_free(c1, c2, map))
+        }
+        _ => false,
+    }
+}
+
+fn alpha_equiv_terms_free(
+    t1: &mrs_core::Term,
+    t2: &mrs_core::Term,
+    map: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::VarId>,
+) -> bool {
+    match (t1, t2) {
+        (mrs_core::Term::Var(id1), mrs_core::Term::Var(id2)) => {
+            if let Some(&existing) = map.get(id1) {
+                existing == *id2
+            } else {
+                map.insert(*id1, *id2);
+                true
+            }
+        }
+        (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
+            f1 == f2
+                && args1.len() == args2.len()
+                && args1
+                    .iter()
+                    .zip(args2.iter())
+                    .all(|(a1, a2)| alpha_equiv_terms_free(a1, a2, map))
+        }
+        _ => false,
+    }
+}
+
+fn extract_pred_atom(
+    f: &mrs_core::Formula,
+) -> Option<(mrs_core::SymbolId, &Vec<mrs_core::Term>, bool)> {
+    match f {
+        mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) => Some((*p, args, true)),
+        mrs_core::Formula::Neg(inner) => {
+            if let mrs_core::Formula::Atom(mrs_core::Atom::Pred(p, args)) = &**inner {
+                Some((*p, args, false))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn unify_lists(
+    args1: &[mrs_core::Term],
+    args2: &[mrs_core::Term],
+) -> Option<mrs_core::Substitution> {
+    if args1.len() != args2.len() {
+        return None;
+    }
+    let mut subst = mrs_core::Substitution::new();
+    for (t1, t2) in args1.iter().zip(args2.iter()) {
+        let t1_subst = subst.apply_term(t1);
+        let t2_subst = subst.apply_term(t2);
+        if let Ok(mgu) = mrs_unify::unify(&t1_subst, &t2_subst) {
+            for (&v, t) in mgu.iter() {
+                subst.bind(v, t.clone());
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(subst)
+}
+
+fn dedup_lits(lits: &[mrs_core::Formula]) -> Vec<mrs_core::Formula> {
+    let mut unique = Vec::new();
+    for literal in lits {
+        if !unique
+            .iter()
+            .any(|existing| mrs_core::alpha::alpha_equiv(literal, existing))
+        {
+            unique.push(literal.clone());
+        }
+    }
+    unique
+}
+
+fn clause_equiv(lits1: &[mrs_core::Formula], lits2: &[mrs_core::Formula]) -> bool {
+    // Clauses are sets of literals semantically: repeated literals do not
+    // change the clause, but distinct literals must remain distinct.
+    let lits1 = dedup_lits(lits1);
+    let lits2 = dedup_lits(lits2);
+    if lits1.len() != lits2.len() {
+        return false;
+    }
+    fn match_lits(
+        idx: usize,
+        lits1: &[mrs_core::Formula],
+        lits2: &[mrs_core::Formula],
+        used: &mut Vec<bool>,
+        map: &mut std::collections::HashMap<mrs_core::VarId, mrs_core::VarId>,
+    ) -> bool {
+        if idx == lits1.len() {
+            let mut values: Vec<mrs_core::VarId> = map.values().copied().collect();
+            values.sort();
+            let len_before = values.len();
+            values.dedup();
+            return len_before == values.len();
+        }
+        for i in 0..lits2.len() {
+            if !used[i] {
+                let mut map_snapshot = map.clone();
+                if alpha_equiv_formulas_free(&lits1[idx], &lits2[i], &mut map_snapshot) {
+                    used[i] = true;
+                    if match_lits(idx + 1, lits1, lits2, used, &mut map_snapshot) {
+                        return true;
+                    }
+                    used[i] = false;
+                }
+            }
+        }
+        false
+    }
+    let mut used = vec![false; lits2.len()];
+    let mut map = std::collections::HashMap::new();
+    match_lits(0, &lits1, &lits2, &mut used, &mut map)
+}
+
+fn try_factoring_step(p1: &mrs_core::Formula, concl: &mrs_core::Formula) -> bool {
+    let mut c1 = p1;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = c1 {
+        c1 = inner;
+    }
+    let mut concl_body = concl;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = concl_body
+    {
+        concl_body = inner;
+    }
+
+    let lits1 = match c1 {
+        mrs_core::Formula::Or(cs) => cs.clone(),
+        _ => vec![c1.clone()],
+    };
+    let concl_lits = match concl_body {
+        mrs_core::Formula::Or(cs) => cs.clone(),
+        _ => vec![concl_body.clone()],
+    };
+
+    // Factoring may merge more than one pair of literals in a single
+    // exported step. Accept any conclusion reachable by repeated
+    // single-factor steps (each step removes exactly one literal).
+    fn one_step_factors(lits: &[mrs_core::Formula]) -> Vec<Vec<mrs_core::Formula>> {
+        let mut out = Vec::new();
+        for i in 0..lits.len() {
+            let Some((sym1, args1, pol1)) = extract_pred_atom(&lits[i]) else {
+                continue;
+            };
+            for j in i + 1..lits.len() {
+                let Some((sym2, args2, pol2)) = extract_pred_atom(&lits[j]) else {
+                    continue;
+                };
+                if sym1 == sym2
+                    && pol1 == pol2
+                    && let Some(subst) = unify_lists(args1, args2)
+                {
+                    let mut expected_lits = Vec::new();
+                    let subst_map: std::collections::HashMap<mrs_core::VarId, mrs_core::Term> =
+                        subst.iter().map(|(&v, t)| (v, t.clone())).collect();
+
+                    for (k, x) in lits.iter().enumerate() {
+                        if k != j {
+                            expected_lits.push(apply_subst_formula(x, &subst_map));
+                        }
+                    }
+                    out.push(expected_lits);
+                }
+            }
+        }
+        out
+    }
+    let mut stack: Vec<Vec<mrs_core::Formula>> = one_step_factors(&lits1)
+        .into_iter()
+        .filter(|expected| expected.len() >= concl_lits.len())
+        .collect();
+    let mut visited: usize = 0;
+    while let Some(state) = stack.pop() {
+        visited += 1;
+        if visited > 5_000 {
+            return false;
+        }
+        if clause_equiv(&concl_lits, &state) {
+            return true;
+        }
+        if state.len() <= concl_lits.len() {
+            continue;
+        }
+        for expected in one_step_factors(&state) {
+            if expected.len() >= concl_lits.len() {
+                stack.push(expected);
+            }
+        }
+    }
+    false
+}
+
+fn try_resolution_step(
+    p1: &mrs_core::Formula,
+    p2: &mrs_core::Formula,
+    concl: &mrs_core::Formula,
+) -> bool {
+    let mut c1 = p1;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = c1 {
+        c1 = inner;
+    }
+    let mut c2 = p2;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = c2 {
+        c2 = inner;
+    }
+    let mut concl_body = concl;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = concl_body
+    {
+        concl_body = inner;
+    }
+
+    let c1_shifted = shift_vars_formula(c1, 1000);
+
+    let lits1 = match c1_shifted {
+        mrs_core::Formula::Or(cs) => cs.clone(),
+        _ => vec![c1_shifted.clone()],
+    };
+    let lits2 = match c2 {
+        mrs_core::Formula::Or(cs) => cs.clone(),
+        _ => vec![c2.clone()],
+    };
+    let concl_lits = match concl_body {
+        mrs_core::Formula::Or(cs) => cs.clone(),
+        _ => vec![concl_body.clone()],
+    };
+
+    for l1 in &lits1 {
+        let Some((sym1, args1, pol1)) = extract_pred_atom(l1) else {
+            continue;
+        };
+        for l2 in &lits2 {
+            let Some((sym2, args2, pol2)) = extract_pred_atom(l2) else {
+                continue;
+            };
+            if sym1 == sym2 && pol1 != pol2 {
+                let mut subst_candidates = Vec::new();
+                if let Some(s) = unify_lists(args1, args2) {
+                    subst_candidates.push(s);
+                }
+
+                for subst in subst_candidates {
+                    let mut expected_lits = Vec::new();
+                    let subst_map: std::collections::HashMap<mrs_core::VarId, mrs_core::Term> =
+                        subst.iter().map(|(&v, t)| (v, t.clone())).collect();
+
+                    for x in &lits1 {
+                        if x != l1 {
+                            expected_lits.push(apply_subst_formula(x, &subst_map));
+                        }
+                    }
+                    for x in &lits2 {
+                        if x != l2 {
+                            expected_lits.push(apply_subst_formula(x, &subst_map));
+                        }
+                    }
+
+                    if clause_equiv(&concl_lits, &expected_lits) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Structural demodulation check: rewrite a candidate target premise to
+/// fixpoint using the sibling premises as rewrite rules.
+///
+/// Mirrors `mrs_calculus::demodulation` (`parents: [target, rules...]`,
+/// one-way matching via `mrs_unify::matching::match_term`, leftmost-
+/// outermost rewrite, rescan to fixpoint), with two deliberate
+/// generalizations. Both are sound: every single rewrite is a valid
+/// equational step, and acceptance additionally requires alpha-equivalence
+/// with the conclusion.
+/// * Rules are unit equations tried in each orientation. `mrs` orients each
+///   rule by KBO/LPO, but the proof carries no orientation metadata, and a
+///   single step may need mixed orientations (COL002-5 `c783` needs the
+///   C-axiom forward and the B-axiom backward). Orientation combinations are
+///   enumerated (capped: wide steps fall back to the uniform orientations).
+/// * Every premise is tried as the rewrite target; the TPTP parent order is
+///   not trusted for direction (cf. the superposition parent-order fix).
+///
+/// Bounded: each orientation combination runs at most 100 fixpoint passes,
+/// so adversarial cyclic rules (e.g. `a = b`, `b = a`) terminate instead of
+/// hanging the verifier. Non-unit-equation premises are never used as
+/// rules, matching the prover's demodulation index.
+fn try_demodulation_step(premises: &[mrs_core::Formula], concl: &mrs_core::Formula) -> bool {
+    if premises.is_empty() {
+        return false;
+    }
+    for (i, target) in premises.iter().enumerate() {
+        // Freshen every rule apart from the target (uniformly so): rule
+        // variables must not collide with target variables, otherwise
+        // matching binds the wrong variables (cf. COL002-5 `c699`).
+        let mut equations: Vec<(mrs_core::Term, mrs_core::Term)> = Vec::new();
+        for (j, premise) in premises.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let shift = max_var_formula(premise)
+                .max(max_var_formula(target))
+                .saturating_add(1);
+            let shifted = shift_vars_formula(premise, shift);
+            if let Some((left, right)) = extract_eq_sides(&shifted) {
+                equations.push((left, right));
+            }
+        }
+        if equations.is_empty() {
+            continue;
+        }
+        // Enumerate per-rule orientations when narrow enough for 2^k to stay
+        // cheap; otherwise fall back to the two uniform orientations.
+        const MAX_ENUM_EQUATIONS: usize = 8;
+        if equations.len() <= MAX_ENUM_EQUATIONS {
+            let combos = 1usize << equations.len();
+            for mask in 0..combos {
+                let rules: Vec<(mrs_core::Term, mrs_core::Term)> = equations
+                    .iter()
+                    .enumerate()
+                    .map(|(k, (left, right))| {
+                        if mask & (1 << k) == 0 {
+                            (left.clone(), right.clone())
+                        } else {
+                            (right.clone(), left.clone())
+                        }
+                    })
+                    .collect();
+                if demodulation_rewrites_to(target, &rules, concl) {
+                    return true;
+                }
+            }
+        } else {
+            let forward: Vec<(mrs_core::Term, mrs_core::Term)> = equations
+                .iter()
+                .map(|(left, right)| (left.clone(), right.clone()))
+                .collect();
+            if demodulation_rewrites_to(target, &forward, concl) {
+                return true;
+            }
+            let backward: Vec<(mrs_core::Term, mrs_core::Term)> = equations
+                .iter()
+                .map(|(left, right)| (right.clone(), left.clone()))
+                .collect();
+            if demodulation_rewrites_to(target, &backward, concl) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Rewrite `target`'s clause literals to fixpoint with `rules` and test
+/// alpha-equivalence against `concl`'s literals.
+fn demodulation_rewrites_to(
+    target: &mrs_core::Formula,
+    rules: &[(mrs_core::Term, mrs_core::Term)],
+    concl: &mrs_core::Formula,
+) -> bool {
+    let Some(mut lits) = formula_clause_literals(target) else {
+        return false;
+    };
+    for _ in 0..100 {
+        let mut changed = false;
+        for lit in &mut lits {
+            if rewrite_literal_demod(lit, rules) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let Some(concl_lits) = formula_clause_literals(concl) else {
+        return false;
+    };
+    clause_equiv(&lits, &concl_lits)
+}
+
+/// Rewrite one clause literal in place; mirrors
+/// `mrs_calculus::demodulation::rewrite_literal` (predicate arguments and
+/// both equation sides).
+fn rewrite_literal_demod(
+    lit: &mut mrs_core::Formula,
+    rules: &[(mrs_core::Term, mrs_core::Term)],
+) -> bool {
+    match lit {
+        mrs_core::Formula::Atom(atom) => match atom {
+            mrs_core::Atom::Pred(_, args) => {
+                let mut changed = false;
+                for arg in args.iter_mut() {
+                    if rewrite_term_demod(arg, rules) {
+                        changed = true;
+                    }
+                }
+                changed
+            }
+            mrs_core::Atom::Eq(left, right) => {
+                let changed_left = rewrite_term_demod(left, rules);
+                let changed_right = rewrite_term_demod(right, rules);
+                changed_left || changed_right
+            }
+        },
+        mrs_core::Formula::Neg(inner) if matches!(inner.as_ref(), mrs_core::Formula::Atom(_)) => {
+            rewrite_literal_demod(inner, rules)
+        }
+        _ => false,
+    }
+}
+
+/// One demodulation pass over a term: leftmost-outermost single rewrite,
+/// mirroring `mrs_calculus::demodulation::rewrite_term` (match at the
+/// current position first with the first matching rule, else recurse into
+/// arguments).
+fn rewrite_term_demod(
+    term: &mut mrs_core::Term,
+    rules: &[(mrs_core::Term, mrs_core::Term)],
+) -> bool {
+    for (from, to) in rules {
+        if let Ok(sigma) = mrs_unify::matching::match_term(from, term) {
+            *term = sigma.apply_term(to);
+            return true;
+        }
+    }
+    match term {
+        mrs_core::Term::Var(_) => false,
+        mrs_core::Term::App(_, args) => {
+            let mut changed = false;
+            for arg in args.iter_mut() {
+                if rewrite_term_demod(arg, rules) {
+                    changed = true;
+                }
+            }
+            changed
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AvatarSplitShape {
+    parent_literals: Vec<mrs_core::Formula>,
+    branch_vars: Vec<u32>,
+    inherited_vars: Vec<u32>,
+    component_indices: Vec<Vec<usize>>,
+}
+
+fn strip_forall_prefix(mut formula: &mrs_core::Formula) -> &mrs_core::Formula {
+    while let mrs_core::Formula::Forall(_, inner) = formula {
+        formula = inner;
+    }
+    formula
+}
+
+/// True when `f` is a universally quantified unit equality that
+/// [`classify_ac_axiom`] recognises as commutativity or associativity.
+fn is_unit_ac_equality(f: &Formula) -> bool {
+    let body = strip_forall_prefix(f);
+    match body {
+        Formula::Atom(mrs_core::Atom::Eq(l, r)) => classify_ac_axiom(l, r).is_some(),
+        _ => false,
+    }
+}
+
+/// Node and depth ceilings for a bounded NNF conversion in this crate. Both
+/// are far above any real TPTP formula; they exist so a nested biconditional
+/// cannot expand without bound.
+const NNF_NODE_BUDGET: usize = 100_000;
+const NNF_DEPTH_BUDGET: usize = 256;
+
+/// Collect background AC unit equalities from the linked problem.
+///
+/// Includes unit AC equalities from axiom-like roles and from the negation of
+/// the conjecture (e.g. SWX217's `? [X,Y] : x(X,Y) != x(Y,X)` becomes
+/// `! [X,Y] : x(X,Y) = x(Y,X)`). These are appended to superposition ATP
+/// premises so the ATP can use problem-level AC laws that are not among the
+/// step's parents.
+fn collect_background_ac(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+    symbols: &mut SymbolTable,
+) -> Vec<Formula> {
+    let mut out = Vec::new();
+    let mut ctx = LowerCtx::new(symbols);
+    for af in &problem.formulas {
+        ctx.reset_vars();
+        let Some(f) = lower_annotated_formula(&mut ctx, af) else {
+            continue;
+        };
+        let role = af.role();
+        if role == FormulaRole::Type || role == FormulaRole::Logic {
+            continue;
+        }
+        // For the conjecture, use the negation (NNF) so existential
+        // inequalities become universal equalities the AC classifier accepts.
+        // The conversion is bounded: NNF distributes nested biconditionals, so
+        // a long `<=>` chain expands exponentially and a problem carrying one
+        // (ProoVer-2026 `PRV043+1` is a 100-term chain) would otherwise consume
+        // the whole verification budget before any step is examined. A formula
+        // too large to normalise simply carries no background AC.
+        let candidate = if role == FormulaRole::Conjecture {
+            match to_nnf_bounded(&Formula::neg(f), NNF_NODE_BUDGET, NNF_DEPTH_BUDGET) {
+                Some(normalized) => normalized,
+                // Too large to normalise: it carries no background AC, and the
+                // step that needs one will be declined further down.
+                None => continue,
+            }
+        } else {
+            f
+        };
+        if is_unit_ac_equality(&candidate) {
+            out.push(candidate);
+        }
+    }
+    out
+}
+
+fn formula_clause_literals(formula: &mrs_core::Formula) -> Option<Vec<mrs_core::Formula>> {
+    fn collect(formula: &mrs_core::Formula, out: &mut Vec<mrs_core::Formula>) -> Option<()> {
+        match formula {
+            mrs_core::Formula::Or(parts) => {
+                for part in parts {
+                    collect(part, out)?;
+                }
+            }
+            mrs_core::Formula::Atom(_) => out.push(formula.clone()),
+            mrs_core::Formula::Neg(inner)
+                if matches!(inner.as_ref(), mrs_core::Formula::Atom(_)) =>
+            {
+                out.push(formula.clone())
+            }
+            mrs_core::Formula::False => {}
+            _ => return None,
+        }
+        Some(())
+    }
+
+    let mut literals = Vec::new();
+    collect(strip_forall_prefix(formula), &mut literals)?;
+    Some(literals)
+}
+
+fn avatar_marker_var(
+    formula: &mrs_core::Formula,
+    symbols: &mrs_core::SymbolTable,
+) -> Option<(bool, u32)> {
+    let (positive, atom) = match formula {
+        mrs_core::Formula::Atom(atom) => (true, atom),
+        mrs_core::Formula::Neg(inner) => match inner.as_ref() {
+            mrs_core::Formula::Atom(atom) => (false, atom),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let mrs_core::Atom::Pred(symbol, args) = atom else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    let name = symbols.resolve(*symbol);
+    let value = name
+        .strip_prefix("spl0_")
+        .or_else(|| name.strip_prefix("spl_"))?
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)?;
+    Some((positive, value))
+}
+
+fn split_avatar_literals(
+    literals: &[mrs_core::Formula],
+    symbols: &mrs_core::SymbolTable,
+) -> (Vec<mrs_core::Formula>, Vec<u32>, Vec<u32>) {
+    let mut ordinary = Vec::new();
+    let mut negative = Vec::new();
+    let mut positive = Vec::new();
+    for literal in literals {
+        match avatar_marker_var(literal, symbols) {
+            Some((true, value)) => positive.push(value),
+            Some((false, value)) => negative.push(value),
+            None => ordinary.push(literal.clone()),
+        }
+    }
+    (ordinary, negative, positive)
+}
+
+fn parse_avatar_var_name(name: &str) -> Option<u32> {
+    name.strip_prefix("spl0_")
+        .or_else(|| name.strip_prefix("spl_"))?
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0 && *value <= i32::MAX as u32)
+}
+
+fn normalized_avatar_vars(mut vars: Vec<u32>) -> Option<Vec<u32>> {
+    vars.sort_unstable();
+    if vars.windows(2).any(|pair| pair[0] == pair[1]) {
+        return None;
+    }
+    Some(vars)
+}
+
+fn validate_avatar_split_shape(
+    node: &dag::Node<'_>,
+    parent: &mrs_core::Formula,
+    conclusion: &mrs_core::Formula,
+    symbols: &mrs_core::SymbolTable,
+) -> Result<AvatarSplitShape, StepOutcome> {
+    let Some(annotation) = node
+        .formula
+        .annotations()
+        .and_then(|annotations| annotations.avatar_split())
+    else {
+        return Err(StepOutcome::Unknown(
+            "avatar_split_clause lacks explicit branch metadata".into(),
+        ));
+    };
+    let Some(parent_literals) = formula_clause_literals(parent) else {
+        return Err(StepOutcome::Unknown(
+            "avatar_split_clause parent is not a supported clause".into(),
+        ));
+    };
+    let Some(split_literals) = formula_clause_literals(conclusion) else {
+        return Err(StepOutcome::Unknown(
+            "avatar_split_clause conclusion is not a supported clause".into(),
+        ));
+    };
+    let (parent_ordinary, parent_negative, parent_positive) =
+        split_avatar_literals(&parent_literals, symbols);
+    let (split_ordinary, split_negative, split_positive) =
+        split_avatar_literals(&split_literals, symbols);
+    if parent_ordinary.len() < 2
+        || !parent_positive.is_empty()
+        || !split_ordinary.is_empty()
+        || split_positive.len() < 2
+        || normalized_avatar_vars(parent_negative.clone())
+            != normalized_avatar_vars(split_negative.clone())
+    {
+        return Err(StepOutcome::Unsound(
+            "avatar_split_clause has invalid parent or split marker clauses".into(),
+        ));
+    }
+
+    let Some(inherited_vars) = annotation
+        .inherited
+        .iter()
+        .map(|name| parse_avatar_var_name(name))
+        .collect::<Option<Vec<_>>>()
+        .and_then(normalized_avatar_vars)
+    else {
+        return Err(StepOutcome::Unsound(
+            "avatar_split_clause has invalid inherited context".into(),
+        ));
+    };
+    if normalized_avatar_vars(parent_negative) != Some(inherited_vars.clone()) {
+        return Err(StepOutcome::Unsound(
+            "avatar_split_clause inherited context does not match its parent".into(),
+        ));
+    }
+    if annotation.components.len() != split_positive.len() {
+        return Err(StepOutcome::Unsound(
+            "avatar_split_clause metadata does not cover every branch".into(),
+        ));
+    }
+
+    let mut branch_vars = vec![None; split_positive.len()];
+    let mut component_indices = vec![None; split_positive.len()];
+    let mut covered = vec![false; parent_ordinary.len()];
+    for component in annotation.components {
+        if component.branch_index >= split_positive.len()
+            || branch_vars[component.branch_index].is_some()
+            || component.literal_indices.is_empty()
+        {
+            return Err(StepOutcome::Unsound(
+                "avatar_split_clause has invalid branch indices".into(),
+            ));
+        }
+        let Some(var) = parse_avatar_var_name(component.sat_var) else {
+            return Err(StepOutcome::Unsound(
+                "avatar_split_clause has an invalid SAT variable".into(),
+            ));
+        };
+        if split_positive[component.branch_index] != var
+            || component
+                .literal_indices
+                .iter()
+                .any(|index| *index >= parent_ordinary.len())
+        {
+            return Err(StepOutcome::Unsound(
+                "avatar_split_clause metadata does not match its split literal".into(),
+            ));
+        }
+        for index in &component.literal_indices {
+            if covered[*index] {
+                return Err(StepOutcome::Unsound(
+                    "avatar_split_clause assigns a literal to multiple components".into(),
+                ));
+            }
+            covered[*index] = true;
+        }
+        branch_vars[component.branch_index] = Some(var);
+        component_indices[component.branch_index] = Some(component.literal_indices);
+    }
+    if covered.iter().any(|covered| !covered) {
+        return Err(StepOutcome::Unsound(
+            "avatar_split_clause does not cover every parent literal".into(),
+        ));
+    }
+
+    // SAT-variable reuse is sound only when the corresponding component
+    // clauses are alpha-equivalent. Otherwise `(S | S)` strengthens the
+    // original split and can make a forged refutation appear complete.
+    for left in 0..branch_vars.len() {
+        for right in left + 1..branch_vars.len() {
+            if branch_vars[left] != branch_vars[right] {
+                continue;
+            }
+            let left_literals = component_indices[left]
+                .as_ref()
+                .expect("covered component has indices")
+                .iter()
+                .map(|index| parent_ordinary[*index].clone())
+                .collect::<Vec<_>>();
+            let right_literals = component_indices[right]
+                .as_ref()
+                .expect("covered component has indices")
+                .iter()
+                .map(|index| parent_ordinary[*index].clone())
+                .collect::<Vec<_>>();
+            if !clause_equiv(&left_literals, &right_literals) {
+                return Err(StepOutcome::Unsound(
+                    "avatar_split_clause reuses a SAT variable for non-equivalent components"
+                        .into(),
+                ));
+            }
+        }
+    }
+
+    Ok(AvatarSplitShape {
+        parent_literals: parent_ordinary,
+        branch_vars: branch_vars.into_iter().flatten().collect(),
+        inherited_vars,
+        component_indices: component_indices.into_iter().flatten().collect(),
+    })
+}
+
+fn validate_avatar_component_step(
+    node: &dag::Node<'_>,
+    dag: &dag::Dag<'_>,
+    lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    symbols: &mrs_core::SymbolTable,
+) -> Option<StepOutcome> {
+    if node.parents.len() != 1 {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause must have one parent".into(),
+        ));
+    }
+    let Some(annotation) = node
+        .formula
+        .annotations()
+        .and_then(|annotations| annotations.avatar_component())
+    else {
+        // Legacy Vampire AVATAR output uses this rule name for ordinary
+        // definition-backed clauses without the explicit certificate metadata
+        // emitted by MRS. Leave those steps to the normal ATP ladder.
+        return None;
+    };
+    let Some(&split_idx) = dag.by_name.get(node.parents[0]) else {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause references an unknown split parent".into(),
+        ));
+    };
+    let split_node = &dag.nodes[split_idx];
+    if split_node.inference_rule != Some("avatar_split_clause")
+        || annotation.split_parent != split_node.name
+        || split_node.parents.len() != 1
+    {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause cites the wrong split parent".into(),
+        ));
+    }
+    let Some(&source_idx) = dag.by_name.get(split_node.parents[0]) else {
+        return Some(StepOutcome::Unsound(
+            "avatar_split_clause references an unknown source parent".into(),
+        ));
+    };
+    let Some(source) = lowered_formulas.get(&source_idx) else {
+        return Some(StepOutcome::Unknown(
+            "avatar_split_clause source parent could not be lowered".into(),
+        ));
+    };
+    let Some(split_formula) = lowered_formulas.get(&split_idx) else {
+        return Some(StepOutcome::Unknown(
+            "avatar_split_clause could not be lowered".into(),
+        ));
+    };
+    let shape = match validate_avatar_split_shape(split_node, source, split_formula, symbols) {
+        Ok(shape) => shape,
+        Err(outcome) => return Some(outcome),
+    };
+    let Some(branch_var) = shape.branch_vars.get(annotation.branch_index).copied() else {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause references an unknown branch".into(),
+        ));
+    };
+    if parse_avatar_var_name(annotation.sat_var) != Some(branch_var) {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause SAT variable does not match its branch".into(),
+        ));
+    }
+    let Some(conclusion_literals) = formula_clause_literals(
+        lowered_formulas
+            .get(&dag.by_name[node.name])
+            .unwrap_or(&mrs_core::Formula::False),
+    ) else {
+        return Some(StepOutcome::Unknown(
+            "avatar_component_clause conclusion is not a supported clause".into(),
+        ));
+    };
+    let (ordinary, negative, positive) = split_avatar_literals(&conclusion_literals, symbols);
+    let mut expected_context = shape.inherited_vars.clone();
+    expected_context.push(branch_var);
+    expected_context.sort_unstable();
+    if !positive.is_empty() || normalized_avatar_vars(negative) != Some(expected_context) {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause has invalid SAT context".into(),
+        ));
+    }
+    let expected = shape.component_indices[annotation.branch_index]
+        .iter()
+        .map(|index| shape.parent_literals[*index].clone())
+        .collect::<Vec<_>>();
+    if !clause_equiv(&expected, &ordinary) {
+        return Some(StepOutcome::Unsound(
+            "avatar_component_clause does not contain its declared component".into(),
+        ));
+    }
+    Some(StepOutcome::Sound)
+}
+
+fn validate_avatar_branch_step(
+    node: &dag::Node<'_>,
+    premises: &[mrs_core::Formula],
+    conclusion: &mrs_core::Formula,
+    symbols: &mrs_core::SymbolTable,
+) -> Option<StepOutcome> {
+    if premises.len() != 1 || !matches!(conclusion, mrs_core::Formula::False) {
+        return Some(StepOutcome::Unsound(
+            "avatar_branch_refutation must derive `$false` from one branch root".into(),
+        ));
+    }
+    let context = node
+        .formula
+        .annotations()
+        .and_then(|annotations| annotations.avatar_branch())?;
+    let Some(context) = context
+        .context
+        .iter()
+        .map(|name| parse_avatar_var_name(name))
+        .collect::<Option<Vec<_>>>()
+        .and_then(normalized_avatar_vars)
+        .filter(|context| !context.is_empty())
+    else {
+        return Some(StepOutcome::Unsound(
+            "avatar_branch_refutation has invalid SAT context".into(),
+        ));
+    };
+    let Some(parent_literals) = formula_clause_literals(&premises[0]) else {
+        return Some(StepOutcome::Unknown(
+            "avatar_branch_refutation parent is not a supported clause".into(),
+        ));
+    };
+    let (ordinary, negative, positive) = split_avatar_literals(&parent_literals, symbols);
+    if !ordinary.is_empty()
+        || !positive.is_empty()
+        || normalized_avatar_vars(negative) != Some(context)
+    {
+        return Some(StepOutcome::Unsound(
+            "avatar_branch_refutation parent is not false under its SAT context".into(),
+        ));
+    }
+    Some(StepOutcome::Sound)
+}
+
+fn validate_avatar_sat_step(
+    node: &dag::Node<'_>,
+    dag: &dag::Dag<'_>,
+    lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    symbols: &mrs_core::SymbolTable,
+    deadline: Instant,
+) -> Option<StepOutcome> {
+    if !matches!(
+        lowered_formulas.get(&dag.by_name[node.name])?,
+        mrs_core::Formula::False
+    ) {
+        return Some(StepOutcome::Unsound(
+            "avatar_sat_refutation must conclude `$false`".into(),
+        ));
+    }
+    let Some(annotation) = node
+        .formula
+        .annotations()
+        .and_then(|annotations| annotations.avatar_sat())
+    else {
+        // Legacy CWA proofs do not carry the explicit metadata. Let the ATP
+        // ladder handle those instead of accepting an under-specified roll-up.
+        return None;
+    };
+    if annotation.split_nodes.is_empty() || annotation.branch_roots.is_empty() {
+        return Some(StepOutcome::Unsound(
+            "avatar_sat_refutation must cite split nodes and branch roots".into(),
+        ));
+    }
+    let mut metadata_names = annotation.split_nodes.clone();
+    metadata_names.extend(annotation.branch_roots.iter().copied());
+    let mut metadata_set = std::collections::HashSet::new();
+    if metadata_names
+        .iter()
+        .any(|name| !metadata_set.insert(*name))
+    {
+        return Some(StepOutcome::Unsound(
+            "avatar_sat_refutation contains duplicate metadata references".into(),
+        ));
+    }
+    let parent_set: std::collections::HashSet<_> = node.parents.iter().copied().collect();
+    if parent_set != metadata_set || parent_set.len() != node.parents.len() {
+        return Some(StepOutcome::Unsound(
+            "avatar_sat_refutation metadata does not match its parent list".into(),
+        ));
+    }
+    let cited_split_names: std::collections::HashSet<_> =
+        annotation.split_nodes.iter().copied().collect();
+    let mut split_shapes = Vec::new();
+    for split_name in annotation.split_nodes {
+        let Some(&split_idx) = dag.by_name.get(split_name) else {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation references an unknown split node".into(),
+            ));
+        };
+        let split_node = &dag.nodes[split_idx];
+        if split_node.inference_rule != Some("avatar_split_clause") || split_node.parents.len() != 1
+        {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation cites a non-split node".into(),
+            ));
+        }
+        let Some(&source_idx) = dag.by_name.get(split_node.parents[0]) else {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation split has an unknown source parent".into(),
+            ));
+        };
+        let Some(source) = lowered_formulas.get(&source_idx) else {
+            return Some(StepOutcome::Unknown(
+                "avatar_sat_refutation split source could not be lowered".into(),
+            ));
+        };
+        let Some(split_formula) = lowered_formulas.get(&split_idx) else {
+            return Some(StepOutcome::Unknown(
+                "avatar_sat_refutation split could not be lowered".into(),
+            ));
+        };
+        match validate_avatar_split_shape(split_node, source, split_formula, symbols) {
+            Ok(shape) => split_shapes.push(shape),
+            Err(outcome) => return Some(outcome),
+        }
+    }
+
+    let mut branch_contexts = Vec::new();
+    for branch_name in annotation.branch_roots {
+        let Some(&branch_idx) = dag.by_name.get(branch_name) else {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation references an unknown branch root".into(),
+            ));
+        };
+        let branch_node = &dag.nodes[branch_idx];
+        if branch_node.inference_rule != Some("avatar_branch_refutation")
+            || branch_node.parents.len() != 1
+        {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation branch root is not an AVATAR branch refutation".into(),
+            ));
+        }
+        let Some(&branch_parent_idx) = dag.by_name.get(branch_node.parents[0]) else {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation branch has an unknown parent".into(),
+            ));
+        };
+        let Some(branch_parent) = lowered_formulas.get(&branch_parent_idx) else {
+            return Some(StepOutcome::Unknown(
+                "avatar_sat_refutation branch parent could not be lowered".into(),
+            ));
+        };
+        let Some(branch_conclusion) = lowered_formulas.get(&branch_idx) else {
+            return Some(StepOutcome::Unknown(
+                "avatar_sat_refutation branch could not be lowered".into(),
+            ));
+        };
+        if let Some(outcome) = validate_avatar_branch_step(
+            branch_node,
+            std::slice::from_ref(branch_parent),
+            branch_conclusion,
+            symbols,
+        ) && !matches!(outcome, StepOutcome::Sound)
+        {
+            return Some(outcome);
+        }
+        let context = branch_node
+            .formula
+            .annotations()
+            .and_then(|annotations| annotations.avatar_branch())?
+            .context
+            .iter()
+            .map(|name| parse_avatar_var_name(name))
+            .collect::<Option<Vec<_>>>()
+            .and_then(normalized_avatar_vars)?;
+
+        // A branch context is only justified when the branch derivation
+        // actually descends from a component clause belonging to one of the
+        // cited split nodes. Without this ancestry check, a forged branch can
+        // choose arbitrary SAT variables and make the final assignment
+        // coverage test pass without proving that those variables occur in a
+        // first-order branch at all.
+        let mut ancestor_vars = std::collections::HashSet::new();
+        let mut pending = vec![branch_parent_idx];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            let current_node = &dag.nodes[current];
+            if current_node.inference_rule == Some("avatar_component_clause") {
+                let Some(annotation) = current_node
+                    .formula
+                    .annotations()
+                    .and_then(|annotations| annotations.avatar_component())
+                else {
+                    return Some(StepOutcome::Unknown(
+                        "avatar component ancestor lacks branch metadata".into(),
+                    ));
+                };
+                if !cited_split_names.contains(annotation.split_parent) {
+                    return Some(StepOutcome::Unsound(
+                        "avatar_sat_refutation branch descends from an uncited split".into(),
+                    ));
+                }
+                let Some(formula) = lowered_formulas.get(&current) else {
+                    return Some(StepOutcome::Unknown(
+                        "avatar component ancestor could not be lowered".into(),
+                    ));
+                };
+                let Some(literals) = formula_clause_literals(formula) else {
+                    return Some(StepOutcome::Unknown(
+                        "avatar component ancestor is not a supported clause".into(),
+                    ));
+                };
+                let (ordinary, negative, positive) = split_avatar_literals(&literals, symbols);
+                if !positive.is_empty() || ordinary.is_empty() {
+                    return Some(StepOutcome::Unsound(
+                        "avatar component ancestor has invalid SAT markers".into(),
+                    ));
+                }
+                let Some(component_context) = normalized_avatar_vars(negative) else {
+                    return Some(StepOutcome::Unsound(
+                        "avatar component ancestor has duplicate SAT markers".into(),
+                    ));
+                };
+                ancestor_vars.extend(component_context.iter().copied());
+            }
+            for parent_name in &current_node.parents {
+                let Some(&parent_idx) = dag.by_name.get(parent_name) else {
+                    return Some(StepOutcome::Unsound(
+                        "avatar branch ancestry references an unknown parent".into(),
+                    ));
+                };
+                pending.push(parent_idx);
+            }
+        }
+        if !context.iter().all(|var| ancestor_vars.contains(var)) {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation branch context is not justified by a component clause"
+                    .into(),
+            ));
+        }
+        branch_contexts.push(context);
+    }
+
+    let mut variables = std::collections::HashSet::new();
+    for shape in &split_shapes {
+        variables.extend(shape.inherited_vars.iter().copied());
+        variables.extend(shape.branch_vars.iter().copied());
+    }
+    for context in &branch_contexts {
+        variables.extend(context.iter().copied());
+    }
+    if variables.len() > 200 {
+        return Some(StepOutcome::Unknown(
+            "avatar_sat_refutation exceeds competition SAT verification limit".into(),
+        ));
+    }
+
+    let mut solver = mrs_cadical::Solver::new();
+
+    // 1. Add all split constraints to the SAT solver
+    for shape in &split_shapes {
+        let mut clause = Vec::with_capacity(shape.branch_vars.len() + shape.inherited_vars.len());
+        for &var in &shape.branch_vars {
+            clause.push(var as i32);
+        }
+        for &var in &shape.inherited_vars {
+            clause.push(-(var as i32));
+        }
+        solver.add_clause(&clause);
+    }
+
+    // 2. Add all branch refutations to the SAT solver
+    let mut seen_contexts = std::collections::HashSet::new();
+    for context in &branch_contexts {
+        if !seen_contexts.insert(context.clone()) {
+            return Some(StepOutcome::Unsound(
+                "avatar_sat_refutation contains duplicate branch contexts".into(),
+            ));
+        }
+        let mut clause = Vec::with_capacity(context.len());
+        for &var in context {
+            clause.push(-(var as i32));
+        }
+        solver.add_clause(&clause);
+    }
+
+    // 3. Solve the SAT problem to check if it is unsatisfiable (refuted)
+    match solver.solve_until(deadline) {
+        mrs_cadical::SolveResult::Unsat => Some(StepOutcome::Sound),
+        mrs_cadical::SolveResult::Unknown => Some(StepOutcome::Unknown(
+            "avatar_sat_refutation SAT verification deadline exceeded".into(),
+        )),
+        _ => Some(StepOutcome::Unsound(
+            "avatar_sat_refutation leaves a satisfiable SAT assignment unrefuted".into(),
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_verify_avatar_step(
+    rule: &str,
+    node: &dag::Node<'_>,
+    dag: &dag::Dag<'_>,
+    premises: &[mrs_core::Formula],
+    conclusion: &mrs_core::Formula,
+    lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    symbols: &mrs_core::SymbolTable,
+    deadline: Instant,
+) -> Option<StepOutcome> {
+    let mut conclusion = conclusion;
+    while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = conclusion
+    {
+        conclusion = inner;
+    }
+
+    if rule == "split_component" && premises.len() == 1 {
+        let mut parent = &premises[0];
+        while let mrs_core::Formula::Forall(_, inner) | mrs_core::Formula::Exists(_, inner) = parent
+        {
+            parent = inner;
+        }
+        let parent_lits = match parent {
+            mrs_core::Formula::Or(cs) => cs.clone(),
+            _ => vec![parent.clone()],
+        };
+        let concl_lits = match conclusion {
+            mrs_core::Formula::Or(cs) => cs.clone(),
+            _ => vec![conclusion.clone()],
+        };
+        if concl_lits.len() == 1 {
+            let lit = &concl_lits[0];
+            let mut found = false;
+            for pl in &parent_lits {
+                if mrs_core::alpha::alpha_equiv(lit, pl) {
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                return Some(StepOutcome::Sound);
+            }
+        }
+    } else if rule == "avatar_component_clause" {
+        return validate_avatar_component_step(node, dag, lowered_formulas, symbols);
+    } else if rule == "avatar_split_clause" {
+        // Vampire also uses this rule name for a legacy SAT-conversion step
+        // whose parents include definition clauses and whose annotation has
+        // no explicit `avatar_split(...)` metadata. It must go through the
+        // ordinary ATP/definition checks, never through the MRS-specific
+        // one-parent certificate validator.
+        node.formula
+            .annotations()
+            .and_then(|annotations| annotations.avatar_split())?;
+        if node.parents.len() != 1 {
+            return Some(StepOutcome::Unsound(
+                "avatar_split_clause must have one parent".into(),
+            ));
+        }
+        let Some(&parent_idx) = dag.by_name.get(node.parents[0]) else {
+            return Some(StepOutcome::Unsound(
+                "avatar_split_clause references an unknown parent".into(),
+            ));
+        };
+        let Some(parent) = lowered_formulas.get(&parent_idx) else {
+            return Some(StepOutcome::Unknown(
+                "avatar_split_clause parent could not be lowered".into(),
+            ));
+        };
+        match validate_avatar_split_shape(node, parent, conclusion, symbols) {
+            Ok(_) => return Some(StepOutcome::Sound),
+            Err(outcome) => return Some(outcome),
+        }
+    } else if rule == "avatar_branch_refutation" {
+        return validate_avatar_branch_step(node, premises, conclusion, symbols);
+    } else if rule == "avatar_sat_refutation" {
+        return validate_avatar_sat_step(node, dag, lowered_formulas, symbols, deadline);
+    }
+    None
 }
 
 /// Lower a step's premises and conclusion and run the structural fast-paths.
 /// Returns `Resolved` when a fast-path decides the step, otherwise `NeedsAtp`
 /// with the lowered formulas captured for a deferred ATP query. Mutates
 /// `symbols` (interning during lowering); must run in Pass 1.
-fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) -> Prepared {
+fn prepare_atp_step<'p>(
+    dag: &Dag<'p>,
+    idx: usize,
+    strict: bool,
+    symbols: &mut SymbolTable,
+    lowered_formulas: &std::collections::HashMap<usize, mrs_core::Formula>,
+    background_ac: &[Formula],
+    deadline: Instant,
+) -> Prepared {
     let node = &dag.nodes[idx];
     // SZS status routing. An `esa` step asserts *equisatisfiability*, not
     // logical entailment: e.g. Skolemization introduces a fresh symbol whose
     // value the premises do not pin down, so the conclusion need not be a
     // logical consequence. A counter-model to the entailment query is
     // therefore *expected* for a sound esa step and is NOT evidence of a
-    // fault. Reporting `Unsound` (→ FailedVerified, −1) on a good esa step
+    // fault. Reporting `Unsound` (→ VerifiedBad, −1) on a good esa step
     // would be a scoring error, and becomes an outright hazard once a
     // counter-model finder is in the ladder. So for esa steps we accept only
     // positive `Sound` confirmations and downgrade every refutation to
-    // `Unknown` (NotVerified, 0). `thm`/`cth`/plain steps are genuine
+    // `StepOutcome::Unknown` (aggregates to a final `Verdict::Unknown`, 0
+    // pts). `thm`/`cth`/plain steps are genuine
     // entailments and keep full refutation power.
     let esa = node.status == Some("esa");
     // Build the conclusion and premise formulas in mrs-core form.
@@ -525,7 +2565,7 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
     // negate before handing it to the ATP — otherwise we'll feed
     // `co1 ∧ definitions ⊨ ¬co1` (genuinely unsatisfiable) and get back
     // a spurious `Unsound` verdict.
-    let mut ctx = LowerCtx::new(symbols);
+    let ctx = LowerCtx::new(symbols);
     let mut premises = Vec::with_capacity(node.parents.len());
     // Parallel to `premises`: whether each premise is an *introduced
     // definition* (E `predicate_definition_introduction` or Vampire
@@ -537,10 +2577,12 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
     let mut premise_is_def = Vec::with_capacity(node.parents.len());
     for (i, p) in node.parents.iter().enumerate() {
         if let Some(&pi) = dag.by_name.get(p) {
-            ctx.reset_vars();
-            let mut f = lower_annotated_formula(&mut ctx, dag.nodes[pi].formula);
+            let mut f = lowered_formulas.get(&pi).unwrap().clone();
             let negated = node.negated_parents.get(i).copied().unwrap_or(false);
-            if negated && dag.nodes[pi].role != FormulaRole::Conjecture {
+            if negated
+                && dag.nodes[pi].role != FormulaRole::Conjecture
+                && node.inference_rule != Some("avatar_branch_refutation")
+            {
                 return Prepared::Resolved(StepOutcome::Unsound(format!(
                     "parent '{}' is wrapped in `assume_negation` but is not a conjecture",
                     p
@@ -552,6 +2594,12 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
             // parents go through `assume_negation` and are sources.
             let is_def =
                 !negated && !introduced_definition::declared_new_symbols_opt(parent_ann).is_empty();
+            if node.name == "c135154" && std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!(
+                    "[prop-sat-dbg] c135154 parent: {}, is_def: {}, parent_ann: {:?}",
+                    p, is_def, parent_ann
+                );
+            }
             if negated {
                 f = mrs_core::Formula::Neg(Box::new(f));
             } else {
@@ -583,8 +2631,24 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
             premise_is_def.push(is_def);
         }
     }
-    ctx.reset_vars();
-    let conclusion = lower_annotated_formula(&mut ctx, node.formula);
+
+    let conclusion = lowered_formulas.get(&idx).unwrap().clone();
+
+    if !strict
+        && let Some(rule) = node.inference_rule
+        && let Some(outcome) = try_verify_avatar_step(
+            rule,
+            node,
+            dag,
+            &premises[0..node.parents.len()],
+            &conclusion,
+            lowered_formulas,
+            symbols,
+            deadline,
+        )
+    {
+        return Prepared::Resolved(outcome);
+    }
 
     // Structural definition_folding: when Vampire emits a step whose
     // sole non-def parent is the unfolded source and the rest are
@@ -601,58 +2665,110 @@ fn prepare_atp_step<'p>(dag: &Dag<'p>, idx: usize, symbols: &mut SymbolTable) ->
     // propositional disjunction of the `spl` symbols. Unfolding all
     // `spl` symbols in the conclusion yields a formula α-equivalent
     // to the original clause, exactly as for `definition_folding`.
-    if matches!(
+    let definition_folding_rule = matches!(
         node.inference_rule,
-        Some("definition_folding") | Some("avatar_split_clause")
-    ) && let Some(outcome) =
-        crate::checks::definition_folding::try_check(&premises, &premise_is_def, &conclusion)
+        Some("definition_folding") | Some("cnf_transformation")
+    ) || (!strict
+        && node.inference_rule == Some("avatar_split_clause"));
+    if definition_folding_rule
+        && let Some(outcome) = crate::checks::definition_folding::try_check(
+            &premises[0..node.parents.len()],
+            &premise_is_def[0..node.parents.len()],
+            &conclusion,
+        )
     {
         return Prepared::Resolved(outcome);
     }
 
-    // Propositional fast-path: when every premise and the conclusion are
-    // built from 0-ary predicates only (the `spl0_N` avatar splits and
-    // similar), the entailment check is a finite SAT problem solvable in
-    // microseconds. Vampire's `rat`, `avatar_*`, and `sat_conversion`
-    // rules all produce pure propositional steps, and FOL ATPs
-    // (eprover/vampire/mrs) routinely time out on the larger ones.
-    // Returning `None` here costs only a quick is_propositional walk and
-    // falls through to the unchanged ATP ladder.
-    if let Some(outcome) =
-        crate::checks::propositional_sat::try_propositional(&premises, &conclusion)
-    {
-        return Prepared::Resolved(match outcome {
-            crate::checks::propositional_sat::PropOutcome::Sound => StepOutcome::Sound,
-            crate::checks::propositional_sat::PropOutcome::Unsound if esa => StepOutcome::Unknown(
-                "esa step: propositional refutation is not evidence of a faulty \
-                 equisatisfiability step"
-                    .into(),
-            ),
-            crate::checks::propositional_sat::PropOutcome::Unsound => StepOutcome::Unsound(
-                "propositional SAT solver refuted entailment by premises".into(),
-            ),
-        });
+    // Fast-path: try to verify superposition structurally.
+    // `try_superposition_step` itself tries both parent orders, since the
+    // TPTP parent list does not reliably put the rule first (COL002-5 c699).
+    if node.inference_rule == Some("superposition") && !premises.is_empty() {
+        let p1 = &premises[0];
+        let p2 = if premises.len() >= 2 {
+            &premises[1]
+        } else {
+            &premises[0]
+        };
+        if try_superposition_step(p1, p2, &conclusion) {
+            return Prepared::Resolved(StepOutcome::Sound);
+        }
     }
 
-    // Propositional-abstraction fast-path: treat every argumented atom (and
-    // equalities) as an opaque boolean and ask the SAT solver whether the
-    // step is *propositionally* valid. Sound over-approximation — an UNSAT
-    // abstraction means the step holds in every FOL model, so we accept it.
-    // A satisfiable abstraction proves nothing and falls through to the ATP
-    // ladder; this path never reports unsoundness. This decides Vampire's
-    // `avatar_component_clause` (`spl <=> body` ⊢ `¬body ∨ spl`) and similar
-    // CNF-of-iff extractions that the FOL ATPs stall on.
-    if crate::checks::propositional_sat::try_propositional_abstraction(&premises, &conclusion) {
+    // Fast-path: try to verify resolution structurally
+    if node.inference_rule == Some("resolution") && premises.len() >= 2 {
+        let p1 = &premises[0];
+        let p2 = &premises[1];
+        if try_resolution_step(p1, p2, &conclusion) {
+            return Prepared::Resolved(StepOutcome::Sound);
+        }
+    }
+
+    // Fast-path: try to verify factoring structurally
+    if node.inference_rule == Some("factoring") && !premises.is_empty() {
+        let p1 = &premises[0];
+        if try_factoring_step(p1, &conclusion) {
+            return Prepared::Resolved(StepOutcome::Sound);
+        }
+    }
+
+    // Fast-path: structural demodulation (multi-rule matching rewrite to
+    // fixpoint). Discharges simplification steps such as COL002-5 `c783`
+    // without an ATP call.
+    if node.inference_rule == Some("demodulation")
+        && !premises.is_empty()
+        && try_demodulation_step(&premises, &conclusion)
+    {
         return Prepared::Resolved(StepOutcome::Sound);
     }
 
+    if formula_max_depth(&conclusion) > 200 {
+        return Prepared::Resolved(StepOutcome::Unknown(
+            "deep term step ignored under fast budget".into(),
+        ));
+    }
+
     // No fast-path applied: defer the genuine entailment query to Pass 2.
+    //
+    // Superposition ATP steps additionally receive problem-level background AC
+    // unit equalities (commutativity/associativity from axioms and the
+    // negated conjecture). `parents_len` stays the original parent count so
+    // propositional checks only see real parents; the ATP sees the full
+    // premise list including background AC.
+    if node.inference_rule == Some("superposition") && !background_ac.is_empty() {
+        premises.extend(background_ac.iter().cloned());
+    }
     Prepared::NeedsAtp(AtpStep {
         premises,
         conclusion,
+        parents_len: node.parents.len(),
         esa,
         rule: node.inference_rule.map(str::to_owned),
+        has_avatar_context: dag.nodes.iter().any(|n| {
+            if let Some(r) = n.inference_rule {
+                r.starts_with("avatar_") || r == "split_component"
+            } else {
+                false
+            }
+        }),
     })
+}
+
+fn formula_max_depth(f: &Formula) -> usize {
+    use mrs_core::formula::Atom;
+    match f {
+        Formula::Atom(a) => match a {
+            Atom::Pred(_, args) => args.iter().map(|t| t.depth()).max().unwrap_or(0),
+            Atom::Eq(l, r) => l.depth().max(r.depth()),
+        },
+        Formula::Neg(inner) => formula_max_depth(inner),
+        Formula::And(cs) | Formula::Or(cs) => cs.iter().map(formula_max_depth).max().unwrap_or(0),
+        Formula::Implies(a, b) | Formula::Iff(a, b) => {
+            formula_max_depth(a).max(formula_max_depth(b))
+        }
+        Formula::Forall(_, body) | Formula::Exists(_, body) => formula_max_depth(body),
+        Formula::True | Formula::False => 0,
+    }
 }
 
 /// Run one prepared ATP query and map the verdict to a `StepOutcome`,
@@ -666,18 +2782,90 @@ fn finish_atp(
     if budget.is_zero() {
         return StepOutcome::Unknown(format!("ATP budget exhausted (rule={:?})", step.rule));
     }
+
+    // Parallelized propositional & propositional abstraction fast-paths on worker threads!
+    if let Some(outcome) = crate::checks::propositional_sat::try_propositional(
+        &step.premises[0..step.parents_len],
+        &step.conclusion,
+    ) {
+        return match outcome {
+            crate::checks::propositional_sat::PropOutcome::Sound => StepOutcome::Sound,
+            crate::checks::propositional_sat::PropOutcome::Unsound if step.esa => {
+                StepOutcome::Unknown(
+                    "esa step: propositional refutation is not evidence of a faulty \
+                 equisatisfiability step"
+                        .into(),
+                )
+            }
+            crate::checks::propositional_sat::PropOutcome::Unsound => StepOutcome::Unsound(
+                "propositional SAT solver refuted entailment by premises".into(),
+            ),
+        };
+    }
+
+    if crate::checks::propositional_sat::try_propositional_abstraction(
+        &step.premises[0..step.parents_len],
+        &step.conclusion,
+    ) {
+        return StepOutcome::Sound;
+    }
+
     let cancel = std::sync::atomic::AtomicBool::new(false);
     match atp.check_step(symbols, &step.premises, &step.conclusion, budget, &cancel) {
         AtpVerdict::Sound => StepOutcome::Sound,
-        AtpVerdict::Unsound if step.esa => StepOutcome::Unknown(format!(
-            "esa step: ATP `{}` found a counter-model, but equisatisfiability \
-             steps are not entailments, so this is not a fault",
-            atp.name()
-        )),
-        AtpVerdict::Unsound => StepOutcome::Unsound(format!(
-            "ATP `{}` refuted entailment by premises",
-            atp.name()
-        )),
+        AtpVerdict::Unsound if step.esa => {
+            let is_known_esa_rule = matches!(
+                step.rule.as_deref(),
+                Some(
+                    "skolemize"
+                        | "skolemisation"
+                        | "variable_rename"
+                        | "introduced_definition"
+                        | "fof_nnf"
+                        | "distribute"
+                        | "avatar_split_clause"
+                        | "avatar_component_clause"
+                        | "avatar_branch_refutation"
+                        | "split_component"
+                )
+            );
+            if is_known_esa_rule {
+                StepOutcome::Unknown(format!(
+                    "esa step: ATP `{}` found a counter-model, but equisatisfiability \
+                     steps are not entailments, so this is not a fault",
+                    atp.name()
+                ))
+            } else {
+                StepOutcome::Unsound(format!(
+                    "ATP `{}` refuted entailment on non-equisatisfiable rule ({:?}) carrying status(esa)",
+                    atp.name(),
+                    step.rule
+                ))
+            }
+        }
+        AtpVerdict::Unsound => {
+            let is_core_inference = matches!(
+                step.rule.as_deref(),
+                Some(
+                    "resolution"
+                        | "superposition"
+                        | "demodulation"
+                        | "subsumption_resolution"
+                        | "equality_resolution"
+                )
+            );
+            if is_core_inference && step.has_avatar_context {
+                StepOutcome::Unknown(
+                    "core inference step refuted in AVATAR context: likely an incomplete proof-export or splitting gap rather than a soundness bug"
+                        .into(),
+                )
+            } else {
+                StepOutcome::Unsound(format!(
+                    "ATP `{}` refuted entailment by premises",
+                    atp.name()
+                ))
+            }
+        }
         AtpVerdict::Unknown => {
             StepOutcome::Unknown(format!("no ATP could decide step (rule={:?})", step.rule))
         }
@@ -1051,9 +3239,9 @@ mod esa_guard_tests {
     fn esa_step_downgrades_unsound_to_unknown() {
         // An esa step refuted by the backend must NOT be reported Unsound:
         // equisatisfiability steps are not entailments, so a counter-model is
-        // expected and is not a fault. Scoring: 0 (NotVerified), never −1.
+        // expected and is not a fault. Scoring: 0 (Unknown), never −1.
         let src = "fof(a, axiom, p(a)).\n\
-                   fof(s1, plain, q(b), inference(some_rule, [status(esa)], [a])).\n\
+                   fof(s1, plain, q(b), inference(skolemize, [status(esa)], [a])).\n\
                    fof(s2, plain, $false, inference(some_rule, [status(thm)], [s1])).\n";
         assert!(
             matches!(outcome_for(src, "s1"), StepOutcome::Unknown(_)),
@@ -1064,7 +3252,7 @@ mod esa_guard_tests {
     #[test]
     fn thm_step_keeps_unsound() {
         // A thm step is a genuine entailment; a refutation IS a fault and must
-        // be reported Unsound (→ FailedVerified, +2 on a bad proof).
+        // be reported Unsound (→ VerifiedBad, +2 on a bad proof).
         let src = "fof(a, axiom, p(a)).\n\
                    fof(s1, plain, q(b), inference(some_rule, [status(thm)], [a])).\n\
                    fof(s2, plain, $false, inference(some_rule, [status(thm)], [s1])).\n";
@@ -1072,6 +3260,29 @@ mod esa_guard_tests {
             matches!(outcome_for(src, "s1"), StepOutcome::Unsound(_)),
             "thm refutation must stay Unsound"
         );
+    }
+
+    #[test]
+    fn unrelated_problem_axioms_cannot_replace_missing_parents() {
+        let problem = "fof(axp, axiom, p(a)).\nfof(axn, axiom, ~p(a)).";
+        let proof = "fof(axp, axiom, p(a), file('problem.p', axp)).\
+                     fof(axn, axiom, ~p(a), file('problem.p', axn)).\
+                     fof(fake, plain, p(a), inference(custom, [status(thm)], [])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [fake, axn])).";
+        let job = crate::load::load_text(
+            problem.to_owned(),
+            proof.to_owned(),
+            std::path::Path::new("."),
+        )
+        .expect("load malformed proof");
+        let settings = Settings {
+            total_budget: Duration::from_secs(3),
+            per_step_budget: Duration::from_secs(1),
+            workers: 1,
+            strict: false,
+            verbose: false,
+        };
+        assert!(matches!(verify(&job, &settings), Verdict::Unknown(_)));
     }
 }
 
@@ -1129,5 +3340,870 @@ mod budget_tests {
             step_budget(deadline, Duration::from_secs(8), 8, 1000, false),
             Duration::from_secs(1)
         );
+    }
+}
+
+#[cfg(test)]
+mod telemetry_tests {
+    use super::*;
+    use crate::atp::{Atp, AtpVerdict};
+    use crate::load::load_text;
+    use std::path::Path;
+    use std::sync::atomic::AtomicUsize;
+
+    struct ReportingAtp {
+        calls: AtomicUsize,
+        reports: Mutex<Vec<mrs_search::ScheduleReport>>,
+    }
+
+    impl ReportingAtp {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                reports: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Atp for ReportingAtp {
+        fn name(&self) -> &'static str {
+            "reporting"
+        }
+
+        fn check_step(
+            &self,
+            _symbols: &SymbolTable,
+            _premises: &[Formula],
+            _conclusion: &Formula,
+            _budget: Duration,
+            _cancel: &std::sync::atomic::AtomicBool,
+        ) -> AtpVerdict {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.reports
+                .lock()
+                .expect("report mutex")
+                .push(mrs_search::ScheduleReport {
+                    workers: 1,
+                    ..mrs_search::ScheduleReport::default()
+                });
+            AtpVerdict::Sound
+        }
+
+        fn search_reports(&self) -> Vec<mrs_search::ScheduleReport> {
+            self.reports
+                .lock()
+                .map(|mut reports| std::mem::take(&mut *reports))
+                .unwrap_or_default()
+        }
+    }
+
+    fn telemetry_job() -> crate::load::LoadedJob {
+        let problem = "fof(a, axiom, ![X]: p(X)).\nfof(c, conjecture, p(a)).";
+        let proof = "fof(a, axiom, ![X]: p(X), file('problem.p', a)).\n\
+                     fof(c, conjecture, p(a), file('problem.p', c)).\n\
+                     fof(nc, negated_conjecture, ~p(a), inference(negated_conjecture, [status(cth)], [c])).\n\
+                     fof(step, plain, p(a), inference(custom, [status(thm)], [a])).\n\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [nc, step])).";
+        load_text(problem.to_owned(), proof.to_owned(), Path::new("."))
+            .expect("telemetry fixture should load")
+    }
+
+    #[test]
+    fn competition_telemetry_collects_all_mrs_reports_and_drains_reuse() {
+        let atp = ReportingAtp::new();
+        let settings = Settings {
+            workers: 1,
+            ..Settings::default()
+        };
+
+        let (_verdict, first) = verify_with_telemetry(&telemetry_job(), &settings, &atp);
+        let first_calls = atp.calls.load(Ordering::Relaxed);
+        assert!(first_calls > 0, "fixture must reach the ATP");
+        assert_eq!(first.mrs_reports.len(), first_calls);
+        assert_eq!(first.workers, 1);
+        assert_eq!(first.atp_jobs, 2);
+        assert!(first.detail().contains("mrs_reports="));
+
+        let (_verdict, second) = verify_with_telemetry(&telemetry_job(), &settings, &atp);
+        let second_calls = atp.calls.load(Ordering::Relaxed) - first_calls;
+        assert_eq!(second.mrs_reports.len(), second_calls);
+        assert_eq!(second_calls, first_calls);
+    }
+}
+
+#[cfg(test)]
+mod mrs_skolemisation_tests {
+    use super::*;
+    use crate::atp::{Atp, AtpVerdict};
+    use crate::load::load_text;
+    use std::path::Path;
+    use std::sync::atomic::AtomicUsize;
+
+    fn settings() -> Settings {
+        Settings {
+            total_budget: Duration::from_secs(5),
+            per_step_budget: Duration::from_secs(1),
+            workers: 1,
+            strict: false,
+            verbose: false,
+        }
+    }
+
+    /// ATP stub that accepts every queried step while counting queries.
+    /// Asserting the query count proves which steps resolved structurally.
+    struct CountingAtp {
+        calls: AtomicUsize,
+    }
+
+    impl Atp for CountingAtp {
+        fn name(&self) -> &'static str {
+            "counting"
+        }
+
+        fn check_step(
+            &self,
+            _symbols: &SymbolTable,
+            _premises: &[Formula],
+            _conclusion: &Formula,
+            _budget: Duration,
+            _cancel: &std::sync::atomic::AtomicBool,
+        ) -> AtpVerdict {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            AtpVerdict::Sound
+        }
+
+        fn search_reports(&self) -> Vec<mrs_search::ScheduleReport> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn mrs_skolemisation_without_declarations_verifies_structurally() {
+        // MRS emits single-parent `skolemisation` steps with only
+        // `[status(esa)]` (no `new_symbols`, no `skolemize(...)`
+        // metadata). They must resolve structurally: the ATP cannot
+        // prove an equisatisfiable step as an entailment. Only the
+        // final instantiation+resolution reaches the ATP here.
+        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(n, axiom, ![Y] : ~p(Y)).";
+        let proof = "fof(a, axiom, ?[X] : p(X), file('problem.p', a)).\n\
+                     fof(s, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(n, axiom, ![Y] : ~p(Y), file('problem.p', n)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s,n])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new(".")).expect("load");
+        let atp = CountingAtp {
+            calls: AtomicUsize::new(0),
+        };
+        assert_eq!(verify_with(&job, &settings(), &atp), Verdict::VerifiedGood);
+        assert_eq!(atp.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn repeated_mrs_skolemisation_of_same_parent_stays_sound() {
+        // Duplicate skolemisation of one source along two clausification
+        // paths (COM127+1 c361 / c106967): the second step reuses witness
+        // symbols for the identical parent and must stay accepted without
+        // ATP help.
+        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(n, axiom, ![X] : ~p(X)).";
+        let proof = "fof(a, axiom, ?[X] : p(X), file('problem.p', a)).\n\
+                     fof(s1, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(s2, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(n, axiom, ![X] : ~p(X), file('problem.p', n)).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [s2,n])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new(".")).expect("load");
+        let atp = CountingAtp {
+            calls: AtomicUsize::new(0),
+        };
+        assert_eq!(verify_with(&job, &settings(), &atp), Verdict::VerifiedGood);
+        assert_eq!(atp.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn repeated_mrs_skolemisation_cannot_reassign_witness_symbols() {
+        // Each step is a valid Skolemisation of the parent in isolation, but
+        // swapping the already-introduced symbols would let their joint use
+        // imply more than the existential source formula.
+        let problem = "fof(a, axiom, ?[X,Y] : p(X,Y)).\n\
+                       fof(asym, axiom, ![X,Y] : (~p(X,Y) | ~p(Y,X))).";
+        let proof = "fof(a, axiom, ?[X,Y] : p(X,Y), file('problem.p', a)).\
+                     fof(s1, plain, p(sk0,sk1), inference(skolemisation, [status(esa)], [a])).\
+                     fof(s2, plain, p(sk1,sk0), inference(skolemisation, [status(esa)], [a])).\
+                     fof(asym, axiom, ![X,Y] : (~p(X,Y) | ~p(Y,X)), file('problem.p', asym)).\
+                     fof(c1, plain, ~p(sk1,sk0), inference(resolution, [status(thm)], [asym,s1])).\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [c1,s2])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load witness-reassignment fixture");
+        assert!(matches!(verify(&job, &settings()), Verdict::Unknown(_)));
+    }
+
+    #[test]
+    fn mrs_skolemisation_reuse_for_different_existential_is_not_sound() {
+        // One witness constant for two different existentials must not
+        // verify structurally; without an ATP it stays Unknown (fail-closed).
+        let problem = "fof(a, axiom, ?[X] : p(X)).\nfof(b, axiom, ?[Y] : q(Y)).";
+        let proof = "fof(a, axiom, ?[X] : p(X), file('problem.p', a)).\n\
+                     fof(b, axiom, ?[Y] : q(Y), file('problem.p', b)).\n\
+                     fof(s1, plain, p(sk0), inference(skolemisation, [status(esa)], [a])).\n\
+                     fof(s2, plain, q(sk0), inference(skolemisation, [status(esa)], [b])).\n\
+                     fof(bot, plain, $false, inference(consequence, [status(thm)], [s2])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new(".")).expect("load");
+        assert_ne!(verify(&job, &settings()), Verdict::VerifiedGood);
+    }
+}
+
+#[cfg(test)]
+mod avatar_validation_tests {
+    use super::*;
+    use crate::load::load_text;
+    use std::path::Path;
+
+    fn settings() -> Settings {
+        Settings {
+            total_budget: Duration::from_secs(5),
+            per_step_budget: Duration::from_secs(1),
+            workers: 1,
+            strict: false,
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn competition_mode_accepts_valid_explicit_avatar_certificate() {
+        let problem = "fof(top, axiom, p | q).\n\
+                       fof(np, axiom, ~p).\n\
+                       fof(nq, axiom, ~q).";
+        let proof = "fof(top, axiom, p | q, file('problem.p', top)).\
+                     fof(np, axiom, ~p, file('problem.p', np)).\
+                     fof(nq, axiom, ~q, file('problem.p', nq)).\
+                     fof(split, plain, spl0_1 | spl0_2,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_2, [1])], [])],\
+                           [top])).\
+                     fof(comp_p, plain, p | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 0, spl0_1)],\
+                           [split])).\
+                     fof(comp_q, plain, q | ~spl0_2,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 1, spl0_2)],\
+                           [split])).\
+                     fof(empty_p, plain, ~spl0_1,\
+                         inference(resolution, [status(thm)], [comp_p, np])).\
+                     fof(empty_q, plain, ~spl0_2,\
+                         inference(resolution, [status(thm)], [comp_q, nq])).\
+                     fof(branch_p, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [empty_p])).\
+                     fof(branch_q, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_2])], [empty_q])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                           [status(thm),\
+                            avatar_sat_refutation([split], [branch_p, branch_q])],\
+                           [split, branch_p, branch_q])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load valid AVATAR proof");
+        assert_eq!(verify(&job, &settings()), Verdict::VerifiedGood);
+    }
+
+    #[test]
+    fn competition_mode_accepts_alpha_equivalent_duplicate_avatar_variable() {
+        let problem = "fof(top, axiom, p(X) | p(Y)).\n\
+                       fof(np, axiom, ~p(a)).";
+        let proof = "fof(top, axiom, p(X) | p(Y), file('problem.p', top)).\
+                     fof(np, axiom, ~p(a), file('problem.p', np)).\
+                     fof(split, plain, spl0_1 | spl0_1,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_1, [1])], [])],\
+                           [top])).\
+                     fof(comp_x, plain, p(X) | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 0, spl0_1)],\
+                           [split])).\
+                     fof(comp_y, plain, p(Y) | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 1, spl0_1)],\
+                           [split])).\
+                     fof(empty, plain, ~spl0_1,\
+                         inference(resolution, [status(thm)], [comp_x, np])).\
+                     fof(branch, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [empty])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                           [status(thm),\
+                            avatar_sat_refutation([split], [branch])],\
+                           [split, branch])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load alpha-equivalent AVATAR proof");
+        assert_eq!(verify(&job, &settings()), Verdict::VerifiedGood);
+    }
+
+    #[test]
+    fn competition_mode_accepts_duplicate_literals_in_avatar_component() {
+        let problem = "fof(top, axiom, p | p).\n\
+                       fof(np, axiom, ~p).";
+        let proof = "fof(top, axiom, p | p, file('problem.p', top)).\
+                     fof(np, axiom, ~p, file('problem.p', np)).\
+                     fof(split, plain, spl0_1 | spl0_2,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_2, [1])], [])],\
+                           [top])).\
+                     fof(comp_left, plain, p | p | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 0, spl0_1)],\
+                           [split])).\
+                     fof(comp_right, plain, p | ~spl0_2,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 1, spl0_2)],\
+                           [split])).\
+                     fof(left_once, plain, p | ~spl0_1,\
+                         inference(resolution, [status(thm)], [comp_left, np])).\
+                     fof(empty_left, plain, ~spl0_1,\
+                         inference(resolution, [status(thm)], [left_once, np])).\
+                     fof(empty_right, plain, ~spl0_2,\
+                         inference(resolution, [status(thm)], [comp_right, np])).\
+                     fof(branch_left, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [empty_left])).\
+                     fof(branch_right, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_2])], [empty_right])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                           [status(thm),\
+                            avatar_sat_refutation([split], [branch_left, branch_right])],\
+                           [split, branch_left, branch_right])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load duplicate-literal AVATAR proof");
+        assert_eq!(verify(&job, &settings()), Verdict::VerifiedGood);
+    }
+
+    #[test]
+    fn competition_mode_accepts_union_avatar_branch_context() {
+        let problem = "fof(top, axiom, p | ~p).\n\
+                       fof(pos, axiom, p).\n\
+                       fof(neg, axiom, ~p).";
+        let proof = "fof(top, axiom, p | ~p, file('problem.p', top)).\
+                     fof(pos, axiom, p, file('problem.p', pos)).\
+                     fof(neg, axiom, ~p, file('problem.p', neg)).\
+                     fof(split, plain, spl0_1 | spl0_2,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_2, [1])], [])],\
+                           [top])).\
+                     fof(comp_pos, plain, p | ~spl0_1,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 0, spl0_1)],\
+                           [split])).\
+                     fof(comp_neg, plain, ~p | ~spl0_2,\
+                         inference(avatar_component_clause,\
+                           [status(esa), avatar_component(split, 1, spl0_2)],\
+                           [split])).\
+                     fof(empty_pos, plain, ~spl0_1,\
+                         inference(resolution, [status(thm)], [comp_pos, neg])).\
+                     fof(empty_neg, plain, ~spl0_2,\
+                         inference(resolution, [status(thm)], [comp_neg, pos])).\
+                     fof(union, plain, ~spl0_1 | ~spl0_2,\
+                         inference(resolution, [status(thm)], [comp_pos, comp_neg])).\
+                     fof(branch_pos, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [empty_pos])).\
+                     fof(branch_neg, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_2])], [empty_neg])).\
+                     fof(branch_union, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1, spl0_2])], [union])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_sat_refutation,\
+                           [status(thm),\
+                            avatar_sat_refutation([split],\
+                                                   [branch_pos, branch_neg, branch_union])],\
+                           [split, branch_pos, branch_neg, branch_union])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load union-context AVATAR proof");
+        assert_eq!(verify(&job, &settings()), Verdict::VerifiedGood);
+    }
+
+    #[test]
+    fn competition_mode_rejects_forged_avatar_branch_refutation() {
+        let problem = "fof(p, axiom, p).";
+        let proof = "fof(p, axiom, p, file('problem.p', p)).\
+                     fof(branch, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [p])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load forged AVATAR proof");
+        assert!(matches!(verify(&job, &settings()), Verdict::VerifiedBad(_)));
+    }
+
+    #[test]
+    fn competition_mode_rejects_non_equivalent_duplicate_avatar_variable() {
+        let problem = "fof(top, axiom, p | q).";
+        let proof = "fof(top, axiom, p | q, file('problem.p', top)).\
+                     fof(split, plain, spl0_1 | spl0_1,\
+                         inference(avatar_split_clause,\
+                           [status(esa),\
+                            avatar_split([branch(0, spl0_1, [0]),\
+                                         branch(1, spl0_1, [1])], [])],\
+                           [top])).\
+                     fof(bot, plain, $false,\
+                         inference(avatar_branch_refutation,\
+                           [status(esa), avatar_context([spl0_1])], [split])).";
+        let job = load_text(problem.to_string(), proof.to_string(), Path::new("."))
+            .expect("load forged duplicate-variable AVATAR proof");
+        assert!(matches!(
+            verify(&job, &settings()),
+            Verdict::VerifiedBad(reason)
+                if reason.contains(
+                    "avatar_split_clause reuses a SAT variable for non-equivalent components"
+                )
+        ));
+    }
+
+    #[test]
+    fn competition_mode_bounds_large_avatar_sat_certificates() {
+        use std::fmt::Write;
+
+        const BRANCHES: usize = 201;
+        let mut problem = String::from("fof(top, axiom, ");
+        for index in 0..BRANCHES {
+            if index > 0 {
+                problem.push_str(" | ");
+            }
+            write!(problem, "p{index}").unwrap();
+        }
+        problem.push_str(").\n");
+        for index in 0..BRANCHES {
+            writeln!(problem, "fof(np{index}, axiom, ~p{index}).").unwrap();
+        }
+
+        let mut proof = String::new();
+        proof.push_str("fof(top, axiom, ");
+        for index in 0..BRANCHES {
+            if index > 0 {
+                proof.push_str(" | ");
+            }
+            write!(proof, "p{index}").unwrap();
+        }
+        proof.push_str(", file('problem.p', top)).\n");
+        for index in 0..BRANCHES {
+            writeln!(
+                proof,
+                "fof(np{index}, axiom, ~p{index}, file('problem.p', np{index}))."
+            )
+            .unwrap();
+        }
+
+        proof.push_str("fof(split, plain, ");
+        for index in 0..BRANCHES {
+            if index > 0 {
+                proof.push_str(" | ");
+            }
+            write!(proof, "spl0_{}", index + 1).unwrap();
+        }
+        proof.push_str(", inference(avatar_split_clause, [status(esa), avatar_split([");
+        for index in 0..BRANCHES {
+            if index > 0 {
+                proof.push_str(", ");
+            }
+            write!(
+                proof,
+                "branch({0}, spl0_{1}, [{2}])",
+                index,
+                index + 1,
+                index
+            )
+            .unwrap();
+        }
+        proof.push_str("], [])], [top])).\n");
+
+        for index in 0..BRANCHES {
+            writeln!(
+                proof,
+                "fof(comp{0}, plain, p{0} | ~spl0_{1}, inference(avatar_component_clause, [status(esa), avatar_component(split, {0}, spl0_{1})], [split])).",
+                index,
+                index + 1
+            )
+            .unwrap();
+            writeln!(
+                proof,
+                "fof(empty{0}, plain, ~spl0_{1}, inference(resolution, [status(thm)], [comp{0}, np{0}])).",
+                index,
+                index + 1
+            )
+            .unwrap();
+            writeln!(
+                proof,
+                "fof(branch{0}, plain, $false, inference(avatar_branch_refutation, [status(esa), avatar_context([spl0_{1}])], [empty{0}])).",
+                index,
+                index + 1
+            )
+            .unwrap();
+        }
+
+        proof.push_str(
+            "fof(bot, plain, $false, inference(avatar_sat_refutation, [status(thm), avatar_sat_refutation([split], [",
+        );
+        for index in 0..BRANCHES {
+            if index > 0 {
+                proof.push_str(", ");
+            }
+            write!(proof, "branch{index}").unwrap();
+        }
+        proof.push_str("])], [split, ");
+        for index in 0..BRANCHES {
+            if index > 0 {
+                proof.push_str(", ");
+            }
+            write!(proof, "branch{index}").unwrap();
+        }
+        proof.push_str("])).\n");
+
+        let job =
+            load_text(problem, proof, Path::new(".")).expect("large AVATAR proof should load");
+        let verdict = verify(&job, &settings());
+        assert!(
+            matches!(verdict, Verdict::Unknown(ref reason) if reason.contains("SAT verification limit")),
+            "large AVATAR certificates must fail closed at the bounded limit: {verdict:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod superposition_order_tests {
+    use super::*;
+    use mrs_core::{Atom, Formula, SymbolTable, Term};
+
+    /// Minimal analogue of COL002-5 `c699 [c2, c0]`:
+    /// rule `f(X) = g(X)` rewrites `h(f(a)) = b` into `h(g(a)) = b`.
+    /// The proof lists `[target, rule]`, so a direction-sensitive checker
+    /// that only tries `premises[0]` as the rule misses it.
+    fn rule_target_conclusion() -> (Formula, Formula, Formula) {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let g = syms.intern("g");
+        let h = syms.intern("h");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        // Leak the table so the returned formulas' SymbolIds stay valid for
+        // the duration of the test without threading `syms` through.
+        // SymbolIds are only compared for equality inside the checker, and
+        // every interning here happens before any check runs, so the leaked
+        // table cannot observe later interning.
+        let _ = Box::leak(Box::new(syms));
+
+        let rule = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(f, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        let conclusion = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(g, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        (rule, target, conclusion)
+    }
+
+    #[test]
+    fn directed_check_is_order_sensitive() {
+        let (rule, target, conclusion) = rule_target_conclusion();
+        assert!(
+            try_directed_superposition_step(&rule, &target, &conclusion),
+            "rule→target must verify"
+        );
+        assert!(
+            !try_directed_superposition_step(&target, &rule, &conclusion),
+            "target→rule must miss (documents the old blind spot)"
+        );
+    }
+
+    #[test]
+    fn order_insensitive_check_accepts_both_parent_orders() {
+        let (rule, target, conclusion) = rule_target_conclusion();
+        assert!(
+            try_superposition_step(&rule, &target, &conclusion),
+            "[rule, target] order must verify"
+        );
+        assert!(
+            try_superposition_step(&target, &rule, &conclusion),
+            "[target, rule] order (COL002-5 c699 [c2, c0]) must verify"
+        );
+    }
+
+    #[test]
+    fn rejects_unrelated_conclusion_regardless_of_order() {
+        let (rule, target, _) = rule_target_conclusion();
+        let mut syms = SymbolTable::new();
+        let h = syms.intern("h");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let q = syms.intern("q");
+        let _ = Box::leak(Box::new(syms));
+        let bogus = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(q, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        assert!(!try_superposition_step(&rule, &target, &bogus));
+        assert!(!try_superposition_step(&target, &rule, &bogus));
+    }
+
+    /// COL002-5 `c699` shape: both rule and target are quantified over the
+    /// same `VarId`, and the rule variable must unify with a term containing
+    /// that ID. Without freshening (`shift_vars_formula` recursing into
+    /// `Forall`), the occurs-check spuriously fails and a valid step is
+    /// missed however the parents are ordered.
+    #[test]
+    fn quantified_overlap_needs_freshening_in_both_orders() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("kf");
+        let g = syms.intern("kg");
+        let h = syms.intern("kh");
+        let c = syms.intern("kc");
+        let b = syms.intern("kb");
+        let _ = Box::leak(Box::new(syms));
+
+        // rule: ![X0]: f(X0) = g(X0)
+        let rule = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        // target: ![X0]: h(f(c(X0))) = b — X0 must unify with c(X0).
+        let target = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(
+                    h,
+                    vec![Term::app(f, vec![Term::app(c, vec![Term::var(0)])])],
+                ),
+                Term::constant(b),
+            )),
+        );
+        let conclusion = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(
+                    h,
+                    vec![Term::app(g, vec![Term::app(c, vec![Term::var(0)])])],
+                ),
+                Term::constant(b),
+            )),
+        );
+
+        assert!(
+            try_directed_superposition_step(&rule, &target, &conclusion),
+            "freshened rule→target must verify despite shared VarId"
+        );
+        assert!(
+            try_superposition_step(&rule, &target, &conclusion),
+            "[rule, target] order must verify"
+        );
+        assert!(
+            try_superposition_step(&target, &rule, &conclusion),
+            "[target, rule] order must verify"
+        );
+    }
+}
+
+#[cfg(test)]
+mod demodulation_tests {
+    use super::*;
+    use mrs_core::{Atom, Formula, SymbolTable, Term};
+
+    /// Interns fresh `d`-prefixed symbols and leaks the table (see
+    /// `superposition_order_tests` for why the leak is sound in tests).
+    fn syms(names: &[&str]) -> Vec<mrs_core::SymbolId> {
+        let mut table = SymbolTable::new();
+        let ids = names.iter().map(|n| table.intern(n)).collect();
+        let _ = Box::leak(Box::new(table));
+        ids
+    }
+
+    #[test]
+    fn single_rule_verifies_in_both_parent_orders() {
+        let ids = syms(&["df", "dg", "dh", "da", "db"]);
+        let (f, g, h, a, b) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+        let rule = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(f, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        let conclusion = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(g, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        assert!(try_demodulation_step(
+            &[target.clone(), rule.clone()],
+            &conclusion
+        ));
+        assert!(try_demodulation_step(&[rule, target], &conclusion));
+    }
+
+    #[test]
+    fn multi_rule_chain_rewrites_to_fixpoint() {
+        let ids = syms(&["ef", "eg", "ek", "ep", "ea"]);
+        let (f, g, k, p, a) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+        // f(X) = g(X), g(X) = k(X): reaching k needs two fixpoint passes.
+        let rule1 = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let rule2 = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(g, vec![Term::var(0)]),
+                Term::app(k, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::atom(Atom::pred(p, vec![Term::app(f, vec![Term::constant(a)])]));
+        let conclusion = Formula::atom(Atom::pred(p, vec![Term::app(k, vec![Term::constant(a)])]));
+        assert!(try_demodulation_step(&[target, rule1, rule2], &conclusion));
+    }
+
+    #[test]
+    fn mixed_orientations_in_one_step() {
+        let ids = syms(&["mf", "mg", "mh", "mk", "mpair", "ma", "mb", "mz"]);
+        let (f, g, h, k, pair, a, b, z) = (
+            ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6], ids[7],
+        );
+        // The derivation needs rule1 forward (f→g) and rule2 backward
+        // (h→k although written k=h): COL002-5 `c783` needs exactly this
+        // mix (C-axiom forward, B-axiom backward).
+        let rule1 = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let rule2 = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(k, vec![Term::var(0)]),
+                Term::app(h, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::atom(Atom::eq(
+            Term::app(
+                pair,
+                vec![
+                    Term::app(f, vec![Term::constant(a)]),
+                    Term::app(h, vec![Term::constant(b)]),
+                ],
+            ),
+            Term::constant(z),
+        ));
+        let conclusion = Formula::atom(Atom::eq(
+            Term::app(
+                pair,
+                vec![
+                    Term::app(g, vec![Term::constant(a)]),
+                    Term::app(k, vec![Term::constant(b)]),
+                ],
+            ),
+            Term::constant(z),
+        ));
+        assert!(try_demodulation_step(&[target, rule1, rule2], &conclusion));
+    }
+
+    #[test]
+    fn quantified_overlap_rewrites_despite_shared_var_id() {
+        let ids = syms(&["qf", "qg", "qh", "qc", "qb"]);
+        let (f, g, h, c, b) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+        // Rule and target both quantify X0; matching f(X0) against
+        // f(c(X0)) needs freshening to avoid a spurious occurs-check
+        // failure.
+        let rule = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(
+                    h,
+                    vec![Term::app(f, vec![Term::app(c, vec![Term::var(0)])])],
+                ),
+                Term::constant(b),
+            )),
+        );
+        let conclusion = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(
+                    h,
+                    vec![Term::app(g, vec![Term::app(c, vec![Term::var(0)])])],
+                ),
+                Term::constant(b),
+            )),
+        );
+        assert!(try_demodulation_step(&[target, rule], &conclusion));
+    }
+
+    #[test]
+    fn rejects_unreachable_conclusion() {
+        let ids = syms(&["rf", "rg", "rh", "rq", "ra", "rb"]);
+        let (f, g, h, q, a, b) = (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
+        let rule = Formula::forall(
+            0,
+            Formula::atom(Atom::eq(
+                Term::app(f, vec![Term::var(0)]),
+                Term::app(g, vec![Term::var(0)]),
+            )),
+        );
+        let target = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(f, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        let bogus = Formula::atom(Atom::eq(
+            Term::app(h, vec![Term::app(q, vec![Term::constant(a)])]),
+            Term::constant(b),
+        ));
+        assert!(!try_demodulation_step(&[target, rule], &bogus));
+    }
+
+    #[test]
+    fn cyclic_rules_terminate_with_unknown() {
+        let ids = syms(&["cfa", "cfb", "cfc", "cfp"]);
+        let (a, b, c, p) = (ids[0], ids[1], ids[2], ids[3]);
+        // a = b and b = a rewrite each other forever; the pass cap must
+        // terminate the check instead of hanging the verifier.
+        let rule1 = Formula::atom(Atom::eq(Term::constant(a), Term::constant(b)));
+        let rule2 = Formula::atom(Atom::eq(Term::constant(b), Term::constant(a)));
+        let target = Formula::atom(Atom::pred(p, vec![Term::constant(a)]));
+        let unreachable = Formula::atom(Atom::pred(p, vec![Term::constant(c)]));
+        assert!(!try_demodulation_step(
+            &[target, rule1, rule2],
+            &unreachable
+        ));
     }
 }

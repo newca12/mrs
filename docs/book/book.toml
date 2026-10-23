@@ -1,0 +1,11 @@
+[book]
+title = "Mechanical Reasoning with mrs — From Zero to Superposition"
+authors = ["mrs contributors"]
+language = "en"
+src = "src"
+
+[rust]
+edition = "2024"
+
+[build]
+create-missing = false

@@ -5,10 +5,14 @@
 //! over all its variables. This is the working format for resolution-based provers.
 
 use crate::HashSet;
+use sha2::Digest;
 use smallvec::SmallVec;
 
+use crate::Formula;
 use crate::formula::Atom;
+use crate::symbol::SymbolId;
 use crate::term::VarId;
+use crate::witness::{ProofNodeId, ProofWitness};
 
 /// Unique identifier for a clause within a proof search.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
@@ -87,6 +91,159 @@ pub enum ClauseSource {
         /// IDs of the parent clauses.
         parents: SmallVec<[ClauseId; 2]>,
     },
+    /// A definitionally-introduced formula: the full biconditional defining
+    /// a fresh predicate/function symbol (e.g. from Tseitin/definitional
+    /// CNF). The parent list records proof-DAG dependencies when the
+    /// definition was introduced from an earlier transformation or another
+    /// nested definition. The definition remains sound by construction as a
+    /// conservative extension, since the symbol is guaranteed fresh. Rendered
+    /// in TSTP output as `introduced(definition, [new_symbols(definition,
+    /// [<symbol>])])` with role `definition`; the internal parent list is not
+    /// printed because GDV treats the introduction as a conservative
+    /// extension. Both the explicit role and the `new_symbols` annotation are required by GDV's
+    /// `IsCorrectlySpecifiedDefinition` check (confirmed against a real
+    /// GDV build: role `plain` with a bare `introduced(definition)`
+    /// annotation, which is what E emits and what `mrs-proover`'s own
+    /// checker accepts, is NOT accepted by GDV — it requires the stricter
+    /// `new_symbols(definition, [...])` info list to identify exactly
+    /// which symbol is being defined).
+    Introduced {
+        /// The fresh symbol this step defines.
+        symbol: SymbolId,
+        /// The parent clauses this definition was introduced from or depends on.
+        parents: SmallVec<[ClauseId; 2]>,
+    },
+}
+
+/// Explicit proof metadata for a generated AVATAR certificate.
+///
+/// The metadata is deliberately kept separate from [`ClauseSource`].  The
+/// source records the ordinary proof-DAG parents, while these records preserve
+/// the propositional branch information that cannot be represented by a first-
+/// order parent edge alone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClauseCertificate {
+    /// A split clause declares one SAT variable for each original clause
+    /// literal.  `branch_index` refers to the original literal position.
+    AvatarSplit {
+        inherited: Vec<u32>,
+        components: Vec<AvatarComponent>,
+    },
+    /// A conditional component clause belonging to an AVATAR split.
+    AvatarComponent {
+        split_parent: ClauseId,
+        branch_index: usize,
+        sat_var: u32,
+    },
+    /// A first-order branch refutation closed under the listed SAT
+    /// assumptions.  The corresponding TSTP node is an unconditional `$false`
+    /// node plus an explicit `avatar_context(...)` annotation.
+    AvatarBranchRefutation { context: Vec<u32> },
+    /// The final SAT roll-up.  The kernel independently checks that the split
+    /// clauses and branch-refutation clauses are propositionally inconsistent.
+    AvatarSatRefutation {
+        split_nodes: Vec<ClauseId>,
+        branch_roots: Vec<ClauseId>,
+        sat_trace: Option<AvatarSatTrace>,
+    },
+    /// A SAT-backed refutation of a large grounded EPR set with no AVATAR
+    /// splits: every cited input is a ground instance (or ground input) and
+    /// the attached trace is a FRAT/LRAT proof of their propositional
+    /// inconsistency, checked by the kernel with fresh RUP replay. The
+    /// `sat_trace` payload reuses [`AvatarSatTrace`]; unlike the AVATAR
+    /// roll-up there are no split/branch nodes, so every manifest entry is
+    /// cited and every parent must be an input or an `instantiation` of one.
+    SatBackedRefutation {
+        inputs: Vec<ClauseId>,
+        sat_trace: Option<AvatarSatTrace>,
+    },
+}
+
+/// A bounded SAT manifest and proof trace associated with an AVATAR roll-up.
+///
+/// Strict proof output serializes this value in the final TSTP annotation. The
+/// canonical digest input is provided by [`avatar_sat_trace_digest_input`] so
+/// the producer and the independent kernel agree on exactly what is hashed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AvatarSatTrace {
+    pub format: &'static str,
+    pub variables: u32,
+    pub original_ids: Vec<i64>,
+    /// Full-manifest positions corresponding to the cited split/branch clauses.
+    pub cited_indices: Vec<usize>,
+    pub clauses: Vec<Vec<i32>>,
+    pub trace: Vec<u8>,
+    pub digest: [u8; 32],
+}
+
+/// Build the canonical byte sequence covered by an AVATAR SAT-trace digest.
+///
+/// This is deliberately a small, dependency-free wire encoding. Every
+/// variable-length field carries an explicit little-endian `u64` length, so
+/// concatenation cannot make two distinct manifests hash to the same input.
+pub fn avatar_sat_trace_digest_input(
+    format: &str,
+    variables: u32,
+    original_ids: &[i64],
+    cited_indices: &[usize],
+    clauses: &[Vec<i32>],
+    trace: &[u8],
+) -> Vec<u8> {
+    fn put_u64(output: &mut Vec<u8>, value: u64) {
+        output.extend_from_slice(&value.to_le_bytes());
+    }
+
+    let mut output = Vec::new();
+    output.extend_from_slice(b"MRS-AVATAR-SAT-TRACE\0");
+    put_u64(&mut output, format.len() as u64);
+    output.extend_from_slice(format.as_bytes());
+    output.extend_from_slice(&variables.to_le_bytes());
+    put_u64(&mut output, original_ids.len() as u64);
+    for &id in original_ids {
+        output.extend_from_slice(&id.to_le_bytes());
+    }
+    put_u64(&mut output, cited_indices.len() as u64);
+    for &index in cited_indices {
+        put_u64(&mut output, index as u64);
+    }
+    put_u64(&mut output, clauses.len() as u64);
+    for clause in clauses {
+        put_u64(&mut output, clause.len() as u64);
+        for &literal in clause {
+            output.extend_from_slice(&literal.to_le_bytes());
+        }
+    }
+    put_u64(&mut output, trace.len() as u64);
+    output.extend_from_slice(trace);
+    output
+}
+
+/// Return the SHA-256 digest of an AVATAR SAT-trace payload.
+pub fn avatar_sat_trace_digest(
+    format: &str,
+    variables: u32,
+    original_ids: &[i64],
+    cited_indices: &[usize],
+    clauses: &[Vec<i32>],
+    trace: &[u8],
+) -> [u8; 32] {
+    sha2::Sha256::digest(avatar_sat_trace_digest_input(
+        format,
+        variables,
+        original_ids,
+        cited_indices,
+        clauses,
+        trace,
+    ))
+    .into()
+}
+
+/// One original clause literal and the SAT variable representing its branch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AvatarComponent {
+    pub branch_index: usize,
+    pub sat_var: u32,
+    pub literal_indices: Vec<usize>,
 }
 
 /// A clause: a disjunction of literals.
@@ -105,6 +262,29 @@ pub struct Clause {
     pub avatar: Vec<u32>,
     /// Distance to conjecture (0 for conjectures, +1 for generated, large for axioms).
     pub distance: u32,
+    /// If set, this "clause" is actually a non-clausal, FOF-level proof step
+    /// (e.g. an NNF conversion or Skolemization result) rather than a real
+    /// disjunction of literals. `literals` is unused/empty in that case.
+    ///
+    /// This exists because TSTP derivations of FOF problems commonly need to
+    /// cite intermediate formula-level transformation steps (which may still
+    /// contain quantifiers or nested and/or structure) before the formula
+    /// reaches clausal (CNF) shape — see `mrs-cnf::clausify`'s `fof_nnf_transformation`
+    /// / `skolemisation` steps. Proof formatting (`mrs-proof::tstp`) prints
+    /// these as `fof(...)` annotated formulas instead of `cnf(...)`.
+    ///
+    /// **Never add a `Clause` with `formula: Some(_)` to the live given-clause
+    /// search** (`processed`/`unprocessed`): its `literals` field is empty,
+    /// which is indistinguishable from the empty clause (a refutation) to
+    /// the search loop. These clauses exist only for proof-provenance lookup
+    /// (`clause_store`) at proof-extraction time.
+    pub formula: Option<Box<Formula>>,
+    /// Optional explicit certificate metadata for specialized proof rules.
+    pub certificate: Option<ClauseCertificate>,
+    /// Stable proof node identifier in the append-only proof arena.
+    pub proof_id: Option<ProofNodeId>,
+    /// Typed inference witness for exact justification.
+    pub witness: Option<ProofWitness>,
 }
 
 impl Clause {
@@ -119,6 +299,31 @@ impl Clause {
             source,
             avatar: Vec::new(),
             distance: 1000,
+            formula: None,
+            certificate: None,
+            proof_id: None,
+            witness: None,
+        }
+    }
+
+    /// Creates a non-clausal, FOF-level proof step: a formula that has not
+    /// (yet) reached clausal shape, cited via `source` (`Input` for the
+    /// original leaf formula, `Inference` for a named transformation like
+    /// `fof_nnf_transformation`/`skolemisation`/`negated_conjecture`).
+    ///
+    /// See the [`Clause::formula`] doc comment for the critical caveat about
+    /// never feeding these into the live given-clause search.
+    pub fn new_formula_step(id: ClauseId, formula: Formula, source: ClauseSource) -> Self {
+        Clause {
+            id,
+            literals: SmallVec::new(),
+            source,
+            avatar: Vec::new(),
+            distance: 1000,
+            formula: Some(Box::new(formula)),
+            certificate: None,
+            proof_id: None,
+            witness: None,
         }
     }
 
@@ -140,7 +345,18 @@ impl Clause {
             source,
             avatar,
             distance: 1000,
+            formula: None,
+            certificate: None,
+            proof_id: None,
+            witness: None,
         }
+    }
+
+    /// Attach a proof node and witness to this clause.
+    pub fn with_witness(mut self, proof_id: ProofNodeId, witness: ProofWitness) -> Self {
+        self.proof_id = Some(proof_id);
+        self.witness = Some(witness);
+        self
     }
 
     /// Set the distance for this clause.
@@ -235,24 +451,49 @@ impl Clause {
     }
 }
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 /// A counter for generating unique clause IDs.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ClauseIdGen {
-    next: u64,
+    next: Arc<AtomicU64>,
+}
+
+impl Default for ClauseIdGen {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ClauseIdGen {
     /// Creates a new generator starting at 0.
     pub fn new() -> Self {
-        Self { next: 0 }
+        Self {
+            next: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /// Returns the next unique clause ID.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> ClauseId {
-        let id = ClauseId(self.next);
-        self.next += 1;
-        id
+        ClauseId(self.next.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Reserves all IDs through `floor` so future calls return IDs above it.
+    ///
+    /// Derived clauses must not reuse the IDs of clauses that already exist:
+    /// anything that maps a clause ID back to a position would then resolve a
+    /// lookup to the wrong clause instead of reporting a miss. O(1), and safe
+    /// to call from several threads holding clones.
+    /// Returns `false` when `floor` is the largest representable clause ID and
+    /// there is no fresh ID available above it.
+    pub fn reserve_at_least(&mut self, floor: ClauseId) -> bool {
+        let Some(wanted) = floor.0.checked_add(1) else {
+            return false;
+        };
+        self.next.fetch_max(wanted, Ordering::Relaxed);
+        true
     }
 }
 
@@ -274,6 +515,17 @@ mod tests {
         );
         assert!(c.is_empty());
         assert_eq!(c.len(), 0);
+    }
+
+    #[test]
+    fn reserve_at_least_advances_shared_generators_and_refuses_overflow() {
+        let mut generator = ClauseIdGen::new();
+        assert!(generator.reserve_at_least(ClauseId(42)));
+        let mut clone = generator.clone();
+        assert_eq!(generator.next(), ClauseId(43));
+        assert_eq!(clone.next(), ClauseId(44));
+
+        assert!(!generator.reserve_at_least(ClauseId(u64::MAX)));
     }
 
     #[test]

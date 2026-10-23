@@ -1,0 +1,23 @@
+[package]
+name = "mrs-proof-kernel"
+version.workspace = true
+edition.workspace = true
+description = "Deterministic independent proof kernel for MRS TSTP proofs"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mrs-core = { workspace = true, features = ["proover"] }
+mrs-cnf = { workspace = true }
+mrs-tptp = { workspace = true, features = ["proover", "owned"] }
+mrs-cadical = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+mrs-proover = { path = "../mrs-proover" }

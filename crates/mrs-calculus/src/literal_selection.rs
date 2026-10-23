@@ -459,4 +459,29 @@ mod tests {
             vec![0, 1]
         );
     }
+
+    #[test]
+    fn restrict_to_maximal_keeps_incomparable_variable_atoms() {
+        use mrs_core::term_bank::TermBank;
+
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let mut id_gen = ClauseIdGen::new();
+        let clause = make_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(p, vec![Term::var(1)])),
+            ],
+        );
+        let mut bank = TermBank::new();
+        let id_clause = bank.clause_from_legacy(&clause);
+        let maximal = restrict_to_maximal_id(
+            &id_clause,
+            &[0, 1],
+            &crate::ordering::TermOrdering::KBO,
+            &mut bank,
+        );
+        assert_eq!(maximal, vec![0, 1]);
+    }
 }

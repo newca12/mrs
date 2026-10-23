@@ -15,7 +15,7 @@ WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 
 BINARY="${WORKSPACE_ROOT}/target/release/mrs-proover"
 if [[ ! -x "${BINARY}" ]]; then
-    echo "% SZS status NotVerified : mrs-proover binary not found; run: cargo build --release -p mrs-proover"
+    echo "% SZS status Unknown : mrs-proover binary not found; run: cargo build --release -p mrs-proover"
     exit 0
 fi
 
@@ -39,7 +39,30 @@ if [[ -x "${VAMPIRE}" ]]; then
 fi
 
 # Run with a wall-clock timeout one second below the harness limit so we
-# always emit something rather than being killed.
-SOFT=$(( TIME_LIMIT > 1 ? TIME_LIMIT - 1 : TIME_LIMIT ))
-exec timeout --foreground "${SOFT}s" "${BINARY}" "${ARGS[@]}" "${PROOF}" \
-    || echo "% SZS status NotVerified : exhausted wall-clock budget"
+# always emit something rather than being killed. Never let this evaluate
+# to 0: GNU `timeout 0s <cmd>` disables the timeout entirely (runs
+# unbounded) rather than killing immediately.
+SOFT=$(( TIME_LIMIT > 1 ? TIME_LIMIT - 1 : 1 ))
+
+# Raise the stack limit for the parsing/DAG-building phase (load() and
+# dag::build() both run on the main thread, before the parallel ATP-ladder
+# verification pass spawns worker threads -- see docs/STATUS.md). Both use
+# mrs-tptp's recursive-descent parser, which crates/mrs-tptp/doc/technical.md
+# documents as a stack-overflow risk on deeply nested formulas. Best-effort:
+# some sandboxes cap the hard limit and refuse to raise the soft limit
+# further, which prints a warning but does not abort under `set -e`.
+ulimit -s unlimited 2>/dev/null || true
+
+# `ulimit -s` above only covers the main thread. The parallel ATP-ladder
+# verification pass runs on threads of its own, and those set their stack in
+# code -- see mrs_core::RECURSION_STACK_BYTES and the spawn sites in
+# mrs-proover's verify.rs and atp/ladder.rs -- so nothing here needs to, and
+# nothing should. They run genuinely recursive code from mrs-unify, mrs-core and
+# mrs-index on every step, including the MrsAtp in-process fallback, which runs
+# a full given-clause search. A stack overflow on one of them triggers Rust's
+# abort() handler, killing the whole process with zero output, which is worse
+# than a clean timeout; 64 MiB is about 300,000 levels of headroom, and a
+# lazily committed stack is not counted against RSS until used.
+
+exec timeout --foreground "${SOFT}s" "${BINARY}" --workers "${PROOVER_WORKERS:-8}" "${ARGS[@]}" "${PROOF}" \
+    || echo "% SZS status Unknown : exhausted wall-clock budget"

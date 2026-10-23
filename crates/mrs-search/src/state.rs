@@ -5,15 +5,32 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+use mrs_calculus::demodulation::DemodMemo;
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::SymbolId;
 use mrs_core::clause::{Clause, ClauseId, ClauseIdGen};
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
+use mrs_core::witness::{ProofArena, ProofNodeId, ProofWitness};
 use mrs_index::literal_index::LiteralIndex;
 use mrs_index::stree::STreeId;
 
 use crate::avatar::AvatarContext;
 use crate::unprocessed::UnprocessedSet;
+
+#[cfg(feature = "parent-guidance")]
+fn sample_hash(
+    given: ClauseId,
+    partner: ClauseId,
+    kind: mrs_core::ml::parent_guidance::InferenceKind,
+) -> f32 {
+    use std::hash::{Hash, Hasher};
+    let mut ids = [given.0, partner.0];
+    ids.sort_unstable();
+    let mut hasher = rustc_hash::FxHasher::default();
+    ids.hash(&mut hasher);
+    kind.hash(&mut hasher);
+    (hasher.finish() >> 40) as f32 / (1u32 << 24) as f32
+}
 
 /// The mutable state of a proof search.
 ///
@@ -28,16 +45,26 @@ pub struct SearchState {
     /// STree indexing the LHS of oriented unit equalities for fast demodulation.
     /// The value is (from_id, to_id, unit_clause_id).
     pub demod_index: STreeId<(TermId, TermId, ClauseId)>,
+    /// Memo of terms `demod_index` has already been shown not to rewrite.
+    ///
+    /// Valid only for `demod_index`; every insert into or removal from it must
+    /// call [`DemodMemo::invalidate`]. Per worker, so no sharing and no locking.
+    /// See `mrs-calculus::demodulation`.
+    pub demod_memo: DemodMemo,
     /// Clauses waiting to be selected.
     pub unprocessed: UnprocessedSet,
     /// Maps clause IDs to `IdClause` (for proof extraction).
     pub clause_store: HashMap<ClauseId, IdClause>,
+    /// Append-only proof arena preserving exact derivation steps.
+    pub proof_arena: ProofArena,
     /// Generator for fresh clause IDs.
     pub id_gen: ClauseIdGen,
     /// Configuration for symbol precedence and weights.
     pub config: Arc<SymbolConfig>,
     /// AVATAR context for clause splitting.
     pub avatar: AvatarContext,
+    /// Derived empty clause IDs for each refuted branch.
+    pub branch_empty_ids: Vec<ClauseId>,
     /// Dormant processed clauses (inactive under current AVATAR model).
     pub dormant_processed: HashMap<ClauseId, IdClause>,
     /// Clauses that were in `unprocessed` but are currently inactive.
@@ -46,6 +73,8 @@ pub struct SearchState {
     pub comm_symbols: HashSet<SymbolId>,
     /// Binary function symbols detected as associative.
     pub assoc_symbols: HashSet<SymbolId>,
+    /// Problem-clause IDs that justify the detected AC symbols.
+    pub ac_axiom_ids: Vec<ClauseId>,
     /// Wall-clock deadline for the current search.
     pub search_deadline: Option<Instant>,
     /// Symbol table for mapping SymbolId to strings (used by ML features and TSTP output).
@@ -61,16 +90,37 @@ pub struct SearchState {
     /// returns `SearchResult::Timeout` at the next time-check iteration.
     pub stop_flag: Option<Arc<AtomicBool>>,
     /// Shared pool of globally discovered unit equalities.
-    pub shared_pool: Option<Arc<std::sync::RwLock<Vec<Clause>>>>,
-    /// Number of clauses already consumed from the shared pool.
-    pub shared_pool_read: usize,
+    ///
+    /// Each entry is a full, topologically-sorted ancestor chain (input
+    /// clauses first, the shared unit-equality clause last) rather than a
+    /// single bare clause, so that a receiving thread can splice the entire
+    /// justification into its own `clause_store` with remapped IDs. This
+    /// preserves proof reconstructability: a shared clause must never end
+    /// up in the final extracted proof with an empty/unjustified parent
+    /// list (previously stamped `inference(shared, [status(thm)], [])`,
+    /// which fails GDV-style structural leaf/parent checks).
+    pub shared_pool: Option<Arc<std::sync::RwLock<Vec<crate::SharedClauseChain>>>>,
+    /// Stable keys already imported from the shared pool.
+    pub shared_pool_seen: HashSet<String>,
     /// Directory to log ML feature vectors and labels to.
     pub log_ml_data: Option<String>,
     /// Whether to log in CSV format instead of wincode.
     pub ml_log_csv: bool,
+    /// Sampled parent-pair vectors, parent ids, operation kind, and whether
+    /// the full inference routine produced a non-tautological result.
+    #[cfg(feature = "parent-guidance")]
+    pub parent_pairs: Vec<mrs_core::ml::parent_guidance::ParentPairSample>,
+    #[cfg(feature = "parent-guidance")]
+    pub parent_guidance_enabled: bool,
+    #[cfg(feature = "parent-guidance")]
+    pub parent_guidance_sample_probability: f32,
+    #[cfg(feature = "parent-guidance")]
+    pub parent_guidance_threshold: Option<f32>,
+    #[cfg(feature = "parent-guidance")]
+    pub parent_guidance_model: Option<Arc<mrs_core::ml::parent_guidance::ParentGuidanceModel>>,
     /// Loaded ML model for clause scoring.
     #[cfg(feature = "ml-guidance")]
-    pub ml_model: Option<Arc<mrs_core::ml::model::ClauseClassifier<burn::backend::NdArray>>>,
+    pub ml_model: Option<Arc<mrs_core::ml::model::ClauseClassifier>>,
     /// Cached scores for clauses
     #[cfg(feature = "ml-guidance")]
     pub scores: HashMap<ClauseId, f32>,
@@ -79,8 +129,10 @@ pub struct SearchState {
     /// Weight function used for passive-queue priority.  Copied from `SearchConfig`
     /// at `new_with_ml` time so every call site can access it cheaply.
     pub weight_fn: crate::ClauseWeightFn,
+    /// Relational goal distance map for multi-hop conjecture guidance.
+    pub goal_map: Arc<crate::goal_distance::GoalDistanceMap>,
     /// Symbols that appear in any goal-connected clause (distance < 100).
-    /// Used by the `ConjSymbolBoost` weight function.
+    /// Kept for backwards compatibility and fast membership lookup.
     pub goal_symbols: rustc_hash::FxHashSet<mrs_core::SymbolId>,
 }
 
@@ -98,6 +150,7 @@ impl SearchState {
     ) -> Self {
         Self::new_with_ml(
             initial_clauses,
+            Vec::new(),
             id_gen,
             config,
             symbols,
@@ -111,6 +164,7 @@ impl SearchState {
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_ml(
         initial_clauses: Vec<Clause>,
+        provenance: Vec<Clause>,
         id_gen: ClauseIdGen,
         config: Arc<SymbolConfig>,
         symbols: Arc<mrs_core::SymbolTable>,
@@ -119,103 +173,147 @@ impl SearchState {
         ml_log_csv: bool,
         weight_fn: crate::ClauseWeightFn,
     ) -> Self {
+        // AVATAR marker symbols are interned lazily when a split actually
+        // allocates the corresponding SAT variable.  Keeping this Arc allows
+        // strategy states to share the immutable input table until the first
+        // marker is needed; `Arc::make_mut` then gives that state its own copy.
+        let mut symbols = symbols;
+
         let mut term_bank = TermBank::new();
         let mut clause_store: HashMap<ClauseId, IdClause> = HashMap::default();
         let mut unprocessed = UnprocessedSet::new(config.clone());
         let mut avatar = AvatarContext::new();
         let mut id_gen = id_gen;
 
-        // Pre-compute goal symbols from conjecture-connected input clauses.
-        let goal_symbols = {
-            let mut syms: rustc_hash::FxHashSet<mrs_core::SymbolId> =
-                rustc_hash::FxHashSet::default();
-            for c in initial_clauses.iter().filter(|c| c.distance < 100) {
-                for lit in &c.literals {
-                    match &lit.atom {
-                        mrs_core::formula::Atom::Pred(s, args) => {
-                            syms.insert(*s);
-                            let mut stack: Vec<&mrs_core::term::Term> = args.iter().collect();
-                            while let Some(t) = stack.pop() {
-                                if let mrs_core::term::Term::App(f, a) = t {
-                                    syms.insert(*f);
-                                    stack.extend(a.iter());
-                                }
-                            }
-                        }
-                        mrs_core::formula::Atom::Eq(l, r) => {
-                            let mut stack = vec![l, r];
-                            while let Some(t) = stack.pop() {
-                                if let mrs_core::term::Term::App(f, a) = t {
-                                    syms.insert(*f);
-                                    stack.extend(a.iter());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            syms
-        };
+        // Pre-compute relational goal-distance reachability map from input clauses.
+        let goal_map = Arc::new(crate::goal_distance::GoalDistanceMap::compute(
+            &initial_clauses,
+        ));
+        let goal_symbols = goal_map.conjecture_symbols().clone();
 
         for clause in initial_clauses {
             let id_clause = term_bank.clause_from_legacy(&clause);
+            let goal_dist = goal_map.clause_goal_distance(&id_clause, &term_bank);
             let w = crate::weight::clause_weight_fn(
-                &id_clause,
-                &term_bank,
-                &config,
-                &weight_fn,
-                &goal_symbols,
+                &id_clause, &term_bank, &config, &weight_fn, &goal_map,
             );
             if use_avatar {
-                if let Some(splits) = avatar.split_clause_id(&id_clause, &mut id_gen, &term_bank) {
+                if let Some(splits) = avatar.split_clause_id(
+                    &id_clause,
+                    &mut id_gen,
+                    &term_bank,
+                    &mut clause_store,
+                    Arc::make_mut(&mut symbols),
+                ) {
                     for split in splits {
                         let sw = crate::weight::clause_weight_fn(
-                            &split,
-                            &term_bank,
-                            &config,
-                            &weight_fn,
-                            &goal_symbols,
+                            &split, &term_bank, &config, &weight_fn, &goal_map,
                         );
+                        let s_goal_dist = goal_map.clause_goal_distance(&split, &term_bank);
                         clause_store.insert(split.id, split.clone());
-                        unprocessed.push(&split, &term_bank, sw, None);
+                        unprocessed.push(&split, &term_bank, sw, Some(s_goal_dist), None);
                     }
                 } else {
                     clause_store.insert(id_clause.id, id_clause.clone());
-                    unprocessed.push(&id_clause, &term_bank, w, None);
+                    unprocessed.push(&id_clause, &term_bank, w, Some(goal_dist), None);
                 }
             } else {
                 clause_store.insert(id_clause.id, id_clause.clone());
-                unprocessed.push(&id_clause, &term_bank, w, None);
+                unprocessed.push(&id_clause, &term_bank, w, Some(goal_dist), None);
             }
+        }
+
+        // Provenance-only clauses (non-clausal FOF-level proof steps, e.g.
+        // NNF/Skolemization results from `mrs_cnf::clausify_with_provenance`)
+        // are registered in `clause_store` for proof-extraction lookup ONLY.
+        // They must never touch `unprocessed`/`processed`: their `literals`
+        // are empty (real content lives in `formula`), which the given-clause
+        // loop would otherwise misread as the empty clause (a refutation).
+        for clause in provenance {
+            debug_assert!(
+                clause.formula.is_some() || !clause.literals.is_empty(),
+                "provenance clauses must have formula: Some(_) or non-empty literals"
+            );
+            let id_clause = term_bank.clause_from_legacy(&clause);
+            clause_store.insert(id_clause.id, id_clause);
+        }
+
+        let mut proof_arena = ProofArena::new();
+        for (id, clause) in &clause_store {
+            let witness = if let Some(w) = &clause.witness {
+                w.clone()
+            } else {
+                match &clause.source {
+                    mrs_core::clause::ClauseSource::Input { name, role } => ProofWitness::Input {
+                        name: name.clone(),
+                        role: role.clone(),
+                    },
+                    mrs_core::clause::ClauseSource::Introduced { symbol, .. } => {
+                        ProofWitness::Definition {
+                            symbol: *symbol,
+                            defining_formula: clause.formula.clone(),
+                        }
+                    }
+                    mrs_core::clause::ClauseSource::Inference { rule, parents } => {
+                        ProofWitness::Legacy {
+                            rule,
+                            parents: parents.iter().map(|p| ProofNodeId(p.0)).collect(),
+                        }
+                    }
+                }
+            };
+            let parents = match &clause.source {
+                mrs_core::clause::ClauseSource::Inference { parents, .. }
+                | mrs_core::clause::ClauseSource::Introduced { parents, .. } => {
+                    parents.iter().map(|p| ProofNodeId(p.0)).collect()
+                }
+                mrs_core::clause::ClauseSource::Input { .. } => smallvec::SmallVec::new(),
+            };
+            proof_arena.alloc(*id, witness, parents);
         }
 
         Self {
             processed: LiteralIndex::new(),
             demod_index: STreeId::new(),
+            demod_memo: DemodMemo::new(),
             unprocessed,
             clause_store,
+            proof_arena,
             id_gen,
             config,
             avatar,
+            branch_empty_ids: Vec::new(),
             dormant_processed: HashMap::default(),
             dormant_unprocessed: HashMap::default(),
             comm_symbols: HashSet::default(),
             assoc_symbols: HashSet::default(),
+            ac_axiom_ids: Vec::new(),
             search_deadline: None,
             symbols,
             term_bank,
             children: HashMap::default(),
             stop_flag: None,
             shared_pool: None,
-            shared_pool_read: 0,
+            shared_pool_seen: HashSet::default(),
             log_ml_data,
             ml_log_csv,
+            #[cfg(feature = "parent-guidance")]
+            parent_pairs: Vec::new(),
+            #[cfg(feature = "parent-guidance")]
+            parent_guidance_enabled: false,
+            #[cfg(feature = "parent-guidance")]
+            parent_guidance_sample_probability: 0.0,
+            #[cfg(feature = "parent-guidance")]
+            parent_guidance_threshold: None,
+            #[cfg(feature = "parent-guidance")]
+            parent_guidance_model: None,
             #[cfg(feature = "ml-guidance")]
             ml_model: None,
             #[cfg(feature = "ml-guidance")]
             scores: HashMap::default(),
             stats: crate::SearchStats::default(),
             weight_fn,
+            goal_map,
             goal_symbols,
         }
     }
@@ -227,8 +325,53 @@ impl SearchState {
             &self.term_bank,
             &self.config,
             &self.weight_fn,
-            &self.goal_symbols,
+            &self.goal_map,
         )
+    }
+
+    /// Registers a clause in `clause_store` and the append-only `proof_arena`.
+    pub fn store_clause(&mut self, clause: &IdClause) {
+        self.clause_store.insert(clause.id, clause.clone());
+        if self.proof_arena.node_for_clause(clause.id).is_none() {
+            let witness = if let Some(w) = &clause.witness {
+                w.clone()
+            } else {
+                match &clause.source {
+                    mrs_core::clause::ClauseSource::Input { name, role } => ProofWitness::Input {
+                        name: name.clone(),
+                        role: role.clone(),
+                    },
+                    mrs_core::clause::ClauseSource::Introduced { symbol, .. } => {
+                        ProofWitness::Definition {
+                            symbol: *symbol,
+                            defining_formula: clause.formula.clone(),
+                        }
+                    }
+                    mrs_core::clause::ClauseSource::Inference { rule, parents } => {
+                        ProofWitness::Legacy {
+                            rule,
+                            parents: parents.iter().map(|p| ProofNodeId(p.0)).collect(),
+                        }
+                    }
+                }
+            };
+            let parents = match &clause.source {
+                mrs_core::clause::ClauseSource::Inference { parents, .. }
+                | mrs_core::clause::ClauseSource::Introduced { parents, .. } => {
+                    parents.iter().map(|p| ProofNodeId(p.0)).collect()
+                }
+                mrs_core::clause::ClauseSource::Input { .. } => smallvec::SmallVec::new(),
+            };
+            self.proof_arena.alloc(clause.id, witness, parents);
+        }
+    }
+
+    /// Enqueues a clause into `unprocessed` using its computed weight and relational goal distance.
+    pub fn push_unprocessed(&mut self, clause: &IdClause, weight: u32, score: Option<f32>) {
+        self.store_clause(clause);
+        let goal_dist = self.goal_map.clause_goal_distance(clause, &self.term_bank);
+        self.unprocessed
+            .push(clause, &self.term_bank, weight, Some(goal_dist), score);
     }
 
     /// Computes and caches the ML score for a clause.
@@ -244,14 +387,92 @@ impl SearchState {
                 mrs_core::ml::features::extract(clause, &self.term_bank, &self.symbols, weight);
 
             use burn::tensor::Tensor;
-            let tensor =
-                Tensor::<burn::backend::NdArray, 1>::from_floats(feats, &Default::default());
+            let tensor = Tensor::<1>::from_floats(feats, &burn::tensor::Device::flex());
             let tensor = tensor.reshape([1, 128]); // batch size 1
             let logit = model.forward(tensor).into_scalar();
             self.scores.insert(clause.id, logit);
             Some(logit)
         } else {
             None
+        }
+    }
+
+    /// Sample candidate parent pairs, or reject them only when an explicit
+    /// model and logit threshold have both been configured.
+    #[cfg(feature = "parent-guidance")]
+    pub fn reject_parent_pair(
+        &mut self,
+        given: &IdClause,
+        partner: &IdClause,
+        kind: mrs_core::ml::parent_guidance::InferenceKind,
+        selected_literals: usize,
+    ) -> (bool, Option<usize>) {
+        if !self.parent_guidance_enabled {
+            return (false, None);
+        }
+        let threshold = self.parent_guidance_threshold;
+        let sample = self.log_ml_data.is_some()
+            && self
+                .parent_guidance_model
+                .as_ref()
+                .is_none_or(|model| model.inference_kind == kind as u8)
+            && sample_hash(given.id, partner.id, kind) < self.parent_guidance_sample_probability;
+        let sample_index = if sample && self.parent_pairs.len() < 200_000 {
+            let mut parents = [given.id, partner.id];
+            parents.sort_unstable();
+            let index = self.parent_pairs.len();
+            self.parent_pairs.push((
+                [0.0; mrs_core::ml::parent_guidance::PARENT_FEATURE_DIM],
+                parents,
+                kind,
+                None,
+            ));
+            Some(index)
+        } else {
+            None
+        };
+        if !sample && threshold.is_none() {
+            return (false, None);
+        }
+        let model = self.parent_guidance_model.as_ref();
+        let features = mrs_core::ml::parent_guidance::extract_parent_features(
+            given,
+            partner,
+            kind,
+            selected_literals,
+            &self.term_bank,
+            &self.symbols,
+        );
+        if let Some(index) = sample_index {
+            self.parent_pairs[index].0 = features;
+            self.stats.parent_guidance_sampled += 1;
+        }
+        let rejected = match (model, threshold) {
+            (Some(model), Some(threshold)) if model.inference_kind == kind as u8 => {
+                let score = model.score(&features);
+                score.is_finite() && score < threshold
+            }
+            _ => false,
+        };
+        (rejected, (!rejected).then_some(sample_index).flatten())
+    }
+
+    #[cfg(feature = "parent-guidance")]
+    pub fn record_parent_pair_outcome(
+        &mut self,
+        sample_index: Option<usize>,
+        produced_inference: bool,
+    ) {
+        if self
+            .search_deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return;
+        }
+        if let Some((_, _, _, label)) =
+            sample_index.and_then(|index| self.parent_pairs.get_mut(index))
+        {
+            *label = Some(produced_inference);
         }
     }
 
@@ -282,11 +503,13 @@ impl SearchState {
                     if ordering.compare_id(*l, *r, &self.term_bank) == TermComparison::Greater {
                         self.demod_index
                             .remove(*l, &self.term_bank, &(*l, *r, p.id));
+                        self.demod_memo.invalidate(*l, &self.term_bank);
                     } else if ordering.compare_id(*r, *l, &self.term_bank)
                         == TermComparison::Greater
                     {
                         self.demod_index
                             .remove(*r, &self.term_bank, &(*r, *l, p.id));
+                        self.demod_memo.invalidate(*r, &self.term_bank);
                     }
                 }
             }
@@ -315,20 +538,34 @@ impl SearchState {
 
     /// Registers a new clause in the store and tracks its dependencies.
     pub fn register_clause(&mut self, clause: &IdClause) {
-        self.clause_store.insert(clause.id, clause.clone());
-        if let mrs_core::clause::ClauseSource::Inference { rule, parents } = &clause.source {
-            let is_destructive = *rule == "demodulation" || *rule == "subsumption_resolution";
-            for (i, &parent) in parents.iter().enumerate() {
-                // For destructive inference rules, the primary target clause is always
-                // at index 0. Subsequent parents are auxiliary rewrites or subsuming clauses.
-                // We only track the primary target for orphan elimination. If an auxiliary
-                // parent is backward-subsumed, we should NOT delete the derived clause,
-                // otherwise we lose completeness.
-                if is_destructive && i > 0 {
-                    continue;
+        // Search may carry an AC-normalized copy of a clause, but the proof
+        // store must retain the first form registered for its ID. This keeps
+        // both input provenance and derived inference formulas aligned with
+        // the actual pre-normalization result that was generated.
+        self.clause_store
+            .entry(clause.id)
+            .or_insert_with(|| clause.clone());
+        match &clause.source {
+            mrs_core::clause::ClauseSource::Inference { rule, parents } => {
+                let is_destructive = *rule == "demodulation" || *rule == "subsumption_resolution";
+                for (i, &parent) in parents.iter().enumerate() {
+                    // For destructive inference rules, the primary target clause is always
+                    // at index 0. Subsequent parents are auxiliary rewrites or subsuming clauses.
+                    // We only track the primary target for orphan elimination. If an auxiliary
+                    // parent is backward-subsumed, we should NOT delete the derived clause,
+                    // otherwise we lose completeness.
+                    if is_destructive && i > 0 {
+                        continue;
+                    }
+                    self.children.entry(parent).or_default().push(clause.id);
                 }
-                self.children.entry(parent).or_default().push(clause.id);
             }
+            mrs_core::clause::ClauseSource::Introduced { parents, .. } => {
+                for &parent in parents {
+                    self.children.entry(parent).or_default().push(clause.id);
+                }
+            }
+            mrs_core::clause::ClauseSource::Input { .. } => {}
         }
     }
 
@@ -367,7 +604,37 @@ impl SearchState {
                 atom: norm_atom,
             });
         }
-        IdClause::new_avatar(clause.id, norm_lits, clause.source, clause.avatar)
+        let mut norm_clause =
+            IdClause::new_avatar(clause.id, norm_lits, clause.source, clause.avatar);
+        norm_clause.formula = clause.formula;
+        norm_clause
+    }
+
+    /// Create a proof-visible AC normalization step when the operational
+    /// representation differs from the clause already in the store.
+    pub fn ac_normalize_for_search(
+        &mut self,
+        clause: IdClause,
+        ac_syms: &HashSet<SymbolId>,
+    ) -> IdClause {
+        if ac_syms.is_empty() {
+            return clause;
+        }
+        let mut normalized = self.ac_normalize_clause(clause.clone(), ac_syms);
+        if normalized.literals == clause.literals {
+            return clause;
+        }
+        self.register_clause(&clause);
+        let normalized_id = self.id_gen.next();
+        normalized.id = normalized_id;
+        let mut parents = vec![clause.id];
+        parents.extend(self.ac_axiom_ids.iter().copied());
+        normalized.source = mrs_core::clause::ClauseSource::Inference {
+            rule: "ac_normalization",
+            parents: parents.into(),
+        };
+        self.register_clause(&normalized);
+        normalized
     }
 
     /// Recursively AC-normalizes all active clauses and updates their weights in queues.
@@ -376,17 +643,12 @@ impl SearchState {
             return;
         }
 
-        // 1. Normalize all clauses in clause_store
-        let ids: Vec<ClauseId> = self.clause_store.keys().copied().collect();
-        for id in ids {
-            let clause = self.clause_store.remove(&id).unwrap();
-            let norm_clause = self.ac_normalize_clause(clause, ac_syms);
-            self.clause_store.insert(id, norm_clause);
-        }
-
-        // 2. Re-populate unprocessed queue with normalized clauses and updated weights
+        // Re-populate the passive queue with the original clauses. Search
+        // normalizes each selected copy, while the store remains the exact
+        // proof/provenance representation.
+        let unprocessed_ids: Vec<_> = self.unprocessed.iter().collect();
         let mut unprocessed_clauses = Vec::new();
-        for id in self.unprocessed.iter() {
+        for id in unprocessed_ids {
             if let Some(clause) = self.clause_store.get(&id) {
                 unprocessed_clauses.push(clause.clone());
             }
@@ -402,19 +664,124 @@ impl SearchState {
             let score = self.get_ml_score(&clause);
             #[cfg(not(feature = "ml-guidance"))]
             let score = None;
-            self.unprocessed.push(&clause, &self.term_bank, w, score);
+            self.push_unprocessed(&clause, w, score);
         }
     }
 }
 
-#[cfg(all(test, feature = "ml-guidance"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use mrs_calculus::ordering::SymbolConfig;
     use mrs_core::SymbolTable;
+    #[cfg(feature = "ml-guidance")]
     use mrs_core::clause::{Clause, ClauseSource};
+    #[cfg(feature = "ml-guidance")]
     use std::time::Instant;
 
+    #[test]
+    fn avatar_symbols_are_not_preinterned() {
+        let symbols = Arc::new(SymbolTable::new());
+        let state = SearchState::new(
+            vec![],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            symbols,
+            true,
+        );
+
+        assert_eq!(state.symbols.len(), 0);
+        assert!(state.symbols.resolve_name("spl0_1").is_none());
+    }
+
+    #[test]
+    fn ac_normalization_preserves_input_clause_shape() {
+        use mrs_core::clause::{Clause, ClauseSource};
+        use mrs_core::{Atom, Literal, Term};
+
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let input = Clause::new(
+            ClauseId(0),
+            vec![Literal::pos(Atom::eq(
+                Term::app(f, vec![Term::constant(b), Term::constant(a)]),
+                Term::constant(a),
+            ))],
+            ClauseSource::Input {
+                name: "commutative_axiom".into(),
+                role: "axiom".into(),
+            },
+        );
+        let mut state = SearchState::new(
+            vec![input],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        let mut ac = HashSet::default();
+        ac.insert(f);
+
+        let original = state.clause_store.get(&ClauseId(0)).unwrap().clone();
+        state.ac_normalize_all(&ac);
+        let normalized = state.clause_store.get(&ClauseId(0)).unwrap();
+
+        assert_eq!(normalized.literals, original.literals);
+        assert!(matches!(normalized.source, ClauseSource::Input { .. }));
+    }
+
+    #[test]
+    fn ac_normalization_retains_same_name_unary_terms() {
+        use mrs_core::clause::ClauseSource;
+        use mrs_core::{Atom, Literal, Term};
+
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("arity_shared_f");
+        let a = symbols.intern("arity_shared_a");
+        let b = symbols.intern("arity_shared_b");
+        let unary = Term::app(f, vec![Term::constant(a)]);
+        let binary = Term::app(f, vec![unary.clone(), Term::constant(b)]);
+        let clause = mrs_core::clause::Clause::new(
+            ClauseId(0),
+            vec![Literal::pos(Atom::eq(binary, Term::constant(a)))],
+            ClauseSource::Input {
+                name: "arity_shared".into(),
+                role: "axiom".into(),
+            },
+        );
+        let mut state = SearchState::new(
+            vec![clause],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        let mut ac = HashSet::default();
+        ac.insert(f);
+
+        let original = state.clause_store.get(&ClauseId(0)).unwrap().clone();
+        let normalized = state.ac_normalize_clause(original, &ac);
+        let legacy = state.term_bank.clause_to_legacy(&normalized);
+        let Atom::Eq(left, right) = &legacy.literals[0].atom else {
+            panic!("expected equality clause");
+        };
+        let outer = [left, right]
+            .into_iter()
+            .find(|term| matches!(term, Term::App(symbol, args) if *symbol == f && args.len() == 2))
+            .expect("outer application must be retained");
+        let Term::App(symbol, args) = outer else {
+            unreachable!()
+        };
+        assert_eq!(*symbol, f);
+        assert_eq!(args.len(), 2);
+        assert!(
+            matches!(&args[0], Term::App(inner, inner_args) if *inner == f && inner_args.len() == 1)
+        );
+    }
+
+    #[cfg(feature = "ml-guidance")]
     #[test]
     fn benchmark_scoring_overhead() {
         let mut symbols = SymbolTable::new();

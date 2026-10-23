@@ -1,0 +1,245 @@
+# MRS CASC Divisions: Schedules and Structural Mapping
+
+> Status: Dated benchmark report. The source-derived schedule registry is in
+> [`reference/schedules.md`](../../reference/schedules.md); this report retains
+> the evidence and caveats for the 2026-09 analysis.
+
+This document describes how the MRS theorem prover maps CASC competition
+divisions to named strategy schedules, and how per-division portfolios are
+selected and tuned.
+
+---
+
+## 1. Division → Schedule Mapping
+
+The benchmark harness (`crates/mrs-bench/systems/mrs/invoke.sh`) detects the
+CASC division from the problem file path and selects the matching schedule:
+
+| CASC Division | Named Schedule | Notes |
+|:---|:---|:---|
+| **FEQ** (FOF with Equality) | `casc_feq` | Full superposition + demodulation |
+| **FNE** (FOF No Equality) | `casc_fne` | Pure resolution/factoring; no paramodulation |
+| **UEQ** (Unit Equality) | `casc_ueq` | Unit clauses only; no AVATAR |
+| **EPU** (EPR Unsatisfiable) | `casc_epu` | s4-first (greedy optimal: s4→s6) |
+| **EPS** (EPR Satisfiable) | `casc_eps` | s1-first (greedy optimal: s1→s2→s5) |
+| **ICU** (Intensional Unit Equality) | `casc_icu` | s12-first |
+| other / fallback | `casc` | Generic 15-strategy CASC portfolio |
+
+---
+
+## 2. Data-Driven Portfolio Construction
+
+Each division schedule is constructed by `build_casc_schedule` in
+`crates/mrs-search/src/strategy/named.rs`. The function takes:
+- The total time budget and number of workers
+- A **priority order array** listing strategy indices (1-indexed, 1–15) in
+  the order they should be allocated to parallel worker slots
+
+This replaces the previous loop-generated schedules (which varied parameters
+via modular arithmetic) with **data-driven portfolios** derived from benchmark
+results.
+
+The historical greedy set-cover inputs are **solo-strategy diagnostics**. They
+measure `--strategy N` with one worker and therefore do not include
+cross-strategy unit-equality sharing. They must not be interpreted as the final
+cooperative portfolio objective.
+
+### How to regenerate (after a new TPTP release or benchmark run):
+
+```bash
+# Step 1: optional diagnostic solo coverage across all divisions
+export TPTP=/path/to/TPTP-v9.x.x
+./crates/mrs-bench/run_strategy_sweep.sh \
+    --divisions fne,feq,ueq,eps,epu,icu --time 30 --jobs 4 \
+    --output results/sweep-$(date +%Y%m%d)
+
+# Step 2: optional diagnostic solo set-cover
+./crates/mrs-bench/run_all_greedy_sweeps.sh results/sweep-*/run.csv \
+    > greedy_all.res
+
+# Step 3: measure the actual cooperative portfolio with shared clauses
+# The eight IDs must match MRS_WORKERS. This launches one 8-worker mrs
+# process per problem, as competition runs do.
+MRS_SHARED_POOL_INTERVAL=500 \
+./crates/mrs-bench/cooperative_portfolio_sweep.sh \
+    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
+    results/cooperative-fne
+
+# Control: isolate the contribution from cross-strategy sharing.
+MRS_SHARED_POOL_INTERVAL=0 \
+./crates/mrs-bench/cooperative_portfolio_sweep.sh \
+    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
+    results/cooperative-fne-no-sharing
+
+# Step 4: use cooperative results, not solo set-cover alone, to update named.rs
+```
+
+---
+
+## 3. Current Data-Driven Priority Orders
+
+Based on historical 30 s per-strategy solo sweeps; these orders and coverage
+figures are diagnostic and are not cooperative portfolio measurements. FNE
+and UEQ use CASC-30/CASC-J13 compromise orders; other rows retain their prior
+CASC-30 candidates:
+
+| Division | 8-core candidate order | Solo union diagnostic coverage |
+|:---------|:----------------------|:---------------------------|
+| **FNE** | s11, s8, s4, s15, s10, s3, s12, s1 | CASC-30: 42/42 with s8,s15,s11,s3,s4; J13: 35/35 with s11,s4,s10 |
+| **FEQ** | s11, s12, s1, s6, s10, s8, s14, s4 | 90 problems solved at 8 cores |
+| **UEQ** | s4, s8, s12, s11, s2, s14, s15, s1 | J13: 122/124; CASC-30 original greedy order: 136/139 |
+| **EPU** | s1, s6, s14, s11, s4, s2, s3, s7 | 16/16 (100%) at 2 cores |
+| **EPS** | s2, s3, s1, s8, s11, s12, s9, s14 | 38/38 (100%) at 1 core |
+| **ICU** | s12, s1, s2, s3, s4, s5, s6, s7 | 0 problems solved |
+
+Beyond the minimum coverage point, extra slots cycle through remaining
+strategies so no core is idle.
+
+The FNE and UEQ orders are compromise candidates based on both CASC-30 and
+CASC-J13 solo-strategy sweeps. These results are diagnostics, not cooperative
+portfolio measurements. The UEQ CASC-30 coverage refers to its original greedy
+order; the exact coverage for the compromise order has not been measured.
+
+> **FNE full-time sweep update (2026-10-20):** Full-time (180 s / 240 s) sweeps revealed
+> that `s13` cracks 5 previously unsolved LCL problems in 56–105 s. Greedy set cover
+> over full-time runs selects candidate order `[s11, s13, s04, s08, s15, s07, s03, s01]`,
+> which raises solo diagnostic coverage from 35/38 to 38/38 (100%) on J13 and from
+> 40/44 to 44/44 (100%) on CASC-30. See [`fne-fulltime-portfolio-2026-10.md`](fne-fulltime-portfolio-2026-10.md).
+
+### UEQ measured cooperatively: 107/400, and a 150-problem regression
+
+`docs/reports/benchmarks/ueq-2026-09.md` is the first cooperative 8-worker
+measurement of the UEQ division (CASC-J13, 400 problems, 180 s, commit
+`c07cac9`). Headline: **107/400, all 107 kernel-certified, zero violations** —
+against the `codex.db` CASC-J13 UEQ run's 257/400, that is 96 solved in common,
+**161 lost**, 11 gained, with median `processed_per_s` on the regressed rows
+falling from 1649.5 to 116.0. The UEQ order above shipped at `b214a13` on solo
+set-cover evidence that its own source document calls unvalidated for the
+cooperative case, and cross-strategy sharing was disabled by default at
+`ce7bdc5`; both fall inside the regression window and neither is yet
+established as the cause. The four-cell A/B that separates them is §2 of that
+report. The row in the table above should be read as a candidate, not as a
+measured schedule.
+
+---
+
+### FNE follow-up: where the CASC-30 failures actually go
+
+`docs/reports/benchmarks/fne-2026-09.md` profiles the FNE division. Headline:
+**31 of the 61 `cert-fne-20260928` FNE failures are TPTP LCL problems** —
+420-to-545-byte inputs that encode propositional theoremhood as
+`is_a_theorem(<schema>)` plus a condensed-detachment rule. The portfolio spends
+42 000 given-clause iterations per problem on a three-clause problem and does
+not close a five-step condensed-detachment derivation. casc-sim shows the
+failures are arithmetic, not allocation (2–11 GB peaks against a 128 GiB
+allowance, `casc_limit_passed_ms` reached, iteration counts unchanged at 2x the
+budget).
+
+That investigation also found a real defect, fixed in this branch: `casc_fne`
+installs single-negative literal selection on every slot, which leaves a Horn
+rule clause unable to supply the selected positive literal a lone negative goal
+unit needs, and with `set-of-support` on top (s10, s13) the resulting inference
+is forbidden outright — `LCL978+1  s10  GaveUp processed=3 generated=0` in
+71 ms. The pre-flight added in `fix(sos)` releases a set-of-support restriction
+only when it can prove the restriction blocks every inference the input admits.
+Worth ~2.3x throughput on the LCL cluster and two working portfolio workers;
+worth 0 on the FNE score, because the refutations are not reachable by extra
+throughput. The 25 condensed-detachment LCL problems need a propositional-logic
+engine, which is where the next attempt should start.
+
+Two further findings from the `cert-fne-20260928` run (FNE only, `jobs=1`,
+Xeon E5-2407, commit `0f28fbb`):
+
+* **The score carries a +-4-point host band.** That run reports 39/100 where
+  `cert-30-20260926` reports 43/100, with identical strategy, worker count and
+  time limit. Over the 39 commonly-solved problems the E5-2407 host does
+  0.762x the clauses per second and is slower on 39 of 39, and all four lost
+  problems had solved in the 161-238 s band. An FNE improvement below ~5
+  problems is therefore not measurable, and an A/B has to run on one host
+  against a baseline from that host. `run.csv` now banks `processed_per_s`
+  (`9cb44d8`) so this is visible without re-deriving anything.
+* **Seven proofs were rejected that were sound.** Across both runs the strict
+  kernel returned `VerifiedBad` for 7 `Theorem` answers, all of them
+  `cnf_transformation` steps citing nested definitional CNF definitions that its
+  own matcher cannot place in the source. `37d3e2e` makes that verdict
+  `Inconclusive`: FNE goes 30 good / 2 bad / 4 unknown to 30 good / 0 bad / 6
+  unknown, and the full `cert-30-20260926` sweep 116/3/2 to 116/0/2, with no
+  `VerifiedGood` lost. The honest FNE reading is 39/100 refuted, 30 of them
+  kernel-certified.
+
+## 4. The `categorize_tptp` Utility
+
+For custom problem sets, the `categorize_tptp` binary (in `mrs-bench`) splits a
+TPTP installation into per-division problem lists:
+
+```bash
+cargo run --release -p mrs-bench --bin categorize_tptp <TPTP_DIR> ./casc_problem_lists
+```
+
+**Categorization rules** (from `crates/mrs-bench/src/bin/categorize_tptp.rs`):
+
+| Category | Rule |
+|:---------|:-----|
+| EPR | No function symbols of arity ≥ 1 (only constants and variables) |
+| UEQ | Strictly CNF; every clause is a unit equality/inequality literal |
+| FNE | FOF/CNF with no equality literals (and has functions of arity ≥ 1) |
+| FEQ | FOF/CNF with at least one equality literal (and has functions) |
+| Other | TFF, THF, or other typed/higher-order; ignored |
+
+---
+
+## 5. Performance Safety Guards
+
+Three hard limits protect against algorithmic blowups on large-clause problems
+(e.g., the `HWV` Software Verification domain with 200+ literal clauses):
+
+### Subsumption step limit (5 000 steps)
+
+**Location:** `crates/mrs-calculus/src/subsumption.rs` — `subsumes_id`  
+**Problem:** Subsumption checking is NP-complete in clause width.  On 200-literal
+clauses naive backtracking can execute billions of operations on a single call,
+bypassing the wall-clock time limit.  
+**Fix:** The backtracking counter is incremented once per recursive call.  Once
+it exceeds 5 000 the check immediately returns `false` (not subsumed).
+
+### Condensation clause-width guard (> 50 literals → skip)
+
+**Location:** `crates/mrs-calculus/src/subsumption.rs` — `condense_id`  
+**Problem:** Condensation is O(N³) in clause width.  For a 200-literal clause
+this requires ~40 000 expensive unification checks.  
+**Fix:** Condensation is skipped entirely for clauses with more than 50 literals.
+Wide clauses are extremely unlikely to be condensable in practice.
+
+### Demodulation pass limit (100 passes)
+
+**Location:** `crates/mrs-calculus/src/demodulation.rs` — `demodulate_id`  
+**Problem:** Equational problems can generate cyclic rewrite rules (a→b and b→a),
+causing the rewriter to loop indefinitely.  
+**Fix:** Each call to `demodulate_id` is capped at 100 rewriting passes.  If the
+limit is reached, the partially rewritten clause is returned as-is.
+
+---
+
+## 6. Complete CASC Division Support & Scope Map
+
+The table below outlines all possible CASC divisions, including those that are active, legacy, or out of scope for MRS:
+
+| CASC Division | Category / Description | MRS Support Status | Technical Reason / Details |
+|:---|:---|:---|:---|
+| **FOF** | First-Order Formulas (Classical) | 🟢 **Active Competitor** | Core of first-order ATP. Split internally into **FNE** (No Equality) and **FEQ** (With Equality). |
+| **FNE** | FOF No Equality | 🟢 **Active Competitor** | Handled by `casc_fne` schedule with pure resolution/factoring (paramodulation/demodulation disabled). |
+| **FEQ** | FOF with Equality | 🟢 **Active Competitor** | Handled by `casc_feq` schedule using full superposition + demodulation. |
+| **UEQ** | Unit Equality CNF | 🟢 **Active Competitor** | Pure equational logic handled by `casc_ueq` using our sound AC-indexing given-clause loop. |
+| **EPR / EPU / EPS** | Effectively Propositional | 🟡 **Legacy / Local Benchmarks** | Bernays-Schönfinkel class (no functions of arity $\ge 1$). Supported via CaDiCaL SAT-splitting, but no EPR division at CASC-J13. |
+| **ICU** | Intuitionistic First-order logic | 🟡 **Legacy / Local Benchmarks** | Experimental support and fixtures remain, but the division does not exist at CASC-J13. |
+| **THF** | Typed Higher-order Form | ❌ **Out of Scope** | Requires higher-order logic (lambda-calculus, type theory, currying). MRS is strictly a classical *First-Order* solver. |
+| **TNE** | THF No Equality | ❌ **Out of Scope** | Higher-order logic (THF) with no equality. |
+| **TEQ** | THF with Equality | ❌ **Out of Scope** | Higher-order logic (THF) containing equality. |
+| **TFF** | Typed First-order Form | ❌ **Out of Scope** | Monomorphic/polymorphic typed first-order formulas; parsed but ignored by default. |
+| **TFA** | Typed First-order with Arithmetic | ❌ **Out of Scope** | Requires SMT-style arithmetic solvers to handle numeric constraints. MRS does not support numeric theories. |
+| **FNT** | First-order Non-theorems | ❌ **Out of Scope** | Requires finding counter-models (finite model generators). MRS is purely refutation-based. |
+| **FNN** | FNT No Equality | ❌ **Out of Scope** | First-order non-theorems with no equality. |
+| **FNQ** | FNT with Equality | ❌ **Out of Scope** | First-order non-theorems containing equality. |
+| **LTB** | Large Theory Batch | ❌ **Out of Scope** | Large-scale problem sets requiring specialized axiom selection/filtering over thousands of formulas. |
+| **SLH** | Sledgehammer (Isabelle) | ❌ **Out of Scope** | Obligations translated from interactive HOL proof assistants requiring highly specialized translation parsing. |
+| **PRV** | Proof Verification | 🟢 **Active Competitor** | MRS competes in this division via the `mrs-proover` sub-crate (ProoVer 2026 entry), which functions as an independent TSTP proof verifier. |

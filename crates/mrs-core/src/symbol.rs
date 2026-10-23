@@ -19,6 +19,19 @@ impl SymbolId {
     pub fn index(self) -> u32 {
         self.0
     }
+
+    /// Reserved pseudo-symbol for ordering ground equality atoms as terms.
+    ///
+    /// The certified EPR+Eq path compares `Eq(l, r)` atoms by wrapping them
+    /// as `RESERVED_EQ_ORDER(l, r)` terms inside ordering computations only
+    /// (maximal-literal selection, totality validation). This id can never
+    /// collide with an interned symbol (tables grow up from zero), and the
+    /// pseudo-term must never be interned, rendered, collected into
+    /// signatures, or stored in clauses: ordering configs resolve it
+    /// through their unknown-symbol fallbacks (variable weight,
+    /// index-derived precedence), which keeps it positive-weighted and
+    /// precedence-distinct by construction. See `certified_eq`.
+    pub const RESERVED_EQ_ORDER: SymbolId = SymbolId(u32::MAX);
 }
 
 /// Bidirectional mapping between symbol names and [`SymbolId`]s.
@@ -44,6 +57,7 @@ impl SymbolId {
 pub struct SymbolTable {
     names: Vec<String>,
     ids: HashMap<String, SymbolId>,
+    fresh_counters: HashMap<String, usize>,
 }
 
 impl SymbolTable {
@@ -52,6 +66,28 @@ impl SymbolTable {
         Self {
             names: Vec::new(),
             ids: HashMap::default(),
+            fresh_counters: HashMap::default(),
+        }
+    }
+
+    /// Generates a fresh symbol guaranteed to be globally unique in this symbol table.
+    ///
+    /// The resulting symbol will start with `base_prefix`, followed by an underscore
+    /// and a monotonically increasing counter, continuing until an unused symbol name
+    /// is found. This prevents collisions across formulas or passes.
+    pub fn fresh_symbol(&mut self, base_prefix: &str) -> SymbolId {
+        let prefix = if base_prefix.is_empty() {
+            "fresh"
+        } else {
+            base_prefix
+        };
+        loop {
+            let count = self.fresh_counters.entry(prefix.to_string()).or_insert(0);
+            let name = format!("{prefix}_{count}");
+            *count += 1;
+            if !self.ids.contains_key(&name) {
+                return self.intern(&name);
+            }
         }
     }
 
@@ -71,6 +107,11 @@ impl SymbolTable {
         }
     }
 
+    /// Looks up a symbol by name, returning its [`SymbolId`] if it exists.
+    pub fn resolve_name(&self, name: &str) -> Option<SymbolId> {
+        self.ids.get(name).copied()
+    }
+
     /// Resolves a [`SymbolId`] back to its string name.
     ///
     /// # Panics
@@ -88,6 +129,14 @@ impl SymbolTable {
     /// Returns `true` if no symbols have been interned.
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
+    }
+
+    /// Iterates over interned names in their [`SymbolId`] index order.
+    ///
+    /// The order is stable for the lifetime of this table and is useful when
+    /// transferring symbol-bearing values to another symbol table.
+    pub fn iter_names(&self) -> impl Iterator<Item = &str> {
+        self.names.iter().map(|name| name.as_str())
     }
 }
 
@@ -118,5 +167,20 @@ mod tests {
         let b = st.intern("hello");
         assert_eq!(a, b);
         assert_eq!(st.len(), 1);
+    }
+
+    #[test]
+    fn fresh_symbol_monotonic_and_collision_free() {
+        let mut st = SymbolTable::new();
+        let s0 = st.fresh_symbol("def");
+        let s1 = st.fresh_symbol("def");
+        assert_ne!(s0, s1);
+        assert_eq!(st.resolve(s0), "def_0");
+        assert_eq!(st.resolve(s1), "def_1");
+
+        // If def_2 is already interned, fresh_symbol must skip it
+        let _s2_manual = st.intern("def_2");
+        let s3 = st.fresh_symbol("def");
+        assert_eq!(st.resolve(s3), "def_3");
     }
 }

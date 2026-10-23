@@ -70,6 +70,9 @@ pub enum DagError {
     DuplicateName(String),
     /// A parent reference does not resolve.
     UnknownParent { node: String, parent: String },
+    /// An inference pedigree contains a parent term that this verifier does
+    /// not understand, so accepting the step would change its cited premises.
+    MalformedParent { node: String },
     /// The parent graph contains a cycle.
     Cycle,
     /// The proof has no `$false` step.
@@ -94,6 +97,9 @@ impl std::fmt::Display for DagError {
             DagError::DuplicateName(n) => write!(f, "duplicate node name {n}"),
             DagError::UnknownParent { node, parent } => {
                 write!(f, "node {node} references unknown parent {parent}")
+            }
+            DagError::MalformedParent { node } => {
+                write!(f, "node {node} has a malformed parent reference")
             }
             DagError::Cycle => write!(f, "cycle in parent graph"),
             DagError::NoFalseRoot => write!(f, "proof does not derive $false"),
@@ -123,7 +129,7 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
         if !af.is_fof() && !af.is_cnf() {
             // A TFF/THF *inference* step — we cannot verify it, but it is not
             // positive evidence the proof is wrong: return UnsupportedDialect
-            // so the caller can map this to NotVerified.
+            // so the caller can map this to Unknown.
             return Err(DagError::UnsupportedDialect(af.name().to_string()));
         }
         let name = af.name();
@@ -131,6 +137,11 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
             return Err(DagError::DuplicateName(name.to_string()));
         }
         let (parents, negated_parents, rule, status) = if let Some(ann) = af.annotations() {
+            if !ann.parent_refs_well_formed() {
+                return Err(DagError::MalformedParent {
+                    node: name.to_string(),
+                });
+            }
             let refs = ann.parent_refs();
             let rule = ann.inference_rule();
             // Use the direct status, but also propagate esa from nested
@@ -140,7 +151,7 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
             // whose outer label is "thm" but whose semantic status is "esa"
             // (because the chain passes through a skolemisation).  Treating
             // such a step as "thm" causes the ATP to correctly refute the
-            // non-entailment and we spuriously report FailedVerified (−1).
+            // non-entailment and we spuriously report VerifiedBad (−1).
             let direct_status = ann.status();
             let status = if direct_status != Some("esa") && has_esa_in_term(&ann.source) {
                 Some("esa")
@@ -174,7 +185,7 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
     // If the proof contained no FOF/CNF nodes at all (e.g. the proof file was
     // in a non-TSTP format such as Alethe/S-expression used by cvc5, or every
     // step was a type declaration), report EmptyProof so the caller can map
-    // this to NotVerified rather than FailedVerified.
+    // this to Unknown rather than VerifiedBad.
     if nodes.is_empty() {
         return Err(DagError::EmptyProof);
     }

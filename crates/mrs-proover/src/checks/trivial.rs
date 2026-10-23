@@ -6,7 +6,7 @@
 //! soundness liability in an adversarial setting (ProoVer 2026 `evil-proofs`):
 //! an attacker controls the rule label, so they can tag a non-equivalence
 //! step `[A] ⊢ B` (where `B` does not follow from `A`) with e.g. `fof_nnf`
-//! and earn a blind pass — a catastrophic `Verified`-on-bad (−10) outcome.
+//! and earn a blind pass — a catastrophic `VerifiedGood`-on-bad (−10) outcome.
 //!
 //! This module replaces *name-trust* with *name-dispatched structural
 //! verification*. Each former trivial rule routes to a verifier that returns
@@ -51,6 +51,8 @@ use crate::verdict::StepOutcome;
 /// Single-premise rules whose conclusion the prover claims is *logically
 /// equivalent* to the (sole) premise.
 const EQUIV_RULES: &[&str] = &[
+    "assume",
+    "copy",
     "assume_negation", // handled by neg_conjecture too; harmless here for non-conjecture parents
     "rectify",
     "true_and_iff_removal",
@@ -59,6 +61,7 @@ const EQUIV_RULES: &[&str] = &[
     "evaluation",
     "remove_duplicate_literals",
     "fof_nnf",
+    "fof_nnf_transformation",
     "distribute",
     "variable_rename",
     "duplicate_literal_removal",
@@ -69,12 +72,15 @@ const EQUIV_RULES: &[&str] = &[
 ];
 
 /// Single-premise rules that project one conjunct out of a conjunction.
-const PROJECTION_RULES: &[&str] = &["split_conjunct"];
+const PROJECTION_RULES: &[&str] = &["split_conjunct", "cnf_transformation"];
 
 /// Returns `true` if `rule` is one this module knows how to *attempt*.
 /// (It may still fail the structural check and fall through to the ATP.)
 pub fn is_trivial_rule(rule: Option<&str>) -> bool {
-    matches!(rule, Some(r) if EQUIV_RULES.contains(&r) || PROJECTION_RULES.contains(&r))
+    matches!(
+        rule,
+        Some(r) if EQUIV_RULES.contains(&r) || PROJECTION_RULES.contains(&r) || r == "modus_ponens"
+    )
 }
 
 /// Attempt a structural verification of a former "trivial" step.
@@ -97,6 +103,22 @@ pub fn try_check<'p>(
         return None;
     }
 
+    if rule == "modus_ponens" {
+        if let [p0, p1] = parents {
+            let mut ctx = LowerCtx::new(symbols);
+            ctx.reset_vars();
+            let p0_f = lower_annotated_formula(&mut ctx, p0)?;
+            ctx.reset_vars();
+            let p1_f = lower_annotated_formula(&mut ctx, p1)?;
+            ctx.reset_vars();
+            let concl_f = lower_annotated_formula(&mut ctx, node.formula)?;
+            if check_mp(&p0_f, &p1_f, &concl_f) || check_mp(&p1_f, &p0_f, &concl_f) {
+                return Some(StepOutcome::Sound);
+            }
+        }
+        return None;
+    }
+
     // Both primitives operate on a single premise.
     let [parent] = parents else {
         return None;
@@ -104,12 +126,26 @@ pub fn try_check<'p>(
 
     let mut ctx = LowerCtx::new(symbols);
     ctx.reset_vars();
-    let parent_f = lower_annotated_formula(&mut ctx, parent);
+    let Some(parent_f) = lower_annotated_formula(&mut ctx, parent) else {
+        return Some(StepOutcome::Unknown(
+            "unsupported parent formula type".into(),
+        ));
+    };
     ctx.reset_vars();
-    let concl_f = lower_annotated_formula(&mut ctx, node.formula);
+    let Some(concl_f) = lower_annotated_formula(&mut ctx, node.formula) else {
+        return Some(StepOutcome::Unknown(
+            "unsupported conclusion formula type".into(),
+        ));
+    };
 
-    if EQUIV_RULES.contains(&rule) && equiv(&parent_f, &concl_f) {
-        return Some(StepOutcome::Sound);
+    if EQUIV_RULES.contains(&rule) {
+        if rule == "cnf_transformation" {
+            if equiv(&parent_f, &concl_f) || projects_disjunct(&parent_f, &concl_f) {
+                return Some(StepOutcome::Sound);
+            }
+        } else if equiv(&parent_f, &concl_f) {
+            return Some(StepOutcome::Sound);
+        }
     }
     if PROJECTION_RULES.contains(&rule) && projects_conjunct(&parent_f, &concl_f) {
         return Some(StepOutcome::Sound);
@@ -117,9 +153,26 @@ pub fn try_check<'p>(
     None
 }
 
+fn contains_too_many_iffs(f: &Formula) -> bool {
+    fn count_iffs(f: &Formula) -> usize {
+        match f {
+            Formula::Iff(a, b) => 1 + count_iffs(a) + count_iffs(b),
+            Formula::Neg(inner) => count_iffs(inner),
+            Formula::And(cs) | Formula::Or(cs) => cs.iter().map(count_iffs).sum(),
+            Formula::Implies(a, b) => count_iffs(a) + count_iffs(b),
+            Formula::Forall(_, body) | Formula::Exists(_, body) => count_iffs(body),
+            _ => 0,
+        }
+    }
+    count_iffs(f) > 15
+}
+
 /// Sound (partial) logical-equivalence test: `a ≡ b` confirmed via
 /// `canon(nnf(a)) =α= canon(nnf(b))`.
-fn equiv(a: &Formula, b: &Formula) -> bool {
+pub fn equiv(a: &Formula, b: &Formula) -> bool {
+    if contains_too_many_iffs(a) || contains_too_many_iffs(b) {
+        return false;
+    }
     let ca = canon(&to_nnf(a));
     let cb = canon(&to_nnf(b));
     alpha_equiv(&ca, &cb)
@@ -128,6 +181,9 @@ fn equiv(a: &Formula, b: &Formula) -> bool {
 /// `(∀x.(A ∧ B)) ⊨ ∀x.A`: confirm the conclusion is α-equivalent to the
 /// universal closure of one top-level conjunct of the parent's NNF.
 fn projects_conjunct(parent: &Formula, concl: &Formula) -> bool {
+    if contains_too_many_iffs(parent) || contains_too_many_iffs(concl) {
+        return false;
+    }
     let parent_nnf = to_nnf(parent);
     // Peel a shared universal prefix.
     let mut binders: Vec<VarId> = Vec::new();
@@ -136,10 +192,20 @@ fn projects_conjunct(parent: &Formula, concl: &Formula) -> bool {
         binders.push(*v);
         body = inner;
     }
-    let conjuncts: Vec<&Formula> = match body {
-        Formula::And(cs) => cs.iter().collect(),
-        _ => return false,
-    };
+    let mut conjuncts: Vec<&Formula> = Vec::new();
+    fn collect_conjuncts<'a>(f: &'a Formula, list: &mut Vec<&'a Formula>) {
+        if let Formula::And(cs) = f {
+            for c in cs {
+                collect_conjuncts(c, list);
+            }
+        } else {
+            list.push(f);
+        }
+    }
+    collect_conjuncts(body, &mut conjuncts);
+    if conjuncts.is_empty() {
+        return false;
+    }
     let concl_nnf = to_nnf(concl);
     for c in conjuncts {
         // Re-wrap the conjunct in the peeled universal prefix.
@@ -152,6 +218,53 @@ fn projects_conjunct(parent: &Formula, concl: &Formula) -> bool {
         }
     }
     false
+}
+
+fn projects_disjunct(parent: &Formula, concl: &Formula) -> bool {
+    if contains_too_many_iffs(parent) || contains_too_many_iffs(concl) {
+        return false;
+    }
+    let parent_nnf = to_nnf(parent);
+    let mut body = &parent_nnf;
+    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = body {
+        body = inner;
+    }
+    let mut disjuncts: Vec<&Formula> = Vec::new();
+    fn collect_disjuncts<'a>(f: &'a Formula, list: &mut Vec<&'a Formula>) {
+        if let Formula::Or(cs) = f {
+            for c in cs {
+                collect_disjuncts(c, list);
+            }
+        } else {
+            list.push(f);
+        }
+    }
+    collect_disjuncts(body, &mut disjuncts);
+    if disjuncts.is_empty() {
+        return false;
+    }
+    let concl_nnf = to_nnf(concl);
+    let mut concl_body = &concl_nnf;
+    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = concl_body {
+        concl_body = inner;
+    }
+    for d in disjuncts {
+        let mut d_body = d;
+        while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = d_body {
+            d_body = inner;
+        }
+        if strict_alpha_equiv(d_body, concl_body) {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn check_mp(premise: &Formula, implication: &Formula, concl: &Formula) -> bool {
+    match implication {
+        Formula::Implies(ant, cons) => alpha_equiv(premise, ant) && alpha_equiv(concl, cons),
+        _ => false,
+    }
 }
 
 /// A strict version of alpha-equivalence that does NOT ignore order of
@@ -484,5 +597,22 @@ mod tests {
         };
         let mut syms = SymbolTable::new();
         assert!(try_check(&node, &[parent1, parent2], &mut syms).is_none());
+    }
+
+    #[test]
+    fn test_modus_ponens() {
+        let p0 = fof("fof(a1, axiom, (p(c0) => p(c1))).");
+        let p1 = fof("fof(s0, plain, p(c0)).");
+        let concl = fof("fof(s1, plain, p(c1), inference(modus_ponens, [], [a1, s0])).");
+        let node = Node {
+            parents: vec!["a1", "s0"],
+            negated_parents: vec![false, false],
+            ..node_for(concl, "modus_ponens", false)
+        };
+        let mut syms = SymbolTable::new();
+        assert_eq!(
+            try_check(&node, &[p0, p1], &mut syms),
+            Some(StepOutcome::Sound)
+        );
     }
 }

@@ -19,7 +19,11 @@ use mrs_core::term::Term;
 
 use crate::ordering::{TermComparison, TermOrdering};
 use crate::rename::{max_var, max_var_id, rename_clause, rename_clause_id};
-use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId};
+use mrs_core::term_bank::{
+    IdAtom, IdClause, IdLiteral, IdSubstitution, TermBank, TermId, TermNode,
+};
+use mrs_core::witness::{ProofNodeId, ProofWitness};
+use mrs_unify::ac_subset::AcSubsetBudget;
 
 /// Performs all superposition inferences from `eq_clause` into `target`.
 ///
@@ -73,6 +77,7 @@ pub fn superpose_selected(
 ) -> Vec<Clause> {
     let offset = max_var(eq_clause);
     let target_r = rename_clause(target, offset);
+    let target_vars = target_r.free_vars();
     let mut results = Vec::new();
 
     for (i, eq_lit) in eq_clause.literals.iter().enumerate() {
@@ -86,7 +91,7 @@ pub fn superpose_selected(
         };
 
         // Try both orientations: l→r and r→l
-        for (from, to) in [(left, right), (right, left)] {
+        for (from, to, is_left) in [(left, right, true), (right, left, false)] {
             // Standard superposition condition: don't superpose from a variable.
             // A variable from-term unifies with every non-variable subterm,
             // producing many useless inferences that explode the search space.
@@ -99,10 +104,12 @@ pub fn superpose_selected(
                 i,
                 from,
                 to,
+                is_left,
                 ordering,
                 id_gen,
                 target_sel,
                 comm,
+                &target_vars,
                 &mut results,
             );
         }
@@ -122,11 +129,78 @@ pub fn superpose_selected_id(
     comm: &HashSet<SymbolId>,
     assoc: &HashSet<SymbolId>,
 ) -> Vec<IdClause> {
+    superpose_selected_id_until(
+        eq_clause, target, bank, ordering, id_gen, target_sel, comm, assoc, None,
+    )
+}
+
+/// Superposition with an optional deadline.
+///
+/// The caller may pass `deadline`; the routine then returns as soon as the
+/// instant passes, possibly with a partial result set. Callers must treat a
+/// return after the deadline as "search over budget" and discard the partial
+/// results, because a partial resolvent set is not a sound basis for any
+/// conclusion. The unbounded variant [`superpose_selected_id`] passes `None`.
+///
+/// The bound is checked in the innermost position loop, so a single call can no
+/// longer run past the search deadline no matter how many rewrite positions it
+/// would otherwise examine.
+#[allow(clippy::too_many_arguments)]
+pub fn superpose_selected_id_until(
+    eq_clause: &IdClause,
+    target: &IdClause,
+    bank: &mut TermBank,
+    ordering: &TermOrdering,
+    id_gen: &mut ClauseIdGen,
+    target_sel: Option<&[usize]>,
+    comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
+    deadline: Option<std::time::Instant>,
+) -> Vec<IdClause> {
+    superpose_selected_id_until_budgeted(
+        eq_clause,
+        target,
+        bank,
+        ordering,
+        id_gen,
+        target_sel,
+        comm,
+        assoc,
+        AC_SUBSET_MATCH_BUDGET,
+        deadline,
+    )
+}
+
+/// [`superpose_selected_id_until`] with the AC subset/permutation search budget
+/// stated explicitly rather than taken from [`AC_SUBSET_MATCH_BUDGET`].
+///
+/// The budget is a *total* for the call, shared across every equation literal,
+/// orientation and rewrite position. Running out is not an error the caller has
+/// to handle: the affected positions simply produce no inference, which is the
+/// same outcome as "no match here". Nothing partial is ever returned, so a
+/// truncated search cannot be mistaken for a match.
+#[allow(clippy::too_many_arguments)]
+pub fn superpose_selected_id_until_budgeted(
+    eq_clause: &IdClause,
+    target: &IdClause,
+    bank: &mut TermBank,
+    ordering: &TermOrdering,
+    id_gen: &mut ClauseIdGen,
+    target_sel: Option<&[usize]>,
+    comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
+    ac_subset_budget: u32,
+    deadline: Option<std::time::Instant>,
+) -> Vec<IdClause> {
+    let mut ac_subset_budget = AcSubsetBudget::new(ac_subset_budget);
     let offset = max_var_id(eq_clause, bank);
     let target_r = rename_clause_id(target, offset, bank);
     let mut results = Vec::new();
 
     for (i, eq_lit) in eq_clause.literals.iter().enumerate() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return results;
+        }
         if !eq_lit.positive {
             continue;
         }
@@ -135,7 +209,10 @@ pub fn superpose_selected_id(
             _ => continue,
         };
 
-        for (from, to) in [(left, right), (right, left)] {
+        for (from, to, is_left) in [(left, right, true), (right, left, false)] {
+            if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                return results;
+            }
             if matches!(bank.get(from), mrs_core::term_bank::TermNode::Var(_)) {
                 continue;
             }
@@ -145,13 +222,16 @@ pub fn superpose_selected_id(
                 i,
                 from,
                 to,
+                is_left,
                 bank,
                 ordering,
                 id_gen,
                 target_sel,
                 comm,
                 assoc,
+                &mut ac_subset_budget,
                 &mut results,
+                deadline,
             );
         }
     }
@@ -166,43 +246,150 @@ fn superpose_with_id(
     eq_lit_idx: usize,
     from: TermId,
     to: TermId,
+    is_left: bool,
     bank: &mut TermBank,
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
     target_sel: Option<&[usize]>,
     comm: &HashSet<SymbolId>,
     assoc: &HashSet<SymbolId>,
+    ac_subset_budget: &mut AcSubsetBudget,
     results: &mut Vec<IdClause>,
+    deadline: Option<std::time::Instant>,
 ) {
+    // Retain rigidity for the incomplete theory-specific matching paths.
+    // Ordinary syntactic unification below can bind either parent: `target`
+    // is standardized apart and sigma is applied to the complete resolvent.
+    let mut target_vars = HashSet::default();
+    for literal in &target.literals {
+        literal.collect_vars(bank, &mut target_vars);
+    }
+
     for (j, target_lit) in target.literals.iter().enumerate() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return;
+        }
         if let Some(sel) = target_sel
             && !sel.contains(&j)
         {
             continue;
         }
-        let term_positions = literal_term_positions_id(target_lit, bank);
+        let Some(term_positions) = literal_term_positions_id(target_lit, bank, deadline) else {
+            return;
+        };
 
         for (arg_idx, base_term, positions) in term_positions {
             for pos in positions {
+                if let Some(limit) = deadline
+                    && std::time::Instant::now() >= limit
+                {
+                    return;
+                }
                 let subterm = match bank.subterm_at(base_term, &pos) {
                     Some(t) => t,
                     None => continue,
                 };
 
-                let sigma = match mrs_unify::robinson::unify_ac_id(from, subterm, bank, comm, assoc)
-                {
-                    Ok(s) => s,
-                    Err(_) => continue,
+                // Two shapes, tried in this order.
+                //
+                // 1. Whole-subterm unification (syntactic first, then the
+                //    restricted theory-aware implementation).
+                // 2. The AC subset shape: under a commutative-associative
+                //    symbol the equation side may instead fit into a *non-empty
+                //    subset* of the subterm's AC arguments. The rigid whole-
+                //    subterm unifier cannot express that shape at all, and it
+                //    is the shape UI-1 records as lost capability.
+                let from_root = match bank.get(from) {
+                    TermNode::App(symbol, _) if assoc.contains(symbol) => Some(*symbol),
+                    _ => None,
                 };
+                let assoc_only_root = from_root.is_some_and(|symbol| {
+                    matches!(bank.get(subterm), TermNode::App(target_symbol, _) if *target_symbol == symbol)
+                        && !comm.contains(&symbol)
+                });
+                // Syntactic unification is sound even in the presence of AC
+                // axioms. Unlike matching used for demodulation, superposition
+                // may instantiate either standardized-apart parent. Apply the
+                // resulting substitution to every remaining literal below.
+                let (sigma, replacement) =
+                    if let Ok(sigma) = mrs_unify::robinson::unify_id(from, subterm, bank) {
+                        (sigma, to)
+                    } else if assoc_only_root {
+                        match assoc_replacement(
+                            from,
+                            to,
+                            subterm,
+                            bank,
+                            assoc,
+                            &target_vars,
+                            ac_subset_budget,
+                        ) {
+                            Ok(replacement) => replacement,
+                            Err(_) => match mrs_unify::robinson::unify_ac_rigid_id(
+                                from,
+                                subterm,
+                                bank,
+                                comm,
+                                assoc,
+                                Some(&target_vars),
+                            ) {
+                                Ok(sigma) => (sigma, to),
+                                Err(_) => continue,
+                            },
+                        }
+                    } else {
+                        match mrs_unify::robinson::unify_ac_rigid_id(
+                            from,
+                            subterm,
+                            bank,
+                            comm,
+                            assoc,
+                            Some(&target_vars),
+                        ) {
+                            Ok(sigma) => (sigma, to),
+                            Err(_) => {
+                                if let Ok(replacement) = ac_subset_replacement(
+                                    from,
+                                    to,
+                                    subterm,
+                                    bank,
+                                    comm,
+                                    assoc,
+                                    &target_vars,
+                                    ac_subset_budget,
+                                ) {
+                                    replacement
+                                } else if let Ok(replacement) = assoc_replacement(
+                                    from,
+                                    to,
+                                    subterm,
+                                    bank,
+                                    assoc,
+                                    &target_vars,
+                                    ac_subset_budget,
+                                ) {
+                                    replacement
+                                } else {
+                                    continue;
+                                }
+                            }
+                        }
+                    };
 
                 let from_s = sigma.apply_term(from, bank);
                 let to_s = sigma.apply_term(to, bank);
                 let comp = ordering.compare_id(from_s, to_s, bank);
+                // An exhausted LPO comparison is only a placeholder
+                // `Incomparable`, not an ordering decision. In particular, do
+                // not let it orient a superposition inference.
+                if crate::ordering::lpo_budget_expired() {
+                    return;
+                }
                 if comp == TermComparison::Less || comp == TermComparison::Equal {
                     continue;
                 }
 
-                let replaced_term = bank.replace_at(base_term, &pos, to);
+                let replaced_term = bank.replace_at(base_term, &pos, replacement);
                 let replaced_lit = rebuild_literal_id(target_lit, arg_idx, replaced_term);
                 let replaced_lit = sigma.apply_literal(&replaced_lit, bank);
 
@@ -222,7 +409,7 @@ fn superpose_with_id(
                 let mut new_avatar = eq_clause.avatar.clone();
                 new_avatar.extend_from_slice(&target.avatar);
 
-                results.push(IdClause::new_avatar(
+                let mut derived = IdClause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
@@ -230,27 +417,384 @@ fn superpose_with_id(
                         parents: vec![eq_clause.id, target.id].into(),
                     },
                     new_avatar,
-                ));
+                );
+                derived.witness = Some(ProofWitness::Superposition {
+                    lhs_parent: eq_clause.proof_id.unwrap_or(ProofNodeId(eq_clause.id.0)),
+                    rhs_parent: target.proof_id.unwrap_or(ProofNodeId(target.id.0)),
+                    lhs_lit_idx: eq_lit_idx,
+                    rhs_lit_idx: j,
+                    term_path: pos,
+                    orientation_left: is_left,
+                    unifier: None,
+                });
+                results.push(derived);
             }
         }
     }
 }
 
+/// Deterministic ceiling on the AC subset/permutation search of one
+/// `superpose_selected_id_until` call.
+///
+/// Matching a `k`-element pattern into an `m`-element argument list has
+/// `m!/(m-k)!` candidate pairings for AC subset matching; ordered associative
+/// matching has at most `m-k+1` segment starts per position. Each element
+/// comparison recurses, so both are bounded rather than merely hoped to
+/// terminate. Exhaustion is a non-success (see
+/// [`mrs_unify::ac_subset::AcSubsetBudget`]); the value is a per-call total, not
+/// a per-position one, so widening the rule cannot make its cost grow with the
+/// size of the target clause.
+pub const AC_SUBSET_MATCH_BUDGET: u32 = 4096;
+
+/// The AC-subset shape of superposition: rewrite the arguments a match consumed
+/// and leave every other argument of the target term in place.
+///
+/// Returns `(σ, replacement)` on success, where `replacement` is the term that
+/// takes the subterm's place, built with `to` *uninstantiated* — the caller
+/// applies `σ` to the rebuilt literal, exactly as it does for the whole-subterm
+/// shape.
+///
+/// Every failure is a non-success: an unsupported AC shape, a match that would
+/// bind a target variable, and an exhausted budget all return `Err`, so a
+/// truncated or partial search can never be read as a match.
+#[allow(clippy::too_many_arguments)]
+fn ac_subset_replacement(
+    from: TermId,
+    to: TermId,
+    subterm: TermId,
+    bank: &mut TermBank,
+    comm: &HashSet<SymbolId>,
+    assoc: &HashSet<SymbolId>,
+    target_vars: &HashSet<u32>,
+    budget: &mut AcSubsetBudget,
+) -> Result<(IdSubstitution, TermId), mrs_unify::UnifyError> {
+    // Cheap gate before the matcher's own shape check: the whole-subterm
+    // unifier fails on every non-AC symbol too, and without this the matcher is
+    // entered tens of millions of times per bounded run just to be told the
+    // symbol is not AC.
+    let TermNode::App(symbol, _) = bank.get(subterm) else {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    };
+    let symbol = *symbol;
+    if !comm.contains(&symbol) || !assoc.contains(&symbol) {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    }
+
+    let found = mrs_unify::ac_subset::match_ac_subset_rigid_id(
+        from,
+        subterm,
+        bank,
+        comm,
+        assoc,
+        Some(target_vars),
+        budget,
+    )?;
+
+    let args = mrs_unify::ac_subset::flatten_ac(subterm, symbol, &found.subst, bank);
+    if args.len() < 2 {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    }
+
+    // Keep every argument the match did not consume, then append `to`. Dropping
+    // an unmatched argument would be a different rule — one that can delete
+    // hypotheses for free — so it is not available here.
+    let mut kept: Vec<TermId> = Vec::with_capacity(args.len());
+    let mut next = 0usize;
+    for (index, &arg) in args.iter().enumerate() {
+        if next < found.consumed.len() && found.consumed[next] == index {
+            next += 1;
+            continue;
+        }
+        kept.push(arg);
+    }
+    // `next == consumed.len()` says the consumed indices really were a subset of
+    // this argument list. A match that took *every* argument is kept: it is the
+    // whole-subterm shape under a permutation the rigid AC unifier never tries
+    // (it looks at the flat list in order and reversed, not at all `m!`
+    // pairings), and it cannot duplicate that path because the path is only
+    // reached after the unifier has already failed.
+    if next != found.consumed.len() {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    }
+    kept.push(to);
+
+    Ok((found.subst, rebuild_ac_term(kept, symbol, bank)))
+}
+
+/// Ordered associative superposition. The source's flattened operands match a
+/// contiguous segment of the target's flattened operands, in order. The segment
+/// is replaced by the equation's right side and all remaining target operands
+/// are retained. This is justified solely by associativity; no identity or
+/// commutativity law is assumed here.
+#[allow(clippy::too_many_arguments)]
+fn assoc_replacement(
+    from: TermId,
+    to: TermId,
+    subterm: TermId,
+    bank: &mut TermBank,
+    assoc: &HashSet<SymbolId>,
+    target_vars: &HashSet<u32>,
+    budget: &mut AcSubsetBudget,
+) -> Result<(IdSubstitution, TermId), mrs_unify::UnifyError> {
+    let TermNode::App(symbol, _) = bank.get(subterm) else {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    };
+    let symbol = *symbol;
+    if !assoc.contains(&symbol) {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    }
+    let subst = IdSubstitution::new();
+    let source = mrs_unify::ac_subset::flatten_ac(from, symbol, &subst, bank);
+    let target = mrs_unify::ac_subset::flatten_ac(subterm, symbol, &subst, bank);
+    // A unary f(X) is not an operand-level match: associativity cannot erase
+    // the outer f. A source with at least two operands may match a contiguous
+    // target segment of any length >= 2 through variable segment bindings.
+    if source.len() < 2 {
+        return Err(mrs_unify::UnifyError::UnsupportedShape);
+    }
+
+    let mut last_error = mrs_unify::UnifyError::NoAcSubsetMatch;
+    for start in 0..target.len() {
+        for end in start + 2..=target.len() {
+            if !budget.consume() {
+                return Err(mrs_unify::UnifyError::BudgetExhausted);
+            }
+            let mut candidate = IdSubstitution::new();
+            if let Err(err) = assoc_match_sequence(
+                &source,
+                &target[start..end],
+                symbol,
+                &mut candidate,
+                bank,
+                assoc,
+                target_vars,
+                budget,
+            ) {
+                last_error = err;
+                if last_error == mrs_unify::UnifyError::BudgetExhausted {
+                    return Err(last_error);
+                }
+                continue;
+            }
+            if start == 0 && end == target.len() {
+                return Ok((candidate, to));
+            }
+            let mut rewritten = target[..start].to_vec();
+            rewritten.push(to);
+            rewritten.extend_from_slice(&target[end..]);
+            return Ok((candidate, rebuild_ac_term(rewritten, symbol, bank)));
+        }
+    }
+    Err(last_error)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assoc_match_sequence(
+    pattern: &[TermId],
+    target: &[TermId],
+    symbol: SymbolId,
+    subst: &mut IdSubstitution,
+    bank: &mut TermBank,
+    assoc: &HashSet<SymbolId>,
+    rigid: &HashSet<u32>,
+    budget: &mut AcSubsetBudget,
+) -> Result<(), mrs_unify::UnifyError> {
+    if !budget.consume() {
+        return Err(mrs_unify::UnifyError::BudgetExhausted);
+    }
+    if pattern.is_empty() {
+        return if target.is_empty() {
+            Ok(())
+        } else {
+            Err(mrs_unify::UnifyError::NoAcSubsetMatch)
+        };
+    }
+    if target.is_empty() || target.len() < pattern.len() {
+        return Err(mrs_unify::UnifyError::NoAcSubsetMatch);
+    }
+
+    let current = assoc_deref(pattern[0], subst, bank);
+    if matches!(bank.get(current), TermNode::Var(_)) {
+        for length in 1..=target.len() - pattern.len() + 1 {
+            if !budget.consume() {
+                return Err(mrs_unify::UnifyError::BudgetExhausted);
+            }
+            let segment = rebuild_ac_term(target[..length].to_vec(), symbol, bank);
+            let mut candidate = subst.clone();
+            if let Err(err) =
+                assoc_unify_element(current, segment, &mut candidate, bank, assoc, rigid, budget)
+            {
+                if err == mrs_unify::UnifyError::BudgetExhausted {
+                    return Err(err);
+                }
+                continue;
+            }
+            match assoc_match_sequence(
+                &pattern[1..],
+                &target[length..],
+                symbol,
+                &mut candidate,
+                bank,
+                assoc,
+                rigid,
+                budget,
+            ) {
+                Ok(()) => {
+                    *subst = candidate;
+                    return Ok(());
+                }
+                Err(mrs_unify::UnifyError::BudgetExhausted) => {
+                    return Err(mrs_unify::UnifyError::BudgetExhausted);
+                }
+                Err(_) => {}
+            }
+        }
+        return Err(mrs_unify::UnifyError::NoAcSubsetMatch);
+    }
+
+    let mut candidate = subst.clone();
+    assoc_unify_element(
+        current,
+        target[0],
+        &mut candidate,
+        bank,
+        assoc,
+        rigid,
+        budget,
+    )?;
+    assoc_match_sequence(
+        &pattern[1..],
+        &target[1..],
+        symbol,
+        &mut candidate,
+        bank,
+        assoc,
+        rigid,
+        budget,
+    )?;
+    *subst = candidate;
+    Ok(())
+}
+
+fn assoc_unify_element(
+    pattern: TermId,
+    target: TermId,
+    subst: &mut IdSubstitution,
+    bank: &mut TermBank,
+    assoc: &HashSet<SymbolId>,
+    rigid: &HashSet<u32>,
+    budget: &mut AcSubsetBudget,
+) -> Result<(), mrs_unify::UnifyError> {
+    use mrs_core::term_bank::TermNode;
+    if !budget.consume() {
+        return Err(mrs_unify::UnifyError::BudgetExhausted);
+    }
+    let pattern = assoc_deref(pattern, subst, bank);
+    let target = assoc_deref(target, subst, bank);
+    if pattern == target {
+        return Ok(());
+    }
+    match (bank.get(pattern).clone(), bank.get(target).clone()) {
+        (TermNode::Var(var), _) => {
+            if rigid.contains(&var) {
+                return Err(mrs_unify::UnifyError::RigidVariable { var });
+            }
+            if assoc_occurs(var, target, subst, bank) {
+                return Err(mrs_unify::UnifyError::OccursCheck { var });
+            }
+            subst.bind(var, target);
+            Ok(())
+        }
+        (_, TermNode::Var(var)) => Err(mrs_unify::UnifyError::RigidVariable { var }),
+        (TermNode::App(left_symbol, left_args), TermNode::App(right_symbol, right_args)) => {
+            if left_symbol != right_symbol {
+                return Err(mrs_unify::UnifyError::SymbolClash {
+                    left: format!("{left_symbol:?}"),
+                    right: format!("{right_symbol:?}"),
+                });
+            }
+            if assoc.contains(&left_symbol) {
+                let left = mrs_unify::ac_subset::flatten_ac(pattern, left_symbol, subst, bank);
+                let right = mrs_unify::ac_subset::flatten_ac(target, left_symbol, subst, bank);
+                return assoc_match_sequence(
+                    &left,
+                    &right,
+                    left_symbol,
+                    subst,
+                    bank,
+                    assoc,
+                    rigid,
+                    budget,
+                );
+            }
+            if left_args.len() != right_args.len() {
+                return Err(mrs_unify::UnifyError::ArityMismatch {
+                    expected: left_args.len(),
+                    found: right_args.len(),
+                });
+            }
+            for (left, right) in left_args.into_iter().zip(right_args) {
+                assoc_unify_element(left, right, subst, bank, assoc, rigid, budget)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn assoc_deref(mut term: TermId, subst: &IdSubstitution, bank: &TermBank) -> TermId {
+    while let TermNode::Var(var) = bank.get(term) {
+        let Some(next) = subst.get(*var) else { break };
+        term = next;
+    }
+    term
+}
+
+fn assoc_occurs(var: u32, term: TermId, subst: &IdSubstitution, bank: &TermBank) -> bool {
+    let term = assoc_deref(term, subst, bank);
+    match bank.get(term) {
+        TermNode::Var(found) => *found == var,
+        TermNode::App(_, args) => args.iter().any(|&arg| assoc_occurs(var, arg, subst, bank)),
+    }
+}
+
+/// Rebuilds an AC term from a non-empty argument list in the prover's canonical
+/// shape: right-nested, matching [`TermBank::ac_normalize`].
+fn rebuild_ac_term(args: Vec<TermId>, symbol: SymbolId, bank: &mut TermBank) -> TermId {
+    if args.len() == 1 {
+        // The caller is rebuilding an AC subset rewrite after replacing the
+        // consumed operands. Returning its only operand expresses that rewrite
+        // and does not manufacture an f/1 application from a binary AC step.
+        return args[0];
+    }
+    let mut rebuilt = args[args.len() - 1];
+    for &arg in args[..args.len() - 1].iter().rev() {
+        rebuilt = bank.intern_app(symbol, smallvec::smallvec![arg, rebuilt]);
+    }
+    rebuilt
+}
+
+type LiteralTermPositions = Vec<(usize, TermId, Vec<Vec<usize>>)>;
+
 fn literal_term_positions_id(
     lit: &IdLiteral,
     bank: &TermBank,
-) -> Vec<(usize, TermId, Vec<Vec<usize>>)> {
+    deadline: Option<std::time::Instant>,
+) -> Option<LiteralTermPositions> {
     match &lit.atom {
-        IdAtom::Pred(_, args) => args
-            .iter()
-            .enumerate()
-            .map(|(i, &arg)| (i, arg, bank.non_variable_positions(arg)))
-            .collect(),
+        IdAtom::Pred(_, args) => {
+            let mut positions = Vec::with_capacity(args.len());
+            for (i, &arg) in args.iter().enumerate() {
+                if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                    return None;
+                }
+                positions.push((i, arg, bank.non_variable_positions_until(arg, deadline)?));
+            }
+            Some(positions)
+        }
         IdAtom::Eq(l, r) => {
-            vec![
-                (0, *l, bank.non_variable_positions(*l)),
-                (1, *r, bank.non_variable_positions(*r)),
-            ]
+            let left = bank.non_variable_positions_until(*l, deadline)?;
+            let right = bank.non_variable_positions_until(*r, deadline)?;
+            Some(vec![(0, *l, left), (1, *r, right)])
         }
     }
 }
@@ -284,10 +828,12 @@ fn superpose_with(
     eq_lit_idx: usize,
     from: &Term,
     to: &Term,
+    is_left: bool,
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
     target_sel: Option<&[usize]>,
     comm: &HashSet<SymbolId>,
+    target_vars: &HashSet<u32>,
     results: &mut Vec<Clause>,
 ) {
     for (j, target_lit) in target.literals.iter().enumerate() {
@@ -308,7 +854,9 @@ fn superpose_with(
                 };
 
                 // Try to unify `from` with this subterm
-                let sigma = match mrs_unify::unify_comm(from, subterm, comm) {
+                let sigma = match mrs_unify::unify(from, subterm).or_else(|_| {
+                    mrs_unify::robinson::unify_comm_rigid(from, subterm, comm, target_vars)
+                }) {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
@@ -345,7 +893,7 @@ fn superpose_with(
                 let mut new_avatar = eq_clause.avatar.clone();
                 new_avatar.extend_from_slice(&target.avatar);
 
-                results.push(Clause::new_avatar(
+                let mut derived = Clause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
@@ -353,7 +901,17 @@ fn superpose_with(
                         parents: vec![eq_clause.id, target.id].into(),
                     },
                     new_avatar,
-                ));
+                );
+                derived.witness = Some(ProofWitness::Superposition {
+                    lhs_parent: eq_clause.proof_id.unwrap_or(ProofNodeId(eq_clause.id.0)),
+                    rhs_parent: target.proof_id.unwrap_or(ProofNodeId(target.id.0)),
+                    lhs_lit_idx: eq_lit_idx,
+                    rhs_lit_idx: j,
+                    term_path: pos.clone(),
+                    orientation_left: is_left,
+                    unifier: Some(sigma),
+                });
+                results.push(derived);
             }
         }
     }
@@ -602,6 +1160,40 @@ mod tests {
     }
 
     #[test]
+    fn superpose_instantiates_target_variable() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let p = syms.intern("p");
+        let mut id_gen = ClauseIdGen::new();
+        let equation = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+            ))],
+            "eq",
+        );
+        let target = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::var(0)])],
+            ))],
+            "target",
+        );
+
+        let results = superpose(&equation, &target, &TermOrdering::KBO, &mut id_gen);
+        assert!(
+            results.iter().any(|clause| clause.literals.iter().any(|lit| {
+                matches!(&lit.atom, Atom::Pred(sym, args) if *sym == p && args == &vec![Term::constant(b)])
+            })),
+            "ordinary superposition must admit the target instance at a"
+        );
+    }
+
+    #[test]
     fn superpose_tracks_parents() {
         let mut syms = SymbolTable::new();
         let f = syms.intern("f");
@@ -637,5 +1229,72 @@ mod tests {
                 // Note: parent[1] is the original target id, not the renamed one
             }
         }
+    }
+
+    #[test]
+    fn ac_rebuild_with_one_operand_does_not_invent_unary_application() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let d = symbols.intern("d");
+        let mut bank = TermBank::new();
+        let a = bank.intern_app(a, smallvec::smallvec![]);
+        let b = bank.intern_app(b, smallvec::smallvec![]);
+        let d = bank.intern_app(d, smallvec::smallvec![]);
+
+        assert_eq!(rebuild_ac_term(vec![a], f, &mut bank), a);
+
+        let from = bank.intern_app(f, smallvec::smallvec![a, b]);
+        let mut commutative = HashSet::default();
+        commutative.insert(f);
+        let mut associative = HashSet::default();
+        associative.insert(f);
+        let mut budget = AcSubsetBudget::new(32);
+        let (_, replacement) = ac_subset_replacement(
+            from,
+            d,
+            from,
+            &mut bank,
+            &commutative,
+            &associative,
+            &HashSet::default(),
+            &mut budget,
+        )
+        .expect("whole-term AC match succeeds");
+        assert_eq!(replacement, d);
+    }
+
+    #[test]
+    fn associative_single_operand_binding_is_not_wrapped_in_unary_symbol() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("assoc_single_f");
+        let a = symbols.intern("assoc_single_a");
+        let b = symbols.intern("assoc_single_b");
+        let c = symbols.intern("assoc_single_c");
+        let mut bank = TermBank::new();
+        let x = bank.intern_var(0);
+        let a = bank.intern_app(a, smallvec::smallvec![]);
+        let b = bank.intern_app(b, smallvec::smallvec![]);
+        let c = bank.intern_app(c, smallvec::smallvec![]);
+        let from = bank.intern_app(f, smallvec::smallvec![x, a]);
+        let target = bank.intern_app(f, smallvec::smallvec![c, a]);
+        let mut associative = HashSet::default();
+        associative.insert(f);
+        let mut budget = AcSubsetBudget::new(32);
+
+        let (subst, replacement) = assoc_replacement(
+            from,
+            b,
+            target,
+            &mut bank,
+            &associative,
+            &HashSet::default(),
+            &mut budget,
+        )
+        .expect("ordered associative match succeeds");
+
+        assert_eq!(replacement, b);
+        assert_eq!(subst.get(0), Some(c));
     }
 }

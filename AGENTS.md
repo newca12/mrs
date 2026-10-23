@@ -2,11 +2,109 @@
 
 Quick-start context for AI agents working in this repo.
 
-## What this is
+## Agent Workflow Constraint
+Do not use the `explore` or `general` subagents (`subagent_type: "explore"` or
+`subagent_type: "general"`) in this repository; they may not terminate. Use
+bounded direct searches and file reads, or another explicitly requested tool,
+instead.
+
+## 1. NixOS WSL Development Environment (SOTA)
+The host environment is **NixOS running inside Windows Subsystem for Linux (WSL)**.
+- Traditional FHS assumptions do NOT apply. Files and libraries are versioned under `/nix/store/` instead of `/lib` or `/usr/include`.
+- This project uses **Nix Flakes** (`flake.nix`) and **direnv** (`.envrc`) to declare its development dependencies (including Rust compiler stable 1.99.1, cargo, clippy, rustfmt, rust-analyzer, pkg-config, git, and cargo-nextest).
+
+### Execution Rule (Critical)
+Because your native agent `bash` or terminal execution tool starts in a raw shell that does not automatically load `direnv`, prefer wrapping compilation, testing, and development commands in the Nix environment when `nix` or `direnv` is available.
+
+- **Preferred:** Nest commands inside `nix develop` or `direnv exec`:
+  ```bash
+  # Option A (Preferred):
+  nix develop -c cargo check
+  
+  # Option B:
+  direnv exec . cargo check
+  ```
+
+- **Fallback:** If neither `nix` nor `direnv` is installed or available in the
+  execution environment, use the installed Rust toolchain directly (for
+  example, `cargo check`, `cargo clippy --all -- -D warnings`,
+  `cargo fmt --all --check`, and `cargo test --workspace`). Do not treat the
+  missing wrappers alone as a reason to skip verification or block a commit.
+  Report that the direct-Cargo fallback was used, and resolve any missing
+  toolchain or dependency errors normally.
+
+### Non-NixOS systems
+When working on a non-NixOS host that has the project's Rust toolchain and
+dependencies installed directly, use Cargo commands without the Nix wrapper
+(for example, `cargo check` and `cargo test --workspace`). The Nix wrappers
+above are required for this NixOS WSL environment; they are not a requirement
+for ordinary Linux/macOS development hosts.
+
+---
+
+## 2. Commit and Verification Policy (Strictly Enforced)
+To maintain the highest repository standards, any AI agent working in this workspace must adhere to the following rules:
+
+1. **Pre-Commit Verification**: Every single code change and commit must be completely clean and fully validated. Before creating any commit, run and pass the following checks with zero errors or warnings. Use the Nix-wrapped form when available; if neither `nix` nor `direnv` is available, run the equivalent direct Cargo command:
+   - **Check**: `nix develop -c cargo check`
+   - **Lints**: `nix develop -c cargo clippy --all -- -D warnings`
+   - **Format**: `nix develop -c cargo fmt --all --check`
+   - **Tests**: `nix develop -c cargo test --workspace`
+
+   Direct-Cargo fallback forms:
+   - `cargo check`
+   - `cargo clippy --all -- -D warnings`
+   - `cargo fmt --all --check`
+   - `cargo test --workspace`
+
+   These wrappers are local developer/CI verification commands. Do not add
+   `nix develop` invocations to runtime or benchmark scripts: those scripts
+   must work on ordinary Linux hosts that provide Cargo/Rust but do not install
+   Nix. Script-triggered builds should invoke `cargo` directly; developers in
+   this NixOS WSL workspace can source `.envrc`/use `direnv` before running them.
+
+2. **Git Commits**: You are permitted to create Git commits autonomously to checkpoint stable stages of development. Ensure the commit messages conform to the repository's convention (e.g., `feat: ...`, `fix: ...`, `refactor: ...`).
+
+3. **No Pushing**: You are **strictly forbidden from pushing** commits to the remote tracking branch or any remote repositories. Never run `git push`.
+
+4. **Permission Model**: OpenCode permissions are set to `"allow"` inside `~/.config/opencode/opencode.json` to streamline the agent flow. You do not need to ask for permission before running wrapped bash commands.
+
+---
+
+## 3. What this is
 
 `mrs` is an automated theorem prover in Rust targeting the CASC competition. It reads **TPTP** problem files and outputs **SZS/TSTP**-formatted results. It employs a **parallel strategy portfolio scheduler** running a **superposition calculus** within a **given-clause loop**, augmented by **AVATAR** (using CaDiCaL) for advanced clause splitting and **cross-strategy clause sharing**.
 
-## mrs-tptp
+### Formal superposition checker
+
+The Verus project is a first-class component at
+`formal/superposition-checker/`, developed alongside the Rust workspace and
+checked by regular CI. It is not a Cargo crate. Its current verified scope is
+the ground unit-superposition fragment; it is **not yet integrated** into
+`mrs-proof-kernel` and makes no c502 verdict. The pinned Verus version/toolchain
+and checksums are recorded in `formal/superposition-checker/verus-toolchain.json`.
+
+Use the isolated Verus Nix shell (separate from the workspace Rust 1.99.1
+toolchain):
+
+```bash
+nix develop .#verus -c formal/superposition-checker/install-verus.sh  # one-time install
+nix develop .#verus -c formal/superposition-checker/verify.sh
+```
+
+`VERUS=/path/to/verus formal/superposition-checker/verify.sh` can select an
+already installed binary. The `verus` shell uses a separate `RUSTUP_HOME` and
+`CARGO_HOME` by default, so installing Verus's required Rust 1.98 toolchain
+does not alter the workspace Rust 1.99.1 toolchain. The verifier release and its
+required Rust toolchain are pinned separately. Changes to the formal
+specification, executable checker, toolchain pins, or archived fixtures must
+keep this verification gate passing.
+
+GitHub Actions runs on ordinary Ubuntu runners: workspace Rust checks use
+installed Cargo directly, and the pinned Verus installer/verifier scripts run
+without Nix there.
+
+## 4. mrs-tptp
 
 Zero-copy TPTP parser built with [winnow](https://crates.io/crates/winnow). Lives at `crates/mrs-tptp/`; crate name `mrs-tptp`. The AST borrows `&str` slices directly from the input — no per-token allocation. Single library crate, edition 2024.
 
@@ -33,52 +131,80 @@ Zero-copy TPTP parser built with [winnow](https://crates.io/crates/winnow). Live
 **Testing:**
 
 ```bash
-cargo test -p mrs-tptp                    # unit + integration tests
-cargo test -p mrs-tptp parser_tests       # integration tests only
-cargo test -p mrs-tptp -- --nocapture     # see stdout
+nix develop -c cargo test -p mrs-tptp                    # unit + integration tests
+nix develop -c cargo test -p mrs-tptp parser_tests       # integration tests only
+nix develop -c cargo test -p mrs-tptp -- --nocapture     # see stdout
 
-cargo run -p mrs-tptp --example parse_file
-cargo run --release -p mrs-tptp --example parse_folder -- /path/to/TPTP --timeout 5000 --threads 4
+nix develop -c cargo run -p mrs-tptp --example parse_file
+nix develop -c cargo run --release -p mrs-tptp --example parse_folder -- /path/to/TPTP --timeout 5000 --threads 4
 ```
 
 Integration tests live in `crates/mrs-tptp/tests/`: `parser_tests.rs`, `non_classical_tests.rs`, `syn000_tests.rs`, plus `tests/resources/` fixtures.
 
-## Toolchain
+## 5. Toolchain
 
 - Rust edition **2024**, resolver **3** — requires stable ≥ 1.85.
-- Check version: `rustup show`. Update if needed: `rustup update stable`.
+- Check version: `nix develop -c rustup show`. Update if needed: `nix develop -c rustup update stable`.
 
-## Developer commands
+## 6. Developer commands
 
 ```bash
-cargo build                          # debug build
-cargo build --release                # release (use for benchmarking)
-cargo check                          # fast type-check, no output
-cargo clippy --all                   # lint (always run before committing)
-cargo fmt --all                      # format (always run before committing)
-cargo fmt --all --check              # CI-style format check
+nix develop -c cargo build                          # debug build
+nix develop -c cargo build --release                # release (use for benchmarking)
+nix develop -c cargo check                          # fast type-check, no output
+nix develop -c cargo clippy --all                   # lint (always run before committing)
+nix develop -c cargo fmt --all                      # format (always run before committing)
+nix develop -c cargo fmt --all --check              # CI-style format check
 
-cargo test --workspace               # all tests (use --workspace; bare cargo test only runs root crate)
-cargo test -p mrs-search             # single crate
-cargo test -p mrs-calculus resolution  # single test (substring match)
-cargo test -p mrs-search -- --nocapture  # show stdout
+nix develop -c cargo test --workspace               # all tests
+nix develop -c cargo test -p mrs-search             # single crate
+nix develop -c cargo test -p mrs-calculus resolution  # single test (substring match)
+nix develop -c cargo test -p mrs-search -- --nocapture  # show stdout
 
 # Run the binary on a TPTP problem file
-cargo run -- problems/socrates.p
-cargo run --release -- problems/pel1.p
+nix develop -c cargo run -- problems/socrates.p
+nix develop -c cargo run --release -- problems/pel1.p
 # Expected output: lines starting with "% SZS status ..."
 
 # Pick a non-default strategy schedule
-cargo run --release -- --schedule fast problems/socrates.p
-cargo run --release -- --list-schedules
+nix develop -c cargo run --release -- --schedule fast problems/socrates.p
+nix develop -c cargo run --release -- --list-schedules
 ```
 
-## CLI flags
+### Measure search speed on this host
+
+`crates/mrs-bench/perf_probe.sh` runs a **fixed amount of work** (an
+iteration-counted clause ceiling, not a wall clock) on a generated clause set,
+for both a `native` and a `haswell` build, and appends the result to
+`docs/results/perf/bank.tsv` with a dated report. Work is what makes two hosts
+comparable: a "run it for 30 s and count clauses" number is not, because the
+search is wall-clock sensitive. The whole probe is capped at 12 GiB. A CPU that
+cannot run the `haswell` build (pre-Haswell) measures `native` only, and the
+probe **refuses** a worker count the 12 GiB ceiling cannot hold — 32 workers
+under the default `rlimit-as` — so a wide host needs an explicit `--workers`.
+
+```bash
+crates/mrs-bench/perf_probe.sh              # measure, bank, and report (~3 min)
+crates/mrs-bench/perf_probe.sh --no-bank    # measure only
+crates/mrs-bench/perf_probe.sh --help
+```
+
+It calls `cargo` directly rather than through `nix develop`, so `direnv exec .`
+(or a loaded shell) must already provide the toolchain. Method and comparability
+rules: `docs/results/perf/README.md`.
+
+---
+
+## 7. CLI flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--time <seconds>` | `30` | Wall-clock time limit |
-| `--workers <N>` | all cores | Max parallel search threads |
+| `--hardware <mode>` | `adaptive` | Hardware profile: `casc` (8 workers, 128 GB, never auto-adapted), `casc-sim` (that plus a CPU pin to 8 physical cores, an `RLIMIT_AS` ceiling, and a wall clock extended past the CASC limit), or `adaptive` (fit the host). `MRS_HARDWARE` sets it for a whole harness run. See §11 for what each is for and what its numbers mean. |
+| `--sim-time-factor <mult\|0\|unbounded>` | `2` | casc-sim only: multiple of the CASC wall clock to keep searching after, or `0`/`unbounded` to drop the wall clock and let the resource ceilings decide. The run records where it stood at the CASC limit either way. |
+| `--workers <N>` | per hardware mode | Max parallel search threads. Overrides the mode, so `casc --workers 2` really runs 2 workers. **Reproducibility note:** with `N>1` (the default), strategies run concurrently and may share a pool of derived unit equalities when `MRS_SHARED_POOL_INTERVAL` is positive; sharing is disabled by default (see "Architecture notes" below). With sharing enabled, per-run telemetry (`processed`/`generated`/`lrs_discarded`) and even the pass/fail outcome on borderline problems are not bit-reproducible — sibling-thread timing and CPU contention both feed into the wall-clock-sensitive LRS pruning heuristic. Use `--workers 1` for a fully deterministic, sequential single-strategy run (no clause-pool cross-talk, no contention) when diagnosing or reproducing a specific strategy's behavior. |
+| `--strategy <N>` | — | Run exact base strategy `N` (1–15) from the selected CASC division schedule for the full budget; diagnostic solo coverage only. |
+| `--portfolio <IDs>` | — | Run an explicit cooperative portfolio, e.g. `11,12,1,6,10,8,14,4`; one ID is required per worker. Set `MRS_SHARED_POOL_INTERVAL` to a positive value to enable shared equality exchange. |
 | `--schedule <name>` | `casc` | Strategy schedule; see registry below |
 | `--auto-schedule` | — | Rule-based division detection (EPR/UEQ/FNE/FEQ) picks the matching `casc_*` portfolio; an explicit `--schedule` wins. Replaces the retired ML schedule classifier (`--ml-schedule` is a deprecated alias). |
 | `--list-schedules` | — | Print known schedule names and exit |
@@ -88,13 +214,18 @@ cargo run --release -- --list-schedules
 | `--ml-weights <file>` | — | Load Burn model weights for ML-guided selection; **needs `ml-guidance`**, defaults schedule to `ml` |
 | `--quiet` | — | Suppress non-SZS stderr; **requires `proover` feature** |
 | `-` (positional) | — | Read TPTP from stdin; **requires `proover` feature** |
+| `--certify-ordered` | — | Diagnostic bounded function-free EPR ordered-resolution certification; use with `--workers 1 --strategy N`; unsupported inputs return `GaveUp` |
+| `--pre-phase` | — | Run the pre-phase: measure the problem, print the routing decision and the evidence for it, and — **only when no `--schedule`/`--strategy`/`--portfolio` was named** — let the routed plan replace the portfolio. Experimental; see `docs/reports/prephase/` |
+| `--pre-phase-only` | — | Analyse, print, and exit without searching. For auditing a routing decision |
+| `--pre-phase-probe` | — | Also run the bounded search-behaviour probe and print its trajectory |
+| `--list-rules` | — | Print the pre-phase routing table, one row per rule, with each row's conditions, order and a calibrated/prior flag |
 
 Named schedules live in `mrs_search::strategy::named` (`crates/mrs-search/src/strategy/named.rs`):
 
 | Name | Strategies | Use case |
 |------|------------|----------|
 | `casc` (aliases `default`, `casc_feq`) | 16-strategy portfolio (15 active + 1 diagnostic) | CASC competition; default behavior |
-| `casc_fne` / `casc_feq` / `casc_ueq` / `casc_epr` / `casc_eps` / `casc_epu` / `casc_icu` | one strategy per worker (scales with `--workers`); data-driven from CASC-30 greedy set-cover | division-tuned portfolios; see §"CASC Hardware & --casc Decision Rule" for how to optimise |
+| `casc_fne` / `casc_feq` / `casc_ueq` / `casc_epr` / `casc_eps` / `casc_epu` / `casc_icu` | one strategy per worker (scales with `--workers`); candidate orders informed by solo sweeps and validated cooperatively | division-tuned portfolios; see §"CASC Hardware & --casc Decision Rule" for how to optimise |
 | `fast` | 1 KBO `AgeWeight(5)+AllNegative` | Sub-second ATP queries (e.g. `mrs-proover` backend) |
 | `mini` | 3-strategy compact portfolio | 1–5 s budgets |
 | `ml` (alias `ml_feq`), `ml_fne`, `ml_ueq`, `ml_epr` | ML-guided variants | require `ml-guidance` build + `--ml-weights`; degrade to weight-based selection otherwise |
@@ -115,17 +246,21 @@ Higher n = more weight-biased; lower n = more age-inclusive (broader exploration
 
 To add a new schedule: implement a constructor in `strategy::named`, then add its name to `ALL` and the `by_name` match. `default_schedule()` must stay synonymous with `casc` so unflagged CASC runs are unaffected.
 
-## Root crate features
+---
+
+## 8. Root crate features
 
 | Feature | Off-by-default | Effect |
 |---------|----------------|--------|
-| `proover` | yes | Enables `--quiet` and stdin (`-`); used by `mrs-proover`'s in-process `MrsAtp` backend. Build with `cargo build --release --features proover --bin mrs`. |
+| `proover` | yes | Enables `--quiet` and stdin (`-`); used by `mrs-proover`'s in-process `MrsAtp` backend. Build with `nix develop -c cargo build --release --features proover --bin mrs`. |
 | `ml` | yes | Enables ML trace logging (`--log-ml-data`); pulls `mrs-core/ml` + `mrs-search/ml-guidance` (Burn, wincode). Used by `crates/mrs-bench/collect_ml_data.sh`. |
 | `ml-guidance` | yes | Same flags as `ml`; enables in-process inference with `--ml-weights`. |
 
 `--schedule`, `--list-schedules`, `--workers`, and `--fast` are **unconditional** — they work in any build. The `--log-ml-data`/`--ml-weights` flags parse in any build but are no-ops (with a warning for `--ml-weights`) without the `ml`/`ml-guidance` features.
 
-## Workspace layout
+---
+
+## 9. Workspace layout
 
 ```
 mrs/                  ← workspace root AND the binary crate (src/main.rs)
@@ -151,29 +286,93 @@ mrs/                  ← workspace root AND the binary crate (src/main.rs)
 
 The root `Cargo.toml` is both `[workspace]` and `[package]` — valid but unusual.
 
-## Architecture notes
+---
 
-- **Strategy portfolio:** 15 active strategies run **in parallel**, sharing a pool of derived unit equalities. A 16th diagnostic strategy (`MRS_SINGLE_STRATEGY=16`) gets `Duration::ZERO` in normal runs.
+## 10. Architecture notes
+
+- **Strategy portfolio:** 15 active strategies run **in parallel**. When `MRS_SHARED_POOL_INTERVAL` is positive they share a pool of derived unit equalities; sharing is disabled by default. A 16th diagnostic strategy (`MRS_SINGLE_STRATEGY=16`) gets `Duration::ZERO` in normal runs.
+- **Pre-phase:** off by default (`--pre-phase` / `MRS_PREPHASE=1` enables it). When enabled and no schedule was named explicitly, it replaces the portfolio with the routed plan. When a schedule *is* named it only reports the decision, so the feature's own A/B stays readable. See §12.
 - **Default time budget:** 30 seconds; overridable with `--time <seconds>`.
-- **LRS (Limited Resource Strategy):** every 100 given-clause iterations, the prover estimates the remaining iteration budget from `elapsed/iteration` and prunes the passive queue to that size (min 2000). This prevents memory explosion and teardown latency on hard problems.  Set `TRACE_LRS=1` to see per-prune log lines on stderr.
+- **LRS (Limited Resource Strategy):** every 100 given-clause iterations, the prover estimates the remaining iteration budget from `elapsed/iteration` and prunes the passive queue to that size (min 2000). This prevents memory explosion and teardown latency on hard problems. Set `TRACE_LRS=1` to see per-prune log lines on stderr.
 - **Refutation-based:** conjectures are negated before search. A problem with no `conjecture` role checks satisfiability (outputs `Unsatisfiable`/`Satisfiable`).
 - **TSTP proof output** only on `Refutation`; other statuses produce only the SZS status line.
 
-## CASC Hardware & `--casc` Decision Rule
+---
 
-> **This section is permanent policy.  Do not remove or weaken it.**
+## 11. CASC Hardware & `--casc` Decision Rule
 
-**CASC competition hardware is exactly 8 CPU cores.**  Every entry at CASC runs
+> **This section is permanent policy. Do not remove or weaken it.**
+
+**CASC competition hardware is exactly 8 CPU cores.** Every entry at CASC runs
 with a wall-clock time limit (240 s for FEQ/FNE/UEQ, 120 s for EPS/EPU) on a
-machine with 8 physical cores.  All portfolio design, strategy selection, and
+machine with 8 physical cores. All portfolio design, strategy selection, and
 time-budget arithmetic **must treat 8 as the canonical core count**.
+
+### Canonical hardware, and the modes that reproduce it
+
+| | CASC entry | `--hardware casc` | `--hardware casc-sim` | `--hardware adaptive` (default) |
+|---|---|---|---|---|
+| workers | 8 | **8**, never auto-adapted | **8** | one per usable physical core, bounded by memory |
+| memory allowance | 128 GB | **128 GB** | **128 GB**, plus `RLIMIT_AS` | 80 % of currently available RAM, cgroup-aware |
+| CPU set | 8 physical cores | unrestricted | **pinned to 8 physical cores** (all SMT siblings of each) | unrestricted |
+| wall clock | the per-division limit | the per-division limit | the limit, then **2× longer** (`--sim-time-factor`, `0` = until a resource cap) | the caller's `--time` |
+
+- **`casc` is the honest setting for any number meant to be compared against
+  CASC results.** It never grows to the host, so a 64-core box cannot quietly
+  hand a schedule tuned for 8 cores sixteen workers. On a host with fewer than 8
+  usable physical cores it warns and continues, and says so on the `% Hardware:`
+  line, which every run prints.
+- **`casc-sim` is for developing away from the competition machine.** It makes
+  the constraint real rather than nominal: the process is pinned, its address
+  space is capped, and it keeps searching past the CASC wall clock so a
+  memory-bound failure surfaces instead of being recorded as a timeout. Each run
+  reports where it stood when it crossed the CASC limit
+  (`casc_limit_passed_ms=… state_at_casc_limit=…`), which is what separates "would
+  have timed out at CASC" from "got past the CASC limit and then ran out of
+  memory". Concurrent jobs all pin to the same 8 cores, so `--jobs N` behaves like
+  N problems sharing one CASC machine — which is what the W8J2 runs did.
+- **`adaptive` is for development and for benchmarking on a large box**, where
+  the only question is whether a problem can be solved at all. It is not a CASC
+  number and must never be reported as one.
+
+Physical cores, not logical CPUs, throughout: SMT siblings add no capacity, so
+pinning 8 logical CPUs would be simulating 4 cores. `casc` and `casc-sim` also
+report `effective_mem_mb` and warn when the host has less RAM than the allowance,
+because a limit above what the box can supply is not a limit.
+
+A run that stops on a resource ceiling says which one — memory, term bank,
+processed clauses or passive queue — in `% Resource limit:` and in the
+`resource_reason=` field of the `% SZS detail` line the harness grades.
 
 ### Goal
 
 Maximize the number of CASC problems solved across all entered divisions
-(FEQ, FNE, UEQ, EPS/EPU).  The competition `invoke.sh` already routes each
+(FEQ, FNE, UEQ, EPS/EPU). The competition `invoke.sh` already routes each
 problem to the correct per-division schedule (`casc_feq/fne/ueq/epr`).
 The question is whether those division schedules are optimal for 8 cores.
+
+> **EPS exception — do not run the portfolio-optimisation workflow.** EPS asks
+> for `Satisfiable`; the ordinary portfolio cannot make that claim, even when
+> its clause set saturates, because completeness of the general search path is
+> not established. EPS results come from the certified track. On the canonical
+> shape (8 workers, 8 physical cores, `jobs=1`, campaign at `c07cac9`), the
+> portfolio produced a definitive status on only 2 of 100 problems, both also
+> answered by the certified track, and added 0 unique solves. Thus
+> `greedy_set_cover --division eps` and `cooperative_portfolio_sweep.sh` do not
+> optimize EPS coverage. Focus EPS work on the certified path and grounding
+> tiers; see `docs/reports/benchmarks/eps-2026-09.md`.
+
+> **UEQ historical numbers — do not quote superseded/unsound runs as current scores.**
+> Historical unverified snapshots in `codex.db` (such as 257/400 for CASC-J13
+> and 222/300 for CASC-30) were derived from an older engine whose AC fallback
+> permitted invalid substitutions. Independent strict-kernel re-audits showed 82
+> of 114 audited proofs were rejected as `VerifiedBad` (see UI-1 in
+> `docs/policies/unresolved-issues.md`, `docs/CERTIFICATION_STATUS.md`, and
+> `docs/reports/benchmarks/ueq-soundness-regression-2026-10.md`). The current
+> strictly verified UEQ baseline is **107/400** on CASC-J13 (all 107
+> kernel-certified `VerifiedGood`, 0 `VerifiedBad`). Whenever reporting CASC
+> scores, never present the raw 257/400 or 222/300 numbers as valid scores
+> without explicitly stating they are superseded by soundness re-audits.
 
 ### Decision rule for implementing `--casc`
 
@@ -190,36 +389,71 @@ current generic schedule and the data-driven optimal portfolio.
 
 ### Workflow: Per-Division Portfolio Optimisation
 
-**Step 1 — Generate per-strategy coverage data (run once per TPTP release):**
+**Step 1 — Generate optional solo diagnostic coverage data (run once per TPTP release):**
 
 ```bash
 # Run every mrs strategy solo on one division (30 s per problem, 4 parallel jobs).
-# Requires: cargo build --release
+# Requires: nix develop -c cargo build --release
 export TPTP=/path/to/TPTP-v9.x.x
 ./crates/mrs-bench/run_strategy_sweep.sh --divisions fne --time 30 --jobs 4 \
     --output results/sweep-fne-$(date +%Y%m%d)
 ```
 
 This produces `run.csv` where each `system` column is `mrs-s01..mrs-s15`.
+These runs measure individual strategies with one worker and no cross-strategy
+shared equality pool. Their set-cover output is diagnostic only, not the final
+cooperative portfolio objective.
 
-**Step 2 — Find optimal 8-strategy portfolio per division:**
-
-```bash
-./target/release/greedy_set_cover results/sweep-fne-*/run.csv 8 --division fne
-./target/release/greedy_set_cover results/sweep-fne-*/run.csv 8 --division ueq
-./target/release/greedy_set_cover results/sweep-fne-*/run.csv 8 --division eps
-```
-
-**Step 3 — Baseline comparison:**
+**Step 2 — Use solo set-cover only to generate candidate portfolios:**
 
 ```bash
-# Run the current generic casc portfolio on the same problems:
-./crates/mrs-bench/casc.sh --systems mrs --divisions fne --time 30 --jobs 4 \
-    --output results/baseline-fne-$(date +%Y%m%d)
-# Compare solved counts between baseline and greedy-selected portfolio.
+nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*/run.csv 8 --division fne
+nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*/run.csv 8 --division ueq
+nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*/run.csv 8 --division eps
 ```
 
-**Step 4 — Act on the results:**
+**Step 3 — Measure the actual cooperative portfolio:**
+
+```bash
+# One mrs process per problem, eight workers, shared equality pool enabled.
+MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \
+./crates/mrs-bench/cooperative_portfolio_sweep.sh \
+    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
+    results/cooperative-fne-$(date +%Y%m%d)
+
+# Control: same portfolio with sharing disabled.
+MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
+./crates/mrs-bench/cooperative_portfolio_sweep.sh \
+    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
+    results/cooperative-fne-no-sharing-$(date +%Y%m%d)
+```
+
+The cooperative result is the portfolio-selection objective. The difference
+between shared and no-sharing runs measures cooperation gain separately from
+strategy diversity. Use `cooperative_portfolio_search.sh` for one-swap local
+search over candidate portfolios.
+
+> **Read this before trusting any single-run A/B.** A single run is not a
+> measurement. Five replicates of an identical configuration over a fixed
+> 25-problem casc-30 UEQ subset solved 21 / 20 / 19 / 21 / 20 — **±1 per 25,
+> i.e. ±12 per 300**. That noise floor is the same size as any portfolio
+> difference these steps are asked to detect, and `cooperative_portfolio_search.sh`
+> maximises over ~120 noisy evaluations per round (`rounds × 8 slots × 15
+> candidates`), which selects on noise. Wrap decisive comparisons in
+> `run_variance.sh` and compare **means over ≥5 replicates**:
+>
+> ```bash
+> nix develop -c ./crates/mrs-bench/run_variance.sh 5 \
+>     --edition casc-30 --systems mrs --divisions ueq --casc-times --jobs 1 \
+>     --output crates/mrs-bench/results/variance-ueq-$(date +%Y%m%d)
+> ```
+>
+> Variance is bimodal per problem, not uniform jitter: `KLE152-10` takes ~118 s or
+> ~217 s with nothing between, because concurrent strategies race and contention
+> picks the winner. `run_variance.sh` reports per-problem spread for that reason.
+> See `docs/policies/unresolved-issues.md` UI-8.
+
+**Step 4 — Act on cooperative results:**
 
 - If greedy FNE portfolio = strategies `[s3, s7, s11, s1, s12, s6, s2, s10]` (example),
   replace the `casc_fne` loop-generated body in `named.rs` with those 8 explicit
@@ -230,20 +464,74 @@ This produces `run.csv` where each `system` column is `mrs-s01..mrs-s15`.
 ### Current status
 
 The `casc_feq`, `casc_fne`, `casc_ueq`, `casc_epr`, `casc_eps`, `casc_epu`, and
-`casc_icu` schedules are **data-driven** — priority orders were derived from a
-greedy set-cover analysis over CASC-30 benchmark results (30 s per-strategy sweep).
-See `docs/DIVISIONS.md` for the full coverage numbers and `greedy_all.res` for
-the raw output.  Re-run the workflow above after each new TPTP release or
-major portfolio change.
+`casc_icu` schedules have candidate priority orders derived from solo
+strategy-sweep data. Solo coverage is diagnostic only; when enabled, the
+cooperative portfolio can also share derived unit equalities through a
+cross-strategy pool. Use
+`cooperative_portfolio_sweep.sh` and `cooperative_portfolio_search.sh` to
+validate or replace these orders against the actual 8-worker objective. See
+`docs/reports/benchmarks/divisions-2026-09.md` for the workflow and telemetry
+details.
 
+---
 
-## Testing
+## 12. Pre-phase (experimental, `exp/prephase-study`)
+
+`mrs-prephase` holds the pre-phase: a bounded analysis of a problem run before
+the first inference, whose output is a class label, a feasibility estimate, and a
+routing plan. It is **off by default** and every routing rule is marked
+`calibrated` or `prior` in `mrs --list-rules`.
+
+**What it does**
+
+| Symbol | Role |
+|--------|------|
+| `mrs_prephase::analyze` | ~80 structural features over the *clausified* clause set: scale, polarity shape, equality/variable structure, symbol and term shape, goal reachability under the engine's own symbol-distance BFS, clause-graph decomposition, measured redundancy (it runs the real PLE/BCE reducer), algebraic signature, propositional-abstraction size |
+| `mrs_prephase::Analysis::label` | the class taxonomy: `logic/shape/scale/goal/decomposition`. 172 distinct values over the 26,990-problem TPTP distribution; 54 of them cover 95.9% of it |
+| `mrs_prephase::Analysis::feasibility` | `LIKELY`/`UNKNOWN`/`UNLIKELY` — the one prediction the sweep supports, with a 5x spread between the extremes |
+| `mrs_prephase::plan::rules` | the routing table: conditions → algorithm → priority order → pre-passes, each row with its own evidence string and calibrated/prior flag |
+| `mrs_search::prephase::schedule_from_plan` | plan → `StrategySchedule`, one strategy per worker, cycled from the plan's priority order |
+| `mrs_search::prephase::probe` | bounded reference search on a fixed *clause* budget, reporting generation/redundancy rates. Its verdict is deliberately discarded |
+| `mrs_prephase::preprocessing` | the tautology / pure-literal / blocked-clause reducer, moved here from `mrs-search` so the analysis can measure the redundancy the engine actually removes |
+
+**Instruments** (`crates/mrs-bench/prephase/`)
+
+| Tool | Role |
+|------|------|
+| `prephase_dump` | one CSV row of features per `.p` file. `--rlimit-mb` isolates each file under an `RLIMIT_AS` ceiling, so a problem too large for the host is recorded as `resource_limit` instead of taking the run out with the OOM killer. `--probe` appends the probe's ten columns |
+| `prephase_sweep` | the label: configuration × problem outcome matrix with time-to-solution and the engine's own telemetry. Stratified sampling, resumable |
+| `analyze.py` | joins the two; coverage, greedy set cover, per-bucket conditional coverage, behavioural taxonomy, portfolio simulation, cross-validation, exact sign tests. `--features-only` runs the label-free corpus taxonomy |
+| `ab.sh` | cooperative A/B of the pre-phase against the shipped per-division portfolio |
+
+```bash
+nix develop -c cargo build --release -p mrs-bench --bin prephase_dump --bin prephase_sweep
+
+TPTP=~/TPTP-v9.3.0 ./target/release/prephase_dump \
+    --root ~/TPTP-v9.3.0/Problems --out features.csv --jobs 2 --rlimit-mb 2500
+TPTP=crates/mrs-bench/problems/casc-30 ./target/release/prephase_sweep \
+    --features features.csv --sample 600 --time 3 --jobs 2 --out labels.csv
+python3 crates/mrs-bench/prephase/analyze.py features.csv labels.csv
+```
+
+**Results.** `docs/reports/prephase/2026-10-prephase-study.md`. The headline is a
+negative one and should be read before any routing work: on CASC-30 at 3 s and on
+the hard tail at 30 s, routing on static structure is *worse* than the shipped
+per-division orders, which are within three problems of the greedy optimum at
+every portfolio width. Feasibility prediction works (5x spread); routing does not.
+Do not add a routing rule without a measurement showing it wins on the subset it
+fires on.
+
+---
+
+## 13. Testing
 
 - Most tests are `#[cfg(test)]` inline modules — no separate test directories, no fixtures.
 - Exception: `mrs-tptp` has integration tests under `crates/mrs-tptp/tests/` with fixture files in `tests/resources/`.
 - Some `mrs-search` and `mrs-calculus` tests run the full given-clause loop with real `Duration::from_secs(5)` timeouts.
-- `problems/` is for manual binary runs only, not `cargo test`.
+- `problems/` is for manual binary runs only, not `nix develop -c cargo test`.
 
-## Runtime env var
+---
+
+## 14. Runtime env var
 
 `TPTP=/path/to/TPTP` — only needed at runtime when problems use `%include` pointing to the standard TPTP library. The benchmark harness (`crates/mrs-bench/systems/mrs/invoke.sh`) sets this automatically to `crates/mrs-bench/problems/casc-30`, so it is not required for normal benchmark runs. Only set it manually when running the binary directly on problems that use `%include`.

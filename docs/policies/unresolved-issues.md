@@ -1,0 +1,2242 @@
+# Unresolved issues
+
+Known defects and open questions that are **not** being worked on right now,
+recorded so they are not rediscovered from scratch later.
+
+This page exists because that has already happened repeatedly. The FEQ certification
+figures were once read as coverage when 78 of 144 refutations had never been
+checked. The largest proof in the archive was recorded as "never produced a
+verdict at all" when the real cause was a kernel ceiling a five-minute check
+clears. And a campaign-localisation theory was written down with enough
+confidence to name a fix that the next dataset disproved — see UI-1 below, which
+is the worked example of why this page records *evidence*, not conclusions.
+
+## How to use this page
+
+Each entry states what is observed, what is **ruled out**, and what is still
+unknown. Entries deliberately do not name a fix unless the evidence points at
+one. When you pick an entry up:
+
+1. Reproduce it before changing anything (each entry gives the command).
+2. Prefer an invariant assertion over a trace. A trace scales with search
+   volume and produced 668 293 lines / 271 MB on a 2-core box; an assertion
+   scales with the number of violations and fires once.
+3. Update this page in the same commit that changes behaviour, including when
+   the answer is "it was something else".
+
+Related: [work that needs the remote host](../guides/remote-only-work.md) for
+what is blocked on hardware rather than on knowledge.
+
+---
+
+## UI-1 — Ordinary superposition recovery and incomplete AC replay
+
+### Current finding (2026-10-15; supersedes the historical diagnosis below)
+
+Target-variable binding is not inherently unsound. The blanket rigidity guard
+had disabled valid ordinary superposition. The producer now first tries
+syntactic Robinson unification, retaining its ordering check and applying the
+substitution to all residual literals of both standardized-apart parents.
+The independent kernel now replays that ordinary rule with its own two-sided,
+occurs-checked unifier. Theory-specific AC/associative paths remain restricted.
+
+All five fresh local group/lattice/ring regression problems were recovered at
+one worker and five seconds, and all five proofs passed strict verification.
+Re-auditing the same 114 historical UEQ proofs with ordinary replay restored
+gives **91 VerifiedGood, 0 VerifiedBad, 23 Unknown**, versus 1/82/31 under the
+old target-rigid kernel. These are proof audits, not a new competition score.
+
+The old `group.s` c26 and SWV406+1 c502 refusal tests were wrong: they are
+valid whole-parent syntactic instances. The small lattice-shaped replay test
+formerly described as a known invalid specialization is valid too. Those tests
+now assert certification; a new negative test rejects applying the substitution
+to only one target literal. Archived AC refusal and unmatched-operand tests
+remain passing.
+
+The historical claim that unequal flattened arities or target bindings prove
+an invalid AC unifier is withdrawn. A substitution can change flattened arity.
+The old fallback has not been restored; exact AC candidate validation and the
+remaining 23 inconclusive proofs require separate investigation. The older
+diagnosis and experiments below are retained as history, **not current rule
+semantics or established proofs of unsoundness**. In particular, statements
+below calling c26, c502, or the small lattice test invalid are superseded.
+
+The current implementation, measurements, audit pitfalls, and requested
+eight-core/128-GB campaign are described in
+[`the recovery report`](../reports/benchmarks/ueq-soundness-regression-2026-10.md).
+
+### Historical investigation (superseded where contradicted above)
+
+| | |
+|---|---|
+| Status | **AC matcher defect identified; sound UEQ coverage recovery open** — the old assoc/comm fallback could report a substitution without unifying the selected terms |
+| Severity | Historical `ac_superposition` conclusions could be **not entailed by the cited parents**; a blanket target-rigidity guard prevents malformed matches but also rejects valid standardized-apart MGUs |
+| Soundness | The leading suspicion (`clause_store` / `LiteralIndex` divergence) is **ruled out**. The defect is in AC unification and its replay, not in target-variable bindings as a category |
+| Blocks | Sound UEQ coverage recovery; proof-audit and campaign measurements are recorded in [the October UEQ report](../reports/benchmarks/ueq-soundness-regression-2026-10.md) |
+
+### Root cause
+
+**Observation (verified).** For each of the three archived nodes below, feeding
+the two clauses the node cites — taken verbatim from the archived proof — into
+the historical `mrs_calculus::superposition::superpose_selected_id_until`
+reproduces the archived conclusion **character for character**, including the
+variable names. This reproduced output establishes producer behavior, not
+inference validity. For casc-30 `KLE145-10`:
+
+```
+eq     : true() = leq(X8, addition(X7, X8))                       # c425221
+target : true() = ifeq(leq(addition(one(), X3),
+                   addition(X5, addition(X6, multiplication(X5, X3)))), true(),
+                   leq(addition(one(), X3),
+                   multiplication(strong_iteration(X5), X6)), true())   # c2428
+  eq->tgt: true() = ifeq(true(), true(),
+                   leq(addition(one(), X14),
+                   multiplication(strong_iteration(X14), one())), true()) # c431338
+```
+
+The conclusion is what the old prover computed from its cited parents.
+Reproducing it is not enough to show that its substitution is a valid unifier;
+the old AC fallback could compute and propagate an invalid one.
+
+**Cause.** `superpose_with_id` (`crates/mrs-calculus/src/superposition.rs`)
+standardizes the parents apart, unifies the equation side with a target subterm,
+and applies the substitution to both parents when constructing the resolvent.
+Under standard first-order superposition, variables from either standardized
+parent may be bound by a genuine MGU. The soundness requirement is that the
+substitution really unifies the selected source and target terms and that the
+whole resolvent is its instance. The old AC unifier did not always satisfy the
+first requirement: when flattened operand counts differed, its positional
+fallback unified original binary children as though they were the flattened
+sequences. That fallback could produce target-variable bindings without making
+the selected terms equal. In the `KLE145-10` pair, matching
+`leq(V8, addition(V7,V8))` against
+`leq(addition(one,X3), addition(X5, addition(X6, multiplication(X5,X3))))`
+produced bindings `X3 ↦ X5` and `X6 ↦ one`. The presence of those bindings
+alone does not establish unsoundness; the old fallback's flattened-arity
+mismatch means this candidate is not justified by a valid AC unifier. Directly
+measured by the historical matcher:
+
+```
+unifier succeeded; target-variable bindings: [(3, "X5"), (6, "one()")]
+```
+
+The archived `LAT044-1` and `LAT241-10` nodes show related malformed AC
+matches. Reproducing an output is not a soundness check: replay must establish
+that the substitution unifies the selected terms and that the conclusion is the
+resulting resolvent. A following valid demodulation cannot repair an invalid
+parent inference.
+
+**Current guard.** `mrs_unify::robinson::unify_ac_rigid_id` refuses bindings to
+a caller-supplied rigid set, and superposition currently passes the target's
+variables. This blocks malformed fallback matches but is **stricter than the
+standard superposition rule**: it also excludes genuine MGUs that bind
+standardized-apart target variables. Resolution and factoring already use MGUs
+over both parents' variables.
+
+**What the guard does not do.** It avoids the offending class by dropping every
+match that binds a target variable; it does not distinguish malformed fallback
+results from legitimate standardized-apart MGUs. This rejects valid inferences
+and costs coverage on AC-heavy equational problems. Separately, where the old
+substitution was malformed, recovery requires a correct AC/associative unifier
+rather than relaxing rigidity. Measured on the local regression corpus
+(`problems/*.p`, `--workers 2`, `--time 5`, re-checked at `--time 10` and
+`--time 30` on both `--schedule casc_feq` and the default schedule): 42/48 proved
+before, 37/48 after. The five regressions are all AC equational rewriting:
+
+| problem | before | after |
+|---|---|---|
+| `group.p` | Theorem | GaveUp |
+| `group_right_inv.p` | Theorem | GaveUp |
+| `group_unique_inv.p` | Theorem | GaveUp |
+| `lattice_absorb.p` | Theorem | GaveUp |
+| `ring_idem.p` | Theorem | GaveUp |
+
+Those five pre-fix proofs were reported `VerifiedGood` by the then-current
+strict kernel. That result does not establish their soundness: the then-current
+kernel's ordinary-superposition replay did not validate the old AC matcher's
+substitutions. The historical proof status is not an independent soundness
+result.
+
+**Why the old fallback is invalid (bounded diagnostic, 10 s on `group.p`).**
+The lost-match probe reports (`*` is the associative symbol, `e` the identity;
+the equation side is the associativity axiom):
+
+```
+[rigid-probe] RigidVariable { var: 3 } lost-from=*(X0,*(X1,X2)) lost-subterm=*(e,X3) binds=[3]
+[rigid-probe] RigidVariable { var: 4 } lost-from=*(X0,*(X1,X2)) lost-subterm=*(X3,X4) binds=[4]
+[rigid-probe] RigidVariable { var: 3 } lost-from=*(*(X0,X1),X2) lost-subterm=*(X3,X4) binds=[3]
+[rigid-probe] RigidVariable { var: 5 } lost-from=*(X0,*(X1,X2)) lost-subterm=*(X4,X5) binds=[5]
+```
+
+`unify_ac_rec_id` flattens `[X0,X1,X2]` against `[e,X3]`, observes unequal
+lengths, then falls back to unifying the original binary children. That fallback
+does not establish a unifier of the flattened terms. A replacement matcher
+must enumerate legal associative segmentations and AC pairings, validate each
+candidate substitution, and fail closed on budget exhaustion.
+
+**The bounded matcher diagnostic does not recover the five rows.** AC subset superposition is implemented
+(`mrs_unify::ac_subset`, `superposition::ac_subset_replacement`, budgeted by
+`AC_SUBSET_MATCH_BUDGET = 4096`, pinned by
+`crates/mrs-calculus/tests/ac_subset_superposition.rs`). What it actually
+recovers, and what it does not, is measured below.
+
+#### The subset rule, and the two things that were believed about it
+
+The rule: under a symbol the prover detects as both commutative and
+associative, the equation's side may equal a **non-empty subset** of a target
+subterm's AC arguments. If `σ(s) = S ⊆ flatten(u)` then `u ≈ f((A \ S) ∪ σ(t))`,
+so replacing `u` by that term and instantiating by `σ` is a consequence of the
+two cited parents when the substitution is a genuine match and the complete
+parent instance is reconstructed. The current matcher keeps target variables
+rigid. Its pairing search is under a deterministic per-call budget, and exhaustion is
+`UnifyError::BudgetExhausted` — a non-success, never a partial match.
+
+**It does recover real inferences.** On a bounded sample (60 casc-30 UEQ
+problems, `--workers 1 --time 3`, instrumented build) it emitted 260
+inferences. That count is wall-clock sensitive and is reported as a
+magnitude, not a rate. On the constructed problem
+`problems/force_subset2.p` (`prod(a,X) = b` superposed into
+`prod(prod(a,b),c)`) the prover goes from `GaveUp` to `Theorem`, and the step is
+`cnf(c21, …, prod(b,c) != prod(c,b), inference(ac_superposition, …))` — the
+whole-subterm rigid unifier cannot produce it, because the two terms have equal
+*direct* arity (so its alignment fallback fires) and unequal flattened arity (so
+the fallback cannot align them).
+
+**It does not recover the five rows.** The existing subset and
+ordered-associative matchers are bounded and preserve the current rigidity
+condition. Two measured limitations apply to those matcher paths:
+
+1. **`mult` in `group.p`, `group_right_inv.p`, `group_unique_inv.p` and
+   `plus`/`times` in `ring_idem.p` is declared associative but not commutative.**
+   The prover's own AC detection (`detect_ac_symbols`) puts a symbol in `comm`
+   only when a commutativity axiom is among the input clauses, and none of those
+   four problems has one. Consuming an arbitrary sub-multiset is licensed by
+   commutativity, so the rule refuses them (`UnsupportedShape`) — correctly.
+   Instrumented run, `--workers 1 --time 10`: `group.p` 660 matcher entries, all
+   rejected as not-AC; `ring_idem.p` 2455, all not-AC. `lattice_absorb.p` is the
+   fifth, and its `join`/`meet` *are* both AC, so it is not covered by this
+   reason — it is covered by the next one.
+2. **The inference these five lost is not represented by the implemented
+   matcher.**
+   `group.s`'s `cnf(c26, …, mult(e,X3) = mult(inv(X2), mult(X2,X3)))` is
+   `mult(inv(V), V) = e` superposed into the subterm `mult(A, B)` of the
+   associativity axiom; it needs `A := inv(V)`. Same shape in
+   `lattice_absorb.s`'s `cnf(c33, …, X2 = join(X2, X2), inference(ac_superposition,
+   …, [c32, c30, …]))`: the `meet(X0, X1)` inside the target has to be paired with
+    the equation's `meet(U0, join(U0, U1))`. The current rigid matcher refuses
+    the required target-variable binding. The exact historical `group.s` step
+    is covered by `archived_group_c26_target_specialization_is_still_refused`;
+    a separate positive test must cover valid standardized-apart MGUs, and a
+    negative test must reject the malformed unequal-flattened-arity fallback.
+
+   The four unarchived problems (`group_right_inv.p`, `group_unique_inv.p`,
+   `ring_idem.p`, and `lattice_absorb.p` beyond the node above) are inferred
+   rather than observed: their axiom sets are the same or a subset of
+   `group.p`'s and `lattice_absorb.p`'s, and with the rule switched off all five
+   saturate in 0.01–0.02 s having derived nothing that closes the goal.
+
+So the "recover the five rows above" claim in the previous revision of this
+entry was wrong. Subset matching is a real capability, but those five problems
+also expose the overbreadth of target rigidity; positive matcher tests alone do
+not establish a valid parent-instance inference.
+
+**Why the blanket guard is not the soundness criterion.** `group.s` c26 is
+ordinary superposition between `mult(inv(X0),X0)=e` and the associativity
+equality. Standardizing the parents apart and applying the MGU to both parents
+yields `mult(e,X3)=mult(inv(X2),mult(X2,X3))`, exactly the recorded conclusion.
+This is a valid superposition instance; the previous claim that c26 is
+inherently an invalid target specialization was wrong. In contrast, the archived
+KLE145-10 and LAT044-1 cases involve substitutions returned by the broken AC
+fallback, and must not be accepted merely because such bindings are permitted
+in principle. The kernel must establish that the substitution actually unifies
+the selected terms and reconstructs the exact resolvent.
+
+The positional fallback is not an MGU. For example, on associative `f`, the
+flattened equations `f(X,Y,Z) = f(a,b)` cannot be solved by pairing original
+binary children after the flat lengths differ. The fallback can instead return
+`X := a`, `f(Y,Z) := b` (and, recursively, bind a variable inside `b`), which
+selects one shape rather than describing the general associativity solutions.
+More simply, matching a pattern variable `X` to target compound `g(Y)` yields
+`X ↦ g(Y)`: this is a valid binding for the equation-side variable and does not
+bind `Y`. Binding target `Y` to a constant or compound would specialize the
+target, e.g. the resolvent `p(Y)` would incorrectly become `p(a)`.
+
+For associative-only symbols, ordered segment matching is one justified
+recovery rule: a non-empty contiguous target sequence may match the ordered
+source sequence, and unmatched operands are retained. This follows by repeated
+associativity and ordinary equality replacement. For AC symbols, bounded
+permutation/subset search may additionally use commutativity. These matcher
+shapes still need to validate the substitution against the selected terms and
+reconstruct the complete parent instance. Target-variable rigidity is not a
+substitute for those checks. Identity axioms remain separate ordinary rewrite
+equalities; associativity alone does not elide identities.
+
+The former build with `rigid=None` solved the five at 0.01–8.6 s, while the
+rigid build returned `GaveUp` at 0.01–0.02 s. This demonstrates that the guard
+removed productive inferences, not that every removed inference was sound. A
+bounded ordered-associative matcher is present, but the first local post-change
+run on the five inputs still returned `GaveUp` for all five. Keep UI-1 open for
+a correct AC/associative unifier, complete parent-instance replay, and sound
+problem-level coverage evidence.
+
+#### Full-division consequence and proof re-audit: CASC-J13 UEQ
+
+The two archived 400-problem CASC-J13 UEQ campaigns record a coverage gap
+between two different binaries. They are not a controlled code-only A/B:
+
+| campaign | date / commit | UEQ result | strict proof audit |
+|---|---|---:|---|
+| `campaign-cascj13-clean-unsound` | Oct 10 / `176a9f9` | 114/400 Unsatisfiable | re-audited: 1 `VerifiedGood`, 82 `VerifiedBad`, 31 `Unknown` |
+| `campaign-cascj13-clean` | Oct 13 / `313b923` | 5/400 Unsatisfiable | all 5 `VerifiedGood` |
+
+Both runs used the same 400 problem names, the same Xeon Silver 4108 host,
+`jobs=1`, eight workers, the same eight-strategy UEQ order
+`[4,8,12,11,2,14,15,1]`, and the official 180 s limit. The later run explicitly
+sets `MRS_HARDWARE=casc`; its per-row telemetry confirms the same worker count
+and strategy order. It solved three problems the earlier run did not, while 112
+of the earlier 114 solves disappeared. The result is therefore a large
+**observed coverage gap**, not a valid 109-problem regression against a sound
+baseline: the earlier campaign is marked unsound and cannot serve as a target
+score.
+
+The re-audit establishes that only one of the old 114 archived refutations
+currently certifies; 82 are rejected and 31 are inconclusive. `VerifiedBad`
+means the archived proof does not check, not that this audit has classified the
+specific bad inference. The inconclusive rows must not be counted as sound.
+Thus the valid conclusion is a large historical capability gap, not a proven
+loss of 109 valid refutations.
+
+A checker-only experiment temporarily removed target-variable rejection from
+ordinary and AC replay, then force-ran the same audit. It changed the UEQ
+distribution to 15 `VerifiedGood`, 82 `VerifiedBad`, and 17 `Unknown`; it did not
+make the 82 rejected proofs check. The experiment was reverted. It is diagnostic
+evidence that rigidity rejects some otherwise replayable old derivations, not
+evidence that relaxing the producer or checker is sound. In particular, the
+known lattice negative test certifies under that relaxation, so target bindings
+must be admitted only when they are part of a valid standardized-apart unifier
+and the exact resolvent is checked.
+
+The campaign-level breakdown, provenance, and row-wise comparison are recorded in
+[`ueq-soundness-regression-2026-10.md`](../reports/benchmarks/ueq-soundness-regression-2026-10.md).
+
+#### Independent proof replay
+
+The strict kernel independently replays the bounded subset shape in
+`ac_subset_superposition_replay` (`crates/mrs-proof-kernel/src/lib.rs`). It
+requires a non-empty match of at least two operands, keeps all unmatched target
+operands, currently keeps target variables rigid, and uses the kernel's own AC
+search budget. Focused kernel tests certify a valid subset step and reject a
+conclusion that drops unmatched operands. The prover's `force_subset2.p`
+regression and the kernel regression together pin production and proof replay.
+The rigidity condition remains an open completeness restriction; it must not be
+confused with the actual soundness requirement that the substitution is a valid
+unifier and the complete parent instance is replayed.
+
+Budget exhaustion remains inconclusive rather than being accepted as a proof.
+
+#### GEO111+1 audit rejection was a kernel comparison bug
+
+The archived CASC-J13 clean audit marked `GEO111+1` `VerifiedBad` at node
+`c10744`, with the message that subsumption resolution did not produce the
+target with one justified literal removed. Replaying the archived proof with
+the current strict kernel and the TPTP 9.3.0 include tree now returns
+`VerifiedGood`. The archived `audit.csv` is a historical result from the old
+kernel and has not been rewritten. The fresh FEQ campaign
+`campaign-cascj13-feq-W8C8J1-20261016` also generated a new `GEO111+1` proof,
+which strict replay returned as `VerifiedGood` (proof SHA-256
+`8423e7b6edb7a0a1590c1e4935d7ba9d7d8260869417c828f9f86b9091901e39`).
+
+The offending clause at `c10744` has two negative literals and repeated copies
+of `part_of(X2,X2)`. The active parent `c10670` supplies the complementary
+negative literal and its other literals match the target's remaining literals;
+subsumption resolution removes one copy of the repeated positive literal. The
+kernel was condensing the **target** before computing the expected result. That
+discarded the duplicate first, then removed another literal, so its expected
+intermediate no longer matched the prover's valid recorded conclusion. The
+target may contain duplicates during this rule; keep its multiplicity through
+the single-literal deletion, then compare modulo harmless duplicate removal.
+The active clause can still be condensed before matching.
+
+The kernel now preserves the original target through deletion and condenses
+only the expected conclusion for comparison. A focused regression test pins
+the repeated-target-literal shape. This is a verifier false rejection, not an
+invalid inference or a false theorem answer; this case should no longer count
+as an uncertified proof when re-audited with the updated kernel.
+
+#### Two inefficiencies the implementation measurement exposed
+
+Both were found by instrumenting the matcher, and both are fixed:
+
+- The subset path is entered after *every* failed whole-subterm superposition,
+  including on non-AC symbols. On `ALG240-1` that was 643 635 matcher entries in
+  a 10 s run, all rejected on sight. A `comm.contains(f) && assoc.contains(f)`
+  gate before the call removes them.
+- The nested commutative permutation search could reuse a target operand. It is
+  now an injective permutation search with dedicated positive and negative
+  nested-match tests.
+
+### The leading suspicion is ruled out
+
+The `clause_store` / `LiteralIndex` divergence hypothesis (below) is **not** the
+cause, and no divergence is needed to explain any of the three nodes: replaying
+the two *stored* parent clauses through the prover's own superposition
+reproduces the conclusion exactly. The debug-only invariant
+`assert_indexed_clause_matches_store` (`given_clause.rs`, both the
+given-as-equation-source and given-as-target-source loops, plus its unit test)
+is kept — it remains a cheap guard — but it cannot fire on this defect, and the
+two bounded local runs that failed to trip it were not close to a reproduction
+of anything.
+
+### The archived nodes
+
+The strict kernel's archived campaign audit refused a small number of
+`ac_superposition` nodes:
+
+```
+% SZS status Unknown : node c431338: ac_superposition replay is incomplete:
+  superposition conclusion is not a valid rewrite
+```
+
+One problem in casc-30 UEQ (`KLE145-10`, node `c431338`) and two in casc-j13 UEQ
+(`LAT044-1` node `c659171`, `LAT241-10` node `c53874`) appeared in the examined
+proofs. The campaign counts were not independently re-audited to establish a
+cross-edition total, so this register does not claim a current 4/700 rate.
+
+Node ids are **not stable across runs of the same problem** — the same
+`KLE145-10` node was observed as `c431338`, `c411616`, `c426189`, `c440158`,
+`c441748` and `c449061` in successive local runs, because the portfolio is
+wall-clock sensitive and clause ids follow generation order. Quote the
+conclusion text when identifying a node, not the id.
+
+The kernel's `AcReplay::NotFound` (as opposed to `BudgetExhausted`) proves the
+replay exhausted every superposition position and orientation and genuinely
+found no match. `max_equivalence_steps` was not hit. The diagnostic that
+distinguishes these was added in commit `1edb13b` on branch
+`fix/ac-superposition-cite-folded-demodulators`; before it, both situations
+collapsed into one `Unknown` and this was undiagnosable from an audit report.
+
+### Evidence: the two shapes differ
+
+Everything below was read off the archived proofs while the cause was still
+unknown. It is kept because the shapes are what make the cause checkable, but
+read it with the root-cause section above: the "extra rewriting by uncited
+premises" is not extra rewriting at all — it is the target's variables being
+instantiated.
+
+**casc-30 `KLE145-10`, node `c431338`** (archived campaign run; quoted ids are
+from `certification/proofs/mrs/ueq/KLE145-10.s`):
+
+```
+cnf(c431338, plain, true = iteq(true, true,
+      leq(addition(one, X14), multiplication(strong_iteration(X14), one)), true),
+    inference(ac_superposition, [status(thm)], [c425221, c2428, c3, c21])).
+
+cnf(c432531, plain, true = leq(addition(one, X14), strong_iteration(X14)),
+    inference(demodulation, [...], [c431338, c7, c62])).
+```
+
+The conclusion is the superposition plus two rewrites by *uncited premises*,
+both in the expanding direction:
+
+| clause | axiom | contracting | expanding (the direction used) |
+|---|---|---|---|
+| `c7` | `ifeq_axiom_002` | `iteq(X1,X1,X0,X2) ↦ X0` | `X0 ↦ iteq(X1,X1,X0,X2)` |
+| `c62` | `multiplicative_right_identity` | `X*one ↦ X` | `X ↦ X*one` |
+
+`c7` is the axiom verbatim. `c62` is `ac_normalization` of `c11`
+(`multiplication(X0,one) = X0`) with the sides swapped, so the contracting
+orientation exists in the same problem and the expander chose the other one.
+The next node demodulates both straight back off using those same two clauses.
+
+Dumping the replay's own candidate shows the difference is **not** AC
+permutation — the goal has `multiplication` where the candidate has `addition`.
+(Candidate obtained by instrumenting `ac_superposition_replay` locally; the
+archived proof alone does not contain it.)
+
+**casc-j13 `LAT044-1`, node `c659171`** (archived campaign run):
+
+```
+cnf(c659171, plain,
+  meet(goal_d4, complement(join(X7, goal_d5))) =
+  meet(goal_d4, complement(join(X7, meet(goal_d4, meet(complement(X7), n1))))),
+  inference(ac_superposition, [status(thm)], [c197935, c24789, c8, c9, c11, c14])).
+
+cnf(c673128, plain, meet(goal_d4, complement(join(X7, goal_d5))) = n0,
+    inference(demodulation, [...], [c659171, c1542, c21269, c2095])).
+```
+
+No `ifeq`, no expanding problem axiom; the extra parents are four AC axioms. The
+conclusion merely duplicates a `meet` subtree the parents do not contain.
+
+### A retracted theory, kept because it is instructive
+
+The first theory was that the forward demodulator takes the *expanding*
+orientation of a rule whose contracting orientation also exists, and that the
+fix is to stop it doing so at `crates/mrs-calculus/src/demodulation.rs:615`.
+
+**`LAT044-1` disproves it.** That node has no `iteq` and no expanding problem
+axiom, so an orientation change would not have fixed it. The theory also failed
+to explain why the `demodulation` node appears *immediately downstream in both
+cases*, and — in `LAT044-1` — why a `demodulation` node is one of the
+*parents*. That thread is the one worth pulling.
+
+### Ruled out by reading and by instrumentation
+
+| Candidate | Why not it |
+|---|---|
+| `mrs-calculus/src/superposition.rs` | no demodulation, simplification or folding anywhere in it — **but the unification it calls was binding the target's variables, which was the cause; see above** |
+| forward demodulation (`given_clause.rs:2874`, `:1796`) | `demodulate_id_until` already returns a correctly attributed `demodulation` node (`demodulation.rs:452-466`), and uses one-way `match_term_id`, which cannot bind the subject's variables |
+| `state.rs:616` `ac_normalize_for_search` | `ac_normalize_clause` preserves `clause.id` and `clause.source` |
+| `term_bank.rs:467` `ac_normalize` | pure flatten/sort/rebuild; cannot introduce `multiplication` or an `iteq` shell |
+| condensation / DER / forward SR | each sets its own rule name when it fires |
+| `restrict_to_maximal_id` | returns literal indices only |
+
+### Leading suspicion: ruled out
+
+Superposition takes its partners from `LiteralIndex` (`given_clause.rs:1903`),
+which returns **clones held in the index** (`literal_index.rs:224`), while
+`given` comes from `clause_store` (`given_clause.rs:1581`). Two independent
+copies of the same clause id. Meanwhile `SearchState::store_clause`
+(`state.rs:333`) writes `clause_store` with an **unconditional** `insert` —
+last write wins — while `register_clause` (`state.rs:541`) uses
+`or_insert_with` and is first-write-wins, and `push_unprocessed`
+(`state.rs:371`) routes through `store_clause`. A partner whose index copy and
+store copy disagree would produce exactly this shape.
+
+**Ruled out.** Replaying the two *stored* parent clauses of each failing node
+through `superpose_selected_id_until` reproduces the archived conclusion exactly,
+so no second, divergent copy of either parent is involved: the store copies are
+the ones the prover used. The structural possibility remains (the two copies are
+independent and written by different code), and the debug assertion below is
+kept as a guard against it, but it is not what produced these nodes.
+
+### Reproduction and regression
+
+The defect does not need the search to be reproduced. `mrs-calculus`'s
+superposition on the archived parent pair reproduces the archived conclusion,
+so it is pinned directly:
+
+`crates/mrs-calculus/tests/superposition_target_rigidity.rs`
+
+- `archived_ac_superposition_conclusions_are_not_derived_anymore` — replays all
+  three archived nodes (casc-30 `KLE145-10` `c431338`, casc-j13 `LAT044-1`
+  `c659171`, casc-j13 `LAT241-10` `c53874`) and fails if any archived conclusion
+  is derivable again. Verified to fail on the pre-fix rule and pass after.
+- `valid_ac_superposition_still_goes_through` — a genuine AC superposition that
+  binds only the equation's variables still goes through, so the guard is a side
+  condition and not a blanket refusal.
+- `rigid_unifier_refuses_target_bindings` — the unifier accepts the offending
+  match without the rigid set and rejects it with it, so the test is measuring
+  the guard and not a change in the pair.
+
+Re-measuring coverage needs a fresh campaign, not a local run: all three problems
+time out on a 2-worker box inside 60 s (`LAT044-1` at 20 s / 2 workers:
+`result=Timeout processed=2274 generated=28075`, 1357 MB peak), so a local
+before/after A/B on them cannot separate anything from noise.
+
+```bash
+# Coverage re-measurement (8-core campaign host, not local work).
+MRS_WORKERS=8 crates/mrs-bench/certification_campaign.sh \
+    --edition casc-30 --systems mrs --divisions ueq --casc-times --jobs 2 \
+    --output crates/mrs-bench/results/cert-c30-ueq-$(date +%Y%m%d)
+```
+
+The archived proofs cannot show the fix: they are artifacts of the old binary and
+the kernel reads their text as written. `crates/mrs-bench/results/campaign-casc30-ueq-W8C8J1-20261007`
+still reports `Unknown` for `KLE145-10` at HEAD, and it will keep doing so.
+
+### The debug invariant, kept
+
+The search has a debug-only invariant assertion on both indexed-partner
+superposition paths (`given_clause.rs`, the given-as-equation-source and
+given-as-target-source loops). Bounded local attempts on this 2-core dev box
+used `--workers 2`; KLE145-10 timed out after 60.1 s and LAT044-1 after 45.1 s,
+both at 1.36 GB peak RSS, without reaching a mismatching partner. Those runs were
+inconclusive — and, as established above, they were never going to fire.
+
+> For every clause emitted with rule `superposition`/`ac_superposition`, the
+> literals used were identical in `clause_store` and in `LiteralIndex` at the
+> moment of inference.
+
+It fires only on divergence and prints the clause id and both sources. A unit
+test inserts a deliberately stale processed-index copy and confirms the
+assertion detects it.
+
+```bash
+nix develop -c cargo test -p mrs-search superposition_partner_consistency
+```
+
+### Two traps that cost real time here
+
+- **`/tmp` is tmpfs.** An unfiltered trace is a RAM-availability problem, not a
+  disk one. One unconditional `store_clause` probe emitted 668 293 lines /
+  271 MB and had to be killed mid-run.
+- **`IdAtom`'s `Debug` prints `SymbolId(n)`, not the function name.** Three
+  grep-based probes silently matched *nothing* and their nulls were briefly read
+  as findings. Any name-based probe must resolve through
+  `SymbolTable::iter_names()` *before* matching.
+
+**The archived proofs of all three problems certify `VerifiedGood` today.** The
+`Unknown` nodes this entry is built around (`c431338`, `c659171`, `c53874`) are
+not in the copies that survive on disk: all 18 archived `KLE145-10` / `LAT044-1`
+/ `LAT241-10` proofs under `~/crates/mrs-bench/results/*/certification/proofs/mrs/ueq/`
+audit `VerifiedGood` at HEAD, in under 0.1 s each, and they do contain
+`ac_superposition` nodes (19 to 88 per proof) — just not the offending ones.
+That is consistent with the node ids not being stable across runs, and it is the
+concrete form of "the archived proofs cannot show the fix". Auditing them needs
+`TPTP=crates/mrs-bench/problems/casc-30` for the `%include` resolution.
+
+---
+
+## UI-2 — Problems that hang before emitting any SZS status (12 FEQ remaining)
+
+| | |
+|---|---|
+| Status | **UEQ fixed** (`a67e523`), **FEQ fixed** (UI-10); re-confirmed on 96 GB campaign hosts |
+| Severity | was 15 of 300 casc-30 UEQ (5%) and 12 of 400 casc-30 FEQ (3%) |
+| Soundness | Not a false-positive issue. The timeouts may still cost coverage. |
+
+### Original observation (UEQ, now fixed)
+
+Fifteen casc-30 UEQ problems hit the harness's outer SIGTERM with **empty
+stdout and no `% SZS detail`**, recorded as bare `Timeout`:
+
+`GRP024-5`, `GRP508-1`, `GRP654-10`, `GRP654-12`, `GRP655-13`, `GRP655-14`,
+`GRP662-1`, `GRP667-10`, `GRP670-1`, `GRP681-1`, `GRP691-1`, `GRP695-1`,
+`KLE110-10`, `LAT138-1`, `LAT168-1`.
+
+All report `wall_time_s=240.000` exactly, which is the signature of
+`casc.sh:690-692` capping the recorded time after `timeout 250` fired
+(exit 124). The other 152 timeouts self-report at ~238.3 s, i.e. mrs's own
+238 s deadline (`invoke.sh:49`, `SOFT_TIME`) fired and it printed a status line.
+
+So on these 15 the prover overran its own deadline by more than 12 s inside a
+non-preemptible section. `invoke.sh:45-48` documents this exact failure mode as
+the thing the 2 s soft margin exists to avoid.
+
+### Resolved for UEQ: exponential `lpo_gt_id`
+
+Fixed in `a67e523`. All 15 UEQ problems now self-terminate with a `Timeout`
+status under `--strategy 8`, where previously the process was killed with no
+output; under `--workers 8`, `GRP655-13` and `LAT168-1` now report
+`Unsatisfiable`.
+
+`lpo_gt`/`lpo_gt_id` in `crates/mrs-calculus/src/ordering.rs` had no
+memoization. Case 2a re-descends the arguments of `s` while Case 2b re-compares
+the whole of `s` against each argument of `t`, which revisits the same `(s, t)`
+pairs exponentially often in the term depth. A per-top-level-call memo keyed on
+`(s, t)` bounds the recursion by distinct pairs instead of paths through them.
+
+The evidence that located it, in order:
+
+1. **Strategy isolation.** `--workers 2` already hangs, so the trigger is the
+   second slot, `CASC_UEQ_ORDER[1] == 8`, not portfolio width. `--workers 1
+   --strategy 8` reproduces alone; s4, s7, s9, s14 all terminate.
+2. **Not the deadline.** `--time 10` returns `rc=0` where `--time 238` hangs
+   past 600 s, so the search is not broken at startup — it degenerates after
+   growing.
+3. **Not concurrency or resources.** Two threads on an idle 8-core host, 6 input
+   clauses. Memory is 2048 MB/worker × 8 ≈ 16 GB against ~90 GB available.
+4. **`TRACE_PROGRESS`.** `iter` advances to 630 at t=230 s at 0.24 s/iteration,
+   then iteration 631 never prints. One iteration does not return — which is
+   why no deadline check fires, since all 17 `search_deadline` sites sit at the
+   top of an iteration.
+5. **Symbolized backtrace.** `mrs-worker-0` alternating `ordering.rs:555` ⇄
+   `:562` — Case 2a against Case 2b — with `#0` in `occurs_in_id`.
+
+**Why it looked input-general but was not.** LPO looked exonerated, because
+s7/s9 also use it and terminate. They simply never select a term pair large
+enough to matter; s14 is clean because it is **KBO**. The blowup needs `s` wide
+and `t` narrow with disjoint symbol sets, so `si == t` cannot short-circuit
+Case 2a. Measured `lpo_gt` calls at depth 4/8/12/16/20: 280 / 7 668 / 172 016 /
+3 538 924 / 69 205 992 with the memo, against 4 174 / 12 606 720 at depth 4/8
+without it, and unmemoized depth 12 does not finish in 60 s.
+
+**Two earlier hypotheses were wrong and are recorded so they are not retried.**
+A 12-second margin story (`GRP690-1` finished at 245 850 ms, 4.15 s of slack) fit
+the *survivors* but not the failures, which had no bound at all. And a coarse
+100-iteration deadline check cannot be the explanation, for the reason in (4).
+
+### FEQ: diagnosed separately — see UI-10
+
+The 12 casc-30 FEQ cases with the same CSV signature are a **different defect**,
+in a different phase, and `a67e523` does not fix them:
+
+`ALG215+2`, `BIO005+1`, `BIO006+1`, `CSR037+5`, `CSR047+5`, `CSR052+4`,
+`HWV090+1`, `HWV128+1`, `ITP015+4`, `NUM925+3`, `NUM925+7`, `SWX070+1`.
+
+They hung in `sos_blocks_every_input_inference` (`given_clause.rs`), a
+set-of-support pre-flight that enumerated **every ordered pair** of
+post-clausification clauses. It runs only under strategy 10, the only casc-30
+FEQ portfolio strategy that sets `sos_depth`, and it has no deadline check.
+Now fixed by indexing complementary selected predicate literals before testing
+candidate inference pairs;
+tracked as **UI-10**, with measurements in
+`docs/reports/benchmarks/feq-silent-kills-investigation.md`.
+
+The stage question that used to sit here is settled, and the `0 cnf clauses`
+reading that motivated it was wrong. That count is
+`lowered.cnf_clauses.len()` — clauses supplied **in the input** as CNF — and
+excludes everything clausification generates from FOF, so it says nothing about
+which phase was running. `HWV128+1` reaches `passive=580061` on a small host
+before hitting its memory ceiling, so for it clausification demonstrably
+completes. Both divisions hang in search setup, for different reasons.
+
+`clausify_with_provenance` currently exposes no deadline/cancellation argument.
+The final `None` at `main.rs:705` and `:737` is `leaf_id_override`, not a
+deadline. Long clausification work therefore cannot be cooperatively cancelled
+through this API, but the campaign rows do not prove these 12 are stuck in that
+function. Stage telemetry or a targeted instrumented run is needed before
+assigning a root cause.
+
+This matters beyond these rows: the harness does not record per-stage progress,
+so an outer timeout cannot currently distinguish a slow preprocessing stage
+from a long search.
+
+### Secondary defect, independent of the above
+
+The CSV cannot distinguish "searched hard and timed out" from "stopped in a
+long non-search phase and was killed". Both are recorded as `Timeout` with no
+marker. A harness change should preserve the exit code and whether an SZS status
+was emitted, so these cases can be separated in the results.
+
+### Also affects the memory column
+
+For those 15 rows `peak_memory_mb` comes from GNU `time` Max RSS
+(`casc.sh:750-757`); the other 285 are mrs's self-reported VmPeak. The column
+is **not homogeneous** and must not be charted as one series.
+
+---
+
+## UI-3 — `lrs_discarded` can exceed `generated`
+
+| | |
+|---|---|
+| Status | Benign, documented, no fix planned |
+| Severity | Diagnostic only |
+
+Input clauses enter the passive queue without incrementing `generated`; only
+derived clauses do (`given_clause.rs:3191`). On input-heavy problems
+`lrs_discarded` therefore legitimately exceeds `generated`: `CSR065-10` reports
+80177 against 50432, `CSR073-10` 71668 against 25390, and both have 44220 input
+clauses.
+
+Not a soundness or accounting bug. But it makes a `discarded/generated` ratio
+meaningless on input-heavy problems, and `perf_probe` and
+`dual_run_sanity_check` build thresholds from exactly that ratio. Anyone reading
+those thresholds should exclude problems whose input clause count approaches
+their generated count.
+
+---
+
+## UI-4 — Structural leaf matching rejects some reformulated included axioms
+
+| | |
+|---|---|
+| Status | **Fixed** on `cert/feq-kernel-limits` (`2ffedfe`). Kept here for the record. |
+| Severity | Was 16 rows of `campaign-cascj13-feq-W8C8J1-20261002`; measured and reproduced, now 0 |
+| Soundness | No false-accept path was found. The widening is the AC laws of `&`/`\|`, which hold in every model. All 16 leaves were checked against their cited axioms by an independent canonicaliser before the comparison changed. |
+| Blocks | Nothing. The archived audit needs re-running; the counts below are from that re-run. |
+
+### Observation
+
+The archived `campaign-cascj13-feq-W8C8J1-20261002` report records
+`VerifiedBad` on **16 rows**, every one of the form
+
+```
+leaf `c237` does not match problem formula `axiom_53`
+```
+
+According to the archived investigation, all 16 problems use `%include`, and
+the cited axiom is not in the top-level `.p` file. The mismatch reportedly
+reproduces against either edition's axiom files, suggesting it is distinct from
+the corpus-mismatch issue in the remote-only guide. Original run artifacts are
+not committed, so re-audit the run before relying on these campaign counts.
+
+The cited proof leaf and the source axiom appear to be logically equivalent,
+with reordering/reassociation of conjunctions and a mirrored biconditional.
+This is not alpha-equivalence in the formal sense (bound-variable renaming),
+and must not be labelled as such. Proof leaf `c237` of `SWV453+1`:
+
+```
+![X0]: ![X1]: ( ordered(cons(X0,X1)) <=>
+  ( ordered(X1) & ![X2]: ( ... => leq(pidMsg(X0), pidMsg(X2)) ) ) )
+```
+
+`axiom_53` of casc-j13 `Axioms/SWV011+0.ax`:
+
+```
+![X,Q]: ( ( ordered(Q) & ![Y]: ( ... <= ... ) ) <=> ordered(cons(X,Q)) )
+```
+
+Same apparent conjuncts, mirrored biconditional, different binary grouping of
+`&`. The excerpts abbreviate subformulas; do not treat them alone as a complete
+semantic proof of equivalence.
+
+### Structural mismatch in the leaf checker
+
+`mrs_core::alpha::alpha_equiv` is explicitly an alpha-equivalence checker:
+variables bound under quantifiers may be renamed, while free variables must
+retain their identifiers (`crates/mrs-core/src/alpha.rs:1-4`). Its `And`/`Or`
+case also accepts permutations of the immediate children, but recursively
+compares those children without flattening the connective
+(`crates/mrs-core/src/alpha.rs:37-55`). Since the FOF parser builds conjunctions
+left-associatively (`crates/mrs-tptp/src/parser/fof.rs:101-120`), differently
+grouped/reordered three-or-more operand forms can fail this structural check.
+This is a **structural leaf-matching limitation**, not evidence that
+alpha-equivalence is defined incorrectly.
+
+Characterized with tests in `crates/mrs-proof-kernel/src/lib.rs`
+(`alpha_equiv_shape_tests`):
+
+| case | `alpha_equiv` |
+|---|---|
+| `p & q` vs `q & p` (2 atoms) | `true` |
+| `p & q & r` vs `r & q & p` (3 atoms, reordered) | **`false`** |
+| `(p & q) & r` vs `p & (q & r)` (re-associated) | **`false`** |
+| `(p & q) & r` vs `(p & q) & r` (identical grouping) | `true` |
+| `<=>` mirrored, atomic operands | `true` |
+| `![X,Y]: F` vs `![X]: ![Y]: F` | `true` |
+| `<=` vs `=>` | `true` |
+| corresponding three-operand `|` cases | reordering and reassociation are **`false`** |
+
+The structural limitation is specifically conjunction/disjunction reordering
+or reassociation of three or more operands when the binary trees do not align.
+In the tested shapes, biconditional mirroring, quantifier splitting, and reverse
+implication are handled by `alpha_equiv`. This test matrix characterizes the
+comparator; it is not a mathematical proof that the archived leaf is entailed by
+its cited axiom.
+
+Note the module contract is *not* being violated on free variables:
+`crates/mrs-core/src/alpha.rs:3-4` states "Free variables must have the same
+identifiers", and `term_eq` implements exactly that.
+
+### Blast radius
+
+`alpha_equiv` is a structural comparison used at several verification sites:
+
+- `crates/mrs-proof-kernel/src/lib.rs:2610`, `:2627` — input-leaf checking
+- `crates/mrs-proover/src/checks/axiom_leaf.rs:85`, `:171`, `:201`
+- `crates/mrs-proover/src/checks/definition_folding.rs:84`, `:231`
+- `crates/mrs-proover/src/checks/trivial.rs`, `crates/mrs-proover/src/verify.rs`
+
+These call sites share the same structural limitation. The 16 rows are findings
+reported from one archived campaign, not a re-audited current rate. The cited
+comparison set and exact `VerifiedBad` denominator should be checked against
+that run's saved proof/audit artifacts before using the counts as a baseline.
+
+### Resolution
+
+Reproduced first: `mrs-proover --strict` over the campaign's retained proofs
+gives exactly the archived row for row -- 47 `VerifiedGood`, 16 `VerifiedBad`,
+3 `Unknown` -- so the archived numbers were not stale.
+
+The 16 leaves were then checked against their cited axioms by a canonicaliser
+written from the TPTP grammar rather than from the Rust implementation
+(methodology.md 1.4): bound variables as de Bruijn indices, `&`/`|` flattened
+and sorted, `<=>` and `=` as unordered pairs, `<=` rewritten to `=>` with
+swapped operands, free variables keeping their names. All 16 are
+AC-permutations of their cited axiom. The excerpts in the Observation section
+above abbreviate subformulas and are not themselves a semantic certificate;
+this is.
+
+Fixed by a new bounded comparison used **only** at named-leaf matching.
+`mrs_core::alpha::alpha_equiv` is unchanged and a test pins that it still
+refuses the archived pair, so the global alpha-equivalence contract did not
+move. Widening acceptance is justified only because the extra equivalences are
+the associative and commutative laws of `&`/`|`, which hold in every model of
+classical logic: a leaf the comparison accepts is an instance of its cited axiom
+by those laws alone. It is not general logical equivalence, `And` against `Or`
+is decided a difference, and nine negative cases pin that.
+
+Two further changes in the same comparison, both only ever accepting more:
+same-connective operands are flattened before matching, and operand lists are
+matched by complete backtracking search rather than greedy first-fit -- greedy
+pairing misses permutations that exist, which is a false negative.
+
+The comparison is bounded by `max_comparison_steps`, and exhausting it yields
+`Undecided`, reported `Inconclusive`. That distinction is the point: the 16 rows
+read as `VerifiedBad`, which says "this proof is wrong", because a comparison
+that ran out of room was reported as a difference.
+
+### Measured
+
+Replaying the archived proofs through `mrs-proover --strict`:
+
+| campaign | before | after |
+|---|---|---|
+| `campaign-cascj13-feq-W8C8J1-20261002` | 47 `VerifiedGood`, 16 `VerifiedBad`, 3 `Unknown` | **64 `VerifiedGood`, 0 `VerifiedBad`**, 2 `Unknown` |
+| `campaign-casc30-feq-W8C8J1-20261002` | 90 `VerifiedGood`, 8 `Unknown`, 1 `Timeout` | **92 `VerifiedGood`**, 6 `Unknown`, 1 `Timeout` |
+
+Both columns are `audit_casc_proofs --checks strict --strict-time 120` over the
+campaigns' own retained proofs, so they are like for like.
+
+No `VerifiedGood` was lost in either campaign. The residual rows are **not** UI-4
+and are recorded as UI-7.
+
+`ALG049+1` (casc-30) needs a separate note: it was the campaign's single
+`Timeout`, and it now certifies, but it takes **396 s** and 777 MB, so under the
+campaign's 120 s per-proof kernel budget the audit will still record it as
+`Timeout`. It was over 900 s before this work. Verifying it is not the same as
+verifying it inside the budget.
+
+### Reproduce
+
+```bash
+# The residue check: positive shapes, the three negative shapes, and the
+# budget case.
+nix develop -c cargo test -p mrs-proof-kernel residue
+nix develop -c cargo test -p mrs-proof-kernel -- identical unmatched bound_variable
+
+# The leaf-matching and alpha-equivalence contracts this work must not move.
+nix develop -c cargo test -p mrs-proof-kernel leaf_matching -- --nocapture
+nix develop -c cargo test -p mrs-proof-kernel alpha_equiv_shape_characterization
+
+# One archived proof, end to end.
+TPTP=crates/mrs-bench/problems/casc-30 target/release/mrs-proover \
+  --strict --no-atp --workers 1 --time 240 \
+  /home/hack/crates/mrs-bench/results/campaign-casc30-feq-W8C8J1-20261002/certification/proofs/mrs/feq/ALG127+1.s
+
+# Whole-campaign re-audit, like for like with the numbers above.
+target/release/audit_casc_proofs \
+  --run /home/hack/crates/mrs-bench/results/campaign-casc30-feq-W8C8J1-20261002/run.csv \
+  --problems-dir crates/mrs-bench/problems/casc-30 \
+  --checks strict --strict-time 120 --jobs 1 --output /tmp/audit-feq30
+```
+
+## UI-5 — EPU: equality InstGen is unsupported on many inputs; its contribution needs measurement
+
+| | |
+|---|---|
+| Status | EPR grounding enabled by default on 2026-10-12 after a matched full-division EPU A/B; one additional strict-certified solve on the measured run. Replicated coverage/variance evidence remains open. |
+| Severity | The archived campaign records 9/100 `verdict=ok`; this is a low result |
+| Soundness | No soundness finding is made here. The LRS fix removes a premature `GaveUp`; the extraction changes fail closed on unsupported/oversized traces and only emit binary resolution steps recomputed from their cited ground parents. |
+
+### Observation
+
+The archived report for `campaign-casc30-epu-W8C8J1-20261002` records one
+`Total jobs:`, 100/100 completed, expected statuses on all 100 rows, and **9 `Unsatisfiable`,
+all 9 audited `VerifiedGood`, 0 `VerifiedBad`**. A second archived run,
+`campaign-casc30-epu-W8C8J1-20260930` ran a different binary
+(`08fa4f1ffdf5` vs `fa52c23d73b3`) from a different commit (`c07cac9d` vs
+`fb55719c`) on a different host, and solved **exactly the same 9 problems**.
+Only five statuses differ, all Timeout↔GaveUp. This supports repeatability of
+these observed solves across those runs, but is not a controlled measurement of
+the division ceiling.
+
+The input set includes very large problems: `HWV092-1` has a reported 696 691
+clauses, and the division totals 2 847 336 clauses. None use `%include`.
+
+### InstGen telemetry and the 43 unsupported-profile cases
+
+From the `% SZS detail` telemetry:
+
+| `instgen_fallback` | rows |
+|---|---:|
+| `unsupported_epr_profile` | 43 |
+| `timeout` | 33 |
+| `max_instances_exceeded` | 15 |
+| `max_rounds_reached` | 3 |
+| Other/no listed reason | 6 |
+
+These reason counts sum to 100. Separately, `instgen_result` is `fallback` on 51
+rows and `none` on 43, with no `refutation` value recorded. The fields have
+different coverage/semantics, so do not treat the reason buckets as a
+one-to-one tally of attempted/returned InstGen outcomes. These counts describe
+this run only; they do not prove that InstGen is generally incapable of
+contributing. The reported detail for the nine solved rows is:
+
+| solve | InstGen profile / telemetry | `instgen_result` |
+|---|---|---|
+| `LAT260-2`, `LAT261-2`, `LAT264-2`, `LAT265-2`, `SET856-2`, `PUZ008-2` | no InstGen telemetry | — |
+| `PUZ036-1.005`, `SYN837-1` | `pure_relational_epr` | `fallback` |
+| `HWV107-1` | `epr_equality` | `none` |
+
+The `instgen_ms` aggregate is the sum of reported telemetry for rows that
+attempted the pre-pass. The archived summary reports 32.6 s total (mean 346 ms,
+selected per-problem budget 750 ms). This is elapsed duration summed across
+rows, not CPU time or full-division wall time, and should not be expressed as a
+share of the 100 × 120 s sum of per-problem limits. It does not establish total
+resource cost or potential benefit with another profile/budget.
+
+`crates/mrs-search/src/instgen.rs:713-716` confirms that non-pure-relational
+profiles return before InstGen starts. The specific 43-row count is from this
+archived run's telemetry.
+
+### Four GaveUp rows have worker telemetry short of their wall limit
+
+The four reported rows have aggregate `elapsed_ms` below the wall time:
+
+| problem | `elapsed_ms` | wall | gap |
+|---|---|---|---|
+| `HWV092-1` | 10 817 | 19.6 s | **8.8 s** |
+| `HWV094-1` | 16 982 | 21.4 s | 4.4 s |
+| `HWV126-1` | 116 643 | 125.1 s | 8.4 s |
+| `HWV127-1` | 116 711 | 124.8 s | 8.0 s |
+
+They report `timeout=0` and `passive=0`. These are aggregate fields: portfolio
+workers have separate time slices, and pre-pass time and worker time are not
+identical measures. The values do not prove no worker used its slice, nor do
+they identify which component returned `GaveUp`. EPU's InstGen pre-pass is
+unsupported on equality-bearing profiles (`instgen_result=none` for HWV092-1;
+absent telemetry on the other three), after which the given-clause fallback
+runs. The precise `GaveUp` source remains unestablished; inspect per-strategy
+reports and termination telemetry before attributing it to the LRS guard.
+
+### Where further profiling may be useful
+
+The 61 timeouts and 30 `GaveUp` rows are not evenly distributed. The large-input
+tail (`HWV*` at 155 k–697 k clauses) is a candidate for profiling. `HWV092-1`
+reports 63 662 processed clauses at 10.8 s and a final `GaveUp`; aggregate
+detail does not establish that loading dominates or which worker/result caused
+the final status. Use stage and per-strategy timing before selecting a fix.
+
+### 2026-10-09 local subset measurement: one boundedness defect found and fixed
+
+The 43 `unsupported_epr_profile` rows above are **InstGen** telemetry, and the
+question this section asks is about a different route. Two things had to be kept
+apart, and the archived A/B could not: `epu-sweep-epu-A-baseline` and
+`epu-sweep-epu-B-prepass` were run at the same commit `cb03c254` but with
+**different binaries** (`bdff9958` vs `1cc1492e`, both `git_dirty=true`) on
+**different hosts** (`teenf9901`, 128 GB / `tlpnf9701`, 64 GB), at
+`EPU_JOBS=4` on a 32-core box. Neither `conditions.txt` records
+`binary_sha256`, so the arms cannot be shown to be the same instrument. They
+also predate `f73d427` (Herbrand universe) and `e79b562` (ladder enumeration),
+so their silence is not evidence about the current instrument.
+
+#### Method
+
+Local, bounded, paired, sequential. Revision `176a9f9`, `rustc 1.99.0
+(b940084d7 2026-09-28)`, Intel i3-5010U, **2 physical cores / 4 logical**, 15 GB
+RAM, TPTP root `crates/mrs-bench/problems/casc-30` (100 EPU problems, 352 MB)
+plus `~/TPTP-v9.3.0`. `--schedule casc_epu`, `--workers 1` for the paired sweep
+and `--workers 2` for the two decisive runs, `--time 40`, one problem at a time,
+no concurrent pairs. Local runs are **relative**, not CASC numbers.
+
+Subset: the 10 equality-bearing (`epr_route=epr_equality`) CASC-30 EPU problems
+that exercise every fallback bucket the archived telemetry names —
+`proof_extraction_failed` (`HWV078-1`, `MSC024-1`), `grounding_exhausted`
+(`HWV065-1`, `SYN914-1`, `HWV051-1`, `HWV039-1`), `sat_solver_unknown`
+(`PLA037-1`), `grounding_timeout` (`SYO591-1`, `HWV057-1`, `HWV103-1`) — plus
+and not including `HWV107-1`; the table below records the ten paired cases.
+`HWV107-1`, the one `epr_equality` problem the archived run refuted and
+certified, was considered as a control in separate local runs, but those runs
+used different worker counts/budgets and are not part of this paired table. This
+is not an easy-wins subset: 9 of the 10 paired cases are `Timeout`/`GaveUp` in
+**both** arms.
+
+#### The defect
+
+`proof_extraction_failed` was never a search-power result. That bucket is reached
+only after CaDiCaL has returned `Unsat` on the instance set, so unsatisfiability
+is already settled and the remaining task is turning it into a derivation. The
+loop doing that ran with `lrs_policy` at its `WallClock` default, and LRS
+discarded **184 808 clauses** from `HWV078-1`, drained the queue, and returned
+`GaveUp` after **1.1 s of an 18 s budget** (`TRACE_LRS=1 TRACE_EPR=1`). The
+pre-pass was reporting failure to certify a refutation it had already proved
+existed. Fixed in `crates/mrs-search/src/epr_ground.rs`:
+`epr_fallback_lrs_policy()` returns `LrsPolicy::Disabled`, with `MRS_EPR_LRS=1`
+restoring pruning so the fix stays falsifiable.
+
+#### Results (paired, same host, same subset)
+
+| problem | arm | SZS | wall | peak RSS | EPR telemetry | strict kernel |
+|---|---|---|---|---|---|---|
+| **`HWV078-1`** | off | `Timeout` | 40.2 s | 1348 MB | — | n/a |
+| **`HWV078-1`** | **on** | **`Unsatisfiable`** | **32.5 s** | **1097 MB** | `refutation`, 52 857 nodes, `epr_ms=1113` | **`VerifiedGood`** |
+| `MSC024-1` | off / on | `Timeout` / `Timeout` | 40.2 / 40.1 s | 1237 / 3475 MB | `proof_extraction_failed` | n/a |
+| `HWV065-1` | off / on | `Timeout` / `Timeout` | 40.4 / 40.5 s | 1509 / 1584 MB | `grounding_exhausted` | n/a |
+| `SYN914-1` | off / on | `Timeout` / `Timeout` | 40.0 / 40.0 s | 236 / 234 MB | `grounding_exhausted` | n/a |
+| `HWV051-1` | off / on | `GaveUp` / `GaveUp` | 40.1 / 40.1 s | 570 / 590 MB | `grounding_exhausted` | n/a |
+| `HWV039-1` | off / on | `GaveUp` / `GaveUp` | 40.1 / 40.1 s | 577 / 591 MB | `grounding_exhausted` | n/a |
+| `PLA037-1` | off / on | `Timeout` / `Timeout` | 40.1 / 40.1 s | 126 / 417 MB | `grounding_timeout` | n/a |
+| `SYO591-1` | off / on | `Timeout` / `Timeout` | 40.2 / 40.2 s | 846 / 1277 MB | `grounding_timeout` | n/a |
+| `HWV057-1` | off / on | `Timeout` / `Timeout` | 40.4 / 40.3 s | 1200 / 2849 MB | `grounding_timeout` | n/a |
+| `HWV103-1` | off / on | `Timeout` / `Timeout` | 40.3 / 40.3 s | 867 / 868 MB | `grounding_timeout` | n/a |
+
+**One status change in 10 problems, and it is a certified gain: +1
+`VerifiedGood`, no regression, no `ko`, no timeout→solve inversion.** The gain
+is strictly larger than it looks, because the baseline cannot reach the problem
+at all: `HWV078-1` is `Timeout` with the pre-pass off at **40 s, 120 s and
+240 s** on this host, and `Timeout` in the archived 120 s / 8-worker campaign.
+The proof is 52 857 nodes / 13.4 MB, so it needs
+`--proof-bytes-limit 268435456` under the then-current default; the kernel
+certifies it under `--strict --no-atp`.
+
+At the time of this local subset measurement the pre-pass remained opt-in. One
+certified solve in ten at 40 s on 2 cores was not division-level evidence, and
+the cost was real: the arm's peak RSS was up to
+2.4x the baseline's on the `grounding_timeout` rows (`HWV057-1` 1200 → 2849 MB),
+and on `PUZ036-1.005` (archived `VerifiedGood` via the portfolio) the pre-pass
+turns a 5.0 s solve into 23.0 s for no coverage change. This is a local subset
+measurement, not the later full-division result below.
+
+#### Limitations
+
+- **Diagnostic, not conclusive.** 2 physical cores and `--workers 1` cannot
+  represent an 8-worker CASC entry, and 10 of 100 problems is not the division.
+  `HWV107-1` timed out in every local configuration (20 s/1 worker, 120 s/2, 150
+  s/4) though the archived run refuted it in 32.8 s, so the subset does not even
+  reproduce the archived baseline.
+- **Single replicate per cell.** AGENTS.md records ±1 per 25 for this repo; a
+  1-problem delta on a 10-problem subset is inside that band. The HWV078-1
+  result is nonetheless robust here because it is not a timing race: the
+  baseline is `Timeout` at every budget tried, and the win is a certified proof.
+- **The remaining `proof_extraction_failed` case is unexplained.**
+  `MSC024-1` still reports it with LRS off, so the bucket has at least one
+  further cause. Its 3.5 GB peak with the pre-pass on is the worst in the subset.
+  → **Diagnosed 2026-10-10; see the section below.** It is a
+  representation/budget limit, not the LRS defect `f59ca34` fixed, and it is why
+  the bucket had to be read as "at least one further cause" rather than one.
+- **The archived `sat_solver_unknown` cause remains unconfirmed.** The
+  entry-aware telemetry added below distinguishes future cases, but does not
+  retroactively establish which path those rows took.
+
+#### Follow-up after the local subset measurement
+
+The local subset was not used to change defaults. The following paired
+full-division measurement subsequently ran on the CASC host; see below. The
+remaining follow-up is replication and review of the resource/certification
+trade-offs, not treating a single A/B as a variance estimate.
+
+1. Re-run paired arms with replicates at the CASC shape and compare
+   `binary_sha256`, commit, host and toolchain for each arm.
+2. **Diagnose `MSC024-1`'s `proof_extraction_failed`** before any further
+   coverage claim. → **Done 2026-10-10; see below.**
+3. **Reproduce the archived `sat_solver_unknown` rows** (`PLA037-1`,
+   `HWV064-1`, `HWV090-1`, `HWV127-1`) with entry-aware solver telemetry before
+   attributing their cause.
+4. Review whether the pre-pass RSS cost on `grounding_timeout` rows needs a
+   per-instance ceiling before altering its budget policy.
+
+### 2026-10-12 matched full-division EPU measurement and default change
+
+The paired sweep directories are:
+
+- `epu-sweep-teenf9901-3e9c004-20261012-105351-baseline`
+- `epu-sweep-teenf9901-3e9c004-20261012-105351-grounding`
+
+Both ran the full 100-problem CASC-30 EPU division sequentially on host
+`teenf9901`, commit `3e9c004de2d3b3492499ce3f45b22131e0784a91`, Rust
+`1.99.0 (b940084d7 2026-09-28)`, identical prover SHA-256
+`f8825f9170e2b8de6c191d5a2b648a86beb7133f9642ef59739da1bd56703d80`,
+`--hardware casc`, one job, 8 workers, and the official 120 s limit. The
+checkout was dirty in both arms; the binary hashes nevertheless match. Host
+memory was 128019 MB, about 2% below the configured 131072 MB CASC allowance.
+
+| Measure | Grounding off | Grounding on |
+|---|---:|---:|
+| `Unsatisfiable` | 9/100 | 11/100 |
+| strict `VerifiedGood` | 9 | 10 |
+| strict proof omitted | 0 | 1 |
+| `GaveUp` | 29 | 26 |
+| `Timeout` | 62 | 63 |
+| sum of recorded per-problem wall | 10782.6 s | 10720.9 s |
+| maximum per-problem RSS | 38807 MB | 28864 MB |
+
+The two additional refutations are `HWV078-1` and `MSC024-1`. `MSC024-1` is
+`VerifiedGood`. `HWV078-1` emitted a refutation of 52,857 nodes / 13,382,374
+bytes, but was **omitted** by the 8 MiB proof cap in this run, so this matched
+audit adds one strict-certified solve, not two. A fresh bounded local run with
+the 32 MiB cap emitted the proof, and the strict kernel certified it; see below.
+This does not retroactively certify the archived run.
+
+The EPR pre-pass attempted all EPR-routed rows where eligible. Among telemetry
+with `epr_attempted=true`, outcomes included 51 `grounding_exhausted`, 33
+`grounding_timeout`, 5 `sat_solver_unknown`, 3 `model_fixpoint`, and 2
+`refutation`. The pre-pass changes status on five rows: `HWV078-1` and
+`MSC024-1` from Timeout to Unsatisfiable; `HWV083-1`, `PLA042-1`, and
+`SYO589-1` from GaveUp to Timeout. No `ko` or `VerifiedBad` occurred. Existing
+solves also slowed substantially: `PUZ036-1.005` 5.4 s to 40.9 s, `SYN837-1`
+39.5 s to 78.3 s, and `HWV107-1` 43.7 s to 80.9 s. Thus the measured
+full-division comparison shows +1 strict-certified solve with an explicit
+latency trade-off, but it is one replicate and does not estimate variance.
+
+**Decision:** EPR grounding is enabled by default on EPR problems. Set
+`MRS_EPR_GROUND=0` to opt out; `MRS_EPR_GROUND=1` remains an explicit enable
+spelling. The route remains bounded and falls through on exhaustion. This
+decision uses the matched full-division CASC-shaped measurement, not the earlier
+10-problem subset. It is one replicate; repeat the A/B before claiming a
+replicated coverage or competition-rate gain.
+
+### 2026-10-19 full-division CASC-mode EPU follow-up
+
+The independent full-division campaign
+`campaign-casc30-epu-W8CASCHJ1-02-20261019` returned 11 `Unsatisfiable`
+problems, all **strict `VerifiedGood`**, with zero `VerifiedBad`; its other
+results were 27 `GaveUp` and 62 `Timeout`. It reproduces the nine certified
+problems in both `cert-epu-20260926` and
+`campaign-casc30-epu-W8C8J1-20261002`, and adds `HWV078-1` and `MSC024-1`.
+Thus the observed strict solve set grows by two, with no losses.
+
+The two new proofs exercise separate extraction paths. `HWV078-1` is a
+52,857-node / 13,382,823-byte proof from `derivation_loop`, certified in this
+campaign with the 32 MiB proof cap. `MSC024-1` is a 26,189-node / 8,057,596
+byte proof from `lrat_lift`. The EPR telemetry reports `epr_route=epr_equality`
+for both. This confirms that both previously observed extraction cases can now
+produce checkable proofs at the full-division configuration.
+
+This is **one post-change campaign**, not the matched grounding-off/on A/B
+required to attribute the +2 to the EPR grounding change. The run used a
+different binary from the October 12 pair, so it also cannot replace that
+pair's causal comparison. Repeat the full-division paired arms at the same
+8-core `casc` shape before claiming a replicated rate improvement.
+
+The host had 95,979 MB RAM, below the nominal 128-GiB CASC allowance; the
+prover reported 81,582 MB effective memory. The highest observed per-problem
+peak was 25,692 MB (`HWV081-1`), and no result stopped at a memory or other
+resource limit. Provenance is recorded in the campaign's `run_meta.json`: dirty
+commit `40278337`, Rust 1.99.1, binary SHA-256
+`947aba9b604307f33e86d595b6112def78b42925f3a6ebeefac114aaf7cb9c96`.
+
+```bash
+# Reproduce the two paired arms with the full-division sweep wrapper.
+MRS_EPR_GROUND=0 MRS_HARDWARE=casc EPU_JOBS=1 \
+  crates/mrs-bench/epr_ab_sweep.sh teenf9901-3e9c004-20261012-105351-baseline
+MRS_EPR_GROUND=1 MRS_HARDWARE=casc EPU_JOBS=1 \
+  crates/mrs-bench/epr_ab_sweep.sh teenf9901-3e9c004-20261012-105351-grounding
+
+# HWV078-1, bounded local follow-up from the repository root.
+MRS_HARDWARE=casc MRS_EPR_GROUND=1 TPTP=/home/fr22192/pve/TPTP-v9.3.0 \
+  timeout 150 ./target/release/mrs --workers 1 --time 120 --schedule casc_epu \
+    --proof-bytes-limit 33554432 \
+    crates/mrs-bench/problems/casc-30/EPU/HWV078-1.p \
+    > /tmp/opencode/HWV078-1.s 2>/tmp/opencode/HWV078-1.stderr
+
+TPTP=/home/fr22192/pve/TPTP-v9.3.0 timeout 120 \
+  ./target/release/mrs-proover --strict --no-atp --workers 1 --time 120 \
+    --problems-dir crates/mrs-bench/problems/casc-30 /tmp/opencode/HWV078-1.s
+```
+
+Observed 2026-10-12 at revision `313b9237ceff11c5db6f5e4889ced685538ce02e`,
+Rust `1.99.0 (b940084d7 2026-09-28)`, on an i7-10610U WSL host (4 physical
+cores, about 4.1 GiB available RAM at run time). The command returned
+`Unsatisfiable`; MRS reports 47.161 s elapsed, 52,857 proof nodes,
+13,376,537 bytes, and 2,072 MB peak RSS. The emitted proof at
+`/tmp/opencode/HWV078-1.s` has SHA-256
+`eeb6dfe435d50d624f7d79e11e2bbf10c77d48dc5d0439c42c1585d637ebd9ae` and returned
+strict `VerifiedGood`. This is a single local verification, not a replacement
+for a replicated campaign-host audit.
+
+This post-A/B confirmation shows the former omitted proof is certifiable with
+the new output cap. Recomputed outcome including this confirmation: 11
+`Unsatisfiable`, 11 strict `VerifiedGood`, 0 `VerifiedBad`; no claims about
+replicated variance are made.
+
+### 2026-10-12 budget-flow audit
+
+At refreshed `main` revision `8b4d9fbf22759bc75ee8ec984285c4175835ee54`, the
+older statement above that EPR pre-pass time was added to a *full* portfolio
+budget did not describe every current route. `run_schedule` records
+`schedule_start` before EPR grounding, and each portfolio worker computes
+`total_budget - schedule_start.elapsed()` before launching work. Therefore an
+EPR refutation pass that falls back already consumes the portfolio's shared
+wall allowance in the refutation arm and in normal `casc`/`adaptive` modes.
+`casc-sim` intentionally uses its extended simulation allowance, so that is its
+deadline rather than the CASC reference limit.
+
+Two concrete accounting defects did remain. First, the default `casc` strategy
+weights added to 111%, so its `total_budget` (the sum of the strategy time
+limits) exceeded the caller's budget; unlike that schedule, the named division
+portfolios partition their input budget exactly. Second, EPR's local timeout
+was started inside the pre-pass after scheduler setup and had a 500 ms minimum,
+so on a nearly exhausted short run it could outlive the scheduler deadline
+before workers noticed the expired shared clock. Other sequential EPR-adjacent
+passes were also inspected: InstGen had its own independent shape budget, and
+componentwise search used a fixed per-branch budget whose sum could exceed the
+caller deadline. Both are now clamped to the same scheduler deadline.
+
+The default weights are now normalized to sum to the caller's budget. Both EPR
+arms retain their existing grounding/model caps but clamp the pass timeout to
+the remaining shared deadline; an already exhausted deadline skips another
+phase and returns `Timeout`. A verified finite model and an un-rejected
+refutation retain their early-return path; `Unknown`, `GaveUp`, timeout,
+resource exhaustion, and a model candidate without a model certificate remain
+inconclusive and fall through only while budget remains. Focused deterministic
+tests pin the remainder calculation, exhausted-phase gate, model/refutation
+caps, and fail-closed outcomes.
+
+`main` now re-scales the selected schedule to the actual time remaining after
+schedule construction and optional pre-phase routing, preventing those setup
+stages from leaving the search with a stale snapshot of the original budget.
+The InstGen and componentwise pre-passes also receive the same scheduler
+deadline, and workers re-check the deadline after SInE, premise filtering and
+state construction before beginning inference.
+
+Investigation environment: Rust `1.99.0 (b940084d7 2026-09-28)`, 2 physical
+cores / 4 logical CPUs, `MemTotal` 15.5 GiB and `MemAvailable` 14.3 GiB. No
+runtime reproduction or division campaign was run. The required Nix-wrapped
+checks could not run in that shell because `nix`/`direnv` were not installed;
+the implementation still needs the focused and workspace checks in the
+repository's Nix development environment. The 2026-10-12 EPU coverage decision
+and its one-replicate limitation are unchanged.
+
+### 2026-10-10 initial diagnosis: BFS and given-clause extraction exhausted their bounds
+
+This records the bounded failure of the original BFS and ground given-clause
+extractors. A later same-day update below adds a CaDiCaL LRAT reconstruction
+route that succeeds on `MSC024-1`. These historical runs predate the 2026-10-12
+default-on decision; the local results themselves are not division-level
+coverage evidence.
+
+| | |
+|---|---|
+| Revision | `f59ca34` (`fix(search): preserve EPR ground refutations from LRS`) |
+| Toolchain | `rustc 1.99.0 (b940084d7 2026-09-28)` |
+| Host | Intel i7-10610U, **4 physical / 8 logical**, 15.7 GB RAM (~9.2 GB available) |
+| Local editions | `crates/mrs-bench/problems/casc-30` (via a symlink to an out-of-tree corpus) and `/home/fr22192/pve/TPTP-v9.3.0` |
+| Shape | `--schedule casc_epu --workers 1 --time 120`, one problem at a time, `ulimit -v 9000000` |
+
+`MSC024-1` **reproduced** the archived outcome, both arms, before anything was
+changed:
+
+| arm | SZS | wall | peak RSS | EPR telemetry |
+|---|---|---|---|---|
+| off | `Timeout` | 120.1 s | 336 MB (GNU `time`) / 1230 MB self-reported | — |
+| on (`MRS_EPR_GROUND=1`) | `Timeout` | 134.7 s | **3475 MB** (GNU `time`) / 4715 MB self-reported | `epr_route=epr_equality epr_domain=2 epr_est=395131 epr_full_grounding=true epr_generated=385707 epr_vars=101860 epr_clauses=385830 epr_rounds=0 epr_result=fallback epr_fallback=proof_extraction_failed` |
+
+#### What the problem is
+
+`MSC024-1` is a propositional problem *encoded as EPR*. Its 1762 CNF clauses are
+84 nullary `eskNN_0` atoms plus `eskNNN_8(X1,…,X8)` clauses, and its only
+constant-bearing clause is `cnf(true_not_false, axiom, false != true)`. So the
+Herbrand universe is the two constants `{true, false}` and every arity-8 clause
+grounds to `2^8 = 256` instances. CaDiCaL settles it in milliseconds. The whole
+difficulty is that the *complete* grounding — which this route takes, because
+`est = 395131 <= FULL_GROUNDING_INSTANCE_CEILING = 500_000` — is a 385 830-clause
+propositional CNF over 101 860 distinct ground atoms.
+
+A refutation of that image exists and is genuine: every clause in it is a
+substitution instance of an input clause, and the image is unsatisfiable, so a
+first-order refutation of the input exists by completeness. What is missing is a
+*derivation* small enough for the bounded lifters to find.
+
+#### Observed facts, separated from hypotheses
+
+Measured, not inferred (each line was an instrumented run at `f59ca34`):
+
+1. `prop_bfs_refute` is exhausted by its **clause cap**, not by the clock. With
+   the production `PROP_BFS_CLAUSE_CAP` it stopped at **400 001 clauses after
+   2.7 s of a 29.2 s budget**.
+2. **A larger cap does not fix it.** Raising the cap 20× to 8 000 000 moved the
+   failure to the deadline at **3 103 544 derived clauses** after 29.7 s, peak
+   RSS 3.86 GB, still without the empty clause. The bound is not what stands
+   between this image and a derivation, so "give it more room" is refuted as a
+   fix by measurement.
+3. The full expansion is not what forces the size. With whole-set grounding
+   suppressed, the widening ladder reached `Unsat` at **192 862 clauses / 51 172
+   atoms** after 60 rounds, and the BFS then failed at its 16.7 s deadline at
+   196 506 clauses. The lazy search converges to a set of the same class.
+4. The ground-derivation fallback (`ground_refutation_fallback`: the ordinary
+   given-clause loop over the ground instances, AVATAR on, LRS off since
+   `f59ca34`) did **not** refute within its remaining budget — 87 s in the
+   whole-set arm, 50 s in the lazy arm.
+5. CaDiCaL's own LRAT proof over the 192 862-clause image has **51 920 added
+   clauses** (checked with `mrs_cadical::trace_manifest`). So a derivation of the
+   right order exists: the information is there, and the BFS is simply not
+   directed enough to reach it from 385 830 clauses.
+
+Not established, and not claimed:
+
+- That any rewrite of the *bounds* recovers a refutation here. Point 2 measures
+  one direction of that and it does not.
+- That the extraction is *incomplete* in principle. Unit-free propositional
+  resolution and superposition over the same instances are both complete; the
+  failure is that the complete procedures are bounded and these images are far
+  outside every bound tried.
+- That the ground image is the only obstacle. Whether a *small* unsat core of
+  the 385 830-clause image admits a short resolution derivation is unmeasured,
+  and it is the one question a fix would turn on (see "Next step").
+
+#### Why the original extraction routes failed
+
+The original BFS exhausted its 400 000-clause cap, and the ground
+given-clause fallback failed to derive a contradiction within its remaining
+budget. The LRAT trace demonstrated that a much smaller useful derivation was
+available, so the broader claim that this image had no practical derivation
+route was premature.
+
+The LRS defect fixed at `f59ca34` was a *fourth* cause of the same bucket, and
+`HWV078-1` was it. `MSC024-1` was never that cause, which is why disabling LRS
+did not move it.
+
+#### Telemetry that hid this, now fixed
+
+- **`epr_ms` stopped at the SAT verdict.** It is recorded *before* extraction
+  runs, so it under-reported the pre-pass by the whole extraction phase: `epr_ms=3239`
+  against 106 s actually spent on `MSC024-1`. A new `epr_extraction_ms` field
+  covers extraction; `elapsed_ms` keeps its old meaning so archived numbers stay
+  comparable, and the pre-pass's true cost is the sum.
+- **`epr_extraction` names the route that ran last** — one of `none`,
+  `bfs_lift`, `bfs_lift_incomplete`, `bfs_clause_cap`, `bfs_deadline`,
+  `bfs_satisfiable`, `derivation_loop`. `proof_extraction_failed` names the
+  *outcome*; this names the route that produced it. Both were one string until
+  this diagnosis, which is why telling cap-exhaustion from clock-exhaustion
+  needed an instrumented build rather than a run.
+- **`epr_rounds` was not recorded on the `Unsat` path.** A 60-round ladder
+  reported `epr_rounds=0`. Set now.
+
+#### Two extractor defects found while building the regression, both closed
+
+Both are in `crates/mrs-search/src/epr_ground.rs` and both can only make the
+lifter *refuse* more, so neither can turn a non-refutation into a refutation.
+
+1. **`resolve_prop` removed the pivot from both parents.** For a
+   propositionally tautological parent that emits a clause that is *not* the
+   first-order resolvent of the two cited clauses. With `c1 = {v,-v,x}`,
+   `c2 = {v,y}` and pivot `v` the old code emitted `{x,y}`, which `c1 ∪ c2` does
+   not entail — `c1` is a tautology and constrains nothing. The correct
+   resolvent `(c1 \ {v}) ∪ (c2 \ {-v}) = {-v,x,y}` is itself a tautology, so the
+   right answer is to refuse. `a_tautological_parent_cannot_forge_a_resolvent`
+   pins it on a set that is satisfiable (`v=F, x=F, y=F`), so a refutation
+   derived from it would be a forged one; the sweep in
+   `resolution_is_the_binary_resolvent_of_its_cited_parents` checks every clause
+   pair over a three-variable alphabet against an independently written oracle.
+   The fix is a no-op whenever neither parent is tautological, which is every
+   clause set the tautology-filtering generators can produce today.
+2. **The lift's clause store could answer one id with two different clauses.**
+   `try_epr_ground_refutation` takes the caller's `ClauseIdGen`, and nothing
+   inside it could tell a generator reserved past the input ids from one that
+   was not. With a colliding generator an instance and an input clause share an
+   id, `store[&id]` hands the dependency walk the wrong one, and the printed
+   proof cites parents whose literals are not the ones the step was computed
+   from — observed exactly that while building the regression: a step printed
+   `p(a)` from parents `q(b,a)` and `q(a,b)`, which resolve to nothing. The entry
+   point now `reserve_at_least`s the generator above every id it is handed, and
+   `lift_bfs_refutation` refuses outright when the store answers one id with two
+   different clauses. It also refuses an unemittable proof, where
+   `format_tstp` returns the empty string because the step graph did not
+   topologically sort.
+
+#### Tests
+
+All in `crates/mrs-search/src/epr_ground.rs`, module `tests`.
+
+| test | what it pins |
+|---|---|
+| `two_element_domain_refutation_lifts_from_its_ground_parents` | positive regression for the established shape: a two-element universe over wide predicates, grounded, refuted, and **every emitted TSTP step recomputed from its citations** |
+| `recheck_tstp` (helper) | `instantiation` conclusions must be substitution instances of their one cited parent; `resolution` conclusions must be the binary resolvent of their two cited parents; the proof must end in the empty clause |
+| `a_tautological_parent_cannot_forge_a_resolvent` | adversarial: a forged ground inference cannot produce the empty clause |
+| `resolution_is_the_binary_resolvent_of_its_cited_parents` | adversarial: `resolve_prop` equals the first-order resolvent for every clause pair over a three-variable alphabet |
+| `an_ambiguous_clause_id_cannot_produce_a_certified_refutation` | adversarial: two input clauses sharing an id produce no proof at all |
+| `a_lifted_proof_cites_only_clauses_it_contains` | a lifted proof cites only clauses it contains, and `recheck_tstp` re-derives it |
+| `an_exhausted_bound_is_inconclusive` | boundedness: cap-exhaustion, deadline-exhaustion and a satisfiable fixpoint all report exhaustion and never a refutation |
+
+#### Verified after the change
+
+```bash
+nix develop -c cargo check
+nix develop -c cargo clippy --all -- -D warnings     # clean
+nix develop -c cargo fmt --all --check                # clean
+nix develop -c cargo test --workspace                 # 69 suites, 0 failed
+nix develop -c cargo test -p mrs-search --lib epr_ground   # 40 passed
+```
+
+An extracted refutation from a locally-generated stand-in for this shape
+(arity-17 predicates over a two-element universe, whole-set grounded) was
+re-checked by the strict kernel. The `HWV078-1` +1 certified solve was checked
+too — see the re-verification section below, which is the result that actually
+gates this change:
+
+```bash
+MRS_EPR_GROUND=1 ./target/release/mrs --time 30 --workers 1 --schedule casc_epu \
+    /tmp/opencode/msc024/stand_in.p                     # 1.9 s, % SZS status Unsatisfiable, 4 proof nodes
+./target/release/mrs-proover --strict --no-atp --workers 1 --time 60 \
+    /tmp/opencode/msc024/stand_in.proof                 # % SZS status VerifiedGood
+```
+
+#### Re-verification against the new telemetry, after the corpus was restored
+
+The out-of-tree corpus that `crates/mrs-bench/problems` symlinks to was deleted
+while this investigation was running and later restored. Nothing above was
+affected — every measurement had completed first — and the two checks that had
+been left open were then run. Same revision, same commands, this host.
+
+**`MSC024-1`** — identical outcome, now with the reason named rather than
+inferred:
+
+```
+epr_route=epr_equality epr_domain=2 epr_est=395131 epr_full_grounding=true
+epr_generated=385707 epr_vars=101860 epr_clauses=385830 epr_rounds=0
+epr_ms=2558 epr_extraction_ms=109356 epr_extraction=derivation_loop
+epr_result=fallback epr_fallback=proof_extraction_failed
+```
+
+`Timeout` at 120.0 s, peak 4715 MB self-reported / 3550 MB GNU. The two numbers
+that settle the question: `epr_extraction=derivation_loop` says the BFS was
+exhausted and the ground given-clause loop ran last, and
+`epr_extraction_ms=109356` against `epr_ms=2558` is the under-reporting the new
+field exists for — the pre-pass really cost 112 s, not 3 s.
+
+**`HWV078-1` — the +1 `VerifiedGood` still holds.** This was the check that
+mattered, because the changes were to the extractor. At `--time 40 --workers 2`
+this host returns `Timeout`, and the *unmodified* `f59ca34` build does too, so
+that is a host difference from the 2026-10-09 i3-5010U measurement rather than a
+regression. At `--time 60 --workers 2` the same command with the changes in
+place gives:
+
+```
+% SZS status Unsatisfiable for HWV078-1        % Proof: 52857 nodes, 13376537 bytes
+% Termination reason: Refutation               % Time elapsed: 37.718 s
+% Peak memory usage: 2072 MB
+epr_clauses=21823 epr_ms=995 epr_proof_nodes=52857 epr_extraction_ms=36647
+epr_extraction=derivation_loop epr_result=refutation
+```
+
+52 857 nodes and 13 376 537 bytes, the same as the archived 52 857 / 13.4 MB, and
+the strict kernel certifies it:
+
+```
+./target/release/mrs-proover --strict --no-atp --workers 1 --time 300     <the run's stdout>          # % SZS status VerifiedGood, 9.5 s, 354 MB
+```
+
+Structurally it could not have been affected, and the run confirms it: both
+changes only refuse, `resolve_prop` is a no-op whenever neither parent is
+tautological, and this derivation never came from the BFS at all —
+`epr_extraction=derivation_loop` means it was produced by the ground
+given-clause loop the id-reservation and the `resolve_prop` fix do not touch.
+
+#### 2026-10-10 follow-up: bounded LRAT reconstruction certifies `MSC024-1`
+
+CaDiCaL now captures a bounded antecedent-bearing proof trace while deciding
+the ground set. `lrat_refute` takes the dependency cone of the empty clause,
+expands RUP steps into binary resolution, and passes the resulting clauses
+through the same hardened proof lifter. It refuses traces whose dependency cone
+exceeds 10,000 derived clauses, whose expanded proof exceeds 100,000 clauses,
+or that contain unsupported RAT steps. Trace capture is capped at 1,000,000
+events; any capture/reconstruction failure falls through to bounded BFS and the
+ground given-clause fallback as before.
+
+On this workspace host (4 physical / 8 logical cores), with
+`MRS_EPR_GROUND=1 --workers 1 --time 15 --schedule casc_epu`,
+`MSC024-1` returned `Unsatisfiable` in 3.7 s: 385,830 ground clauses, 864,607
+trace events, 26,189 emitted proof nodes, and `epr_extraction=lrat_lift`.
+`mrs-proover --strict --no-atp` returned `VerifiedGood`. This is a local,
+single-run validation of the extraction route, not a CASC result or a division
+coverage claim. The generated proof is about 8 MB; the default proof-output
+limit may need to be raised when retaining it.
+
+The 10,000-clause LRAT cone bound is deliberate: larger traces, including the
+`HWV078-1` shape, continue to use the ground given-clause fallback. Re-run the
+paired EPU measurements at the 8-worker CASC shape before considering any
+default or division-level claim. The remaining open work is measuring coverage
+and resource cost across the division, not diagnosing `MSC024-1`'s former
+`proof_extraction_failed` outcome.
+
+### 2026-10-10: `Unknown` telemetry now separates clock expiry from solver interruption
+
+`mrs_cadical::Solver::solve_until` returns `Unknown` both when its deadline has
+already expired (without entering CaDiCaL) and when CaDiCaL is entered but its
+terminator stops the solve. The EPR grounding route previously reported both
+cases as `sat_solver_unknown` and left `epr_rounds` at its default on this arm.
+The archived `PLA037-1`, `HWV064-1`, `HWV090-1`, and `HWV127-1` rows therefore do
+not establish which cause applied.
+
+The wrapper now offers `solve_until_with_entry`, which returns whether it
+actually entered CaDiCaL along with the ordinary result. EPR telemetry records
+`epr_solves` (attempts), `epr_solver_entries` (calls entering CaDiCaL), and
+`epr_solve_ms` (elapsed time for entered calls), and records the ladder round on
+`Unknown`. A pre-entry `Unknown` is labelled `grounding_timeout`; an entered
+solver returning `Unknown` remains `sat_solver_unknown`. Both are fail-closed
+and return no result. The separate entry count is important because a second
+deadline read after an `Unknown` cannot reliably identify the path taken.
+
+The older pure-relational InstGen path also records its current round and calls
+an `Unknown` a `timeout` when its selected deadline has elapsed; otherwise it
+retains `sat_solver_unknown`.
+
+Focused tests cover both CaDiCaL entry cases, EPR telemetry and fallback
+classification, equality-model refusal, and proof extraction's fail-closed
+behavior. These changes improve attribution only; they do not alter the
+pre-pass's verdict policy. The archived bucket's cause remains unverified at
+the current loop revision, and division coverage/resource impact remain
+unmeasured. Re-run the paired EPU arms at the 8-worker CASC shape before
+changing defaults or drawing coverage conclusions.
+
+## UI-6 — ICU: 44 rows lack a decisive reference, and `verdict = ok` does not mean certified
+
+| | |
+|---|---|
+| Status | Bounded-NNF kernel check verified in campaign; 44 non-decisive references and CSI008+1 OOM remain |
+| Severity | 2026-10-19 run strictly certifies 4/4 refutations (100%); 44 reference answers remain GaveUp |
+| Soundness | No unsound result is reported; the CSV's `ok` label is not a certificate. |
+
+### Observation
+
+Among the six casc-30 division runs tabulated in the remote-only guide,
+`campaign-casc30-icu-W8C8J1-20261002` is a well-formed run (one `Total jobs:`,
+101/101, all rows graded) and the only one to exercise a **480 s** budget,
+twice the 240 s budget of FNE/FEQ/UEQ and four times the 120 s budget of EPS/EPU.
+It is also the only one of those six, alongside the archived casc-j13 FEQ run, to
+produce an `Error`:
+
+| | count |
+|---|---|
+| `szs_status` | `Timeout` 83, `GaveUp` 12, `Theorem` 5, **`Error` 1** |
+| strict kernel | `VerifiedGood` 3, `Unknown` 2, `Error` 1 |
+| `verdict` | `ok` 3, `unknown` 98 |
+
+### 44 of 101 problems have a non-decisive reference answer
+
+`expected` is populated for every row and matches the reference file exactly
+(verified against `systems/reference/answers.tsv`: 101/101 present, 0
+mismatches). Its distribution:
+
+| `expected` | rows |
+|---|---|
+| `Theorem` | 55 |
+| **`GaveUp`** | **44** |
+| `Satisfiable` | 1 |
+| `CounterSatisfiable` | 1 |
+
+`casc.sh:810-811` maps a non-committal reference to `verdict = unknown`. Thus 44
+rows cannot be graded as `ok`/`ko` against a decisive reference; this does not
+mean the prover cannot solve them. Of the 57 rows with decisive references, 3
+`ok` is **5.3%**. State the denominator when reporting the score.
+
+The converse also happens: `CSE007+1` and `EEE009+1` are refuted by `mrs` where
+the reference gives up. Both are graded `unknown` by design. The archived audit
+reports `EEE009+1` as `VerifiedGood`; that certification is not represented by
+the reference-based `ok` count.
+
+### `verdict = ok` does not mean the proof was checked
+
+`casc.sh:798-816` computes `verdict` **solely** by comparing `szs_class(szs)`
+with `szs_class(expected)`. It never consults the audit. So:
+
+| problem | `verdict` | strict kernel |
+|---|---|---|
+| `EEE001+1` | **`ok`** | **`Unknown`** |
+
+`EEE001+1` counts toward the status-class match while its proof did not certify.
+The campaign evidence described here gives one concrete divergence. **Read the
+`certification/audit.csv` `strict_status`, not `run.csv` `verdict`, whenever the
+question is "how much is certified".**
+
+### Two of five generated refutations are uncertified under kernel formula-size limits
+
+| problem | `strict_detail` | problem size |
+|---|---|---|
+| `EEE001+1` | `node c71: negated_conjecture exceeds strict formula-size limit` | **4 axioms**, one 16.7 KB conjecture |
+| `CSE007+1` | `node c18798: NNF rule exceeded strict formula-size limit` | — |
+
+Both are `Inconclusive` from `max_formula_nodes` (default `100_000`), so the
+strict checker does not certify them; this does not show that the prover failed
+to find a refutation. The archived run reports `EEE001+1` refutes in **269 ms**.
+`to_nnf` distributes nested
+biconditionals, so a right-nested `<=>` chain of depth *n* expands toward 2ⁿ
+nodes and can cross the ceiling from a modest input. This is another strict
+formula-size limit case, distinct from the FEQ proof-node ceiling described
+earlier. These two rows explain the archived strict result of 3 `VerifiedGood`,
+2 `Unknown` among five `Theorem` rows; they do not establish a general ICU
+certification rate of 3/5.
+
+### Bounded goal-directed NNF check
+
+The strict kernel now checks an NNF step against its proposed conclusion
+without first constructing the expanded formula. It has independent NNF
+step/depth ceilings; exhaustion still falls through to the existing bounded
+conversion, which remains `Inconclusive` if it also cannot decide. An iterative
+bounded shape check likewise lets quantified-CNF normalization retain an
+already-NNF input without consuming the converter's smaller term-depth budget.
+The checker models implication, biconditional (including negated
+biconditional), quantifier polarity, and scoped variable identity. Regression
+tests cover deep linear formulas, those connective cases, mismatches, and
+budget exhaustion.
+
+This addresses the kernel's bounded-NNF decision path. In the October 19 campaign
+(`campaign-casc30-icu-W8CASCHJ1-97-20261019`), the retained proofs for both
+`EEE001+1` and `CSE007+1` were replayed through the strict kernel and both audited
+cleanly as **`VerifiedGood`** (taking 0.49 s and 1.92 s, respectively). This
+confirms the bounded-NNF check resolves the formula-size ceiling under full
+campaign execution. The remaining aspects of UI-6 are the 44 non-decisive
+references and early memory protection for multi-million axiom problems.
+
+### One OS OOM kill despite the reported adaptive memory budget
+
+`CSI008+1` was killed by the OS OOM killer at **94 161 MB** according to the
+archived benchmark row; its `% Hardware:` line reports `mem_budget_mb=71642`.
+Because stdout is empty, `casc.sh` populated `peak_memory_mb` from GNU `time`
+Max RSS rather than the prover's `VmPeak` line. The row has no SZS status in
+stdout and is classified `Error` by the harness. Treat its memory value
+separately from rows with MRS-reported VmPeak; those sources are not homogeneous.
+
+`adaptive` does not install the `casc-sim` address-space limit; however, it is
+not entirely unenforced. The given-clause loop samples RSS and returns a memory
+`ResourceOut` when the configured limit is reached (`given_clause.rs:1576-1588`).
+The check is periodic, not on each allocation, so a large allocation can
+overshoot before sampling and the OS OOM killer can win the race. The row is
+evidence of such an overshoot, not proof that adaptive memory limits have no
+enforcement.
+
+The archived run reports `CSI008+1` at **2 004 866 clauses**, 73% of the
+division's total 2 750 576. Its reported peak is the only ICU memory value above
+60 GB; the next largest reported value is 37 913 MB, but these memory sources
+are heterogeneous as noted above. The archived run did not report a solve on
+this row. Whether a similar input is solvable within 480 s is unmeasured; an OS
+kill can lose the status line instead of producing a graceful resource-limit
+result.
+
+---
+
+## UI-7 — FEQ strict-certification gaps resolved
+
+| | |
+|---|---|
+| Status | **Resolved and measured** on retained FEQ proofs. The merged kernel certifies all eight previously undecided UI-7 proofs. |
+| Severity | None for the eight UI-7 cases. The FEQ campaign still has two `Unknown`, one `Timeout`, and six withheld proofs for other reasons. |
+| Soundness | The kernel records per-formula variable names without changing `VarId` scopes, uses bounded conjunct-local checks, and keeps the goal-directed residue path. Adversarial counterexamples remain fail-closed. |
+| Evidence | Like-for-like strict audit on a 16-core, 128-GB host: 94 to 100 `VerifiedGood`, with no `VerifiedBad` and the same six withheld proofs and one timeout. |
+
+### Observation
+
+The starting point, on `main` at `d74f842`, reproduced exactly from the
+archived proofs:
+
+```
+TPTP=crates/mrs-bench/problems/<edition> target/release/mrs-proover \
+  --strict --no-atp --workers 1 --time 240 <campaign>/certification/proofs/mrs/feq/<P>.s
+```
+
+| problem | campaign | node | verdict before |
+|---|---|---|---|
+| `GEO331+1` | casc-j13 | `c355` | `Unknown` — definitions whose bodies could not be matched against the source |
+| `GEO343+1` | casc-j13 | `c286` | same |
+| `GEO299+1` | casc-30 | `c522` | same |
+| `GEO300+1` | casc-30 | `c285` | same |
+| `ITP019+5` | casc-30 | `c700` | same |
+| `ALG102+1` | casc-30 | `c391` | `Unknown` — CNF expansion exceeded the strict limits |
+| `ALG104+1` | casc-30 | `c281` | same |
+| `ALG127+1` | casc-30 | `c199` | same |
+
+Node ids are not stable across runs; the conclusion and rule identify a step.
+
+### Root cause, family 1 — the fold needs block identity, the goal already has it
+
+`GEO331+1` c355, quoted exactly:
+
+```
+source:      ~ron(X0,X2) & ~rinside(X0,X2)   ...   ~ron(X1,X2) & ~rinside(X1,X2)
+c349:        def_..._0(X0,X2) <=> ~ron(X0,X2) & ~rinside(X0,X2)
+c350:        def_..._1(X1,X2) <=> ~ron(X1,X2) & ~rinside(X1,X2)
+goal c355:   ... | def_..._0(X0,X2) | ... | def_..._1(X1,X2) | ...
+```
+
+The two blocks carry the same literals in the same order; only the source
+variables they range over differ. The fold cannot see that, and neither can
+`is_identity_mapping`: it compares `VarId`s, and `LowerCtx` numbers variables per
+annotated formula, so `c349`'s two variables and `c350`'s two are the *same*
+`VarId`s. Both definitions therefore match both blocks and the greedy fold hands
+both blocks to whichever runs first.
+
+The goal-directed residue check replaces "find the definition's block" with
+"place the goal clause into the source's clause set": it distributes the goal over
+the source's conjunctions and disjunctions and folds a definition only where the
+result reproduces the head arguments the goal names. Block identity is then not
+needed — it is *implied* by the goal.
+
+This is the third family-1 attempt and the first that does not change the
+variable model. Interning one `VarId` per variable *name* would also work, and is
+still not attempted: it is a change to the kernel's variable model with its own
+capture hazard, and it is now unnecessary.
+`mrs_core::alpha::alpha_equiv` is untouched and its contract test still passes.
+
+### Root cause, family 2 — the expansion is combinatorial, and the goal is a weakening of it
+
+`ALG127+1` c199, quoted exactly:
+
+```
+source c78:  (B0 | B1 | B2 | B3) & (C0 | ... | C15)
+c79..c82:    def_ax10_i <=> Bi                       (the four blocks of the first group)
+goal c199:   def_ax10_0 | def_ax10_1 | def_ax10_2 | def_ax10_3
+```
+
+Two facts, both measured, not assumed:
+
+* `CNF` of the *folded* source is small — four unit clauses plus sixteen more —
+  but the second group is a 16-way case split whose blocks are themselves
+  case splits, and the kernel's expander cross-products them: `5^7 = 78 125`
+  clauses at one disjunction, so the 100 000-clause ceiling is reached having
+  produced 1. The ceiling is a symptom; the cross product is the cause.
+* The goal `def_ax10_0 | ... | def_ax10_3` is **not one of the derived clauses**.
+  It is a *weakening* of each of them: `CNF` contains `def_ax10_0`, and a clause
+  entails each of its subclause weakenings. So the step is sound — and
+  expand-and-look cannot see it, because no clause equals it. The prover's own
+  clause set contains only this weakening, not the four unit clauses.
+
+Both facts point the same way: verify entailment, not a particular algorithm's
+output. `ALG104+1` c281 is the same shape with 16 definitions and
+`ALG102+1` c391 with 4.
+
+### The change
+
+One function, `goal_directed_cnf_entailment` in
+`crates/mrs-proof-kernel/src/lib.rs`, run as a second fast path in
+`verify_cnf_transformation` after the existing direction-clause fast path and
+before the expansion. It is additive: `Some(false)` and an exhausted search both
+fall through to the expansion path unchanged, so no step changes verdict except
+from undecided/decided to decided.
+
+The relation it decides is: *is the goal a sub-multiset of the literals of some
+clause of the CNF of the cited source, with the cited definitions abbreviated
+wherever their bodies match, under one substitution?* Every step is an
+equivalence (the definition fold) or a weakening (the disjunction split), so a
+`true` answer is an entailment.
+
+Three things make it terminate where the expansion does not:
+
+* the split width is the *goal's* literal count, not the source's;
+* a literal no part below a node can produce rules the node out, computed once
+  per node and memoised (`producible_goal_literals`);
+* a literal no later part can produce is forced onto the current part, and one
+  no current part can produce is ruled out, which usually leaves one candidate.
+
+The search is memoised on `(node, literal group, substitution)`; without that it
+re-asks the same question once per way of splitting the goal around it and
+`GEO300+1` exhausts its budget.
+
+Budget: `max_residue_steps`, default 400 000 distribution steps, counted per
+step. Exhausting it yields `Inconclusive`, as does a matrix shape the search does
+not model. `exhausted_residue_search_never_certifies` pins that.
+
+### What the adversarial tests found
+
+The first implementation matched each literal group against the goal with its own
+fresh renaming. That is **unsound**, and the test
+`refuses_definition_that_no_source_block_matches` is where it showed up: with
+`d0(X0,X2)` matched through block A and `d1(X0,X2)` matched through a block over
+`X1,X2`, the two groups disagree about what `X0` is. The fix threads *one*
+substitution for the whole clause (`ResidueSearch::substitution`), which is what
+an entailment argument needs.
+
+The same analysis changed what the family-1 negative test can be. After the fix
+the search decides `G ⊆ Dσ` for some substitution `σ`, and prenexing gives the
+disjuncts *independent* copies of the shared variables, so `d0(u,v) | d1(w,z)`
+holds for all independent `u,v,w,z` and consequently `B` holds everywhere. A goal
+that puts both identically-bodied heads at the same arguments is therefore **not**
+a counterexample — it really is entailed, and the kernel is right to certify it.
+The family-1 negative test pins the case that is: a cited definition whose body
+matches no block at all.
+
+Review of the memoized search found one further substitution invariant: a cached
+successful `(node, literal group, incoming substitution)` decision must replay
+the substitution produced by that match. Caching only the Boolean answer let a
+later literal group continue without those bindings on a cache hit. Memo entries
+now retain the resulting substitution, and
+`residue_memo_hit_replays_the_substitution` forces a cache hit and checks that a
+subsequent group cannot choose a conflicting binding.
+
+### Like-for-like comparison and resolution
+
+The official strict audit was run against the same retained FEQ proofs on the
+same 16-core, 128-GB host, with `--strict-time 120`. `main` reports 94
+`VerifiedGood`, 0 `VerifiedBad`, 8 `Unknown`, 1 `Timeout`, and 6 withheld proofs
+out of 109 applicable refutations. The variable-name-aware implementation
+reports 100 `VerifiedGood`, 0 `VerifiedBad`, 2 `Unknown`, 1 `Timeout`, and the
+same 6 withheld proofs. The six additional certified proofs are the previously
+unresolved UI-7 CNF-transformation cases. No previously certified proof was
+rejected, and no new `VerifiedBad` appeared. The evidence justified integrating
+the alternative's definition matching, conjunct-local CNF check, and
+large-clause matching improvements while retaining the residue check already
+in `main`.
+
+The six withheld proofs are not kernel verdicts: MRS did not emit proofs for
+them (`proof_emitted=false`). Both arms also retain the same one timeout, so the
+gain is six additional strict certifications, not a change in proof generation
+or the separate timeout. The two remaining `Unknown` rows and the timeout have
+their own report reasons; do not attribute them to UI-7 without inspecting
+their per-proof `strict_detail` entries.
+
+### Earlier measurement of the residue-only implementation
+
+This is the historical result before the variable-name-aware matching and
+conjunct-local improvements were integrated. It explains why the residue check
+was initially selected, but the 16-core comparison above is now the current
+coverage result.
+
+`audit_casc_proofs --checks strict --strict-time 120 --jobs 1` over the two
+campaigns' own retained proofs, so before/after is like for like and the
+proofs are not re-searched:
+
+```
+target/release/audit_casc_proofs \
+  --run /home/hack/crates/mrs-bench/results/<campaign>/run.csv \
+  --problems-dir crates/mrs-bench/problems/<edition> \
+  --checks strict --strict-time 120 --jobs 1 --output <dir>
+```
+
+| campaign | before | after | audit wall | peak RSS |
+|---|---|---|---:|---:|
+| `campaign-cascj13-feq-W8C8J1-20261002` | 64 `VerifiedGood`, 0 `VerifiedBad`, **2 `Unknown`** | 64 `VerifiedGood`, 0 `VerifiedBad`, 0 `Unknown`, **2 `Timeout`** | 272 s | 749 MB |
+| `campaign-casc30-feq-W8C8J1-20261002` | 92 `VerifiedGood`, 0 `VerifiedBad`, **6 `Unknown`**, 1 `Timeout` | **98 `VerifiedGood`**, 0 `VerifiedBad`, 0 `Unknown`, 1 `Timeout` | 221 s | 2.0 GB |
+
+No `VerifiedBad` appears and no row that certified before stops certifying.
+
+The casc-30 rows, one at a time, `rustc 1.99.0`, release build, `--workers 1`:
+
+```
+TPTP=crates/mrs-bench/problems/casc-30 target/release/mrs-proover \
+  --strict --no-atp --workers 1 --time 240 <campaign>/certification/proofs/mrs/feq/<P>.s
+```
+
+| problem | before | after | wall | max RSS |
+|---|---|---|---:|---:|
+| `GEO299+1` | `Unknown` (`c522`) | **`VerifiedGood`** | 1.9 s | 41 MB |
+| `GEO300+1` | `Unknown` (`c285`) | **`VerifiedGood`** | 24.7 s | 36 MB |
+| `ALG102+1` | `Unknown` (`c391`) | **`VerifiedGood`** | 0.9 s | 29 MB |
+| `ALG104+1` | `Unknown` (`c281`) | **`VerifiedGood`** | 0.4 s | 30 MB |
+| `ALG127+1` | `Unknown` (`c199`) | **`VerifiedGood`** | 0.3 s | 24 MB |
+| `ITP019+5` | `Unknown` (`c700`) | **`VerifiedGood`** | 58 s | 2.0 GB |
+
+`ALG127+1` went from 1.4 s / 468 MB to 0.3 s / 24 MB: the step no longer expands
+anything, so the proof never allocates the cross product. `GEO300+1` went from
+0.7 s to 24.7 s because the kernel now verifies the whole proof instead of
+stopping at `c285`.
+
+The two casc-j13 rows are a change of *kind*, not of count. `GEO331+1` and
+`GEO343+1` are 1.3 MB and 1.1 MB proofs; the kernel now certifies `c355` and
+`c286` and then has to verify everything downstream of them, which does not fit
+in the audit's 120 s per-proof budget on two cores. At that budget they are
+recorded as `Timeout` rather than `Unknown`: the step is decided, the proof is
+not finished.
+
+How long "not finished" is: `GEO331+1` alone on an otherwise idle 2-core /
+12 GiB host, `timeout 3000`, reached no verdict in **50 min** at 41 MB RSS. So
+the cost is not the kernel's memory on those proofs -- it is the number of
+steps, and the per-step work is the expansion path these two proofs still go
+through. A single clean run of `GEO343+1` was not done; both were measured past
+3000 s under load, which is a lower bound on the time, not a clean number.
+
+### Historical follow-up notes
+
+* The residue check remains useful for source shapes it can decide directly; it
+  is retained as a fast path alongside the variable-identity-aware fallback.
+* The 16-core campaign compared these implementations only on the two archived
+  FEQ campaigns. Other divisions should be audited independently before making
+  claims about their coverage.
+
+### Resolution
+
+Both families are resolved in `crates/mrs-proof-kernel`:
+
+1. **Family 1 (definition matching collisions)**: `LowerCtx` records original
+   variable name strings during lowering into a per-node name table without
+   altering global `VarId` scopes or interning globally by spelling. A new
+   `CoreMatchMode::OrderedIdentity` pass pairs operands in order and enforces
+   variable-name identity via `is_identity_mapping`, allowing definitions over
+   distinct source variables to claim their respective blocks. In addition,
+   `replace_definition_subformulas` returns early once all cited definitions
+   have matched, skipping redundant combinatorial multiset passes.
+2. **Family 2 (combinatorial CNF expansion)**: Top-level conjuncts of the
+   normalized source are flattened and expanded individually. If any conjunct
+   completely expands into clauses containing the goal clause within budget, and
+   all cited definitions were matched, the step certifies immediately without
+   triggering combinatorial expansion of unneeded companion conjuncts.
+   Ambiguous or unproven cases strictly fail closed with `Inconclusive`.
+3. **Large-clause alpha-equivalence**: Keep the complete backtracking matcher
+   used by `main`, ordering the most constrained literal shapes first. This
+   avoids factorial searches over unconstrained literal permutations without
+   imposing an order-sensitive cutoff.
+
+The 16-core, 128-GB audit confirms all eight target UI-7 proof steps are
+strictly certifiable within the 120 s per-proof limit. Keep the full campaign
+CSV as the source of per-proof timings and statuses; the aggregate result above
+is the headline measurement.
+
+### Reproduce
+
+```bash
+nix develop -c cargo test -p mrs-proof-kernel residue
+nix develop -c cargo test -p mrs-proof-kernel -- identical unmatched bound_variable
+
+TPTP=crates/mrs-bench/problems/casc-30 target/release/mrs-proover \\
+  --strict --no-atp --workers 1 --time 240 \\
+  /home/hack/crates/mrs-bench/results/campaign-casc30-feq-W8C8J1-20261002/certification/proofs/mrs/feq/ALG127+1.s
+```
+
+The retained proofs are under
+`/home/hack/crates/mrs-bench/results/campaign-<edition>-feq-*/certification/proofs/mrs/feq/`.
+
+## UI-8 — Measured: passive-queue retention is not the constraint on the hard tail
+
+| | |
+|---|---|
+| Status | Measured, **negative**. The hypothesis is retired; the underlying question stays open. |
+| Severity | None directly. It redirects where to look for the tail. |
+| Soundness | Unaffected. No proof or model result changed meaning. |
+
+### The experiment
+
+Full casc-30 UEQ division, 300 problems, 240 s, on `teenf9901`
+(16 physical / 32 logical, 128 019 MB), `--jobs 1`:
+
+```
+MRS_WORKERS=8 MRS_HARDWARE=casc-sim MRS_SIM_TIME_FACTOR=1 \
+MRS_NO_LRS=1 MRS_MAX_MEMORY_MB=90000 CERT_JOBS=4 \
+crates/mrs-bench/certification_campaign.sh \
+  --edition casc-30 --systems mrs --divisions ueq --casc-times --jobs 1 \
+  --output crates/mrs-bench/results/campaign-casc30-ueq-W8P8J1-NOLRS-MB90G-20261005
+```
+
+Every knob verifiably took effect: `lrs_discarded == 0` on all 276 rows
+carrying telemetry, `casc_limit_s=238 sim_limit_s=238` (so `MRS_SIM_TIME_FACTOR=1`
+was needed — at the default of 2.0 the budget becomes 476 s while the harness
+SIGTERMs at 250 s), `pinned_cpus=16` across 8 physical cores, and
+`address_space_mb=90000`. Integrity clean: one `Total jobs:`, 300/300, nothing
+reached the rlimit (peak 71 120 MB), no OOM.
+
+### Result
+
+| | baseline (2026-10-02) | LRS off |
+|---|---:|---:|
+| solved | 123 | **111** |
+| certified | 121 | 110 |
+| `GaveUp` | 10 | 6 |
+| `Timeout` | 167 | 183 |
+| silent kills (UI-2) | 15 | **24** |
+
+Read the `solved` row together with the noise measurement below: **111 vs 123 is
+within run-to-run variance**, so this table shows a direction, not an effect size.
+
+17 problems lost (all to `Timeout`), 5 gained (`COL009-1`, `COL057-1`,
+`LCL211-10`, `LCL400-10`, `SYN615-10`). **On the 12-problem diagnostic subset
+chosen for the highest discard ratios the effect is +1 / -1 / 10 unchanged** —
+no support for the hypothesis even where it should have been strongest.
+
+### The headline -12 is confounded and should not be read as an LRS effect
+
+The baseline ran `--hardware adaptive` (unpinned, 8 workers spread over 16
+physical cores); this arm ran `casc-sim`, **pinned to 8 physical cores**. Two
+variables moved. The loss distribution points at throughput rather than search
+quality: the 17 lost problems were solved in a **median 144 s** in the baseline,
+with **14 of 17 at 120-238 s**, against an overall baseline solve median of
+**15 s**. Losses concentrate exactly where headroom is thinnest, which is the
+signature of a per-worker slowdown under SMT contention, not of worse search.
+
+Independently of that confound, the -12 is **exactly the size of the measured
+run-to-run noise** (next section). Settling this needs the control arm —
+`casc-sim`, pinned, LRS at default — on the 12-problem subset, replicated ≥5
+times, compared on means. A single run cannot resolve a 12-problem difference.
+
+### What it did establish
+
+**Turning LRS off costs solves on this arm — but the magnitude is not
+interpretable.** The -12 matches the measured run-to-run noise floor exactly (see
+below), so it cannot be read as an LRS effect in either direction. What survives
+is the directional sign on this hardware configuration, and nothing stronger.
+
+Raising the LRS floor, an earlier suggestion, is therefore still in the wrong
+direction; a *quantitative* claim that LRS is worth ~12 solves is not supported.
+
+**A new cost of large queues, distinct from memory.** Silent kills rose 15 → 24,
+with 12 new ones. Every one of the 12 had a large *baseline* queue
+(`passive` 40 162-95 156, `generated` 380 672-1 993 586), and the LAT family
+appears repeatedly. Memory was **not** the cause — peak 71 GB against a 90 GB
+rlimit, and the new silent kills sit at 10-18 GB.
+
+**That reading is now known to be wrong for the UEQ mechanism.** The silent
+kills were not queue-size-dependent per-iteration work at all: they were
+exponential `lpo_gt_id` recursion (UI-2, fixed in `a67e523`), which has nothing
+to do with queue size. The 12 new ones are better explained as the same LPO
+defect being reached on more inputs, or as the throughput effect below. Either
+way, do not attribute them to LRS.
+
+### The -12 is within the measured run-to-run noise
+
+Five replicates of a fixed 25-problem casc-30 UEQ subset, identical
+configuration, on the campaign host (`host_physical_cores=16`,
+`mem_budget_mb=96333`, `/DATA/ai/mrs`):
+
+| rep | solved | not solved |
+|---:|---:|---:|
+| 1 | 21 | 4 |
+| 2 | 20 | 5 |
+| 3 | 19 | 6 |
+| 4 | 21 | 4 |
+| 5 | 20 | 5 |
+
+**Mean 20.2 of 25, range 19–21, with zero configuration changes.** Only
+`REL034-1` (solved 2/5) and `REL028-2` (solved 4/5) flip verdict; four problems
+time out in all five. Scaling to 300 problems, that is **±12** — the same size as
+the entire LRS-off effect.
+
+Wall times are bimodal per problem rather than uniformly noisy, which is the
+signature of a race between strategies deciding the winner: `KLE152-10` takes
+~118 s or ~217 s with nothing between, while `GRP423-1` is stable to ±0.2%. A
+host-drift story is ruled out by the stability of the control problems.
+
+The subset has a far lower timeout rate (16%) than the division (56%), so it is
+selected for solvability and ±12 may understate division-level noise. It does
+not overstate it.
+
+### What is still open
+
+Why the tail is slow is now unaddressed by this experiment. Remaining
+candidates: per-worker throughput (favoured by the loss distribution above), or a
+generator producing genuinely distinct heavy clauses, in which case the ~37:1
+generated-per-processed ratio is intrinsic and there is no redundancy to remove.
+
+Note that the ratio itself was never a sound measure: `forward_subsumed` counts
+*selections* discarded (`given_clause.rs:1810`), so `fwd_subsumed/generated` is
+bounded near 1/37 ≈ 2.70% by construction. Any future attempt to measure
+redundancy elimination must compare **discarded against retained**, not generated
+against subsumed.
+
+---
+
+## UI-9 — `GoalDirected` selection can terminate the search early
+
+| | |
+|---|---|
+| Status | **Closed (Disproved / Not a Bug)** |
+| Severity | None |
+| Soundness | **Unaffected.** Premature termination cannot occur, and uncertified saturation is never reported as a definitive result. |
+
+### Resolution
+
+Investigated and disproved. `SelectionStrategy::GoalDirected` cannot cause premature
+search termination, and ordinary given-clause loop termination cannot produce a false
+definitive result.
+
+1. **`goal_queue` is a total priority queue, not a partial queue:**
+   In `crates/mrs-search/src/unprocessed.rs:121-134`, `UnprocessedSet::push()`
+   unconditionally enqueues every single active clause into `goal_queue`. Non-goal
+   clauses (pure axioms or clauses with `goal_distance >= 100`) receive a heavy
+   weight penalty (`+1000`), but remain in `goal_queue`. They are never excluded
+   (unlike `unit_queue`, `horn_queue`, or `sos_queue`).
+
+2. **Invariant `active_ids ⊆ goal_queue`:**
+   Because all active clauses enter `goal_queue`, and `pop_goal_directed()`
+   only removes active IDs upon returning `Some(id)` (skipping tombstones),
+   `pop_goal_directed()` physically exhausts `goal_queue` if and only if
+   `active_ids.is_empty()` holds. Therefore, `pop_goal_directed()` cannot return
+   `None` while active clauses remain in other queues during normal execution.
+
+3. **Comparison with `pop_weight_sos`:**
+   `pop_weight` only employs an age fallback (`.or_else(|| u.pop_age())`) when
+   `sos_depth < u32::MAX`, because `pop_weight_sos` explicitly filters out non-SOS
+   clauses (skipping clauses with distance >= sos_depth and returning `None` once
+   bounded scan finds no SOS clauses). When `sos_depth == u32::MAX` (the default),
+   `pop_weight` has no age fallback because `weight_queue` is a total queue.
+   `GoalDirected` similarly operates over a total queue and needs no fallback.
+
+4. **Definitive result protection:**
+   Even if an empty-queue condition were artificially induced, `given_clause.rs:3384-3387`
+   unconditionally returns `SearchResult::GaveUp` when the given-clause loop breaks
+   without a refutation ("The ordinary engine has not yet been proven complete... Only
+   certified.rs may return positive saturation evidence. SearchResult::GaveUp").
+   In `src/main.rs:1197`, `SearchResult::GaveUp` maps to SZS `GaveUp`, which is an
+   inconclusive non-success status (`is_success() == false`), never a definitive status
+   (`Theorem`, `Satisfiable`, or `CounterSatisfiable`).
+
+5. **Decision:**
+   No code change to `select.rs` or prover search behavior is justified. Adding an age
+   fallback to `GoalDirected` would alter search behavior without justification.
+   Unit tests in `unprocessed.rs`, `select.rs`, and `given_clause.rs` cover the
+   invariant across queue mutations and pruning, genuinely empty termination,
+   selector exhaustion, and non-definitive reporting.
+
+---
+
+## UI-10 — Strategy 10's set-of-support pre-flight is quadratic in the clause count
+
+| | |
+|---|---|
+| Status | **Fixed**; re-confirmed on 96 GB campaign hosts (`mtsdev01`, `mtsdev03`) |
+| Severity | was 12 of 400 casc-30 FEQ (3%); input-dependent |
+| Soundness | Unaffected. The verdict is provably unchanged; see below. |
+
+### Observation
+
+`Strategy 10` is the only casc-30 FEQ portfolio strategy that sets `sos_depth`
+(`strategy.rs:280`). Before the given-clause loop starts, the search runs
+`sos_blocks_every_input_inference` (`given_clause.rs:1070`), which enumerates
+**every ordered pair** of post-clausification clauses:
+
+```rust
+for i in 0..clauses.len() {
+    for j in 0..clauses.len() {
+        ...
+        any_inference_at_all = true;
+        if clauses[i].distance < sos_depth || clauses[j].distance < sos_depth {
+            return false;
+        }
+    }
+}
+any_inference_at_all
+```
+
+The scan only exits early on an inference-capable pair with a member inside the
+support set; otherwise it runs to completion. There is no deadline argument, and
+it runs before the iteration loop, so no `search_deadline` check can fire and
+`TRACE_PROGRESS` prints nothing.
+
+### Measurements
+
+`SWX070+1` has 148 FOF axioms and **105 772** clauses after clausification.
+Instrumented, the scan reached `i=548` of 105772 after 50 s — 0.5% of the outer
+loop — for ~1.12x10^10 pairs at ~1.15M pairs/s, i.e. **~2.7 hours**.
+
+The cost cliff is sharp, which is why the failure looks input-dependent:
+
+| problem | clauses after clausification | pairs | outcome |
+|---|---:|---:|---|
+| `NUM925+3` | 2 053 | 4 214 809 | ~3.7 s, then searches normally |
+| `NUM925+7` | 1 989 | 3 956 121 | scans fully, then searches normally |
+| `SWX070+1` | **105 772** | ~1.1x10^10 | never completes |
+
+The TPTP file size predicts nothing: `SWX070+1` has 149 formulas, `CSR037+5`
+has 3.
+
+### Isolation
+
+`CASC_FEQ_ORDER = [11, 12, 1, 6, 10, 8, 14, 4, ...]` and `build_casc_schedule_inner`
+(`named.rs:545-549`) builds the schedule as `order[0..workers]`, so a
+worker-count sweep is a strategy bisect. On `SWX070+1`: `w1`-`w4` clean
+(`[11]`, `[11,12]`, `[11,12,1]`, `[11,12,1,6]`), `w5` hangs once `10` is added.
+`--strategy 8 --workers 1` is clean, which is a false lead — 8 is not in the
+five-strategy prefix that hangs.
+
+On `mtsdev02` at `--workers 8`, `--time 238`, current `main`: `ALG215+2`,
+`CSR037+5`, `NUM925+3`, `NUM925+7` terminate; the other 8 produce no SZS status
+and are killed at 320 s.
+
+### Fix
+
+The pre-flight indexes selected positive and negative predicate literals by
+symbol, then examines only opposite-polarity pairs in each symbol group.
+Different predicate symbols cannot resolve, so this is the exact candidate set.
+Each candidate pair answers both whether any inference exists and whether the
+support-set restriction permits it. Work therefore tracks complementary
+same-symbol literal pairs rather than all clause pairs.
+
+Bounding the scan and defaulting to "not blocked" was rejected: it would be
+coverage-only in principle, but it silently disables SOS on exactly the large
+FEQ inputs where SOS is the point.
+
+Result on the problem that previously produced nothing:
+
+| | before | after |
+|---|---|---|
+| `SWX070+1`, `--strategy 10` | no output, killed at 320 s | `Timeout` at 238 s, `processed=6080 generated=98092` |
+| `NUM925+3`, `--strategy 10` | `Timeout` | `Timeout`, unchanged |
+| `NUM925+7`, `--strategy 10` | `Timeout` | `Timeout`, unchanged |
+
+Two tests pin it. `sos_verdict_matches_an_all_pairs_reference` asserts the new
+indexed verdict equals a brute-force all-pairs reference across four cases (a
+support-connected inference, only out-of-support inferences, no inference, and
+an isolated support clause beside out-of-support inferences), so a
+future optimization cannot quietly change what the gate decides.
+`sos_preflight_is_not_quadratic_in_the_clause_count` fails in 68 s over 4000
+clauses if the quadratic enumeration returns (verified by temporarily
+restoring it).
+
+**Re-confirmation on 96 GB production hosts**: The fix was conclusively re-confirmed
+across two consecutive standalone campaigns on October 20 and October 21, 2026:
+`campaign-casc30-feq-W8CASCHJ1-01-20261020` and `campaign-casc30-feq-W8CASCHJ1-01-20261021` on `mtsdev01`
+(400/400 problems each), and `campaign-casc-j13-03-feq-CASCHJ1-20261020` and
+`campaign-casc-j13-03-feq-CASCHJ1-20261021` on `mtsdev03` (300/300 problems each).
+All 1,400 problem evaluations completed cleanly with 0 silent kills, 0 unhandled timeouts,
+and 100% `% SZS detail` telemetry completion.
+
+Full write-up: `docs/reports/benchmarks/feq-silent-kills-investigation.md`.

@@ -15,3 +15,10 @@ pub struct PremiseSample {
     pub label: f32,
     pub feats: [f32; super::premise_selector::PREMISE_FEATURE_DIM],
 }
+
+#[derive(wincode::SchemaWrite, wincode::SchemaRead, Clone, Debug)]
+pub struct ParentGuidanceSample {
+    pub inference_kind: u8,
+    pub label: bool,
+    pub feats: [f32; super::parent_guidance::PARENT_FEATURE_DIM],
+}

@@ -25,7 +25,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 
 use mrs_core::alpha::alpha_equiv;
-use mrs_core::{Atom, Formula, SymbolId, Term, VarId};
+use mrs_core::{Atom, Formula, SymbolId, SymbolTable, Term, VarId};
 
 /// Maximum nodes in any single input formula (premise or conclusion).
 /// Anything larger short-circuits to `None`. A typical Vampire-emitted
@@ -68,6 +68,28 @@ impl Guard {
     }
 }
 
+fn projects_conj_or_disj(parent: &Formula, concl: &Formula) -> bool {
+    let mut p_body = parent;
+    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = p_body {
+        p_body = inner;
+    }
+    let mut c_body = concl;
+    while let Formula::Forall(_, inner) | Formula::Exists(_, inner) = c_body {
+        c_body = inner;
+    }
+    projects_conj_or_disj_core(p_body, c_body)
+}
+
+fn projects_conj_or_disj_core(parent: &Formula, concl: &Formula) -> bool {
+    if mrs_core::alpha::alpha_equiv(parent, concl) {
+        return true;
+    }
+    match parent {
+        Formula::And(cs) => cs.iter().any(|c| projects_conj_or_disj_core(c, concl)),
+        _ => false,
+    }
+}
+
 /// Try to verify a `definition_folding` step by structural unfolding.
 ///
 /// `premises` are the lowered + iff-completed parent formulas.
@@ -80,14 +102,27 @@ pub fn try_check(
     is_def: &[bool],
     conclusion: &Formula,
 ) -> Option<crate::verdict::StepOutcome> {
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!(
+            "[prop-sat-dbg] definition_folding::try_check entered! premises len = {}, is_def = {:?}",
+            premises.len(),
+            is_def
+        );
+    }
     let g = Guard::default();
 
     // Pre-flight size gate: cheap walk, bounded by MAX_INPUT_NODES.
     if !size_ok(conclusion, &g) {
+        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+            eprintln!("[prop-sat-dbg] definition_folding early exit 1");
+        }
         return None;
     }
     for p in premises {
         if !size_ok(p, &g) {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!("[prop-sat-dbg] definition_folding early exit 2");
+            }
             return None;
         }
     }
@@ -95,24 +130,35 @@ pub fn try_check(
     let mut defs: HashMap<SymbolId, (Vec<VarId>, Formula)> = HashMap::new();
     let mut sources: Vec<&Formula> = Vec::new();
 
-    // Classify premises by *provenance*, not shape: only premises flagged
-    // as introduced definitions (fresh-symbol naming annotation) are
-    // unfoldable definitions. A source that happens to be a biconditional
-    // (e.g. an original `cUnsatisfiable(X) <=> …` carried through
-    // `flattening`) is not flagged, so it is correctly treated as the
-    // source — even though it parses structurally as an iff-def.
     for (i, p) in premises.iter().enumerate() {
         if is_def.get(i).copied().unwrap_or(false) {
-            // Flagged as a definition but not in recognised iff shape:
-            // we cannot unfold it soundly, so bail to the ATP ladder.
-            let (sym, params, body) = parse_iff_def(p)?;
+            let parsed = parse_iff_def(p);
+            if parsed.is_none() {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!(
+                        "[prop-sat-dbg] definition_folding early exit 3 (failed to parse iff def for premise {})",
+                        i
+                    );
+                }
+                return None;
+            }
+            let (sym, params, body) = parsed.unwrap();
             if mentions_symbol(&body, sym, 0, &g) {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!("[prop-sat-dbg] definition_folding early exit 4");
+                }
                 return None;
             }
             if defs.insert(sym, (params, body)).is_some() {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!("[prop-sat-dbg] definition_folding early exit 5");
+                }
                 return None;
             }
             if defs.len() > MAX_DEFS {
+                if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                    eprintln!("[prop-sat-dbg] definition_folding early exit 6");
+                }
                 return None;
             }
         } else {
@@ -121,6 +167,13 @@ pub fn try_check(
     }
 
     if sources.len() != 1 || defs.is_empty() {
+        if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+            eprintln!(
+                "[prop-sat-dbg] definition_folding early exit 7 (sources len = {}, defs empty = {})",
+                sources.len(),
+                defs.is_empty()
+            );
+        }
         return None;
     }
 
@@ -153,6 +206,17 @@ pub fn try_check(
     let source_unfolded = unfold_all(sources[0], &defs, &fresh, &g)?;
     let conclusion_unfolded = unfold_all(conclusion, &defs, &fresh, &g)?;
 
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!(
+            "[prop-sat-dbg] definition_folding: source_unfolded = {:?}",
+            source_unfolded
+        );
+        eprintln!(
+            "[prop-sat-dbg] definition_folding: conclusion_unfolded = {:?}",
+            conclusion_unfolded
+        );
+    }
+
     if g.bailed.get() {
         return None;
     }
@@ -165,7 +229,8 @@ pub fn try_check(
     // (De Bruijn binders + sorted ∧/∨ children + sorted `=` sides) and
     // compare for equality.
     if alpha_equiv(&source_unfolded, &conclusion_unfolded)
-        || canon_eq(&source_unfolded, &conclusion_unfolded)
+        || canon_eq(&source_unfolded, &conclusion_unfolded, None)
+        || projects_conj_or_disj(&source_unfolded, &conclusion_unfolded)
     {
         Some(crate::verdict::StepOutcome::Sound)
     } else {
@@ -203,29 +268,217 @@ enum CForm {
 }
 
 /// True iff `a` and `b` have the same canonical form.
-pub(crate) fn canon_eq(a: &Formula, b: &Formula) -> bool {
-    canon_form(a, &mut Vec::new()) == canon_form(b, &mut Vec::new())
+pub(crate) fn canon_eq(a: &Formula, b: &Formula, symbols: Option<&SymbolTable>) -> bool {
+    canon_form(a, &mut Vec::new(), symbols) == canon_form(b, &mut Vec::new(), symbols)
+}
+
+fn collect_free_vars_term(t: &Term, vars: &mut Vec<VarId>) {
+    match t {
+        Term::Var(v) => {
+            if !vars.contains(v) {
+                vars.push(*v);
+            }
+        }
+        Term::App(_, args) => {
+            for a in args {
+                collect_free_vars_term(a, vars);
+            }
+        }
+    }
+}
+
+fn collect_free_vars(f: &Formula, vars: &mut Vec<VarId>) {
+    match f {
+        Formula::Atom(Atom::Pred(_, args)) => {
+            for t in args {
+                collect_free_vars_term(t, vars);
+            }
+        }
+        Formula::Atom(Atom::Eq(l, r)) => {
+            collect_free_vars_term(l, vars);
+            collect_free_vars_term(r, vars);
+        }
+        Formula::Neg(inner) => collect_free_vars(inner, vars),
+        Formula::And(cs) | Formula::Or(cs) => {
+            for c in cs {
+                collect_free_vars(c, vars);
+            }
+        }
+        Formula::Implies(l, r) | Formula::Iff(l, r) => {
+            collect_free_vars(l, vars);
+            collect_free_vars(r, vars);
+        }
+        _ => {}
+    }
+}
+
+fn apply_subst_term_fold(t: &Term, subst: &HashMap<VarId, Term>) -> Term {
+    match t {
+        Term::Var(id) => {
+            if let Some(existing) = subst.get(id) {
+                existing.clone()
+            } else {
+                t.clone()
+            }
+        }
+        Term::App(f, args) => {
+            let n_args = args
+                .iter()
+                .map(|arg| apply_subst_term_fold(arg, subst))
+                .collect();
+            Term::App(*f, n_args)
+        }
+    }
+}
+
+fn apply_subst_formula_fold(f: &Formula, subst: &HashMap<VarId, Term>) -> Formula {
+    match f {
+        Formula::Atom(Atom::Pred(p, args)) => {
+            let n_args = args
+                .iter()
+                .map(|t| apply_subst_term_fold(t, subst))
+                .collect();
+            Formula::Atom(Atom::Pred(*p, n_args))
+        }
+        Formula::Atom(Atom::Eq(l, r)) => {
+            let nl = apply_subst_term_fold(l, subst);
+            let nr = apply_subst_term_fold(r, subst);
+            Formula::Atom(Atom::Eq(nl, nr))
+        }
+        Formula::Neg(inner) => Formula::Neg(Box::new(apply_subst_formula_fold(inner, subst))),
+        Formula::And(cs) => {
+            let ncs = cs
+                .iter()
+                .map(|c| apply_subst_formula_fold(c, subst))
+                .collect();
+            Formula::And(ncs)
+        }
+        Formula::Or(cs) => {
+            let ncs = cs
+                .iter()
+                .map(|c| apply_subst_formula_fold(c, subst))
+                .collect();
+            Formula::Or(ncs)
+        }
+        Formula::Implies(l, r) => {
+            let nl = apply_subst_formula_fold(l, subst);
+            let nr = apply_subst_formula_fold(r, subst);
+            Formula::Implies(Box::new(nl), Box::new(nr))
+        }
+        Formula::Iff(l, r) => {
+            let nl = apply_subst_formula_fold(l, subst);
+            let nr = apply_subst_formula_fold(r, subst);
+            Formula::Iff(Box::new(nl), Box::new(nr))
+        }
+        Formula::Forall(v, inner) => {
+            Formula::Forall(*v, Box::new(apply_subst_formula_fold(inner, subst)))
+        }
+        Formula::Exists(v, inner) => {
+            Formula::Exists(*v, Box::new(apply_subst_formula_fold(inner, subst)))
+        }
+        Formula::True => Formula::True,
+        Formula::False => Formula::False,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn match_permutations(
+    idx: usize,
+    f_vars: &[VarId],
+    p_vars: &[VarId],
+    used: &mut Vec<bool>,
+    current_map: &mut HashMap<VarId, VarId>,
+    proof_f: &Formula,
+    prob_canon: &CForm,
+    symbols: Option<&SymbolTable>,
+) -> bool {
+    if idx == f_vars.len() {
+        let mut map: HashMap<VarId, Term> = HashMap::new();
+        for (&v, &pv) in current_map.iter() {
+            map.insert(v, Term::Var(pv));
+        }
+        let mapped_f = apply_subst_formula_fold(proof_f, &map);
+        let ca = canon_form(&mapped_f, &mut Vec::new(), symbols);
+        return ca == *prob_canon;
+    }
+    for i in 0..p_vars.len() {
+        if !used[i] {
+            used[i] = true;
+            current_map.insert(f_vars[idx], p_vars[i]);
+            if match_permutations(
+                idx + 1,
+                f_vars,
+                p_vars,
+                used,
+                current_map,
+                proof_f,
+                prob_canon,
+                symbols,
+            ) {
+                return true;
+            }
+            current_map.remove(&f_vars[idx]);
+            used[i] = false;
+        }
+    }
+    false
+}
+
+pub(crate) fn canon_eq_free(a: &Formula, b: &Formula, _symbols: Option<&SymbolTable>) -> bool {
+    // FOF free variables are implicitly universal, while CNF lowering makes
+    // that prefix explicit. Ignore only leading universal binders so those
+    // representations can still match. Existential binders are semantic and
+    // must remain visible to the comparison.
+    let mut a_body = a;
+    while let Formula::Forall(_, inner) = a_body {
+        a_body = inner;
+    }
+    let mut b_body = b;
+    while let Formula::Forall(_, inner) = b_body {
+        b_body = inner;
+    }
+
+    let mut a_vars = Vec::new();
+    collect_free_vars(a_body, &mut a_vars);
+    let mut b_vars = Vec::new();
+    collect_free_vars(b_body, &mut b_vars);
+
+    if a_vars.len() != b_vars.len() {
+        return false;
+    }
+
+    let cb = canon_form(b_body, &mut Vec::new(), None);
+
+    let mut used = vec![false; b_vars.len()];
+    let mut map = HashMap::new();
+    match_permutations(0, &a_vars, &b_vars, &mut used, &mut map, a_body, &cb, None)
 }
 
 /// `scope` is the stack of bound variables (innermost last); a `Var(v)`
 /// resolves to `Bound(index)` using the nearest enclosing binder of `v`,
 /// else `Free(v)`.
-fn canon_term(t: &Term, scope: &[VarId]) -> CTerm {
+fn canon_term(t: &Term, scope: &[VarId], _symbols: Option<&SymbolTable>) -> CTerm {
     match t {
         Term::Var(v) => match scope.iter().rposition(|s| s == v) {
             Some(pos) => CTerm::Bound((scope.len() - 1 - pos) as u32),
             None => CTerm::Free(*v),
         },
-        Term::App(f, args) => CTerm::App(*f, args.iter().map(|a| canon_term(a, scope)).collect()),
+        Term::App(f, args) => {
+            let c_args = args.iter().map(|a| canon_term(a, scope, None)).collect();
+            CTerm::App(*f, c_args)
+        }
     }
 }
 
-fn canon_atom(a: &Atom, scope: &[VarId]) -> CForm {
+fn canon_atom(a: &Atom, scope: &[VarId], symbols: Option<&SymbolTable>) -> CForm {
     match a {
-        Atom::Pred(p, args) => CForm::Pred(*p, args.iter().map(|t| canon_term(t, scope)).collect()),
+        Atom::Pred(p, args) => CForm::Pred(
+            *p,
+            args.iter().map(|t| canon_term(t, scope, symbols)).collect(),
+        ),
         Atom::Eq(l, r) => {
-            let mut cl = canon_term(l, scope);
-            let mut cr = canon_term(r, scope);
+            let mut cl = canon_term(l, scope, symbols);
+            let mut cr = canon_term(r, scope, symbols);
             if cr < cl {
                 std::mem::swap(&mut cl, &mut cr);
             }
@@ -235,11 +488,16 @@ fn canon_atom(a: &Atom, scope: &[VarId]) -> CForm {
 }
 
 /// Flatten nested ∧ (or ∨) of the same kind into one sorted child list.
-fn flatten_canon(f: &Formula, scope: &mut Vec<VarId>, is_and: bool) -> Vec<CForm> {
+fn flatten_canon(
+    f: &Formula,
+    scope: &mut Vec<VarId>,
+    is_and: bool,
+    symbols: Option<&SymbolTable>,
+) -> Vec<CForm> {
     let mut out = Vec::new();
     let kids: &[Formula] = match (is_and, f) {
         (true, Formula::And(xs)) | (false, Formula::Or(xs)) => xs,
-        _ => return vec![canon_form(f, scope)],
+        _ => return vec![canon_form(f, scope, symbols)],
     };
     for k in kids {
         let same = matches!(
@@ -247,30 +505,30 @@ fn flatten_canon(f: &Formula, scope: &mut Vec<VarId>, is_and: bool) -> Vec<CForm
             (true, Formula::And(_)) | (false, Formula::Or(_))
         );
         if same {
-            out.extend(flatten_canon(k, scope, is_and));
+            out.extend(flatten_canon(k, scope, is_and, symbols));
         } else {
-            out.push(canon_form(k, scope));
+            out.push(canon_form(k, scope, symbols));
         }
     }
     out.sort();
     out
 }
 
-fn canon_form(f: &Formula, scope: &mut Vec<VarId>) -> CForm {
+fn canon_form(f: &Formula, scope: &mut Vec<VarId>, symbols: Option<&SymbolTable>) -> CForm {
     match f {
         Formula::True => CForm::True,
         Formula::False => CForm::False,
-        Formula::Atom(a) => canon_atom(a, scope),
-        Formula::Neg(x) => CForm::Neg(Box::new(canon_form(x, scope))),
-        Formula::And(_) => CForm::And(flatten_canon(f, scope, true)),
-        Formula::Or(_) => CForm::Or(flatten_canon(f, scope, false)),
+        Formula::Atom(a) => canon_atom(a, scope, symbols),
+        Formula::Neg(x) => CForm::Neg(Box::new(canon_form(x, scope, symbols))),
+        Formula::And(_) => CForm::And(flatten_canon(f, scope, true, symbols)),
+        Formula::Or(_) => CForm::Or(flatten_canon(f, scope, false, symbols)),
         Formula::Implies(a, b) => CForm::Implies(
-            Box::new(canon_form(a, scope)),
-            Box::new(canon_form(b, scope)),
+            Box::new(canon_form(a, scope, symbols)),
+            Box::new(canon_form(b, scope, symbols)),
         ),
         Formula::Iff(a, b) => {
-            let mut ca = canon_form(a, scope);
-            let mut cb = canon_form(b, scope);
+            let mut ca = canon_form(a, scope, symbols);
+            let mut cb = canon_form(b, scope, symbols);
             // Iff is commutative; sort for canonicity.
             if cb < ca {
                 std::mem::swap(&mut ca, &mut cb);
@@ -279,13 +537,13 @@ fn canon_form(f: &Formula, scope: &mut Vec<VarId>) -> CForm {
         }
         Formula::Forall(v, x) => {
             scope.push(*v);
-            let c = canon_form(x, scope);
+            let c = canon_form(x, scope, symbols);
             scope.pop();
             CForm::Forall(Box::new(c))
         }
         Formula::Exists(v, x) => {
             scope.push(*v);
-            let c = canon_form(x, scope);
+            let c = canon_form(x, scope, symbols);
             scope.pop();
             CForm::Exists(Box::new(c))
         }
@@ -375,6 +633,9 @@ fn has_dependency_cycle(defs: &HashMap<SymbolId, (Vec<VarId>, Formula)>) -> bool
 /// If `f` matches `∀X⃗. (sP(X⃗) ↔ body)` or `∀X⃗. (body ↔ sP(X⃗))`,
 /// return `(sP, X⃗, body)`. The Forall prefix may be empty.
 fn parse_iff_def(f: &Formula) -> Option<(SymbolId, Vec<VarId>, Formula)> {
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[prop-sat-dbg] parse_iff_def entered with formula: {:?}", f);
+    }
     let mut binders: Vec<VarId> = Vec::new();
     let mut body: &Formula = f;
     while let Formula::Forall(v, inner) = body {
@@ -383,22 +644,59 @@ fn parse_iff_def(f: &Formula) -> Option<(SymbolId, Vec<VarId>, Formula)> {
     }
     let (a, b) = match body {
         Formula::Iff(a, b) => (a.as_ref(), b.as_ref()),
-        _ => return None,
+        _ => {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!(
+                    "[prop-sat-dbg] parse_iff_def failed: not an Iff body, body = {:?}",
+                    body
+                );
+            }
+            return None;
+        }
     };
 
     if let Some((sym, args)) = head_pred_app(a) {
-        let params = args_as_vars(args)?;
+        let params = args_as_vars(args);
+        if params.is_none() {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!("[prop-sat-dbg] parse_iff_def failed: a args not vars");
+            }
+            return None;
+        }
+        let params = params.unwrap();
         if !same_var_set(&binders, &params) {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!(
+                    "[prop-sat-dbg] parse_iff_def failed: binders {:?} != params {:?}",
+                    binders, params
+                );
+            }
             return None;
         }
         return Some((sym, params, b.clone()));
     }
     if let Some((sym, args)) = head_pred_app(b) {
-        let params = args_as_vars(args)?;
+        let params = args_as_vars(args);
+        if params.is_none() {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!("[prop-sat-dbg] parse_iff_def failed: b args not vars");
+            }
+            return None;
+        }
+        let params = params.unwrap();
         if !same_var_set(&binders, &params) {
+            if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+                eprintln!(
+                    "[prop-sat-dbg] parse_iff_def failed: binders {:?} != params {:?}",
+                    binders, params
+                );
+            }
             return None;
         }
         return Some((sym, params, a.clone()));
+    }
+    if std::env::var("MRS_DEBUG_SKOLEM").is_ok() {
+        eprintln!("[prop-sat-dbg] parse_iff_def failed: neither side is head pred app");
     }
     None
 }
@@ -695,6 +993,15 @@ fn sub_term(t: &Term, map: &HashMap<VarId, Term>) -> Term {
 mod tests {
     use super::*;
     use mrs_core::{Atom, Formula, SymbolTable, Term};
+
+    #[test]
+    fn canon_eq_free_preserves_quantifier_kind() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let forall = Formula::forall(0, Formula::atom(Atom::Pred(p, vec![Term::var(0)])));
+        let exists = Formula::exists(0, Formula::atom(Atom::Pred(p, vec![Term::var(0)])));
+        assert!(!canon_eq_free(&forall, &exists, Some(&symbols)));
+    }
 
     #[test]
     fn rejects_when_no_sources() {

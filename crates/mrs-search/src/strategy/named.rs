@@ -30,16 +30,147 @@
 
 use std::time::Duration;
 
-use crate::{LiteralSelection, SearchConfig, SelectionStrategy, TermOrdering};
+use crate::{LiteralSelection, QueueType, SearchConfig, SelectionStrategy, TermOrdering};
 
 use super::StrategySchedule;
 
 /// All built-in schedule names, in the order they should be listed in
 /// `--help` output.
 pub const ALL: &[&str] = &[
-    "casc", "casc_feq", "casc_fne", "casc_ueq", "casc_epr", "casc_eps", "casc_epu", "casc_icu",
-    "fast", "mini", "ml", "ml_feq", "ml_fne", "ml_ueq", "ml_epr",
+    "casc",
+    "casc_feq",
+    "casc_fne",
+    "casc_ueq",
+    "casc_epr",
+    "casc_eps",
+    "casc_epu",
+    "casc_icu",
+    "casc_fne_mq_hybrid",
+    "fast",
+    "mini",
+    "ml",
+    "ml_feq",
+    "ml_fne",
+    "ml_ueq",
+    "ml_epr",
+    "mq",
+    "mq_1",
+    "mq_2",
+    "mq_3",
+    "mq_4",
+    "mq_5",
+    "mq_6",
+    "mq_7",
+    "mq_8",
 ];
+
+const DEFAULT_CASC_ORDER: [usize; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+const CASC_FEQ_ORDER: [usize; 15] = [11, 12, 1, 6, 10, 8, 14, 4, 5, 2, 3, 7, 9, 13, 15];
+const CASC_FNE_ORDER: [usize; 15] = [11, 13, 4, 8, 15, 7, 3, 1, 10, 12, 6, 2, 9, 14, 5];
+const CASC_UEQ_ORDER: [usize; 15] = [4, 8, 12, 11, 2, 14, 15, 1, 3, 5, 6, 7, 9, 10, 13];
+const CASC_EPR_ORDER: [usize; 15] = [6, 2, 1, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+const CASC_EPS_ORDER: [usize; 15] = [2, 3, 1, 8, 11, 12, 9, 14, 7, 10, 5, 13, 15, 6, 4];
+const CASC_EPU_ORDER: [usize; 15] = [1, 6, 14, 11, 4, 2, 3, 7, 5, 8, 10, 9, 12, 13, 15];
+const CASC_ICU_ORDER: [usize; 15] = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15];
+
+fn canonical_order(name: &str) -> Option<&'static [usize; 15]> {
+    match name {
+        "casc" | "default" => Some(&DEFAULT_CASC_ORDER),
+        "casc_feq" => Some(&CASC_FEQ_ORDER),
+        "casc_fne" => Some(&CASC_FNE_ORDER),
+        "casc_ueq" => Some(&CASC_UEQ_ORDER),
+        "casc_epr" => Some(&CASC_EPR_ORDER),
+        "casc_eps" => Some(&CASC_EPS_ORDER),
+        "casc_epu" => Some(&CASC_EPU_ORDER),
+        "casc_icu" => Some(&CASC_ICU_ORDER),
+        _ => None,
+    }
+}
+
+fn uses_goal_transformation(name: &str) -> bool {
+    matches!(name, "casc_ueq" | "casc_icu")
+}
+
+fn build_casc_schedule_from_ids(total_time: Duration, ids: &[usize]) -> Option<StrategySchedule> {
+    if ids.is_empty() || ids.iter().any(|&id| !(1..=15).contains(&id)) {
+        return None;
+    }
+    let base_configs = super::StrategySchedule::_all_strategies(Duration::ZERO, 0)
+        .strategies
+        .into_iter()
+        .map(|(config, _)| config)
+        .collect::<Vec<_>>();
+    let slots = ids.len();
+    let part = Duration::from_millis((total_time.as_millis() / slots as u128) as u64);
+    let last = total_time.saturating_sub(part * (slots as u32 - 1));
+    let mut strategies = Vec::with_capacity(slots);
+    for (idx, &id) in ids.iter().enumerate() {
+        let time = if idx + 1 == slots { last } else { part };
+        let mut config = base_configs[id - 1].clone();
+        config.time_limit = time;
+        config.strategy_id = id;
+        strategies.push((config, time));
+    }
+    Some(StrategySchedule { strategies })
+}
+
+/// Build an explicit cooperative portfolio from base strategy IDs.
+///
+/// IDs refer to the fifteen base strategies in `_all_strategies`, not to the
+/// slot number in the resulting schedule. The IDs must be in `1..=15`; the
+/// caller normally supplies one ID per worker so every slot runs concurrently.
+pub fn with_portfolio(
+    name: &str,
+    total_time: Duration,
+    workers: usize,
+    ids: &[usize],
+) -> Option<StrategySchedule> {
+    canonical_order(name)?;
+    if ids.is_empty()
+        || ids.len() != workers.max(1)
+        || ids.iter().any(|&id| !(1..=15).contains(&id))
+    {
+        return None;
+    }
+
+    let mut schedule = build_casc_schedule_from_ids(total_time, ids)?;
+    if uses_goal_transformation(name) {
+        for (i, (cfg, _)) in schedule.strategies.iter_mut().enumerate() {
+            cfg.goal_transformation = match i % 3 {
+                0 => None,
+                1 => Some(crate::GoalTransformMode::RecursiveSubterms),
+                2 => Some(crate::GoalTransformMode::MaximalSubterms),
+                _ => unreachable!(),
+            };
+        }
+    }
+    // Keep cooperative experiments identical to the named schedule's normal
+    // SInE configuration rather than silently using raw base strategies.
+    schedule.apply_sine_threshold_tuning();
+
+    Some(schedule)
+}
+
+/// Select one exact base strategy from a named CASC division schedule.
+///
+/// For UEQ/ICU, the canonical slot position is retained so the slot-specific
+/// goal transformation is preserved even though the selected strategy runs
+/// alone for the full budget.
+pub fn single_strategy(name: &str, total_time: Duration, id: usize) -> Option<StrategySchedule> {
+    let order = canonical_order(name)?;
+    let slot = order.iter().position(|&candidate| candidate == id)?;
+    let full = with_portfolio(name, total_time, order.len(), order)?;
+    let (mut config, _) = full.strategies.get(slot)?.clone();
+    config.time_limit = total_time;
+    Some(StrategySchedule {
+        strategies: vec![(config, total_time)],
+    })
+}
+
+/// Return the canonical base-strategy order used by a CASC division.
+pub fn canonical_strategy_order(name: &str) -> Option<&'static [usize; 15]> {
+    canonical_order(name)
+}
 
 /// Look up a schedule by name. Returns `None` if the name is unknown.
 pub fn by_name(name: &str, total_time: Duration, workers: usize) -> Option<StrategySchedule> {
@@ -52,12 +183,22 @@ pub fn by_name(name: &str, total_time: Duration, workers: usize) -> Option<Strat
         "casc_eps" => Some(casc_eps(total_time, workers)),
         "casc_epu" => Some(casc_epu(total_time, workers)),
         "casc_icu" => Some(casc_icu(total_time, workers)),
+        "casc_fne_mq_hybrid" => Some(casc_fne_mq_hybrid(total_time, workers)),
         "fast" => Some(fast(total_time, workers)),
         "mini" => Some(mini(total_time, workers)),
         "ml" | "ml_feq" => Some(ml_feq(total_time, workers)),
         "ml_fne" => Some(ml_fne(total_time, workers)),
         "ml_ueq" => Some(ml_ueq(total_time, workers)),
         "ml_epr" => Some(ml_epr(total_time, workers)),
+        "mq" => Some(mq(total_time, workers)),
+        "mq_1" => Some(mq_archetype_schedule(total_time, workers, 0)),
+        "mq_2" => Some(mq_archetype_schedule(total_time, workers, 1)),
+        "mq_3" => Some(mq_archetype_schedule(total_time, workers, 2)),
+        "mq_4" => Some(mq_archetype_schedule(total_time, workers, 3)),
+        "mq_5" => Some(mq_archetype_schedule(total_time, workers, 4)),
+        "mq_6" => Some(mq_archetype_schedule(total_time, workers, 5)),
+        "mq_7" => Some(mq_archetype_schedule(total_time, workers, 6)),
+        "mq_8" => Some(mq_archetype_schedule(total_time, workers, 7)),
         _ => None,
     };
     if let Some(s) = &mut schedule {
@@ -448,14 +589,14 @@ fn build_casc_schedule_inner(
 }
 
 /// A purely static schedule optimized for FNE (First-Order No Equality).
-/// Tunes the portfolio according to CASC-30 priority sweeps. FNE has no
-/// equality, so resolution dominates; single-negative literal selection avoids
-/// the all-negative resolution blow-up.
+/// Tunes the portfolio as a CASC-30/CASC-J13 compromise based on solo priority
+/// sweeps. FNE has no equality, so resolution dominates; single-negative
+/// literal selection avoids the all-negative resolution blow-up.
 pub fn casc_fne(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule_inner(
         total_time,
         workers,
-        &[11, 4, 12, 1, 6, 8, 2, 3, 5, 7, 9, 10, 13, 14, 15],
+        &CASC_FNE_ORDER,
         false, // The single-negative override is now handled dynamically in run_schedule
     )
 }
@@ -463,64 +604,293 @@ pub fn casc_fne(total_time: Duration, workers: usize) -> StrategySchedule {
 /// A purely static schedule optimized for FEQ (First-Order with Equality).
 /// Tunes the portfolio according to CASC-30 priority sweeps.
 pub fn casc_feq(total_time: Duration, workers: usize) -> StrategySchedule {
-    build_casc_schedule(
-        total_time,
-        workers,
-        &[11, 12, 1, 6, 10, 8, 14, 4, 5, 2, 3, 7, 9, 13, 15],
-    )
+    build_casc_schedule(total_time, workers, &CASC_FEQ_ORDER)
 }
 
 /// A purely static schedule optimized for UEQ (Unit Equality).
-/// Tunes the portfolio according to CASC-30 priority sweeps.
+/// Tunes the portfolio as a CASC-30/CASC-J13 compromise based on solo priority
+/// sweeps, interleaved with Twee-style goal-directed subterm flattening on
+/// complementary workers.
 pub fn casc_ueq(total_time: Duration, workers: usize) -> StrategySchedule {
-    build_casc_schedule(
-        total_time,
-        workers,
-        &[11, 4, 2, 8, 14, 1, 15, 3, 5, 6, 7, 9, 10, 12, 13],
-    )
+    let mut schedule = build_casc_schedule(total_time, workers, &CASC_UEQ_ORDER);
+    for (i, (cfg, _)) in schedule.strategies.iter_mut().enumerate() {
+        cfg.goal_transformation = match i % 3 {
+            0 => None,
+            1 => Some(crate::GoalTransformMode::RecursiveSubterms),
+            2 => Some(crate::GoalTransformMode::MaximalSubterms),
+            _ => unreachable!(),
+        };
+    }
+    schedule
 }
 
 /// A schedule optimized for EPR Unsatisfiable (EPU).
 /// Greedy order: s1 (+14/16), s6 (+2/16) — 100% coverage at 2 cores.
 /// Tunes the portfolio according to CASC-30 priority sweeps.
 pub fn casc_epu(total_time: Duration, workers: usize) -> StrategySchedule {
-    build_casc_schedule(
-        total_time,
-        workers,
-        &[1, 6, 14, 11, 4, 2, 3, 7, 5, 8, 10, 9, 12, 13, 15],
-    )
+    build_casc_schedule(total_time, workers, &CASC_EPU_ORDER)
 }
 
 /// A schedule optimized for EPR Satisfiable (EPS).
 /// Greedy order: s2 (+38/38) — 100% coverage at 1 core.
 /// Verified on the AVX2 sweep dataset eps_avx1_run.csv.
 pub fn casc_eps(total_time: Duration, workers: usize) -> StrategySchedule {
-    build_casc_schedule(
-        total_time,
-        workers,
-        &[2, 3, 1, 8, 11, 12, 9, 14, 7, 10, 5, 13, 15, 6, 4],
-    )
+    build_casc_schedule(total_time, workers, &CASC_EPS_ORDER)
 }
 
 /// A schedule optimized for EPR (Effectively Propositional) — used as
 /// a fallback for both EPS and EPU when a specific schedule isn't selected.
 /// Prioritises s6 first (better for EPU; EPS route uses casc_eps directly).
 pub fn casc_epr(total_time: Duration, workers: usize) -> StrategySchedule {
-    build_casc_schedule(
-        total_time,
-        workers,
-        &[6, 2, 1, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-    )
+    build_casc_schedule(total_time, workers, &CASC_EPR_ORDER)
 }
 
 /// A purely static schedule optimized for ICU (Intensional Unit Equality).
-/// Tunes the portfolio according to CASC-30 priority sweeps.
+/// Tunes the portfolio according to CASC-30 priority sweeps, interleaved
+/// with Twee-style goal-directed subterm flattening on complementary workers.
 pub fn casc_icu(total_time: Duration, workers: usize) -> StrategySchedule {
-    build_casc_schedule(
-        total_time,
-        workers,
-        &[12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15],
-    )
+    let mut schedule = build_casc_schedule(total_time, workers, &CASC_ICU_ORDER);
+    for (i, (cfg, _)) in schedule.strategies.iter_mut().enumerate() {
+        cfg.goal_transformation = match i % 3 {
+            0 => None,
+            1 => Some(crate::GoalTransformMode::RecursiveSubterms),
+            2 => Some(crate::GoalTransformMode::MaximalSubterms),
+            _ => unreachable!(),
+        };
+    }
+    schedule
+}
+
+/// A multi-queue portfolio leveraging prioritized unit, Horn, SOS, and goal-directed queues.
+/// Distributes diverse multi-queue configurations across the worker threads.
+pub fn mq(total_time: Duration, workers: usize) -> StrategySchedule {
+    build_mq_schedule(total_time, workers, &[0, 1, 2, 3, 4, 5, 6, 7])
+}
+
+/// Eight-slot FNE experiment retaining four high-coverage base strategies and
+/// adding four diverse MultiQueue configurations. This is diagnostic until
+/// replicated cooperative runs establish its coverage and certification.
+pub fn casc_fne_mq_hybrid(total_time: Duration, workers: usize) -> StrategySchedule {
+    let base_ids = [11, 13, 4, 15];
+    let mq_indices = [0, 1, 2, 5];
+    let base_configs = super::StrategySchedule::_all_strategies(Duration::ZERO, 0)
+        .strategies
+        .into_iter()
+        .map(|(config, _)| config)
+        .collect::<Vec<_>>();
+    let archetypes = mq_archetypes();
+    let template = base_ids
+        .iter()
+        .map(|&id| base_configs[id - 1].clone())
+        .chain(mq_indices.iter().map(|&index| archetypes[index].clone()))
+        .collect::<Vec<_>>();
+    build_from_template(total_time, workers, &template)
+}
+
+fn mq_archetypes() -> [SearchConfig; 8] {
+    let archetype_specs = [
+        // 0: Balanced multi-queue
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 4),
+                (QueueType::Unit, 2),
+                (QueueType::Goal, 2),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            None,
+            true,
+            true,
+        ),
+        // 1: Unit & Horn priority (no AVATAR)
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 3),
+                (QueueType::Unit, 3),
+                (QueueType::Horn, 3),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            None,
+            false,
+            false,
+        ),
+        // 2: Goal & SOS directed
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 3),
+                (QueueType::Goal, 3),
+                (QueueType::Sos, 3),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            None,
+            true,
+            false,
+        ),
+        // 3: Fast unit equational demodulation (LPO)
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 4),
+                (QueueType::Unit, 4),
+            ]),
+            LiteralSelection::All,
+            TermOrdering::LPO,
+            None,
+            false,
+            false,
+        ),
+        // 4: ConjSymbolBoost multi-queue
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 4),
+                (QueueType::Unit, 2),
+                (QueueType::Goal, 2),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            Some(crate::ClauseWeightFn::ConjSymbolBoost),
+            true,
+            false,
+        ),
+        // 5: Horn heuristic multi-queue (no AVATAR)
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 3),
+                (QueueType::Horn, 4),
+                (QueueType::Unit, 2),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            Some(crate::ClauseWeightFn::HornHeuristic),
+            false,
+            false,
+        ),
+        // 6: Aggressive goal-directed (LPO)
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Goal, 5),
+                (QueueType::Unit, 3),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::LPO,
+            None,
+            true,
+            false,
+        ),
+        // 7: Deep chain multi-queue (no AVATAR, unbounded weight)
+        (
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Age, 1),
+                (QueueType::Weight, 5),
+                (QueueType::Unit, 2),
+            ]),
+            LiteralSelection::AllNegative,
+            TermOrdering::KBO,
+            None,
+            false,
+            false,
+        ),
+    ];
+
+    std::array::from_fn(|i| {
+        let (selection, literal_selection, ordering, weight_fn, use_avatar, max_w) =
+            &archetype_specs[i];
+        let mut cfg = SearchConfig {
+            time_limit: Duration::ZERO,
+            selection: selection.clone(),
+            literal_selection: literal_selection.clone(),
+            ordering: ordering.clone(),
+            use_avatar: *use_avatar,
+            strategy_id: 101 + i,
+            ..SearchConfig::default()
+        };
+        if let Some(wf) = weight_fn {
+            cfg.weight_fn = wf.clone();
+        }
+        if !*max_w {
+            cfg.max_term_weight = None;
+        }
+        match i {
+            0 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::InvFreq;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::Uniform;
+            }
+            1 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::ArityMin;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::Arity;
+            }
+            2 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::GoalBoost;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::ConjectureBonus;
+            }
+            3 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::InvFreq;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::Uniform;
+            }
+            4 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::GoalBoost;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::Uniform;
+            }
+            5 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::ArityMin;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::Arity;
+            }
+            6 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::GoalBoost;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::ConjectureBonus;
+            }
+            7 => {
+                cfg.precedence_scheme = crate::PrecedenceScheme::ArityMax;
+                cfg.symbol_weight_scheme = crate::SymbolWeightScheme::InvFreq;
+            }
+            _ => {}
+        }
+        cfg
+    })
+}
+
+fn build_mq_schedule(
+    total_time: Duration,
+    workers: usize,
+    archetype_indices: &[usize],
+) -> StrategySchedule {
+    let archetypes = mq_archetypes();
+    let workers = workers.max(1);
+    let configs = (0..workers)
+        .map(|i| archetypes[archetype_indices[i % archetype_indices.len()]].clone())
+        .collect::<Vec<_>>();
+    build_from_template(total_time, workers, &configs)
+}
+
+fn mq_archetype_schedule(total_time: Duration, workers: usize, index: usize) -> StrategySchedule {
+    build_mq_schedule(total_time, workers, &[index])
+}
+
+fn build_from_template(
+    total_time: Duration,
+    workers: usize,
+    template: &[SearchConfig],
+) -> StrategySchedule {
+    let workers = workers.max(1);
+    let part = Duration::from_millis((total_time.as_millis() / workers as u128) as u64);
+    let last = total_time.saturating_sub(part * (workers as u32 - 1));
+    let strategies = (0..workers)
+        .map(|i| {
+            let time = if i + 1 == workers { last } else { part };
+            let mut config = template[i % template.len()].clone();
+            config.time_limit = time;
+            (config, time)
+        })
+        .collect();
+    StrategySchedule { strategies }
 }
 
 #[cfg(test)]
@@ -533,6 +903,8 @@ mod tests {
         let s = by_name("casc", t, 1).expect("casc must exist");
         let d = StrategySchedule::default_schedule(t, 1);
         assert_eq!(s.strategies.len(), d.strategies.len());
+        let allocated: Duration = d.strategies.iter().map(|(_, slice)| *slice).sum();
+        assert_eq!(allocated, t);
     }
 
     #[test]
@@ -561,13 +933,72 @@ mod tests {
     fn division_schedules_scale_with_workers() {
         let t = Duration::from_secs(8);
         for name in [
-            "casc_fne", "casc_feq", "casc_ueq", "casc_epr", "casc_eps", "casc_epu", "casc_icu",
-            "ml_fne", "ml_ueq", "ml_epr",
+            "casc_fne",
+            "casc_feq",
+            "casc_ueq",
+            "casc_epr",
+            "casc_eps",
+            "casc_epu",
+            "casc_icu",
+            "casc_fne_mq_hybrid",
+            "ml_fne",
+            "ml_ueq",
+            "ml_epr",
+            "mq",
+            "mq_1",
+            "mq_2",
+            "mq_3",
+            "mq_4",
+            "mq_5",
+            "mq_6",
+            "mq_7",
+            "mq_8",
         ] {
             let s = by_name(name, t, 8).unwrap();
             assert_eq!(s.strategies.len(), 8, "{name} should have 8 strategies");
             let total: Duration = s.strategies.iter().map(|(_, t)| *t).sum();
             assert_eq!(total, t, "{name} slices must sum to the budget");
+        }
+    }
+
+    #[test]
+    fn named_schedules_default_to_no_sharing() {
+        for name in [
+            "casc",
+            "default",
+            "casc_fne",
+            "casc_feq",
+            "casc_ueq",
+            "casc_epr",
+            "casc_eps",
+            "casc_epu",
+            "casc_icu",
+            "fast",
+            "mini",
+            "ml",
+            "ml_feq",
+            "ml_fne",
+            "ml_ueq",
+            "ml_epr",
+            "mq",
+            "mq_1",
+            "mq_2",
+            "mq_3",
+            "mq_4",
+            "mq_5",
+            "mq_6",
+            "mq_7",
+            "mq_8",
+            "casc_fne_mq_hybrid",
+        ] {
+            let schedule = by_name(name, Duration::from_secs(8), 8).unwrap();
+            assert!(
+                schedule
+                    .strategies
+                    .iter()
+                    .all(|(config, _)| config.shared_pool_poll_interval == 0),
+                "{name} should default to disabled cross-strategy sharing"
+            );
         }
     }
 
@@ -579,5 +1010,100 @@ mod tests {
                 "named schedule `{name}` is in ALL but by_name() doesn't know it",
             );
         }
+    }
+
+    #[test]
+    fn explicit_portfolio_preserves_base_strategy_ids() {
+        let schedule = with_portfolio(
+            "casc_feq",
+            Duration::from_secs(8),
+            8,
+            &[11, 12, 1, 6, 10, 8, 14, 4],
+        )
+        .expect("portfolio should be valid");
+        assert_eq!(schedule.strategies.len(), 8);
+        assert_eq!(
+            schedule
+                .strategies
+                .iter()
+                .map(|(config, _)| config.strategy_id)
+                .collect::<Vec<_>>(),
+            vec![11, 12, 1, 6, 10, 8, 14, 4]
+        );
+        let total: Duration = schedule.strategies.iter().map(|(_, slice)| *slice).sum();
+        assert_eq!(total, Duration::from_secs(8));
+    }
+
+    #[test]
+    fn explicit_portfolio_requires_one_strategy_per_worker() {
+        assert!(with_portfolio("casc_feq", Duration::from_secs(8), 4, &[1, 2, 3]).is_none());
+    }
+
+    #[test]
+    fn mq_schedules_have_stable_distinct_archetype_ids() {
+        for index in 1..=8 {
+            let schedule = by_name(&format!("mq_{index}"), Duration::from_secs(8), 8).unwrap();
+            assert!(schedule.strategies.iter().all(|(config, _)| {
+                config.strategy_id == 100 + index
+                    && matches!(config.selection, SelectionStrategy::MultiQueue(_))
+            }));
+        }
+    }
+
+    #[test]
+    fn fne_mq_hybrid_keeps_base_strategies_and_adds_four_attributed_mq_slots() {
+        let budget = Duration::from_secs(240);
+        let schedule = by_name("casc_fne_mq_hybrid", budget, 8).unwrap();
+        let ids = schedule
+            .strategies
+            .iter()
+            .map(|(config, _)| config.strategy_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![11, 13, 4, 15, 101, 102, 103, 106]);
+        assert_eq!(
+            schedule
+                .strategies
+                .iter()
+                .map(|(_, slice)| *slice)
+                .sum::<Duration>(),
+            budget
+        );
+        assert!(matches!(
+            schedule.strategies[4].0.selection,
+            SelectionStrategy::MultiQueue(_)
+        ));
+        assert!(!matches!(
+            schedule.strategies[0].0.selection,
+            SelectionStrategy::MultiQueue(_)
+        ));
+    }
+
+    #[test]
+    fn canonical_orders_match_named_division_schedules() {
+        for (name, expected) in [
+            ("casc_feq", &CASC_FEQ_ORDER[..8]),
+            ("casc_fne", &[11, 13, 4, 8, 15, 7, 3, 1][..]),
+            ("casc_ueq", &[4, 8, 12, 11, 2, 14, 15, 1][..]),
+        ] {
+            let schedule = by_name(name, Duration::from_secs(8), 8).unwrap();
+            let actual = schedule
+                .strategies
+                .iter()
+                .map(|(config, _)| config.strategy_id)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn exact_strategy_uses_division_slot_configuration() {
+        let schedule = single_strategy("casc_ueq", Duration::from_secs(5), 8)
+            .expect("strategy should be valid");
+        assert_eq!(schedule.strategies.len(), 1);
+        assert_eq!(schedule.strategies[0].0.strategy_id, 8);
+        assert!(matches!(
+            schedule.strategies[0].0.goal_transformation,
+            Some(crate::GoalTransformMode::RecursiveSubterms)
+        ));
     }
 }

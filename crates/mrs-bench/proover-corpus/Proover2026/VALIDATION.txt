@@ -1,0 +1,1 @@
+manifest=100 valid=50 evil=50 locally_sound_evil=10 max_score=150 checksums=pass

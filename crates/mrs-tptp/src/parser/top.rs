@@ -3,7 +3,7 @@
 //! Most users only need the re-exports from the crate root — you rarely need
 //! to import from this module directly.
 
-use winnow::combinator::{alt, cut_err, delimited, opt, preceded, separated};
+use winnow::combinator::{cut_err, delimited, dispatch, fail, opt, peek, preceded, separated};
 use winnow::error::StrContext;
 use winnow::prelude::*;
 
@@ -167,10 +167,11 @@ impl<'a> Iterator for TPTPIterator<'a> {
 
 /// Parse a single TPTP input
 fn tptp_input<'a>(input: &mut &'a str) -> PResult<TPTPInput<'a>> {
-    alt((
-        include_directive.map(TPTPInput::Include),
-        annotated_formula.map(TPTPInput::Formula),
-    ))
+    dispatch! {peek(winnow::token::any);
+        'i' => cut_err(include_directive).map(TPTPInput::Include),
+        'c' | 'f' | 't' => cut_err(annotated_formula).map(TPTPInput::Formula),
+        _ => fail,
+    }
     .context(StrContext::Label("tptp_input"))
     .parse_next(input)
 }
@@ -220,14 +221,15 @@ fn include_directive<'a>(input: &mut &'a str) -> PResult<Include<'a>> {
 
 /// Parse an annotated formula
 fn annotated_formula<'a>(input: &mut &'a str) -> PResult<AnnotatedFormula<'a>> {
-    alt((
-        thf_annotated.map(AnnotatedFormula::THF),
-        tff_annotated.map(AnnotatedFormula::TFF),
-        tcf_annotated.map(AnnotatedFormula::TCF),
-        fof_annotated.map(AnnotatedFormula::FOF),
-        cnf_annotated.map(AnnotatedFormula::CNF),
-        tpi_annotated.map(AnnotatedFormula::TPI),
-    ))
+    dispatch! {peek(winnow::token::take(3usize));
+        "thf" => thf_annotated.map(Box::new).map(AnnotatedFormula::THF),
+        "tff" => tff_annotated.map(Box::new).map(AnnotatedFormula::TFF),
+        "tcf" => tcf_annotated.map(Box::new).map(AnnotatedFormula::TCF),
+        "tpi" => tpi_annotated.map(Box::new).map(AnnotatedFormula::TPI),
+        "fof" => fof_annotated.map(Box::new).map(AnnotatedFormula::FOF),
+        "cnf" => cnf_annotated.map(Box::new).map(AnnotatedFormula::CNF),
+        _ => fail,
+    }
     .context(StrContext::Label("annotated_formula"))
     .parse_next(input)
 }

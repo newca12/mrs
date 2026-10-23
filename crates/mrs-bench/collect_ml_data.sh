@@ -43,7 +43,7 @@ else
         echo "Make sure you point to the root of a TPTP installation (e.g., TPTP-v9.2.1)."
         exit 1
     fi
-    find "$TPTP_DIR/Problems" -name "*.p" > "$OUT_DIR/problems.list"
+    find -L "$TPTP_DIR/Problems" -name "*.p" > "$OUT_DIR/problems.list"
 fi
 
 NUM_PROBS=$(wc -l < "$OUT_DIR/problems.list")

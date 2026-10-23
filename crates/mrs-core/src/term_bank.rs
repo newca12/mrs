@@ -1,10 +1,12 @@
 use crate::{HashMap, HashSet};
 use smallvec::{SmallVec, smallvec};
 
-use crate::clause::{Clause, ClauseId, ClauseSource, Literal};
+use crate::Formula;
+use crate::clause::{Clause, ClauseCertificate, ClauseId, ClauseSource, Literal};
 use crate::formula::Atom;
 use crate::symbol::SymbolId;
 use crate::term::{Term, VarId};
+use crate::witness::{ProofNodeId, ProofWitness};
 
 /// A lightweight handle to an interned term.
 /// Because terms are hash-consed, `TermId` equality implies deep structural equality.
@@ -63,6 +65,22 @@ pub struct IdClause {
     pub source: ClauseSource,
     pub avatar: Vec<u32>,
     pub distance: u32,
+    /// Mirrors [`Clause::formula`]: when set, this is a non-clausal FOF-level
+    /// proof step (not a real search clause). `Formula` is symbol-table-based
+    /// (not `TermId`-interned), so it round-trips through
+    /// `clause_to_legacy`/`clause_from_legacy` unchanged, with no
+    /// interning/uninterning needed.
+    ///
+    /// **Never insert an `IdClause` with `formula: Some(_)` into
+    /// `processed`/`unprocessed`** — only into `clause_store`, for proof
+    /// provenance. Its empty `literals` would otherwise be misread as the
+    /// empty clause (a refutation) by the given-clause loop.
+    pub formula: Option<Box<Formula>>,
+    pub certificate: Option<ClauseCertificate>,
+    /// Stable proof node identifier in the append-only proof arena.
+    pub proof_id: Option<ProofNodeId>,
+    /// Typed inference witness for exact justification.
+    pub witness: Option<ProofWitness>,
 }
 
 impl IdClause {
@@ -76,6 +94,10 @@ impl IdClause {
             source,
             avatar: Vec::new(),
             distance: 1000,
+            formula: None,
+            certificate: None,
+            proof_id: None,
+            witness: None,
         }
     }
 
@@ -83,13 +105,27 @@ impl IdClause {
     where
         L: Into<SmallVec<[IdLiteral; 4]>>,
     {
+        let mut avatar = avatar;
+        avatar.sort_unstable();
+        avatar.dedup();
         Self {
             id,
             literals: literals.into(),
             source,
             avatar,
             distance: 1000,
+            formula: None,
+            certificate: None,
+            proof_id: None,
+            witness: None,
         }
+    }
+
+    /// Attach a proof node and witness to this clause.
+    pub fn with_witness(mut self, proof_id: ProofNodeId, witness: ProofWitness) -> Self {
+        self.proof_id = Some(proof_id);
+        self.witness = Some(witness);
+        self
     }
 
     pub fn free_vars(&self, bank: &TermBank) -> HashSet<VarId> {
@@ -173,12 +209,49 @@ impl IdClause {
 pub struct TermBank {
     nodes: Vec<TermNode>,
     dedup: HashMap<TermNode, TermId>,
+    /// Memo of [`TermBank::max_var`] per node, indexed by `TermId`.
+    ///
+    /// Parallel to `nodes`, so an entry is valid as soon as it is filled in: a
+    /// term is hash-consed, so its variables never change. The trade is one
+    /// byte per interned term against a walk of the whole subtree per query.
+    /// The subsumption matcher asks for the largest variable of a clause on both
+    /// sides of every test, and a callgrind profile of a single-strategy UEQ run
+    /// put that walk at about 8 % of search instructions.
+    max_var_memo: Vec<MaxVarMemo>,
+}
+
+/// Memoised answer of [`TermBank::max_var`]: the largest `VarId` in a term, or
+/// `NoVar` for a ground one, or `Unknown` before it has been asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaxVarMemo {
+    Unknown,
+    NoVar,
+    Var(VarId),
+}
+
+impl MaxVarMemo {
+    fn value(self) -> Option<VarId> {
+        match self {
+            MaxVarMemo::Unknown | MaxVarMemo::NoVar => None,
+            MaxVarMemo::Var(v) => Some(v),
+        }
+    }
 }
 
 impl TermBank {
     /// Creates a new, empty term bank.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Returns the number of unique term nodes stored in the term bank.
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Returns true if the term bank contains no terms.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
     }
 
     /// Interns a variable into the term bank.
@@ -221,6 +294,134 @@ impl TermBank {
                     self.collect_vars(arg, vars);
                 }
             }
+        }
+    }
+
+    /// Returns the largest `VarId` occurring in `id`, or `None` if it has none.
+    ///
+    /// [`TermBank::collect_vars`] answers the same question through a
+    /// `HashSet`, which costs an allocation and a hash insert per occurrence.
+    /// This is the allocation-free fold, for callers that want the maximum and
+    /// nothing else — [`mrs_calculus::rename::max_var_id`] calls it once per
+    /// subsumption test, so on a candidate set of any size the set was the cost
+    /// and the answer was a single fold away.
+    ///
+    /// Memoised per node: the result is a property of the interned term, so it
+    /// is computed once per term rather than once per query.
+    pub fn max_var(&mut self, id: TermId) -> Option<VarId> {
+        if self.max_var_memo.len() <= id.0 as usize {
+            self.max_var_memo
+                .resize(id.0 as usize + 1, MaxVarMemo::Unknown);
+        }
+        if let Some(known) = self.max_var_memo[id.0 as usize].value() {
+            return Some(known);
+        }
+        if self.max_var_memo[id.0 as usize] == MaxVarMemo::NoVar {
+            return None;
+        }
+        let computed = match self.get(id) {
+            TermNode::Var(v) => MaxVarMemo::Var(*v),
+            TermNode::App(_, args) => {
+                let mut best: Option<VarId> = None;
+                // Children always have a smaller id than their parent, so their
+                // memo entries are already filled in. The argument ids are
+                // copied out because the recursive call takes `&mut self`, which
+                // cannot coexist with a borrow of `self.nodes`.
+                let args: SmallVec<[TermId; 4]> = args.clone();
+                for arg in args {
+                    if let Some(v) = self.max_var(arg) {
+                        best = Some(best.map_or(v, |b: VarId| b.max(v)));
+                    }
+                }
+                best.map_or(MaxVarMemo::NoVar, MaxVarMemo::Var)
+            }
+        };
+        self.max_var_memo[id.0 as usize] = computed;
+        computed.value()
+    }
+
+    /// Returns the largest `VarId` occurring in any atom of `atom`, or `None`.
+    pub fn max_var_atom(&mut self, atom: &IdAtom) -> Option<VarId> {
+        match atom {
+            IdAtom::Pred(_, args) => args.iter().filter_map(|&arg| self.max_var(arg)).max(),
+            IdAtom::Eq(l, r) => self.max_var(*l).into_iter().chain(self.max_var(*r)).max(),
+        }
+    }
+
+    /// Returns the largest `VarId` occurring in any literal of `clause`, or
+    /// `None` for a clause with no variables.
+    pub fn max_var_clause(&mut self, clause: &IdClause) -> Option<VarId> {
+        clause
+            .literals
+            .iter()
+            .filter_map(|lit| self.max_var_atom(&lit.atom))
+            .max()
+    }
+
+    /// Recursively substitutes occurrences of `target_var` with `replacement` in `term`.
+    pub fn substitute_var(
+        &mut self,
+        term: TermId,
+        target_var: VarId,
+        replacement: TermId,
+    ) -> TermId {
+        match self.get(term).clone() {
+            TermNode::Var(v) if v == target_var => replacement,
+            TermNode::Var(_) => term,
+            TermNode::App(sym, args) => {
+                let mut changed = false;
+                let new_args: SmallVec<[TermId; 4]> = args
+                    .iter()
+                    .map(|&arg| {
+                        let new_arg = self.substitute_var(arg, target_var, replacement);
+                        if new_arg != arg {
+                            changed = true;
+                        }
+                        new_arg
+                    })
+                    .collect();
+                if changed {
+                    self.intern_app(sym, new_args)
+                } else {
+                    term
+                }
+            }
+        }
+    }
+
+    /// Substitutes occurrences of `target_var` with `replacement` in `atom`.
+    pub fn substitute_var_atom(
+        &mut self,
+        atom: &IdAtom,
+        target_var: VarId,
+        replacement: TermId,
+    ) -> IdAtom {
+        match atom {
+            IdAtom::Eq(l, r) => {
+                let new_l = self.substitute_var(*l, target_var, replacement);
+                let new_r = self.substitute_var(*r, target_var, replacement);
+                IdAtom::Eq(new_l, new_r)
+            }
+            IdAtom::Pred(sym, args) => {
+                let new_args: SmallVec<[TermId; 4]> = args
+                    .iter()
+                    .map(|&arg| self.substitute_var(arg, target_var, replacement))
+                    .collect();
+                IdAtom::Pred(*sym, new_args)
+            }
+        }
+    }
+
+    /// Substitutes occurrences of `target_var` with `replacement` in `lit`.
+    pub fn substitute_var_literal(
+        &mut self,
+        lit: &IdLiteral,
+        target_var: VarId,
+        replacement: TermId,
+    ) -> IdLiteral {
+        IdLiteral {
+            positive: lit.positive,
+            atom: self.substitute_var_atom(&lit.atom, target_var, replacement),
         }
     }
 
@@ -274,13 +475,17 @@ impl TermBank {
             .map(|&arg| self.ac_normalize(arg, ac_syms))
             .collect();
 
-        if ac_syms.contains(&sym) {
+        if ac_syms.contains(&sym) && norm_args.len() >= 2 {
             let mut leaves = Vec::new();
             let mut stack = norm_args.into_iter().collect::<Vec<_>>();
             stack.reverse();
             while let Some(current) = stack.pop() {
                 match self.get(current) {
-                    TermNode::App(g, child_args) if *g == sym => {
+                    // TPTP is untyped: f/1 and f/2 are distinct
+                    // applications, even when they share the spelling `f`.
+                    // Do not flatten unary f nodes: they are a distinct
+                    // arity from the associative symbol's compound forms.
+                    TermNode::App(g, child_args) if *g == sym && child_args.len() >= 2 => {
                         for &child in child_args.iter().rev() {
                             stack.push(child);
                         }
@@ -296,7 +501,7 @@ impl TermBank {
             if leaves.is_empty() {
                 self.intern_app(sym, smallvec![])
             } else if leaves.len() == 1 {
-                self.intern_app(sym, smallvec![leaves[0]])
+                leaves[0]
             } else {
                 let mut rebuilt = *leaves.last().unwrap();
                 for &leaf in leaves.iter().rev().skip(1) {
@@ -316,6 +521,41 @@ impl TermBank {
         positions
     }
 
+    /// Deadline-aware non-variable position enumeration. Returns `None` once
+    /// the deadline is reached, discarding any partial set of positions.
+    pub fn non_variable_positions_until(
+        &self,
+        term: TermId,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<Vec<Vec<usize>>> {
+        let mut positions = Vec::new();
+        let mut path = Vec::new();
+        self.collect_non_var_positions_until(term, &mut path, &mut positions, deadline)?;
+        Some(positions)
+    }
+
+    fn collect_non_var_positions_until(
+        &self,
+        term: TermId,
+        path: &mut Vec<usize>,
+        positions: &mut Vec<Vec<usize>>,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<()> {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return None;
+        }
+        if let TermNode::App(_, args) = self.get(term) {
+            positions.push(path.clone());
+            for (index, &arg) in args.iter().enumerate() {
+                path.push(index);
+                let result = self.collect_non_var_positions_until(arg, path, positions, deadline);
+                path.pop();
+                result?;
+            }
+        }
+        Some(())
+    }
+
     fn collect_non_var_positions(
         &self,
         term: TermId,
@@ -330,6 +570,25 @@ impl TermBank {
                     current_path.push(i);
                     self.collect_non_var_positions(arg, current_path, positions);
                     current_path.pop();
+                }
+            }
+        }
+    }
+
+    /// Collects all non-variable subterms rooted at `term`.
+    pub fn non_variable_subterms(&self, term: TermId) -> Vec<TermId> {
+        let mut subterms = Vec::new();
+        self.collect_non_var_subterms(term, &mut subterms);
+        subterms
+    }
+
+    fn collect_non_var_subterms(&self, term: TermId, out: &mut Vec<TermId>) {
+        match self.get(term) {
+            TermNode::Var(_) => {}
+            TermNode::App(_, args) => {
+                out.push(term);
+                for &arg in args.iter() {
+                    self.collect_non_var_subterms(arg, out);
                 }
             }
         }
@@ -404,6 +663,10 @@ impl TermBank {
         );
         c.avatar = clause.avatar.clone();
         c.distance = clause.distance;
+        c.formula = clause.formula.clone();
+        c.certificate = clause.certificate.clone();
+        c.proof_id = clause.proof_id;
+        c.witness = clause.witness.clone();
         c
     }
 
@@ -418,6 +681,10 @@ impl TermBank {
             source: clause.source.clone(),
             avatar: clause.avatar.clone(),
             distance: clause.distance,
+            formula: clause.formula.clone(),
+            certificate: clause.certificate.clone(),
+            proof_id: clause.proof_id,
+            witness: clause.witness.clone(),
         }
     }
 }
@@ -445,6 +712,18 @@ impl IdSubstitution {
         self.bindings.get(var as usize).copied().flatten()
     }
 
+    /// Returns `true` if nothing is bound.
+    ///
+    /// Applying an empty substitution is the identity, and saying so lets the
+    /// callers skip the walk *and* the re-interning that a walk would end in.
+    /// This is not a micro-optimisation: the subsumption matcher calls into
+    /// substitution application once per (candidate literal, target literal)
+    /// pair, and it spends most of its time on pairs that are rejected by the
+    /// very first term comparison.
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+    }
+
     /// Recursively applies the substitution to a term, returning a new `TermId`.
     pub fn apply_term(&self, mut term: TermId, bank: &mut TermBank) -> TermId {
         if self.bindings.is_empty() {
@@ -470,20 +749,26 @@ impl IdSubstitution {
             // Clone the node to decouple from bank borrow
             TermNode::Var(_) => term,
             TermNode::App(sym, args) => {
-                let mut changed = false;
-                let mut new_args = Vec::with_capacity(args.len());
-                for &arg in &args {
+                // Collect the arguments that actually change instead of
+                // rebuilding the list: an unchanged argument list interns back to
+                // the id it came from, so the rebuild and the hash lookup that
+                // follows it are pure overhead on the no-op path.
+                let mut rewritten: SmallVec<[(usize, TermId); 4]> = SmallVec::new();
+                for (idx, &arg) in args.iter().enumerate() {
                     let new_arg = self.apply_term(arg, bank);
                     if new_arg != arg {
-                        changed = true;
+                        rewritten.push((idx, new_arg));
                     }
-                    new_args.push(new_arg);
                 }
 
-                if changed {
-                    bank.intern_app(sym, new_args)
-                } else {
+                if rewritten.is_empty() {
                     term
+                } else {
+                    let mut new_args: SmallVec<[TermId; 4]> = args.iter().copied().collect();
+                    for (idx, new_arg) in rewritten {
+                        new_args[idx] = new_arg;
+                    }
+                    bank.intern_app(sym, new_args)
                 }
             }
         }
@@ -589,6 +874,18 @@ mod tests {
         assert_eq!(
             norm_f_b_a, norm_f_a_b,
             "f(b, a) and f(a, b) must normalize to the same term"
+        );
+
+        // Explicit unary terms remain distinct from their operands.
+        let unary_f_a = bank.intern_app(f, smallvec![a_term]);
+        assert_eq!(bank.ac_normalize(unary_f_a, &ac_syms), unary_f_a);
+
+        // A unary same-name child is opaque when flattening a surrounding
+        // binary AC application; the outer node remains binary.
+        let binary_f_unary_f_a = bank.intern_app(f, smallvec![unary_f_a, b_term]);
+        let normalized_binary = bank.ac_normalize(binary_f_unary_f_a, &ac_syms);
+        assert!(
+            matches!(bank.get(normalized_binary), TermNode::App(sym, args) if *sym == f && args.len() == 2)
         );
 
         // 2. Test associativity: f(f(a, b), c) -> f(a, f(b, c))

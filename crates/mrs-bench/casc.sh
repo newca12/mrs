@@ -14,6 +14,8 @@
 #                                (default: fne,feq,epu,eps,ueq,icu)
 #   --time        <secs>         Per-problem time limit for ALL divisions (default: 120)
 #                                Overridden per-division by --casc-times or --time-DIV.
+#   --schedule    <name>         Override the mrs named schedule (default: infer
+#                                casc_<division> in systems/mrs/invoke.sh)
 #   --casc-times                 Use official CASC-30 times per division:
 #                                  fne/feq/ueq → 240s, eps/epu → 120s,
 #                                  icu → 480s, slh → 15s
@@ -21,15 +23,61 @@
 #   --time-DIV    <secs>         Override time limit for a specific division, e.g.
 #                                --time-feq 120  --time-ueq 240
 #                                (takes precedence over both --time and --casc-times)
+#   --sanity-check               Run dual_run_sanity_check on division canaries
+#                                before starting benchmark; aborts if any invariant fails.
 #   --jobs        <N>            Parallel jobs (default: 1)
 #   --output      <dir>          Output directory
 #                                (default: crates/mrs-bench/results/<edition>/TIMESTAMP)
+#   --subset      <file>         Restrict the run to the problems named in
+#                                <file>, one per line. Blank lines and lines
+#                                starting with '#' are ignored; a line may be a
+#                                bare problem name or "<DIVISION>/<problem>".
+#                                Names not present in the division are reported
+#                                and skipped. The default run remains exhaustive.
+#   --subset-list-out <file>     Write the subset of names that actually
+#                                resolved, for feeding back into --subset.
+#   --manifest-out <file>        Write all benchmark-list entries that resolved
+#                                to an existing problem path, before subset
+#                                filtering. Useful for generating subsets from a
+#                                complete local edition without running systems.
+#
+# Environment:
+#   CASC_PROBLEMS_ROOT  Override the problem corpus root (default:
+#                       crates/mrs-bench/problems/<edition>). Point it at a
+#                       full TPTP checkout to benchmark outside the vendored
+#                       corpus; division discovery accepts both EPS/ and
+#                       Problems/EPS/ layouts, and TPTP defaults to it for
+#                       %include resolution.
+#   CASC_ANSWERS_FILE   Override the reference-answers TSV (default:
+#                       systems/reference/answers_<edition>.tsv, fallback
+#                       answers.tsv). Needed when the corpus root holds
+#                       problems the shipped answers files do not cover.
+#   MRS_HARDWARE        Hardware profile for the prover (default: adaptive).
+#                       casc       exactly a CASC entry: 8 workers, 128 GB
+#                                 allowance, never auto-adapted. The honest
+#                                 setting for anything meant to be compared
+#                                 against CASC numbers.
+#                       casc-sim   simulate that entry on this host: same workers
+#                                 and allowance, CPU set pinned to 8 physical
+#                                 cores, address space capped, and the wall clock
+#                                 extended past the CASC limit so a memory-bound
+#                                 failure surfaces instead of reading as a
+#                                 timeout. Use when the host is not the
+#                                 competition machine.
+#                       adaptive   fit the host (default).
+#                       Concurrent jobs in casc-sim all pin to the same 8 cores,
+#                       so --jobs N behaves like N problems sharing one CASC
+#                       machine -- which is what the W8J2 runs did.
+#   MRS_MAX_MEMORY_MB   Explicit per-run memory ceiling; in EPS dual-search mode
+#                       this total is divided across the certifier and portfolio.
+#   MRS_SIM_TIME_FACTOR casc-sim wall-clock multiplier (default 2); 0 means
+#                       continue until a resource cap.
 #
 # Output:
 #   <output>/run.csv    — one row per (problem, system)
 #   <output>/run.log    — harness stderr
 #
-# CSV schema: edition,division,problem,system,szs_status,expected,verdict,wall_time_s,failure_detail
+# CSV schema: edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,processed_per_s,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256
 #   verdict ∈ {ok, ko, unknown}
 #     ok      — system status agrees with the reference answer
 #     ko      — system status disagrees with the reference answer
@@ -49,6 +97,10 @@ TIME_LIMIT=120      # global fallback (seconds)
 JOBS=1
 OUTPUT=""
 USE_CASC_TIMES=0    # 0 = use TIME_LIMIT for all; 1 = use CASC-30 official times
+RUN_SANITY_CHECK=0  # 1 = run pre-flight dual_run_sanity_check on canaries
+SUBSET_FILE=""      # optional path to a newline-separated problem subset
+SUBSET_LIST_OUT=""  # optional path to write the resolved subset back out
+MANIFEST_OUT=""     # optional full set of paths resolved from division lists
 
 # Official CASC-30 wall-clock time limits per division (seconds).
 # SLH is CPU-time limited but we approximate with wall clock here.
@@ -67,6 +119,18 @@ declare -A CASC30_TIMES=(
     [tfn]=120   # TFN (typed first-order non-theorems)
 )
 
+# Official CASC-J13 wall-clock time limits per division (seconds).
+declare -A CASCJ13_TIMES=(
+    [fne]=180   # FOF, no equality
+    [feq]=180   # FOF, with equality
+    [ueq]=180   # unit equality
+    [fnn]=180   # FNT, no equality
+    [fnq]=180   # FNT, with equality
+    [tne]=180   # THF, no equality
+    [teq]=180   # THF, with equality
+    [prv]=180   # PRV
+)
+
 # Per-division overrides set via --time-DIV flags; populated during arg parsing.
 declare -A DIV_OVERRIDE=()
 
@@ -77,9 +141,14 @@ while [[ $# -gt 0 ]]; do
         --systems)    SYSTEMS="$2";    shift 2 ;;
         --divisions)  DIVISIONS="$2";  shift 2 ;;
         --time)       TIME_LIMIT="$2"; shift 2 ;;
+        --schedule)   MRS_SCHEDULE="$2"; export MRS_SCHEDULE; shift 2 ;;
         --casc-times) USE_CASC_TIMES=1; shift ;;
+        --sanity-check) RUN_SANITY_CHECK=1; shift ;;
         --jobs)       JOBS="$2";       shift 2 ;;
         --output)     OUTPUT="$2";     shift 2 ;;
+        --subset)    SUBSET_FILE="$2"; shift 2 ;;
+        --subset-list-out) SUBSET_LIST_OUT="$2"; shift 2 ;;
+        --manifest-out) MANIFEST_OUT="$2"; shift 2 ;;
         --time-*)
             # --time-DIV N  e.g. --time-feq 240
             div_key="${1#--time-}"   # strip "--time-"
@@ -93,14 +162,26 @@ done
 # ---------- resolve per-division time limit ----------
 # Priority (highest to lowest):
 #   1. --time-DIV N  (explicit per-division override)
-#   2. --casc-times  (official CASC-30 defaults)
+#   2. --casc-times  (official CASC wall-clock defaults for the active edition)
 #   3. --time N      (global fallback)
 div_time() {
     local div="$1"
     if [[ -n "${DIV_OVERRIDE[${div}]+x}" ]]; then
         echo "${DIV_OVERRIDE[${div}]}"
-    elif [[ "${USE_CASC_TIMES}" -eq 1 && -n "${CASC30_TIMES[${div}]+x}" ]]; then
-        echo "${CASC30_TIMES[${div}]}"
+    elif [[ "${USE_CASC_TIMES}" -eq 1 ]]; then
+        if [[ "${EDITION}" == "casc-j13" ]]; then
+            if [[ -n "${CASCJ13_TIMES[${div}]+x}" ]]; then
+                echo "${CASCJ13_TIMES[${div}]}"
+            else
+                echo "${TIME_LIMIT}"
+            fi
+        else
+            if [[ -n "${CASC30_TIMES[${div}]+x}" ]]; then
+                echo "${CASC30_TIMES[${div}]}"
+            else
+                echo "${TIME_LIMIT}"
+            fi
+        fi
     else
         echo "${TIME_LIMIT}"
     fi
@@ -109,18 +190,159 @@ TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 if [[ -z "${OUTPUT}" ]]; then
     OUTPUT="${SCRIPT_DIR}/results/${EDITION}/${TIMESTAMP}"
 fi
+if [[ "${OUTPUT}" != /* ]]; then
+    OUTPUT="${PWD}/${OUTPUT}"
+fi
+if [[ -n "${SUBSET_FILE}" && "${SUBSET_FILE}" != /* ]]; then
+    SUBSET_FILE="${PWD}/${SUBSET_FILE}"
+fi
+if [[ -n "${SUBSET_LIST_OUT}" && "${SUBSET_LIST_OUT}" != /* ]]; then
+    SUBSET_LIST_OUT="${PWD}/${SUBSET_LIST_OUT}"
+fi
+if [[ -n "${MANIFEST_OUT}" && "${MANIFEST_OUT}" != /* ]]; then
+    MANIFEST_OUT="${PWD}/${MANIFEST_OUT}"
+fi
 mkdir -p "${OUTPUT}"
+# A run directory is a write-once artifact. Refuse to overwrite an existing
+# run, and atomically claim an empty/new directory so concurrent invocations
+# cannot both truncate run.csv or overwrite each other's raw artifacts.
+if [[ -n "$(ls -A -- "${OUTPUT}")" ]]; then
+    echo "Output directory is not empty: ${OUTPUT}" >&2
+    echo "Choose a new --output directory; benchmark runs are never overwritten." >&2
+    exit 2
+fi
+if ! mkdir "${OUTPUT}/.mrs-casc-lock" 2>/dev/null; then
+    echo "Output directory is already claimed by another run: ${OUTPUT}" >&2
+    exit 2
+fi
+trap 'rmdir "${OUTPUT}/.mrs-casc-lock" 2>/dev/null || true' EXIT
+RAW_ROOT="${OUTPUT}/raw"
+mkdir -p "${RAW_ROOT}"
+
+if ! command -v sha256sum >/dev/null 2>&1; then
+    echo "sha256sum is required to archive benchmark artifacts." >&2
+    exit 1
+fi
+
+RUN_ID="mrs_bench_${TIMESTAMP}_$(head -c 4 /dev/urandom 2>/dev/null | xxd -p 2>/dev/null || od -N 4 -t x4 /dev/urandom 2>/dev/null | head -n1 | awk '{print $2}' || echo $$)"
+GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
+GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
+GIT_DIRTY="$(git status --porcelain 2>/dev/null | grep -q . && echo "true" || echo "false")"
+CPU_MODEL="$(lscpu 2>/dev/null | awk -F: '$1 == "Model name" { sub(/^[ \t]*/, "", $2); print $2; exit }')"
+if [[ -z "${CPU_MODEL}" ]]; then
+    CPU_MODEL="$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || true)"
+fi
+CPU_MODEL="${CPU_MODEL:-unknown}"
+CPU_CORES="$(nproc 2>/dev/null || echo "8")"
+KERNEL_VER="$(uname -r 2>/dev/null || echo "unknown")"
+HOSTNAME_STR="$(hostname 2>/dev/null || echo "unknown")"
+TOTAL_RAM_MB="$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo "0")"
+RUSTC_VER="$(rustc --version 2>/dev/null || /home/fr22192/.cargo/bin/rustc --version 2>/dev/null || echo "unknown")"
+MRS_BIN="${MRS_BINARY:-${SCRIPT_DIR}/../../target/release/mrs}"
+if command -v realpath >/dev/null 2>&1; then
+    MRS_BIN="$(realpath -m "${MRS_BIN}")"
+fi
+MRS_BIN_SHA256="unknown"
+
+# Record every MRS_* variable in the run's own metadata.
+#
+# These knobs change what the prover does: MRS_CONDENSED_DETACHMENT and its
+# bounds, MRS_SHARED_POOL_INTERVAL, MRS_SINGLE_STRATEGY, MRS_PORTFOLIO,
+# MRS_EPR_MODEL, MRS_WORKERS, MRS_HARDWARE. A run that does not record them
+# cannot be told apart from a run with them set, which is exactly the ambiguity
+# that made the 2026-10-01 FNE condensed/ref pair unreadable: the two arms shared
+# a commit and a binary sha, and the only evidence of the on/off state was a ~1 s
+# shift in mrs's own elapsed_ms that had to be inferred from the raw stderr.
+#
+# Recording the whole MRS_ prefix rather than a hand-picked list is deliberate:
+# a new knob is self-documenting from the day it lands, instead of becoming
+# invisible until someone remembers to add it here.
+MRS_ENV_JSON=""
+while IFS='=' read -r mrskey mrsval; do
+    [[ -z "${mrskey}" ]] && continue
+    # JSON-escape backslash and double quote; no other escaping is needed for
+    # the numeric sizes, schedule names and paths these variables carry.
+    mrsval="${mrsval//\\/\\\\}"
+    mrsval="${mrsval//\"/\\\"}"
+    MRS_ENV_JSON+="${MRS_ENV_JSON:+,$'\n'    }\"${mrskey}\": \"${mrsval}\""
+done < <(env | grep '^MRS_' | sort || true)
+if [[ -z "${MRS_ENV_JSON}" ]]; then
+    MRS_ENV_JSON_JSON='{}'
+else
+    MRS_ENV_JSON_JSON="{
+    ${MRS_ENV_JSON}
+  }"
+fi
+
+cat <<EOF > "${OUTPUT}/run_meta.json"
+{
+  "run_id": "${RUN_ID}",
+  "timestamp": "${TIMESTAMP}",
+  "git_commit": "${GIT_COMMIT}",
+  "git_branch": "${GIT_BRANCH}",
+  "git_dirty": ${GIT_DIRTY},
+  "binary_path": "${MRS_BIN}",
+  "binary_sha256": "${MRS_BIN_SHA256}",
+  "edition": "${EDITION}",
+  "systems": "${SYSTEMS:-all}",
+  "divisions": "${DIVISIONS:-all}",
+  "jobs": ${JOBS},
+  "default_time_limit": ${TIME_LIMIT},
+  "use_casc_times": ${USE_CASC_TIMES},
+  "prover_env": ${MRS_ENV_JSON_JSON},
+  "host": {
+    "hostname": "${HOSTNAME_STR}",
+    "kernel": "${KERNEL_VER}",
+    "cpu_model": "${CPU_MODEL}",
+    "cpu_cores": ${CPU_CORES},
+    "memory_mb": ${TOTAL_RAM_MB}
+  },
+  "toolchain": {
+    "rustc": "${RUSTC_VER}"
+  }
+}
+EOF
+
+# Hash the resolved executable immediately before the run starts. This makes
+# run_meta identify the exact artifact available to the worker invocation, not
+# merely the file state from initial harness setup.
+if [[ -f "${MRS_BIN}" && -r "${MRS_BIN}" ]]; then
+    MRS_BIN_SHA256="$(sha256sum "${MRS_BIN}" | awk '{print $1}')"
+    python3 - "${OUTPUT}/run_meta.json" "${MRS_BIN_SHA256}" <<'PY'
+import json
+import sys
+
+path, digest = sys.argv[1:]
+with open(path, encoding="utf-8") as stream:
+    metadata = json.load(stream)
+metadata["binary_sha256"] = digest
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(metadata, stream, indent=2)
+    stream.write("\n")
+PY
+fi
+export CASC_EXPECTED_BINARY_SHA256="${MRS_BIN_SHA256}"
 
 # Redirect harness stderr to run.log (tee so it still shows on terminal)
 exec 2> >(tee -a "${OUTPUT}/run.log" >&2)
 
-PROBLEMS_DIR="${SCRIPT_DIR}/problems/${EDITION}"
+PROBLEMS_DIR="${CASC_PROBLEMS_ROOT:-${SCRIPT_DIR}/problems/${EDITION}}"
+if [[ -d "${PROBLEMS_DIR}" ]]; then
+    PROBLEMS_DIR="$(cd "${PROBLEMS_DIR}" && pwd -P)"
+fi
 LISTS_DIR="${PROBLEMS_DIR}/lists"
 PROBLEMS_ROOT="${PROBLEMS_DIR}"
 
 # Set TPTP so %include directives resolve (can be overridden by caller)
 if [[ -z "${TPTP:-}" ]]; then
     export TPTP="${PROBLEMS_DIR}"
+fi
+
+# ---------- optional pre-flight dual-run canary sanity check ----------
+if [[ "${RUN_SANITY_CHECK}" -eq 1 ]]; then
+    echo "Running pre-flight canary dual-run sanity check..."
+    "${SCRIPT_DIR}/dual_run_sanity_check.sh" --canaries --time 5
+    echo "Pre-flight sanity check passed."
 fi
 
 # ---------- discover systems ----------
@@ -161,31 +383,207 @@ IFS=',' read -ra DIVISION_LIST <<< "${DIVISIONS}"
 
 # Reference answers file. Used inline by the worker to grade each
 # system run. Missing file → every verdict is `unknown`.
-ANSWERS="${SCRIPT_DIR}/systems/reference/answers.tsv"
+ANSWERS="${CASC_ANSWERS_FILE:-${SCRIPT_DIR}/systems/reference/answers_${EDITION}.tsv}"
 if [[ ! -f "${ANSWERS}" ]]; then
-    echo "WARNING: reference answers not found at ${ANSWERS}" >&2
+    ANSWERS="${SCRIPT_DIR}/systems/reference/answers.tsv"
+fi
+if [[ ! -f "${ANSWERS}" ]]; then
+    echo "WARNING: reference answers not found at ${SCRIPT_DIR}/systems/reference/answers_${EDITION}.tsv or answers.tsv" >&2
     echo "         all verdicts will be reported as 'unknown'." >&2
-    echo "         Run: crates/mrs-bench/systems/reference/fetch_answers.sh" >&2
+    echo "         Run: crates/mrs-bench/systems/reference/fetch_answers.sh --edition ${EDITION}" >&2
 fi
 
 CSV="${OUTPUT}/run.csv"
-echo "edition,division,problem,system,szs_status,expected,verdict,wall_time_s,failure_detail" > "${CSV}"
+echo "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,processed_per_s,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256" > "${CSV}"
+
+# Warn on a stale `mrs`. The run itself is unaffected, but a run.csv from an
+# out-of-date prover looks exactly like a measurement of the current one.
+if [[ -e "${MRS_BIN}" ]] \
+   && [[ -n "$(find "${SCRIPT_DIR}/../.." -path '*/target' -prune -o \
+                       -name '*.rs' -newer "${MRS_BIN}" -print -quit 2>/dev/null)" ]]; then
+    echo "WARNING: ${MRS_BIN} is older than the sources; run 'cargo build --release'" >&2
+    echo "         or the results below describe a stale prover." >&2
+fi
+
+# Record how this run was resolved, so a post-hoc tool (certification_campaign.sh
+# in particular) can find the corpus it used instead of guessing from the output
+# path. The output path says nothing about the problems root: an audit pointed at
+# a directory derived from it silently replays the wrong corpus, or none at all.
+{
+    echo "edition=${EDITION}"
+    echo "problems_dir=${PROBLEMS_DIR}"
+    echo "divisions=${DIVISIONS}"
+    echo "systems=${SYSTEMS}"
+    echo "mrs_binary_path=${MRS_BIN}"
+    echo "mrs_binary_sha256=${MRS_BIN_SHA256}"
+    echo "time_limit=${TIME_LIMIT}"
+    echo "use_casc_times=${USE_CASC_TIMES}"
+    echo "mrs_schedule=${MRS_SCHEDULE:-auto}"
+    echo "subset_file=${SUBSET_FILE}"
+} > "${OUTPUT}/run_meta.txt"
 
 JOBS_FILE="${OUTPUT}/.jobs"
 > "${JOBS_FILE}"
 
+# ---------- optional subset filter ----------
+# Names wanted, upper-cased for a case-insensitive match, plus a map from
+# upper-case name to the division it was requested for ("" when unqualified).
+SUBSET_WANT=()
+SUBSET_WANT_BY_DIV=()
+SUBSET_REQUEST_RESOLVED=()
+SUBSET_REQUEST_PATHS=()
+if [[ -n "${SUBSET_FILE}" ]]; then
+    if [[ ! -f "${SUBSET_FILE}" ]]; then
+        echo "ERROR: --subset file not found: ${SUBSET_FILE}" >&2
+        exit 1
+    fi
+    subset_line_number=0
+    while IFS= read -r entry || [[ -n "${entry}" ]]; do
+        subset_line_number=$((subset_line_number + 1))
+        entry="${entry#"${entry%%[![:space:]]*}"}"
+        entry="${entry%"${entry##*[![:space:]]}"}"
+        [[ "${entry}" == \#* ]] && continue
+        [[ -z "${entry}" ]] && continue
+        wanted_div=""
+        if [[ "${entry}" == */* ]]; then
+            wanted_div="${entry%%/*}"
+            entry="${entry##*/}"
+        fi
+        entry="${entry%.p}"
+        key="$(echo "${entry}" | tr '[:lower:]' '[:upper:]')"
+        [[ -z "${key}" ]] && continue
+        duplicate=0
+        for ((i = 0; i < ${#SUBSET_WANT[@]}; i++)); do
+            existing_key="$(echo "${SUBSET_WANT[$i]}" | tr '[:lower:]' '[:upper:]')"
+            existing_div="$(echo "${SUBSET_WANT_BY_DIV[$i]}" | tr '[:lower:]' '[:upper:]')"
+            wanted_div_key="$(echo "${wanted_div}" | tr '[:lower:]' '[:upper:]')"
+            if [[ "${existing_key}" == "${key}" && "${existing_div}" == "${wanted_div_key}" ]]; then
+                duplicate=1
+                break
+            fi
+        done
+        if (( duplicate )); then
+            continue
+        fi
+        SUBSET_WANT+=("${entry}")
+        SUBSET_WANT_BY_DIV+=("${wanted_div}")
+        SUBSET_REQUEST_RESOLVED+=(0)
+        SUBSET_REQUEST_PATHS+=("${SUBSET_FILE}:${subset_line_number}")
+    done < "${SUBSET_FILE}"
+    echo "[casc] subset: ${#SUBSET_WANT[@]} problem name(s) from ${SUBSET_FILE}" >&2
+fi
+
+# Did the caller ask for this problem, in this division?
+subset_wants() {
+    local div="$1" problem="$2" index=0
+    SUBSET_MATCH_INDICES=()
+    [[ -z "${SUBSET_FILE}" ]] && return 0
+    local key
+    key="$(echo "${problem%.p}" | tr '[:lower:]' '[:upper:]')"
+    for name in "${SUBSET_WANT[@]}"; do
+        if [[ "$(echo "${name}" | tr '[:lower:]' '[:upper:]')" == "${key}" ]]; then
+            local wanted="${SUBSET_WANT_BY_DIV[$index]}"
+            # A qualified entry pins the division; an unqualified one matches
+            # whichever division offers the problem.
+            if [[ -z "${wanted}" ]] \
+               || [[ "$(echo "${wanted}" | tr '[:lower:]' '[:upper:]')" == "$(echo "${div}" | tr '[:lower:]' '[:upper:]')" ]]; then
+                SUBSET_MATCH_INDICES+=("${index}")
+            fi
+        fi
+        index=$((index + 1))
+    done
+    ((${#SUBSET_MATCH_INDICES[@]} > 0))
+}
+SUBSET_RESOLVED=()
+MANIFEST_RESOLVED=()
+SUBSET_MATCH_INDICES=()
+
 total_problems=0
 for div in "${DIVISION_LIST[@]}"; do
-    list="${LISTS_DIR}/${div}.list"
-    if [[ ! -f "${list}" ]]; then
-        echo "WARNING: no list file for division '${div}' at ${list}" >&2
+    div_lower="${div,,}"
+    div_upper="${div^^}"
+
+    # setup.sh normally writes lowercase lists, but remote benchmark archives
+    # are often copied without the generated lists directory. Accept either
+    # list casing and fall back to enumerating the corresponding problem
+    # directory so a missing auxiliary list cannot silently yield zero jobs.
+    list=""
+    for candidate in \
+        "${LISTS_DIR}/${div_lower}.list" \
+        "${LISTS_DIR}/${div_upper}.list" \
+        "${PROBLEMS_ROOT}/lists/${div_lower}.list" \
+        "${PROBLEMS_ROOT}/lists/${div_upper}.list"; do
+        if [[ -f "${candidate}" ]]; then
+            list="${candidate}"
+            break
+        fi
+    done
+
+    division_root=""
+    for candidate in \
+        "${PROBLEMS_ROOT}/${div_upper}" \
+        "${PROBLEMS_ROOT}/${div_lower}" \
+        "${PROBLEMS_ROOT}/Problems/${div_upper}" \
+        "${PROBLEMS_ROOT}/Problems/${div_lower}"; do
+        if [[ -d "${candidate}" ]]; then
+            division_root="${candidate}"
+            break
+        fi
+    done
+
+    if [[ -z "${list}" && -n "${division_root}" ]]; then
+        list="${OUTPUT}/.generated-${div_lower}.list"
+        shopt -s nullglob
+        problem_files=("${division_root}"/*.p)
+        shopt -u nullglob
+        if ((${#problem_files[@]} > 0)); then
+            for problem_path in "${problem_files[@]}"; do
+                basename "${problem_path}" .p
+            done | LC_ALL=C sort > "${list}"
+            echo "[casc] generated missing list for '${div}' from ${division_root}" >&2
+        fi
+    fi
+
+    # A pre-existing list may be present even when the archive uses a nested
+    # Problems/ directory. Resolve the problem root independently of list
+    # discovery so both paths work.
+    if [[ -z "${division_root}" ]]; then
+        division_root="${PROBLEMS_ROOT}/${div_upper}"
+    fi
+
+    if [[ -n "${MANIFEST_OUT}" && ( -z "${list}" || ! -s "${list}" ) && -n "${division_root}" ]]; then
+        shopt -s nullglob
+        problem_files=("${division_root}"/*.p)
+        shopt -u nullglob
+        for problem_path in "${problem_files[@]}"; do
+            problem="$(basename "${problem_path}" .p)"
+            MANIFEST_RESOLVED+=("${div}/${problem}")
+        done
+        continue
+    fi
+    if [[ -z "${list}" || ! -s "${list}" ]]; then
+        echo "WARNING: no list or problem directory for division '${div}' under ${PROBLEMS_ROOT}" >&2
         continue
     fi
     t="$(div_time "${div}")"
-    div_upper="${div^^}"
     while IFS= read -r problem || [[ -n "${problem}" ]]; do
         [[ -z "${problem}" ]] && continue
-        prob_path="${PROBLEMS_ROOT}/${div_upper}/${problem}.p"
+        # A subset entry may name a problem that this edition does not carry.
+        if ! subset_wants "${div}" "${problem}"; then
+            continue
+        fi
+        prob_path="${division_root}/${problem}.p"
+        if [[ ! -f "${prob_path}" ]]; then
+            echo "WARNING: ${div}/${problem}: listed but ${prob_path} is missing" >&2
+            continue
+        fi
+        MANIFEST_RESOLVED+=("${div}/${problem%.p}")
+        if [[ -n "${SUBSET_FILE}" ]]; then
+            for match_index in "${SUBSET_MATCH_INDICES[@]}"; do
+                SUBSET_REQUEST_RESOLVED[${match_index}]=1
+            done
+            SUBSET_RESOLVED+=("${div}/${problem%.p}")
+        fi
         for sys in "${SYSTEMS_LIST[@]}"; do
             # Fields: div  problem  prob_path  sys  time_limit
             printf '%s\t%s\t%s\t%s\t%s\n' \
@@ -194,6 +592,50 @@ for div in "${DIVISION_LIST[@]}"; do
         done
     done < "${list}"
 done
+
+if [[ -n "${MANIFEST_OUT}" ]]; then
+    manifest_parent="$(dirname "${MANIFEST_OUT}")"
+    mkdir -p "${manifest_parent}"
+    printf '%s\n' "${MANIFEST_RESOLVED[@]+"${MANIFEST_RESOLVED[@]}"}" | sort -u > "${MANIFEST_OUT}"
+fi
+
+# Report subset names that never matched, so a typo cannot quietly shrink a
+# run to zero problems and look like "nothing to do".
+if [[ -n "${SUBSET_FILE}" ]]; then
+    missing=()
+    index=0
+    for name in "${SUBSET_WANT[@]}"; do
+        if (( SUBSET_REQUEST_RESOLVED[index] == 0 )); then
+            [[ -n "${SUBSET_WANT_BY_DIV[index]}" ]] && name="${SUBSET_WANT_BY_DIV[index]}/${name}"
+            missing+=("${name}")
+            echo "WARNING: subset entry '${name}' from ${SUBSET_REQUEST_PATHS[index]} matched no" \
+                "problem in --edition ${EDITION} --divisions ${DIVISIONS}" >&2
+        fi
+        index=$((index + 1))
+    done
+    # Every requested name missing means the run is not the one that was asked
+    # for. Proceeding would write a run.csv with no rows, which reads as a
+    # successful measurement of nothing.
+    if (( total_problems == 0 )); then
+        echo "ERROR: no problem in --subset ${SUBSET_FILE} matched a problem in" >&2
+        echo "       --edition ${EDITION} --divisions ${DIVISIONS}." >&2
+        echo "       Check the problem names, or widen --divisions/--edition." >&2
+        exit 1
+    fi
+    resolved_file="${OUTPUT}/subset_resolved.txt"
+    printf '%s\n' "${SUBSET_RESOLVED[@]+"${SUBSET_RESOLVED[@]}"}" | sort -u > "${resolved_file}"
+    resolved_count="$(wc -l < "${resolved_file}")"
+    echo "[casc] subset: ${resolved_count} of ${#SUBSET_WANT[@]} name(s) resolved, ${total_problems} job(s)" >&2
+    if [[ -n "${SUBSET_LIST_OUT}" ]]; then
+        if [[ "${SUBSET_LIST_OUT}" != "${resolved_file}" ]]; then
+            subset_list_parent="$(dirname "${SUBSET_LIST_OUT}")"
+            mkdir -p "${subset_list_parent}"
+            cp -- "${resolved_file}" "${SUBSET_LIST_OUT}"
+        fi
+        echo "[casc] subset: resolved names written to ${SUBSET_LIST_OUT}" >&2
+    fi
+    echo "subset_resolved=${resolved_file}" >> "${OUTPUT}/run_meta.txt"
+fi
 
 # Build a human-readable summary of per-division times for the log.
 div_times_summary=""
@@ -207,7 +649,11 @@ echo "[casc] Systems:     ${SYSTEMS_LIST[*]}" >&2
 echo "[casc] Divisions:   ${DIVISION_LIST[*]}" >&2
 echo "[casc] Time limits: ${div_times_summary% }" >&2
 if [[ "${USE_CASC_TIMES}" -eq 1 ]]; then
-    echo "[casc] Mode:        --casc-times (official CASC-30 wall-clock limits)" >&2
+    if [[ "${EDITION}" == "casc-j13" ]]; then
+        echo "[casc] Mode:        --casc-times (official CASC-J13 wall-clock limits)" >&2
+    else
+        echo "[casc] Mode:        --casc-times (official CASC-30 wall-clock limits)" >&2
+    fi
 else
     echo "[casc] Mode:        --time ${TIME_LIMIT} (uniform, all divisions)" >&2
 fi
@@ -220,7 +666,7 @@ echo "[casc] Total jobs:  ${total_problems}" >&2
 # Arguments: div  problem  prob_path  sys  time_limit
 #
 # Emits one CSV row:
-#   edition,division,problem,system,szs_status,expected,verdict,wall_time_s,failure_detail
+#   edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,processed_per_s,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256
 #
 # `verdict` compares the system's SZS status against the reference
 # answer for `problem` (from systems/reference/answers.tsv):
@@ -233,16 +679,47 @@ echo "[casc] Total jobs:  ${total_problems}" >&2
 run_one() {
     local div="$1" problem="$2" prob_path="$3" sys="$4" tlimit="$5"
     local invoke="${SCRIPT_DIR}/systems/${sys}/invoke.sh"
-    local tmp tmp_err
+    local tmp tmp_err tmp_mem
     tmp="$(mktemp)"
     tmp_err="$(mktemp)"
+    tmp_mem="$(mktemp)"
+
+    # Keep the raw prover streams outside temporary files. Relative paths are
+    # stable within a run directory and can be resolved by later audits.
+    local raw_rel_dir="raw/${sys}/${div}"
+    local raw_stdout_rel="${raw_rel_dir}/${problem}.stdout"
+    local raw_stderr_rel="${raw_rel_dir}/${problem}.stderr"
+    local raw_stdout="${OUTPUT}/${raw_stdout_rel}"
+    local raw_stderr="${OUTPUT}/${raw_stderr_rel}"
+    mkdir -p "${OUTPUT}/${raw_rel_dir}"
 
     local start_ms end_ms wall_s szs exit_code
     start_ms=$(date +%s%3N)
+
+    # Locate GNU time binary
+    local time_bin=""
+    if which time &>/dev/null; then
+        time_bin=$(which time 2>/dev/null)
+    elif [[ -x "/usr/bin/time" ]]; then
+        time_bin="/usr/bin/time"
+    elif [[ -x "/run/current-system/sw/bin/time" ]]; then
+        time_bin="/run/current-system/sw/bin/time"
+    fi
+
     # Give the system tlimit seconds; add 10s grace for it to flush output.
-    timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
-        > "${tmp}" 2>"${tmp_err}"
-    exit_code=$?
+    if [[ -n "${time_bin}" ]]; then
+        set +e
+        "${time_bin}" -o "${tmp_mem}" -f "%M" timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
+            > "${tmp}" 2>"${tmp_err}"
+        exit_code=$?
+        set -e
+    else
+        set +e
+        timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
+            > "${tmp}" 2>"${tmp_err}"
+        exit_code=$?
+        set -e
+    fi
     end_ms=$(date +%s%3N)
 
     wall_s=$(echo "scale=3; (${end_ms} - ${start_ms}) / 1000" | bc)
@@ -258,20 +735,90 @@ run_one() {
     # mrs:     "% SZS status Theorem for ..."
     szs=$(grep -m1 '% SZS status' "${tmp}" 2>/dev/null | awk '{print $4}' || true)
 
-    if [[ -z "${szs}" ]]; then
-        if [[ ${exit_code} -eq 124 ]]; then
-            szs="Timeout"
-        else
-            szs="GaveUp"
-        fi
-    fi
-
     # Extract structured failure detail from stderr ("% SZS detail ...").
     # Stores the key=value portion; empty string if not present.
     local failure_detail=""
     failure_detail=$(grep -m1 '% SZS detail' "${tmp_err}" 2>/dev/null | sed 's/^% SZS detail //' || true)
 
-    rm -f "${tmp}" "${tmp_err}"
+    # Derive a work rate from the detail line. `processed_per_s` is the single
+    # number that makes two runs of the same commit comparable: the FNE score
+    # moves by +-4 problems between hosts purely because one host retires
+    # fewer clauses per second, and `processed_per_s` is what shows that
+    # directly. Empty when the prover reported no search telemetry (a
+    # parse-only, model, or immediate verdict), so a blank cell always means
+    # "not measured", never "measured as zero".
+    local processed_per_s=""
+    local _proc="" _elapsed_ms=""
+    _proc=$(printf '%s' "${failure_detail}" | grep -oE '(^| )processed=[0-9]+' | head -1 | cut -d= -f2 || true)
+    _elapsed_ms=$(printf '%s' "${failure_detail}" | grep -oE '(^| )elapsed_ms=[0-9]+' | head -1 | cut -d= -f2 || true)
+    if [[ -n "${_proc}" && -n "${_elapsed_ms}" ]] && (( ${_elapsed_ms} > 0 )); then
+        processed_per_s=$(awk -v p="${_proc}" -v ms="${_elapsed_ms}" \
+            'BEGIN { printf "%.1f", p * 1000 / ms }')
+    fi
+
+    if [[ -z "${szs}" ]]; then
+        if [[ ${exit_code} -eq 124 ]]; then
+            szs="Timeout"
+        elif [[ ${exit_code} -eq 137 ]]; then
+            # Distinguish SIGKILL from timeout vs. early OS OOM Killer.
+            # If killed early before the timeout limit was reached, it's an OS OOM
+            if (( $(echo "${wall_s} < ${tlimit}" | bc -l) )); then
+                szs="Error"
+                failure_detail="OOM: Process killed by OS OOM Killer (SIGKILL)"
+            else
+                szs="Timeout"
+            fi
+        elif [[ ${exit_code} -ne 0 ]]; then
+            szs="Error"
+        else
+            szs="GaveUp"
+        fi
+    fi
+
+    # Extract MRS's reported peak virtual memory from stdout. MRS currently
+    # formats this as "% Peak memory usage: N MB" from /proc/self/status.
+    local peak_memory_mb=""
+    peak_memory_mb=$(awk '
+        $1 == "%" && $2 == "Peak" && $3 == "memory" && $4 == "usage:" && $6 == "MB" {
+            print $5
+            exit
+        }
+    ' "${tmp}" 2>/dev/null || true)
+
+    # Fall back to GNU time Max RSS if self-reported memory is missing
+    if [[ -z "${peak_memory_mb}" && -f "${tmp_mem}" ]]; then
+        local raw_kb
+        raw_kb=$(tail -n 1 "${tmp_mem}" 2>/dev/null | awk '{print $1}' || echo "0")
+        # Ensure raw_kb is a valid integer before doing arithmetic
+        if [[ "${raw_kb}" =~ ^[0-9]+$ && "${raw_kb}" -gt 0 ]]; then
+            peak_memory_mb=$(( raw_kb / 1024 ))
+        fi
+    fi
+
+    if [[ -z "${failure_detail}" && ${exit_code} -ne 0 && ${exit_code} -ne 124 ]]; then
+        if grep -qE "memory allocation.*failed" "${tmp_err}" 2>/dev/null; then
+            failure_detail="OOM: Rust memory allocation failed"
+            szs="Error"
+        elif grep -q "panicked at" "${tmp_err}" 2>/dev/null; then
+            local panic_msg
+            panic_msg=$(grep "panicked at" "${tmp_err}" 2>/dev/null | head -n 1)
+            failure_detail="panic: $(echo "${panic_msg}" | tr -d ',\r\n' | xargs)"
+        elif [[ ${exit_code} -eq 137 && "${szs}" == "Error" ]]; then
+            failure_detail="OOM: Process killed by OS OOM Killer (SIGKILL)"
+        else
+            failure_detail="exit_code=${exit_code}"
+        fi
+    fi
+
+    # Archive both streams for every outcome, including timeout and error
+    # rows, before removing the temporary files.
+    cp -- "${tmp}" "${raw_stdout}"
+    cp -- "${tmp_err}" "${raw_stderr}"
+    local raw_stdout_sha256 raw_stderr_sha256
+    raw_stdout_sha256=$(sha256sum "${raw_stdout}" | cut -d ' ' -f 1)
+    raw_stderr_sha256=$(sha256sum "${raw_stderr}" | cut -d ' ' -f 1)
+
+    rm -f "${tmp}" "${tmp_err}" "${tmp_mem}"
 
     # Look up reference answer and grade.
     local expected="" verdict="unknown"
@@ -294,9 +841,11 @@ run_one() {
         fi
     fi
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-        "${EDITION}" "${div}" "${problem}" "${sys}" \
-        "${szs}" "${expected}" "${verdict}" "${wall_s}" "${failure_detail}"
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "${EDITION}" "${div}" "${problem}" "${sys}" "${tlimit}" \
+        "${szs}" "${expected}" "${verdict}" "${wall_s}" "${peak_memory_mb}" "${failure_detail}" \
+        "${processed_per_s}" \
+        "${raw_stdout_rel}" "${raw_stderr_rel}" "${raw_stdout_sha256}" "${raw_stderr_sha256}"
 }
 
 # Map an SZS status to a coarse provability class so different
@@ -314,7 +863,7 @@ szs_class() {
     esac
 }
 export -f run_one szs_class
-export SCRIPT_DIR EDITION ANSWERS
+export SCRIPT_DIR EDITION ANSWERS OUTPUT RAW_ROOT
 
 # ---------- execute ----------
 

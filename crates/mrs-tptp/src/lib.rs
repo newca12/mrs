@@ -14,6 +14,10 @@
 //! | **TXF** | Extended TFF with FOOL (first-order logic on steroids) |
 //! | **NXF/NHF** | Non-classical extensions |
 //!
+//! ### TPTP Version Compatibility
+//!
+//! **mrs-tptp** implements a single, high-performance, permissive parser supporting a superset of all TPTP language standards up to **TPTP v9.x.x** (including classical CNF/FOF, typed TFF/TCF/THF, TXF/FOOL extensions, and non-classical NXF/NHF). Because the TPTP BNF is designed to be backwards-compatible, older problem files from earlier TPTP releases (e.g. v3.x.x through v8.x.x) are parsed natively without any configuration.
+//!
 //! The parser is built with [winnow] and stores `&str` borrows directly into
 //! the original input — no heap allocation per token, no copying.
 //!

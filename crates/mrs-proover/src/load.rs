@@ -18,6 +18,8 @@ pub struct LoadedJob {
     pub problem_path: Option<PathBuf>,
     /// Parsed problem (if found and parsable).
     pub problem: Option<OwnedTPTPProblem>,
+    /// Included problem files (kept alive for lifetime purposes).
+    pub problem_includes: Vec<OwnedTPTPProblem>,
 }
 
 /// Errors that prevent any verification from starting.
@@ -56,6 +58,11 @@ impl std::fmt::Display for LoadError {
 /// `problems_root` is consulted if the header path is relative and the file is
 /// not found next to the proof. This mirrors the typical competition layout:
 /// proofs live in one folder and `Problems/foo.p` siblings live in another.
+/// Load the proof and, if it references a problem file, parse that too.
+///
+/// `problems_root` is consulted if the header path is relative and the file is
+/// not found next to the proof. This mirrors the typical competition layout:
+/// proofs live in one folder and `Problems/foo.p` siblings live in another.
 pub fn load(proof_path: &Path, problems_root: Option<&Path>) -> Result<LoadedJob, LoadError> {
     let proof_text =
         fs::read_to_string(proof_path).map_err(|e| LoadError::ReadProof(e.to_string()))?;
@@ -64,12 +71,23 @@ pub fn load(proof_path: &Path, problems_root: Option<&Path>) -> Result<LoadedJob
 
     let header = proof_header_link(&proof_text);
 
+    let mut problem_includes = Vec::new();
     let (problem_path, problem) = if let Some(rel) = header {
-        let candidate = resolve_problem_path(proof_path, problems_root, rel);
+        let candidate =
+            resolve_problem_path_with_base(proof_path, problems_root, Path::new("."), rel);
         match candidate {
             Some(path) => {
                 let parsed = parse_tptp_file(&path)
                     .map_err(|e| LoadError::ParseProblem(e.to_string(), path.clone()))?;
+
+                let base_dir = path.parent().unwrap_or(Path::new("."));
+                resolve_includes_recursive(
+                    proof_path,
+                    problems_root,
+                    &parsed.problem().includes,
+                    base_dir,
+                    &mut problem_includes,
+                )?;
                 (Some(path), Some(parsed))
             }
             None => (None, None),
@@ -78,35 +96,216 @@ pub fn load(proof_path: &Path, problems_root: Option<&Path>) -> Result<LoadedJob
         (None, None)
     };
 
-    Ok(LoadedJob {
+    let mut job = LoadedJob {
         proof_path: proof_path.to_path_buf(),
         proof_text,
         proof,
         problem_path,
         problem,
+        problem_includes,
+    };
+
+    // Merge included formulas into the main problem
+    if let Some(ref mut prob) = job.problem {
+        prob.clear_includes();
+        for inc in &job.problem_includes {
+            let inc_tptp: &mrs_tptp::ast::TPTPProblem<'static> = inc;
+            prob.append_formulas(&inc_tptp.formulas);
+        }
+    }
+
+    Ok(job)
+}
+
+/// Parse a problem and proof from memory and resolve `%include` directives
+/// below an explicit root directory.
+pub fn load_text(
+    problem_text: String,
+    proof_text: String,
+    include_root: &Path,
+) -> Result<LoadedJob, LoadError> {
+    let proof = mrs_tptp::owned::parse_tptp_owned(proof_text.clone())
+        .map_err(|e| LoadError::ParseProof(e.to_string()))?;
+    let mut problem = mrs_tptp::owned::parse_tptp_owned(problem_text)
+        .map_err(|e| LoadError::ParseProblem(e.to_string(), include_root.join("stdin.p")))?;
+    let virtual_proof_path = include_root.join("stdin.p");
+    let mut problem_includes = Vec::new();
+    resolve_includes_recursive(
+        &virtual_proof_path,
+        Some(include_root),
+        &problem.problem().includes,
+        include_root,
+        &mut problem_includes,
+    )?;
+    problem.clear_includes();
+    for inc in &problem_includes {
+        let inc_tptp: &mrs_tptp::ast::TPTPProblem<'static> = inc;
+        problem.append_formulas(&inc_tptp.formulas);
+    }
+    Ok(LoadedJob {
+        proof_path: virtual_proof_path,
+        proof_text,
+        proof,
+        problem_path: None,
+        problem: Some(problem),
+        problem_includes,
     })
 }
 
-fn resolve_problem_path(
+#[cfg(test)]
+mod include_selection_tests {
+    use super::*;
+
+    #[test]
+    fn include_selection_imports_only_named_formulas_and_clears_resolved_directives() {
+        let root =
+            std::env::temp_dir().join(format!("mrs_include_selection_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("selected.p"),
+            "cnf(wanted,axiom,p). cnf(unselected,axiom,q).\n",
+        )
+        .unwrap();
+        let job = load_text(
+            "include('selected.p',[wanted]).\n".into(),
+            "% Proof : input\ncnf(wanted,axiom,p,file('input',wanted)).\n".to_owned(),
+            &root,
+        )
+        .unwrap();
+        let problem = job.problem.as_ref().unwrap().problem();
+        assert!(problem.includes.is_empty());
+        assert_eq!(
+            problem
+                .formulas
+                .iter()
+                .filter(|f| f.name() == "wanted")
+                .count(),
+            1
+        );
+        assert_eq!(
+            problem
+                .formulas
+                .iter()
+                .filter(|f| f.name() == "unselected")
+                .count(),
+            0
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_include_selection_is_respected_at_each_level() {
+        let root = std::env::temp_dir().join(format!(
+            "mrs_nested_include_selection_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("outer.p"),
+            "include('inner.p',[chosen]).\ncnf(outer_unselected,axiom,r).\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("inner.p"),
+            "cnf(chosen,axiom,p). cnf(inner_unselected,axiom,q).\n",
+        )
+        .unwrap();
+        let job = load_text(
+            "include('outer.p',[outer_unselected]).\n".into(),
+            "% Proof : input\ncnf(outer_unselected,axiom,r,file('input',outer_unselected)).\n"
+                .into(),
+            &root,
+        )
+        .unwrap();
+        let names: Vec<_> = job
+            .problem
+            .as_ref()
+            .unwrap()
+            .problem()
+            .formulas
+            .iter()
+            .map(|formula| formula.name())
+            .collect();
+        assert_eq!(names, vec!["chosen", "outer_unselected"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+fn resolve_includes_recursive(
     proof_path: &Path,
     problems_root: Option<&Path>,
+    includes: &[mrs_tptp::ast::Include<'_>],
+    base_dir: &Path,
+    problem_includes: &mut Vec<OwnedTPTPProblem>,
+) -> Result<(), LoadError> {
+    for inc in includes {
+        let rel = inc.file_name;
+        let candidate = resolve_problem_path_with_base(proof_path, problems_root, base_dir, rel);
+        if let Some(path) = candidate {
+            let mut parsed = parse_tptp_file(&path)
+                .map_err(|e| LoadError::ParseProblem(e.to_string(), path.clone()))?;
+
+            let inc_dir = path.parent().unwrap_or(Path::new("."));
+            resolve_includes_recursive(
+                proof_path,
+                problems_root,
+                &parsed.problem().includes,
+                inc_dir,
+                problem_includes,
+            )?;
+
+            parsed.retain_formula_names(inc.selection.as_deref());
+            parsed.clear_includes();
+            problem_includes.push(parsed);
+        } else {
+            return Err(LoadError::ReadProblem(
+                "included file not found".into(),
+                PathBuf::from(rel),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the `% Proof :` header path to an existing problem file.
+///
+/// Candidate order matters: a relative header such as `Problems/foo.p` is
+/// resolved *against the proof's own directory* first, then against an
+/// explicit `--problems-dir` root. Only if neither matches do we fall back to
+/// the bare relative path, i.e. against the process working directory. Putting
+/// the cwd-relative candidate last means a proof verified from an unrelated
+/// working directory cannot silently bind to a same-named `Problems/foo.p` in
+/// that directory, and a genuinely missing problem is now reported as missing
+/// (and refused by the verifier) instead of binding to whatever happens to
+/// sit in the caller's cwd.
+pub fn resolve_problem_path_with_base(
+    proof_path: &Path,
+    problems_root: Option<&Path>,
+    base_dir: &Path,
     rel: &str,
 ) -> Option<PathBuf> {
-    // Try (1) literal as-is, (2) relative to the proof's directory,
-    // (3) relative to `problems_root` if given,
-    // (4) `problems_root.join(basename)`.
-    let candidates: Vec<PathBuf> = {
-        let mut v = vec![PathBuf::from(rel)];
-        if let Some(parent) = proof_path.parent() {
-            v.push(parent.join(rel));
+    let mut v: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = proof_path.parent() {
+        v.push(parent.join(rel));
+        v.push(parent.join(base_dir).join(rel));
+    }
+    if let Some(root) = problems_root {
+        v.push(root.join(rel));
+        v.push(root.join(base_dir).join(rel));
+        if let Some(name) = Path::new(rel).file_name() {
+            v.push(root.join(name));
         }
-        if let Some(root) = problems_root {
-            v.push(root.join(rel));
-            if let Some(name) = Path::new(rel).file_name() {
-                v.push(root.join(name));
-            }
+    }
+    if let Ok(tptp_val) = std::env::var("TPTP") {
+        let root = Path::new(&tptp_val);
+        v.push(root.join(rel));
+        v.push(root.join(base_dir).join(rel));
+        if let Some(name) = Path::new(rel).file_name() {
+            v.push(root.join(name));
         }
-        v
-    };
-    candidates.into_iter().find(|p| p.is_file())
+    }
+    // Last resort: the header path as given, relative to the process cwd.
+    v.push(PathBuf::from(rel));
+    v.push(base_dir.join(rel));
+    v.into_iter().find(|p| p.is_file())
 }

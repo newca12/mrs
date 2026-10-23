@@ -10,26 +10,358 @@
 //! - All clauses are processed (saturation)
 //! - A time or clause limit is exceeded
 
-use crate::HashSet;
+use crate::{HashMap, HashSet, LrsPolicy, SharedClauseChain};
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mrs_calculus::demodulation;
 use mrs_calculus::equality;
 use mrs_calculus::factoring;
+use mrs_calculus::literal_selection::LiteralSelection;
 use mrs_calculus::literal_selection::{restrict_to_maximal_id, selected_literals_id};
 use mrs_calculus::resolution;
 use mrs_calculus::subsumption;
 use mrs_calculus::superposition;
-use mrs_core::SymbolId;
-use mrs_core::clause::ClauseSource;
-use mrs_core::term_bank::{IdAtom, IdClause, TermId, TermNode};
+use mrs_core::clause::{
+    AvatarSatTrace, Clause as LegacyClause, ClauseCertificate, ClauseId, ClauseSource,
+    avatar_sat_trace_digest,
+};
+use mrs_core::display::DisplayWithSymbols;
+use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermId, TermNode};
+use mrs_core::{Atom, Formula, SymbolId, Term};
 use mrs_index::fvi::FeatureVector;
+use mrs_proof::extract::extract_proof_ids;
 
 use crate::select::select;
 use crate::state::SearchState;
 use crate::weight;
 use crate::{SearchConfig, SearchResult};
+
+/// Builds a topologically-ordered ancestor chain for `head_id` (input
+/// clauses first, `head_id` last), converting each clause to its portable
+/// "legacy" representation for the cross-strategy shared pool.
+///
+/// Pushing the full chain (rather than just the head clause) lets a
+/// receiving thread splice the entire justification into its own
+/// `clause_store` with remapped IDs, so a shared clause never ends up in
+/// the final extracted proof with an empty/unjustified parent list.
+fn build_shared_chain(state: &SearchState, head_id: ClauseId) -> Vec<LegacyClause> {
+    let ids = extract_proof_ids(head_id, &state.clause_store);
+    let proof = ids
+        .iter()
+        .filter_map(|id| state.clause_store.get(id))
+        .map(|clause| state.term_bank.clause_to_legacy(clause))
+        .collect::<Vec<_>>();
+    mrs_proof::elaborate::topological_sort(&proof).unwrap_or_default()
+}
+
+fn shared_chain_key(chain: &[LegacyClause], symbols: &mrs_core::SymbolTable) -> String {
+    chain
+        .iter()
+        .map(|clause| format!("{}", clause.display(symbols)))
+        .collect::<Vec<_>>()
+        .join(" -> ")
+}
+
+fn remap_symbol(symbol: &mut SymbolId, mapping: &[SymbolId]) -> bool {
+    let Some(mapped) = mapping.get(symbol.index() as usize) else {
+        return false;
+    };
+    *symbol = *mapped;
+    true
+}
+
+fn remap_term(term: &mut Term, mapping: &[SymbolId]) -> bool {
+    match term {
+        Term::Var(_) => true,
+        Term::App(symbol, args) => {
+            let mut valid = remap_symbol(symbol, mapping);
+            for arg in args {
+                valid &= remap_term(arg, mapping);
+            }
+            valid
+        }
+    }
+}
+
+fn remap_atom(atom: &mut Atom, mapping: &[SymbolId]) -> bool {
+    match atom {
+        Atom::Pred(symbol, args) => {
+            let mut valid = remap_symbol(symbol, mapping);
+            for arg in args {
+                valid &= remap_term(arg, mapping);
+            }
+            valid
+        }
+        Atom::Eq(left, right) => remap_term(left, mapping) & remap_term(right, mapping),
+    }
+}
+
+fn remap_formula(formula: &mut Formula, mapping: &[SymbolId]) -> bool {
+    match formula {
+        Formula::Atom(atom) => remap_atom(atom, mapping),
+        Formula::Neg(inner) => remap_formula(inner, mapping),
+        Formula::And(formulas) | Formula::Or(formulas) => formulas
+            .iter_mut()
+            .all(|formula| remap_formula(formula, mapping)),
+        Formula::Implies(left, right) | Formula::Iff(left, right) => {
+            remap_formula(left, mapping) & remap_formula(right, mapping)
+        }
+        Formula::Forall(_, body) | Formula::Exists(_, body) => remap_formula(body, mapping),
+        Formula::True | Formula::False => true,
+    }
+}
+
+/// Rebind every symbol in a shared legacy clause to the receiving worker's
+/// symbol table. Worker-local symbol IDs cannot cross the shared-pool boundary
+/// without this name-based remapping.
+fn remap_shared_clause_symbols(clause: &mut LegacyClause, mapping: &[SymbolId]) -> bool {
+    let mut valid = true;
+    for literal in &mut clause.literals {
+        valid &= remap_atom(&mut literal.atom, mapping);
+    }
+    if let ClauseSource::Introduced { symbol, .. } = &mut clause.source {
+        valid &= remap_symbol(symbol, mapping);
+    }
+    if let Some(formula) = &mut clause.formula {
+        valid &= remap_formula(formula, mapping);
+    }
+    valid
+}
+
+/// Rebind parent clause IDs when a shared proof chain is imported into a
+/// receiving worker. All IDs are assigned before this runs, so forward parent
+/// references are remapped just like ordinary backward references.
+fn remap_shared_clause_ids(clause: &mut LegacyClause, mapping: &HashMap<ClauseId, ClauseId>) {
+    match &mut clause.source {
+        ClauseSource::Inference { parents, .. } | ClauseSource::Introduced { parents, .. } => {
+            for parent in parents {
+                if let Some(&mapped) = mapping.get(parent) {
+                    *parent = mapped;
+                }
+            }
+        }
+        ClauseSource::Input { .. } => {}
+    }
+    if let Some(certificate) = &mut clause.certificate {
+        match certificate {
+            ClauseCertificate::AvatarComponent { split_parent, .. } => {
+                if let Some(&mapped) = mapping.get(split_parent) {
+                    *split_parent = mapped;
+                }
+            }
+            ClauseCertificate::AvatarSatRefutation {
+                split_nodes,
+                branch_roots,
+                ..
+            } => {
+                for id in split_nodes.iter_mut().chain(branch_roots.iter_mut()) {
+                    if let Some(&mapped) = mapping.get(id) {
+                        *id = mapped;
+                    }
+                }
+            }
+            ClauseCertificate::SatBackedRefutation { inputs, .. } => {
+                for id in inputs.iter_mut() {
+                    if let Some(&mapped) = mapping.get(id) {
+                        *id = mapped;
+                    }
+                }
+            }
+            ClauseCertificate::AvatarSplit { .. }
+            | ClauseCertificate::AvatarBranchRefutation { .. } => {}
+        }
+    }
+}
+
+/// Give imported definition symbols a fresh receiver-local name when the
+/// publisher used a name already present in the receiver's symbol table and
+/// the definition is incompatible with the receiver's existing definition.
+///
+/// Goal transformation currently emits names such as `goal_d0` independently
+/// in each strategy. The ordinary symbol remapping below intentionally interns
+/// names by text, so importing such a chain would otherwise merge unrelated
+/// definitions. Compatible definitions retain the existing symbol to preserve
+/// the search behavior; conflicting definitions get a fresh name. Updating the
+/// source-index mapping before remapping the chain keeps every occurrence,
+/// including `ClauseSource::Introduced`, consistent.
+fn isolate_shared_introduced_symbols(
+    chain: &[LegacyClause],
+    symbol_names: &[String],
+    existing_names: &HashSet<String>,
+    existing_definitions: &[(ClauseId, SymbolId, LegacyClause)],
+    symbols: &mut mrs_core::SymbolTable,
+    mapping: &mut [SymbolId],
+) {
+    let mut fresh_counter = 0usize;
+    loop {
+        let mut renamed = false;
+        for clause in chain.iter() {
+            let ClauseSource::Introduced { symbol, .. } = clause.source else {
+                continue;
+            };
+            let index = symbol.index() as usize;
+            let Some(name) = symbol_names.get(index) else {
+                continue;
+            };
+            let mapped_is_original = mapping.get(index).copied() == symbols.resolve_name(name);
+            let collides = mapped_is_original
+                && existing_names.contains(name)
+                && !definition_matches_existing(
+                    clause,
+                    mapping.get(index).copied(),
+                    existing_definitions,
+                    mapping,
+                );
+            if !collides {
+                continue;
+            }
+            let fresh_name = loop {
+                let candidate = format!("{name}__shared_{fresh_counter}");
+                fresh_counter += 1;
+                if symbols.resolve_name(&candidate).is_none() {
+                    break candidate;
+                }
+            };
+            if let Some(mapped) = mapping.get_mut(index) {
+                *mapped = symbols.intern(&fresh_name);
+                renamed = true;
+            }
+        }
+        if !renamed {
+            break;
+        }
+    }
+}
+
+fn definition_matches_existing(
+    clause: &LegacyClause,
+    mapped_symbol: Option<SymbolId>,
+    existing_definitions: &[(ClauseId, SymbolId, LegacyClause)],
+    mapping: &[SymbolId],
+) -> bool {
+    let Some(mapped_symbol) = mapped_symbol else {
+        return false;
+    };
+    let mut candidate = clause.clone();
+    if !remap_shared_clause_symbols(&mut candidate, mapping) {
+        return false;
+    }
+    existing_definitions.iter().any(|(_, symbol, existing)| {
+        *symbol == mapped_symbol && definitions_equivalent(&candidate, existing)
+    })
+}
+
+fn definitions_equivalent(left: &LegacyClause, right: &LegacyClause) -> bool {
+    if left.literals.len() != 1 || right.literals.len() != 1 {
+        return false;
+    }
+    if !left.literals[0].positive || !right.literals[0].positive {
+        return false;
+    }
+    match (&left.literals[0].atom, &right.literals[0].atom) {
+        (Atom::Eq(left_l, left_r), Atom::Eq(right_l, right_r)) => {
+            (left_l == right_l && left_r == right_r) || (left_l == right_r && left_r == right_l)
+        }
+        _ => false,
+    }
+}
+
+fn find_compatible_definition_id(
+    clause: &LegacyClause,
+    symbol: SymbolId,
+    definitions: &[(ClauseId, SymbolId, LegacyClause)],
+) -> Option<ClauseId> {
+    definitions
+        .iter()
+        .find(|(_, known_symbol, known_clause)| {
+            *known_symbol == symbol && definitions_equivalent(clause, known_clause)
+        })
+        .map(|(id, _, _)| *id)
+}
+
+fn lrs_target_size(
+    policy: LrsPolicy,
+    iteration: u64,
+    elapsed: Duration,
+    time_limit: Duration,
+) -> Option<usize> {
+    let remaining_iterations = match policy {
+        LrsPolicy::Disabled => return None,
+        LrsPolicy::WallClock => {
+            let avg_nanos = (elapsed.as_nanos() / iteration.max(1) as u128).max(1);
+            let remaining_nanos = time_limit.saturating_sub(elapsed).as_nanos();
+            (remaining_nanos / avg_nanos) as u64
+        }
+        LrsPolicy::FixedIterations { budget } => budget.saturating_sub(iteration),
+    };
+    Some(remaining_iterations.max(2000) as usize)
+}
+
+fn should_poll_shared_pool(iteration: u64, interval: u64) -> bool {
+    interval > 0 && iteration > 0 && iteration.is_multiple_of(interval)
+}
+
+fn ready_shared_chains(
+    pool: &[SharedClauseChain],
+    seen: &HashSet<String>,
+    epoch: u64,
+) -> Vec<SharedClauseChain> {
+    let mut ready = pool
+        .iter()
+        .filter(|entry| entry.epoch <= epoch && !seen.contains(&entry.key))
+        .cloned()
+        .collect::<Vec<_>>();
+    ready.sort_by(|left, right| left.key.cmp(&right.key));
+    ready.dedup_by(|left, right| left.key == right.key);
+    ready
+}
+
+fn publish_shared_chain(
+    state: &SearchState,
+    given: &IdClause,
+    iteration: u64,
+    interval: u64,
+) -> bool {
+    if interval == 0 || !is_unit_positive_equality_id(given) || !given.avatar.is_empty() {
+        return false;
+    }
+    let Some(pool_lock) = &state.shared_pool else {
+        return false;
+    };
+    let Ok(mut pool) = pool_lock.write() else {
+        return false;
+    };
+    if pool.len() >= SHARED_POOL_CAP {
+        return false;
+    }
+    let chain = build_shared_chain(state, given.id);
+    if chain.is_empty() {
+        return false;
+    }
+    let key = shared_chain_key(&chain, &state.symbols);
+    if pool.iter().any(|entry| entry.key == key) {
+        return false;
+    }
+    pool.push(SharedClauseChain {
+        epoch: iteration / interval,
+        key,
+        symbol_names: state.symbols.iter_names().map(str::to_owned).collect(),
+        chain,
+    });
+    true
+}
+
+fn publish_shared_chain_counted(
+    state: &mut SearchState,
+    given: &IdClause,
+    iteration: u64,
+    interval: u64,
+) {
+    if publish_shared_chain(state, given, iteration, interval) {
+        state.stats.shared_published += 1;
+    }
+}
 
 /// After the SAT model changes, move clauses between active and dormant sets to
 /// reflect the new assignment. Also updates the demodulation index for any
@@ -52,10 +384,12 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
                     state
                         .demod_index
                         .remove(*l, &state.term_bank, &(*l, *r, p.id));
+                    state.demod_memo.invalidate(*l, &state.term_bank);
                 } else if ordering.compare_id(*r, *l, &state.term_bank) == TermComparison::Greater {
                     state
                         .demod_index
                         .remove(*r, &state.term_bank, &(*r, *l, p.id));
+                    state.demod_memo.invalidate(*r, &state.term_bank);
                 }
             }
             state.dormant_processed.insert(p.id, p);
@@ -90,7 +424,7 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         #[cfg(not(feature = "ml-guidance"))]
         let score = None;
         let w = state.compute_weight(&p);
-        state.unprocessed.push(&p, &state.term_bank, w, score);
+        state.push_unprocessed(&p, w, score);
     }
 
     // 4. Dormant Unprocessed -> Unprocessed
@@ -107,7 +441,7 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
         #[cfg(not(feature = "ml-guidance"))]
         let score = None;
         let w = state.compute_weight(&u);
-        state.unprocessed.push(&u, &state.term_bank, w, score);
+        state.push_unprocessed(&u, w, score);
     }
 }
 
@@ -121,48 +455,243 @@ fn update_model(state: &mut SearchState) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AvatarBranchResult {
+    Sat,
+    Unsat,
+    Unknown,
+}
+
 /// Add the negation of an AVATAR clause's assumptions to the SAT solver and
-/// check satisfiability. Returns `true` if a new model was found (clause
-/// is now dormant), `false` if UNSAT (full refutation).
+/// check satisfiability.
 fn avatar_refute_branch(
     state: &mut SearchState,
+    cid: mrs_core::clause::ClauseId,
     avatar: &[u32],
     ordering: &crate::TermOrdering,
-) -> bool {
+) -> AvatarBranchResult {
     if state.search_deadline.is_some_and(|d| Instant::now() >= d)
         || state
             .stop_flag
             .as_ref()
             .is_some_and(|f| f.load(Ordering::Relaxed))
     {
-        return true;
+        return AvatarBranchResult::Unknown;
     }
     let sat_clause: Vec<i32> = avatar.iter().map(|&a| -(a as i32)).collect();
-    state.avatar.solver.add_clause(sat_clause);
+    state.avatar.add_sat_clause(sat_clause);
 
-    if matches!(state.avatar.solver.solve(), Some(true)) {
-        update_model(state);
-        sync_active_dormant(state, ordering);
-        true
-    } else {
-        false
+    if state.branch_empty_ids.iter().any(|existing| {
+        state
+            .clause_store
+            .get(existing)
+            .and_then(|clause| clause.certificate.as_ref())
+            .is_some_and(|certificate| {
+                matches!(
+                    certificate,
+                    ClauseCertificate::AvatarBranchRefutation { context }
+                        if context == avatar
+                )
+            })
+    }) {
+        return match state.avatar.solver.solve() {
+            mrs_cadical::SolveResult::Sat => {
+                update_model(state);
+                sync_active_dormant(state, ordering);
+                if crate::lpo_budget_expired() {
+                    return AvatarBranchResult::Unknown;
+                }
+                AvatarBranchResult::Sat
+            }
+            mrs_cadical::SolveResult::Unsat => AvatarBranchResult::Unsat,
+            mrs_cadical::SolveResult::Unknown => AvatarBranchResult::Unknown,
+        };
     }
+
+    // The first-order empty clause is a branch refutation even when the SAT
+    // solver still has another model.  Record every such branch; the final
+    // SAT roll-up needs the complete set of excluded contexts, not only the
+    // call that happened to make CaDiCaL return UNSAT.
+    let mut branch_root = IdClause::new(
+        state.id_gen.next(),
+        Vec::<IdLiteral>::new(),
+        ClauseSource::Inference {
+            rule: "avatar_branch_refutation",
+            parents: vec![cid].into(),
+        },
+    );
+    branch_root.certificate = Some(ClauseCertificate::AvatarBranchRefutation {
+        context: avatar.to_vec(),
+    });
+    state.register_clause(&branch_root);
+    state.branch_empty_ids.push(branch_root.id);
+
+    match state.avatar.solver.solve() {
+        mrs_cadical::SolveResult::Sat => {
+            update_model(state);
+            sync_active_dormant(state, ordering);
+            if crate::lpo_budget_expired() {
+                return AvatarBranchResult::Unknown;
+            }
+            AvatarBranchResult::Sat
+        }
+        mrs_cadical::SolveResult::Unsat => AvatarBranchResult::Unsat,
+        mrs_cadical::SolveResult::Unknown => AvatarBranchResult::Unknown,
+    }
+}
+
+fn avatar_certificate_parents(state: &crate::state::SearchState) -> Vec<ClauseId> {
+    let mut relevant = HashSet::default();
+    for &id in &state.avatar.sat_split_ids {
+        if state.clause_store.contains_key(&id) {
+            relevant.insert(id);
+        }
+    }
+    for branch_root in &state.branch_empty_ids {
+        for ancestor in extract_proof_ids(*branch_root, &state.clause_store) {
+            if matches!(
+                state.clause_store.get(&ancestor).map(|clause| &clause.source),
+                Some(ClauseSource::Inference { rule, .. }) if *rule == "avatar_split_clause"
+            ) {
+                relevant.insert(ancestor);
+            }
+        }
+    }
+    let mut parents: Vec<_> = relevant.into_iter().collect();
+    parents.sort_unstable_by_key(|id| id.0);
+    parents.extend(state.branch_empty_ids.iter().copied());
+    parents.dedup();
+    parents
+}
+
+fn avatar_certificate_split_ids(state: &crate::state::SearchState) -> Vec<ClauseId> {
+    avatar_certificate_parents(state)
+        .into_iter()
+        .filter(|id| {
+            matches!(
+                state.clause_store.get(id).map(|clause| &clause.source),
+                Some(ClauseSource::Inference { rule, .. }) if *rule == "avatar_split_clause"
+            )
+        })
+        .collect()
+}
+
+fn avatar_certificate_branch_ids(state: &crate::state::SearchState) -> Vec<ClauseId> {
+    state.branch_empty_ids.clone()
+}
+
+fn avatar_sat_trace(
+    state: &crate::state::SearchState,
+    split_nodes: &[ClauseId],
+    branch_roots: &[ClauseId],
+    enabled: bool,
+) -> Option<AvatarSatTrace> {
+    if !enabled {
+        return None;
+    }
+    let cited_clauses = avatar_certificate_manifest(state, split_nodes, branch_roots)?;
+    let clauses = state.avatar.sat_manifest.clone();
+    if clauses.is_empty() {
+        return None;
+    }
+    let mut used = vec![false; clauses.len()];
+    let mut cited_indices = Vec::with_capacity(cited_clauses.len());
+    for cited_clause in cited_clauses {
+        let (index, _) = clauses
+            .iter()
+            .enumerate()
+            .find(|(index, clause)| !used[*index] && **clause == cited_clause)?;
+        used[index] = true;
+        cited_indices.push(index);
+    }
+    let max_variable = clauses
+        .iter()
+        .flat_map(|clause| clause.iter())
+        .map(|literal| literal.unsigned_abs())
+        .max()
+        .unwrap_or(0);
+    let trace = mrs_cadical::trace_manifest(&clauses, max_variable).ok()?;
+    let parsed = mrs_cadical::parse_frat_ascii(std::str::from_utf8(&trace).ok()?).ok()?;
+    let original_ids = parsed
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            mrs_cadical::ProofEvent::OriginalClause { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if original_ids.len() != clauses.len() {
+        return None;
+    }
+    let digest = avatar_sat_trace_digest(
+        "frat-lrat",
+        max_variable,
+        &original_ids,
+        &cited_indices,
+        &clauses,
+        &trace,
+    );
+    Some(AvatarSatTrace {
+        format: "frat-lrat",
+        variables: max_variable,
+        original_ids,
+        cited_indices,
+        clauses,
+        trace,
+        digest,
+    })
+}
+
+fn avatar_certificate_manifest(
+    state: &crate::state::SearchState,
+    split_nodes: &[ClauseId],
+    branch_roots: &[ClauseId],
+) -> Option<Vec<Vec<i32>>> {
+    let mut manifest = Vec::with_capacity(split_nodes.len() + branch_roots.len());
+    for split_id in split_nodes {
+        let clause = state.clause_store.get(split_id)?;
+        let ClauseCertificate::AvatarSplit {
+            inherited,
+            components,
+        } = clause.certificate.as_ref()?
+        else {
+            return None;
+        };
+        let mut sat_clause = components
+            .iter()
+            .map(|component| component.sat_var as i32)
+            .collect::<Vec<_>>();
+        sat_clause.extend(inherited.iter().map(|var| -(*var as i32)));
+        manifest.push(sat_clause);
+    }
+    for branch_id in branch_roots {
+        let clause = state.clause_store.get(branch_id)?;
+        let ClauseCertificate::AvatarBranchRefutation { context } = clause.certificate.as_ref()?
+        else {
+            return None;
+        };
+        manifest.push(context.iter().map(|var| -(*var as i32)).collect());
+    }
+    Some(manifest)
 }
 
 /// Scans the clause store for commutativity and associativity axioms:
 /// Commutativity: `f(X,Y) = f(Y,X)`
 /// Associativity: `f(f(X,Y),Z) = f(X,f(Y,Z))` or `f(X,f(Y,Z)) = f(f(X,Y),Z)`
 /// Returns the set of commutative symbols, associative symbols, and the IDs of the axioms to remove.
+#[allow(clippy::type_complexity)]
 fn detect_ac_symbols(
     state: &crate::state::SearchState,
 ) -> (
     HashSet<SymbolId>,
     HashSet<SymbolId>,
     Vec<mrs_core::clause::ClauseId>,
+    Vec<(mrs_core::clause::ClauseId, SymbolId)>,
 ) {
     let mut comm = HashSet::default();
     let mut assoc = HashSet::default();
     let mut to_remove = Vec::new();
+    let mut ac_axioms = Vec::new();
     for clause in state.clause_store.values() {
         if clause.len() == 1
             && clause.literals[0].positive
@@ -184,6 +713,7 @@ fn detect_ac_symbols(
                 && y1 == x2
             {
                 comm.insert(*f1);
+                ac_axioms.push((clause.id, *f1));
                 to_remove.push(clause.id);
                 continue;
             }
@@ -233,6 +763,7 @@ fn detect_ac_symbols(
                     && z1 == z2
                 {
                     assoc.insert(*f1);
+                    ac_axioms.push((clause.id, *f1));
                     // to_remove.push(clause.id); // DO NOT remove associativity axioms
                     continue;
                 }
@@ -282,33 +813,457 @@ fn detect_ac_symbols(
                     && z1 == z2
                 {
                     assoc.insert(*f1);
+                    ac_axioms.push((clause.id, *f1));
                     // to_remove.push(clause.id); // DO NOT remove associativity axioms
                     continue;
                 }
             }
         }
     }
-    (comm, assoc, to_remove)
+    (comm, assoc, to_remove, ac_axioms)
 }
+
+/// Debug-only consistency check for the two independent copies used in
+/// superposition: the active-index partner and its proof/search store entry.
+/// This intentionally avoids a verbose inference trace and fires only when
+/// the copies diverge.
+#[inline]
+fn assert_indexed_clause_matches_store(state: &SearchState, indexed: &IdClause, site: &str) {
+    #[cfg(debug_assertions)]
+    match state.clause_store.get(&indexed.id) {
+        Some(stored) => debug_assert_eq!(
+            indexed.literals, stored.literals,
+            "superposition partner differs between processed index and clause store at {site}; id={} indexed_source={:?} stored_source={:?}",
+            indexed.id.0, indexed.source, stored.source,
+        ),
+        None => panic!(
+            "superposition partner is absent from clause store at {site}; id={} indexed_source={:?}",
+            indexed.id.0, indexed.source,
+        ),
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (state, indexed, site);
+}
+
+fn mark_ac_superposition(clause: &mut IdClause, ac_axiom_ids: &[ClauseId]) {
+    let ClauseSource::Inference { rule, parents } = &mut clause.source else {
+        return;
+    };
+    if *rule != "superposition" || ac_axiom_ids.is_empty() {
+        return;
+    }
+    *rule = "ac_superposition";
+    parents.extend(ac_axiom_ids.iter().copied());
+}
+
+fn mark_ac_resolution(clause: &mut IdClause, ac_axiom_ids: &[ClauseId]) {
+    let ClauseSource::Inference { rule, parents } = &mut clause.source else {
+        return;
+    };
+    if *rule != "ac_resolution" || ac_axiom_ids.is_empty() {
+        return;
+    }
+    parents.extend(ac_axiom_ids.iter().copied());
+}
+
+/// Hard ceiling on the cross-strategy shared unit-equality pool
+/// (`SearchState::shared_pool`).
+///
+/// Without a cap, strategies can re-broadcast semantically-identical unit
+/// equalities to each other indefinitely: each ingested clause is assigned a
+/// *fresh* clause id (`given_clause.rs` ingestion loop), so once it is later
+/// selected as a "given" clause it is eligible to be pushed straight back to
+/// the pool as if it were new — forward-subsumption at ingestion time only
+/// checks against each thread's own `processed` set, not against duplicates
+/// concurrently sitting in *other* threads' unprocessed queues, so this
+/// ping-pong is not reliably caught. On small, equality-heavy problems with a
+/// tiny Herbrand vocabulary (e.g. ground boolean-gate rewriting systems) this
+/// was observed to produce 100k+ pool pushes and LRS-discards within a few
+/// seconds for an otherwise trivial problem, drowning out strategies that
+/// would have solved it near-instantly on their own. Capping the pool bounds
+/// the worst case while still letting the first (and most valuable) wave of
+/// genuinely new derived facts flow between strategies for harder problems.
+const SHARED_POOL_CAP: usize = 4096;
 
 /// Runs the given-clause proof search.
 ///
 /// Returns `SearchResult::Refutation(id)` if the empty clause is derived,
-/// `SearchResult::Saturated` if all clauses are processed without contradiction,
-/// or `SearchResult::Timeout` on timeout.
+/// `SearchResult::Saturated(witness)` if all clauses are processed without
+/// contradiction and the configuration audit passes, or `SearchResult::Timeout`
+/// on timeout.
+fn extract_and_format_proof(
+    empty_id: mrs_core::clause::ClauseId,
+    state: &crate::state::SearchState,
+) -> String {
+    if state.symbols.is_empty() {
+        return String::new();
+    }
+    if std::env::var("TRACE_SEARCH").is_ok() {
+        if let Some(ic) = state.clause_store.get(&empty_id) {
+            eprintln!(
+                "[TRACE] extract_and_format_proof: empty_id = {}, clause in store literals len = {}, source = {:?}",
+                empty_id.0,
+                ic.literals.len(),
+                ic.source
+            );
+        } else {
+            eprintln!(
+                "[TRACE] extract_and_format_proof: empty_id = {} NOT FOUND in store!",
+                empty_id.0
+            );
+        }
+    }
+    let legacy_store: std::collections::HashMap<_, _> = state
+        .clause_store
+        .iter()
+        .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+        .collect();
+    let proof = mrs_proof::extract::extract_proof(empty_id, &legacy_store);
+    mrs_proof::tstp::format_tstp(&proof, &state.symbols)
+}
+
 pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
+    let res = search_internal(state, config);
+    match res {
+        SearchResult::Refutation(empty_id, tstp) if tstp.is_empty() && empty_id.0 != 0 => {
+            if std::env::var("TRACE_SEARCH").is_ok() {
+                eprintln!(
+                    "[TRACE] search_internal returned Refutation with empty_id = {}",
+                    empty_id.0
+                );
+                for (&cid, ic) in &state.clause_store {
+                    if ic.literals.is_empty() {
+                        eprintln!(
+                            "[TRACE] found actual empty clause in store: id = {}, source = {:?}",
+                            cid.0, ic.source
+                        );
+                    }
+                }
+            }
+            let (final_id, tstp_proof) = if config.use_avatar {
+                let is_pure_fol = state
+                    .clause_store
+                    .get(&empty_id)
+                    .is_some_and(|c| c.avatar.is_empty());
+                if is_pure_fol {
+                    (empty_id, extract_and_format_proof(empty_id, state))
+                } else {
+                    let mut legacy_store: std::collections::HashMap<_, _> = state
+                        .clause_store
+                        .iter()
+                        .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+                        .collect();
+
+                    let parents = avatar_certificate_parents(state);
+                    if parents.is_empty() {
+                        return SearchResult::Refutation(
+                            empty_id,
+                            extract_and_format_proof(empty_id, state),
+                        );
+                    }
+                    let final_id = state.id_gen.next();
+                    let split_nodes = avatar_certificate_split_ids(state);
+                    let branch_roots = avatar_certificate_branch_ids(state);
+                    let mut final_false_clause = mrs_core::clause::Clause::new(
+                        final_id,
+                        vec![],
+                        mrs_core::clause::ClauseSource::Inference {
+                            rule: "avatar_sat_refutation",
+                            parents: parents.into(),
+                        },
+                    );
+                    final_false_clause.certificate = Some(ClauseCertificate::AvatarSatRefutation {
+                        sat_trace: avatar_sat_trace(
+                            state,
+                            &split_nodes,
+                            &branch_roots,
+                            config.emit_avatar_trace,
+                        ),
+                        split_nodes,
+                        branch_roots,
+                    });
+                    legacy_store.insert(final_id, final_false_clause);
+
+                    let mut final_proof =
+                        mrs_proof::extract::extract_proof(final_id, &legacy_store);
+                    final_proof.sort_unstable_by_key(|c| c.id.0);
+
+                    let tstp = if state.symbols.is_empty() {
+                        String::new()
+                    } else {
+                        mrs_proof::tstp::format_tstp(&final_proof, &state.symbols)
+                    };
+                    (final_id, tstp)
+                }
+            } else {
+                (empty_id, extract_and_format_proof(empty_id, state))
+            };
+
+            if std::env::var("TRACE_SEARCH").is_ok() {
+                eprintln!(
+                    "[TRACE] wrapper search Refutation called with empty_id = {}, tstp_proof len = {}",
+                    final_id.0,
+                    tstp_proof.len()
+                );
+            }
+            SearchResult::Refutation(final_id, tstp_proof)
+        }
+        SearchResult::Refutation(empty_id, tstp) if tstp.is_empty() && empty_id.0 == 0 => {
+            let input_ids = avatar_certificate_parents(state);
+            if input_ids.is_empty() {
+                return SearchResult::Refutation(empty_id, String::new());
+            }
+            let final_id = state.id_gen.next();
+            let split_nodes = avatar_certificate_split_ids(state);
+            let branch_roots = avatar_certificate_branch_ids(state);
+            let mut final_false_clause = mrs_core::clause::Clause::new(
+                final_id,
+                vec![],
+                mrs_core::clause::ClauseSource::Inference {
+                    rule: "avatar_sat_refutation",
+                    parents: input_ids.into(),
+                },
+            );
+
+            final_false_clause.certificate = Some(ClauseCertificate::AvatarSatRefutation {
+                sat_trace: avatar_sat_trace(
+                    state,
+                    &split_nodes,
+                    &branch_roots,
+                    config.emit_avatar_trace,
+                ),
+                split_nodes,
+                branch_roots,
+            });
+
+            let mut legacy_store: std::collections::HashMap<_, _> = state
+                .clause_store
+                .iter()
+                .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
+                .collect();
+            legacy_store.insert(final_id, final_false_clause);
+
+            // Prune to the root derivation: emitting the whole store would
+            // include unused input axioms and dead clauses, which the strict
+            // kernel (and TSTP hygiene) rejects as outside the derivation.
+            let mut final_proof = mrs_proof::extract::extract_proof(final_id, &legacy_store);
+            final_proof.sort_unstable_by_key(|c| c.id.0);
+
+            let tstp_proof = if state.symbols.is_empty() {
+                String::new()
+            } else {
+                mrs_proof::tstp::format_tstp(&final_proof, &state.symbols)
+            };
+            SearchResult::Refutation(final_id, tstp_proof)
+        }
+        _ => res,
+    }
+}
+
+/// Consecutive productive-free iterations after which a set-of-support
+/// restriction is dropped. A restriction that cannot generate anything is not
+/// focusing the search, it is ending it.
+const SOS_STALL_LIMIT: u32 = 64;
+
+/// Whether the set-of-support gate would block **every** inference the input
+/// clauses admit.
+///
+/// Returns `false` as soon as one input pair is inference-capable with at least
+/// one parent inside the support set, in which case the restriction is kept.
+///
+/// The input set is the *post-clausification* clause set, which for FEQ is far
+/// larger than the problem file suggests: `SWX070+1` has 148 FOF axioms and
+/// 105 772 clauses after clausification. Enumerating every ordered pair of those
+/// is ~1.1x10^10 comparisons, which ran for hours before being removed, and since
+/// this runs before the given-clause loop it has no deadline check and produces
+/// no progress output — the run just stops emitting lines after `% Problem:`.
+///
+/// Selected predicate literals are grouped by symbol and polarity first.
+/// Enumerating opposite-polarity members of those groups is an exact candidate
+/// set: predicates with different symbols cannot resolve. Each candidate pair
+/// then answers both questions at once — whether it is support-set connected and
+/// whether any inference exists. The cost is proportional to same-symbol,
+/// opposite-polarity literal pairs rather than all clause pairs.
+///
+/// The verdict is unchanged in both directions. A wrong `true` runs unrestricted,
+/// which can only cost solves; a wrong `false` keeps a restriction that should
+/// have been dropped, which can only cost solves. Neither loses a proof.
+fn sos_blocks_every_input_inference(
+    state: &mut SearchState,
+    input_ids: &[mrs_core::clause::ClauseId],
+    sos_depth: u32,
+    literal_selection: &LiteralSelection,
+) -> bool {
+    let clauses: Vec<IdClause> = input_ids
+        .iter()
+        .filter_map(|id| state.clause_store.get(id).cloned())
+        .filter(|c| !c.is_empty())
+        .collect();
+    if clauses.is_empty() {
+        return false;
+    }
+    // The pre-flight is about whether an inference is *available*; use the
+    // configuration's own literal selection so the answer matches the loop.
+    let selections: Vec<Vec<usize>> = clauses
+        .iter()
+        .map(|c| selected_literals_id(c, literal_selection, &state.term_bank))
+        .collect();
+
+    // Index selected positive and negative predicate literals by symbol. The
+    // old pre-flight paid O(n^2) even when every clause had a distinct
+    // predicate; these postings only generate pairs that could resolve.
+    type ByPolarity = (Vec<(usize, usize)>, Vec<(usize, usize)>);
+    let mut by_predicate: HashMap<SymbolId, ByPolarity> = HashMap::default();
+    for (ci, clause) in clauses.iter().enumerate() {
+        for (li, lit) in clause.literals.iter().enumerate() {
+            if !selections[ci].contains(&li) {
+                continue;
+            }
+            let IdAtom::Pred(ps, _) = &lit.atom else {
+                continue;
+            };
+            let entry = by_predicate.entry(*ps).or_default();
+            if lit.positive {
+                entry.0.push((ci, li));
+            } else {
+                entry.1.push((ci, li));
+            }
+        }
+    }
+    let mut any_inference_at_all = false;
+    for (positives, negatives) in by_predicate.values() {
+        for (i, li) in positives {
+            for (j, lj) in negatives {
+                if i == j {
+                    continue;
+                }
+                if selected_atoms_unify(&clauses[*i], *li, &clauses[*j], *lj, state) {
+                    any_inference_at_all = true;
+                    if clauses[*i].distance < sos_depth || clauses[*j].distance < sos_depth {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    any_inference_at_all
+}
+
+/// Largest variable index in a term.
+fn max_var_id(term: &Term) -> u32 {
+    match term {
+        Term::Var(v) => *v,
+        Term::App(_, args) => args.iter().map(max_var_id).max().unwrap_or(0),
+    }
+}
+
+/// Renumbers every variable in `term` by `offset`, making it variable-disjoint
+/// from another term.
+fn shift_vars(term: &Term, offset: u32) -> Term {
+    match term {
+        Term::Var(v) => Term::var(v + offset),
+        Term::App(s, args) => Term::app(*s, args.iter().map(|a| shift_vars(a, offset)).collect()),
+    }
+}
+
+/// Whether two clauses can produce at least one resolvent under the given
+/// literal selections.
+#[cfg(test)]
+fn pair_can_resolve(
+    left: &IdClause,
+    left_sel: &[usize],
+    right: &IdClause,
+    right_sel: &[usize],
+    state: &mut SearchState,
+) -> bool {
+    for (i, li) in left.literals.iter().enumerate() {
+        if !left_sel.contains(&i) {
+            continue;
+        }
+        for (j, lj) in right.literals.iter().enumerate() {
+            if !right_sel.contains(&j) || li.positive == lj.positive {
+                continue;
+            }
+            if selected_atoms_unify(left, i, right, j, state) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether two selected literals of opposite polarity have unifiable predicate
+/// atoms.
+///
+/// Both atoms must be predicate atoms; unifying `p(args)` against `q(args')`
+/// only succeeds when `p == q`, so this also answers "do these two literals
+/// share a predicate symbol".
+fn selected_atoms_unify(
+    left: &IdClause,
+    li: usize,
+    right: &IdClause,
+    lj: usize,
+    state: &mut SearchState,
+) -> bool {
+    let (IdAtom::Pred(ps, pa), IdAtom::Pred(qs, qa)) =
+        (&left.literals[li].atom, &right.literals[lj].atom)
+    else {
+        return false;
+    };
+    let to_term = |sym: SymbolId, args: &[TermId]| {
+        Term::app(
+            sym,
+            args.iter().map(|a| state.term_bank.to_legacy(*a)).collect(),
+        )
+    };
+    // Clause-local variable numbering: the two terms' `Var(0)` are
+    // different variables, so shift the right one clear before unifying
+    // or unification reports a spurious occurs-check failure (and the
+    // pre-flight concludes, wrongly, that no inference is available).
+    let lt = to_term(*ps, pa);
+    let rt = shift_vars(&to_term(*qs, qa), max_var_id(&lt) + 1);
+    mrs_unify::unify(&lt, &rt).is_ok()
+}
+
+fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
+    // Arm before setup too: removing redundant clauses can update demodulation
+    // indexes through LPO comparisons before the given-clause loop begins.
+    let _lpo_budget = crate::LpoBudgetGuard::arm(crate::LPO_STEP_BUDGET);
+
     let mut ordering = config.ordering.clone();
     let sym_config = ordering.symbol_config();
 
-    // Ordered-inference maximal-literal restriction. EXPERIMENTAL and off by
-    // default (incomplete — caused false Satisfiable on EPR). Opt in via env.
-    let ordered_inferences = config.ordered_inferences || std::env::var("MRS_ORDERED").is_ok();
+    // Ordered inference remains useful for finding refutations, but its
+    // saturation result is rejected by the completeness audit below.
+    let ordered_inferences = config.ordered_inferences_enabled();
 
-    let (comm_syms, assoc_syms, to_remove) = detect_ac_symbols(state);
+    // Subsumption resolution is quadratic in the width of the clause being
+    // simplified, so it is only attempted while the target is narrow enough for
+    // the simplification gain to be worth the cost. Skipping it is a loss of
+    // redundancy elimination, never a loss of refutational completeness.
+    let sr_width_ok = |width: usize| {
+        config
+            .max_subsumption_resolution_literals
+            .is_none_or(|max| width <= max)
+    };
+    let condense_allowed = |width: usize| {
+        config
+            .max_condensation_literals
+            .is_none_or(|max| width <= max)
+    };
+
+    let (comm_syms, assoc_syms, to_remove, ac_axiom_symbols) = detect_ac_symbols(state);
     state.comm_symbols = comm_syms.clone();
     state.assoc_symbols = assoc_syms.clone();
 
     let ac_syms: HashSet<SymbolId> = comm_syms.intersection(&assoc_syms).copied().collect();
+    state.ac_axiom_ids = ac_axiom_symbols
+        .into_iter()
+        .filter(|(_, symbol)| ac_syms.contains(symbol))
+        .map(|(id, _)| id)
+        .collect();
+    state.ac_axiom_ids.sort_unstable();
+    state.ac_axiom_ids.dedup();
     if !ac_syms.is_empty() {
         state.ac_normalize_all(&ac_syms);
         if matches!(
@@ -324,96 +1279,373 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
     for id in to_remove {
         state.remove_clause_and_orphans(id, &ordering);
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
     }
-
     let start = Instant::now();
     state.search_deadline = Some(start + config.time_limit);
+
+    // Initial memory watchdog check
+    if let Some(limit_mb) = config.resource_limits.max_memory_mb
+        && let Some(current_mb) = crate::current_memory_mb()
+        && current_mb >= limit_mb
+    {
+        if std::env::var("TRACE_SEARCH").is_ok() {
+            eprintln!(
+                "[WATCHDOG] Initial memory limit exceeded: {} MB >= {} MB",
+                current_mb, limit_mb
+            );
+        }
+        return SearchResult::ResourceOut(crate::ResourceReason::Memory {
+            limit_mb,
+            rss_mb: current_mb,
+        });
+    }
 
     // Initial SAT sync
     if config.use_avatar {
         state.avatar.current_model.clear();
-        if matches!(state.avatar.solver.solve(), Some(true)) {
-            update_model(state);
-        } else {
-            return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
+        match state.avatar.solver.solve() {
+            mrs_cadical::SolveResult::Sat => {
+                update_model(state);
+                sync_active_dormant(state, &ordering);
+                if crate::lpo_budget_expired() {
+                    return SearchResult::Timeout;
+                }
+            }
+            mrs_cadical::SolveResult::Unsat => {
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!("[TRACE] return site 1 (line 437) called with id = 0");
+                }
+                return SearchResult::Refutation(mrs_core::clause::ClauseId(0), String::new());
+            }
+            mrs_cadical::SolveResult::Unknown => return SearchResult::Timeout,
         }
     }
 
     // Check for initial empty clauses
     let initial_ids: Vec<_> = state.unprocessed.iter().collect();
+    // Set-of-support depth actually enforced for this search.
+    //
+    // A set-of-support restriction is a promise that inferences touching the
+    // goal are worth making and axiom-side churn is not. When the input cannot
+    // keep that promise the gate stops being a restriction and becomes a total
+    // block: if *every* inference the input admits has both parents outside the
+    // support set, the search consumes its input clauses, generates nothing and
+    // gives up. The restriction did not focus the search, it ended it.
+    //
+    // That degenerate case is not hypothetical, and it is not cheap. It costs
+    // two whole FNE portfolio workers (s10, s13) their entire budget on TPTP's
+    // LCL "theoremhood" encodings, where the negated conjecture is a lone
+    // negative unit that unifies with nothing and the only productive step is
+    // axiom-side: on `LCL978+1` both workers report `processed=3 generated=0`
+    // and `GaveUp` in 71 ms. Detect it on the input clauses and fall back to
+    // unrestricted inference; whenever the support set can still reach an
+    // inference the restriction is kept exactly as configured.
+    let mut sos_depth = config.sos_depth;
+    if sos_depth < u32::MAX
+        && sos_blocks_every_input_inference(
+            state,
+            &initial_ids,
+            sos_depth,
+            &config.literal_selection,
+        )
+    {
+        if std::env::var("TRACE_SEARCH").is_ok() {
+            eprintln!(
+                "[TRACE] set-of-support at depth {sos_depth} blocks every inference the input \
+                 admits; running unrestricted"
+            );
+        }
+        sos_depth = u32::MAX;
+    }
+
     for id in initial_ids {
         let clause = state.clause_store.get(&id).unwrap().clone();
         if clause.is_empty() {
             if clause.avatar.is_empty() || !config.use_avatar {
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!(
+                        "[TRACE] return site 2 (line 447) called with id = {}",
+                        clause.id.0
+                    );
+                }
                 return SearchResult::Refutation(clause.id, String::new());
             } else {
                 let avatar = clause.avatar.clone();
                 let cid = clause.id;
-                if !avatar_refute_branch(state, &avatar, &ordering) {
-                    return SearchResult::Refutation(cid, String::new());
+                match avatar_refute_branch(state, cid, &avatar, &ordering) {
+                    AvatarBranchResult::Unsat => {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 3 (line 452) called with id = {}",
+                                cid.0
+                            );
+                        }
+                        return SearchResult::Refutation(cid, String::new());
+                    }
+                    AvatarBranchResult::Sat | AvatarBranchResult::Unknown => {}
                 }
             }
         }
     }
 
     let mut iteration: u64 = 0;
+    // Consecutive given-clause iterations that produced nothing, used to drop
+    // a set-of-support restriction that is not paying for itself.
+    let mut starved_iterations: u32 = 0;
 
     loop {
-        // Ingest shared clauses
-        if let Some(pool_lock) = &state.shared_pool {
-            let mut to_add = Vec::new();
-            if let Ok(pool) = pool_lock.read()
-                && state.shared_pool_read < pool.len()
-            {
-                to_add.extend_from_slice(&pool[state.shared_pool_read..]);
-                state.shared_pool_read = pool.len();
+        // Ingest shared clauses (each entry is a full ancestor chain: input
+        // clauses first, the shared unit-equality clause last).
+        if should_poll_shared_pool(iteration, config.shared_pool_poll_interval)
+            && let Some(pool_lock) = &state.shared_pool
+        {
+            let mut to_add: Vec<SharedClauseChain> = Vec::new();
+            if let Ok(pool) = pool_lock.read() {
+                to_add = ready_shared_chains(
+                    &pool,
+                    &state.shared_pool_seen,
+                    iteration / config.shared_pool_poll_interval,
+                );
             }
-            for mut c in to_add {
-                c.id = state.id_gen.next();
-                c.source = ClauseSource::Inference {
-                    rule: "shared",
-                    parents: vec![].into(),
+            for entry in to_add {
+                let existing_names = state.symbols.iter_names().map(str::to_owned).collect();
+                let existing_definitions = state
+                    .clause_store
+                    .values()
+                    .filter_map(|clause| match clause.source {
+                        ClauseSource::Introduced { symbol, .. } => {
+                            Some((clause.id, symbol, state.term_bank.clause_to_legacy(clause)))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let mut symbol_map = {
+                    let symbols = std::sync::Arc::make_mut(&mut state.symbols);
+                    entry
+                        .symbol_names
+                        .iter()
+                        .map(|name| symbols.intern(name))
+                        .collect::<Vec<_>>()
                 };
-                let id_clause = state.term_bank.clause_from_legacy(&c);
-                let fv = FeatureVector::from_id_clause(&id_clause, &state.term_bank);
-                let candidates = state.processed.get_subsumption_candidates(&fv);
-                if !candidates.iter().any(|p| {
-                    p.avatar_is_subset_of(&id_clause)
-                        && subsumption::subsumes_id(p, &id_clause, &mut state.term_bank)
-                }) {
-                    state.register_clause(&id_clause.clone());
-                    #[cfg(feature = "ml-guidance")]
-                    let score = state.get_ml_score(&id_clause);
-                    #[cfg(not(feature = "ml-guidance"))]
-                    let score = None;
-                    let w = state.compute_weight(&id_clause);
-                    state
-                        .unprocessed
-                        .push(&id_clause, &state.term_bank, w, score);
+                let mut chain = entry.chain;
+                isolate_shared_introduced_symbols(
+                    &chain,
+                    &entry.symbol_names,
+                    &existing_names,
+                    &existing_definitions,
+                    std::sync::Arc::make_mut(&mut state.symbols),
+                    &mut symbol_map,
+                );
+                if !chain
+                    .iter_mut()
+                    .all(|clause| remap_shared_clause_symbols(clause, &symbol_map))
+                {
+                    // Do not retry malformed entries or partially insert them
+                    // into the receiving worker's proof store.
+                    state.shared_pool_seen.insert(entry.key);
+                    continue;
+                }
+
+                // Deduplicate compatible introduced definitions across the
+                // imported chain itself as well as against definitions already
+                // present in this worker. Multiple workers can publish paths
+                // that introduce the same goal_d* definition; retaining both
+                // nodes would make a semantically identical proof fail the
+                // verifier's fresh-symbol invariant.
+                let mut known_definitions = existing_definitions;
+                let mut definition_reuse: HashMap<ClauseId, ClauseId> = HashMap::default();
+                for clause in &chain {
+                    let ClauseSource::Introduced { symbol, .. } = clause.source else {
+                        continue;
+                    };
+                    if let Some(existing_id) =
+                        find_compatible_definition_id(clause, symbol, &known_definitions)
+                    {
+                        definition_reuse.insert(clause.id, existing_id);
+                    } else {
+                        known_definitions.push((clause.id, symbol, clause.clone()));
+                    }
+                }
+
+                state.shared_pool_seen.insert(entry.key);
+                state.stats.shared_imported += 1;
+                // Remap every clause ID in the chain to a fresh local ID,
+                // and rewrite `Inference` parent references accordingly,
+                // so the spliced-in subtree is fully self-consistent
+                // within this thread's own `clause_store` — preserving
+                // real derivation history instead of the old parent-less
+                // `shared` stub, which failed GDV-style structural
+                // "every derived formula has parents" checks.
+                let head_old_id = chain.last().map(|clause| clause.id);
+                let mut remap: HashMap<ClauseId, ClauseId> = HashMap::default();
+                let mut imported = Vec::with_capacity(chain.len());
+                for mut c in chain {
+                    let old_id = c.id;
+                    if let Some(&existing_id) = definition_reuse.get(&old_id) {
+                        remap.insert(old_id, existing_id);
+                        continue;
+                    }
+                    let new_id = state.id_gen.next();
+                    remap.insert(old_id, new_id);
+                    c.id = new_id;
+                    imported.push(c);
+                }
+                for mut c in imported {
+                    remap_shared_clause_ids(&mut c, &remap);
+                    let id_clause = state.term_bank.clause_from_legacy(&c);
+                    state.register_clause(&id_clause);
+                }
+                let head = head_old_id
+                    .and_then(|old_id| remap.get(&old_id).copied())
+                    .and_then(|id| state.clause_store.get(&id).cloned());
+
+                // Only the chain's head (the shared unit equality itself)
+                // is offered to the active search as a new premise;
+                // ancestors are recorded in `clause_store` purely for
+                // provenance/proof extraction and are not re-indexed or
+                // re-selected.
+                if let Some(id_clause) = head {
+                    let fv = FeatureVector::from_id_clause(&id_clause, &state.term_bank);
+                    let candidates = state.processed.subsumption_candidate_ids(&fv);
+                    let already_present = candidates.iter().any(|id| {
+                        state.processed.get(*id).is_some_and(|p| {
+                            p.avatar_is_subset_of(&id_clause)
+                                && subsumption::subsumes_id_until(
+                                    p,
+                                    &id_clause,
+                                    &mut state.term_bank,
+                                    state.search_deadline,
+                                )
+                        })
+                    });
+                    if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                        return SearchResult::Timeout;
+                    }
+                    if crate::lpo_budget_expired() {
+                        return SearchResult::Timeout;
+                    }
+                    if !already_present {
+                        #[cfg(feature = "ml-guidance")]
+                        let score = state.get_ml_score(&id_clause);
+                        #[cfg(not(feature = "ml-guidance"))]
+                        let score = None;
+                        let w = state.compute_weight(&id_clause);
+                        state.push_unprocessed(&id_clause, w, score);
+                    }
                 }
             }
         }
 
-        // --- Limited Resource Strategy (LRS) Periodic Pruning ---
         if iteration.is_multiple_of(100) && iteration >= 100 {
             let elapsed = start.elapsed();
-            let remaining_time = config.time_limit.saturating_sub(elapsed);
+            if let Some(target_size) =
+                lrs_target_size(config.lrs_policy, iteration, elapsed, config.time_limit)
+            {
+                let active = state.unprocessed.active_count();
+                // Start pruning early once the process is using a large enough
+                // share of its memory budget to be at risk. The share is a
+                // fraction of the configured ceiling rather than a fixed 1 GB,
+                // so a memory-constrained run prunes early and a large-memory
+                // run does not prune at a threshold that is irrelevant to it.
+                let mem_pressure = match (
+                    crate::current_memory_mb(),
+                    config.resource_limits.max_memory_mb,
+                ) {
+                    (Some(mem_mb), Some(limit)) if limit > 0 => {
+                        mem_mb >= limit.saturating_mul(4) / 5
+                    }
+                    (Some(mem_mb), None) => mem_mb > 1024,
+                    _ => false,
+                };
+                let should_prune = if active > 10_000 {
+                    active > target_size.saturating_add(1000)
+                } else {
+                    mem_pressure && active > target_size.saturating_add(1000)
+                };
 
-            let avg_nanos = (elapsed.as_nanos() / iteration as u128).max(1) as u64;
-            let remaining_nanos = remaining_time.as_nanos() as u64;
+                if should_prune {
+                    let age_reserve = std::env::var("MRS_LRS_AGE_RESERVE")
+                        .ok()
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let discarded = state.unprocessed.prune(target_size, age_reserve);
+                    state.stats.lrs_discarded += discarded as u64;
+                    if std::env::var("TRACE_LRS").is_ok() {
+                        eprintln!(
+                            "[LRS] pruned passive queue to target={} (discarded {})",
+                            target_size, discarded
+                        );
+                    }
+                }
+            }
+        }
 
-            let remaining_iterations = remaining_nanos / avg_nanos;
-            let target_size = (remaining_iterations as usize).max(2000);
-
-            if state.unprocessed.active_count() > target_size.saturating_add(1000) {
-                let discarded = state.unprocessed.prune(target_size);
-                state.stats.lrs_discarded += discarded as u64;
-                if std::env::var("TRACE_LRS").is_ok() {
+        // Hard search-resource ceilings are independent of the periodic LRS
+        // pruning cadence. The processed limit in particular must be checked
+        // after every given clause to be an exact fixed-work cap.
+        if let Some(limit) = config.resource_limits.max_processed
+            && state.stats.processed >= limit
+        {
+            if std::env::var("TRACE_SEARCH").is_ok() {
+                eprintln!(
+                    "[RESOURCE] Processed clause limit exceeded: {} >= {}",
+                    state.stats.processed, limit
+                );
+            }
+            return SearchResult::ResourceOut(crate::ResourceReason::MaxProcessed {
+                limit,
+                processed: state.stats.processed,
+            });
+        }
+        if iteration.is_multiple_of(100) && iteration >= 100 {
+            // --- Resource Containment Ceilings & Memory Watchdog ---
+            if let Some(limit) = config.resource_limits.max_passive {
+                let passive_count = state.unprocessed.active_count() as u64;
+                if passive_count >= limit {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[RESOURCE] Passive clause limit exceeded: {} >= {}",
+                            passive_count, limit
+                        );
+                    }
+                    return SearchResult::ResourceOut(crate::ResourceReason::MaxPassive {
+                        limit,
+                        passive: passive_count,
+                    });
+                }
+            }
+            if let Some(limit) = config.resource_limits.max_terms
+                && state.term_bank.len() >= limit
+            {
+                if std::env::var("TRACE_SEARCH").is_ok() {
                     eprintln!(
-                        "[LRS] pruned passive queue to target={} (discarded {})",
-                        target_size, discarded
+                        "[RESOURCE] Term bank limit exceeded: {} >= {}",
+                        state.term_bank.len(),
+                        limit
                     );
                 }
+                return SearchResult::ResourceOut(crate::ResourceReason::TermBank {
+                    limit,
+                    len: state.term_bank.len(),
+                });
+            }
+            if let Some(limit_mb) = config.resource_limits.max_memory_mb
+                && let Some(current_mb) = crate::current_memory_mb()
+                && current_mb >= limit_mb
+            {
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!(
+                        "[WATCHDOG] Memory limit exceeded: {} MB >= {} MB",
+                        current_mb, limit_mb
+                    );
+                }
+                return SearchResult::ResourceOut(crate::ResourceReason::Memory {
+                    limit_mb,
+                    rss_mb: current_mb,
+                });
             }
         }
 
@@ -421,17 +1653,49 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             &mut state.unprocessed,
             &config.selection,
             iteration,
-            config.sos_depth,
+            sos_depth,
         ) {
             Some(id) => id,
             None => break,
         };
 
         let given = state.clause_store.get(&given_id).unwrap().clone();
+        let mut given = state.ac_normalize_for_search(given, &ac_syms);
+
+        let trace_progress = std::env::var("TRACE_PROGRESS").is_ok();
+        if trace_progress {
+            eprintln!(
+                "[PROGRESS] iter={} given={} lits={} terms={} processed={} passive={}",
+                iteration,
+                given.id.0,
+                given.literals.len(),
+                state.term_bank.len(),
+                state.stats.processed,
+                state.unprocessed.active_count()
+            );
+        }
 
         if !state.is_active(&given) {
             state.dormant_unprocessed.insert(given.id, given);
             continue;
+        }
+
+        // Record where the run stood at the CASC reference wall clock, once.
+        // In casc-sim the search continues past this point, so without a record
+        // here a memory stop and a plain timeout look identical in the report.
+        if state.stats.casc_limit_state.is_none()
+            && let Some(reference) = config.casc_reference_limit
+        {
+            let elapsed = start.elapsed();
+            if elapsed >= reference {
+                state.stats.casc_limit_state = Some(crate::CascLimitState {
+                    elapsed_ms: elapsed.as_millis() as u64,
+                    iterations: state.stats.iterations,
+                    processed: state.stats.processed,
+                    generated: state.stats.generated,
+                    passive: state.stats.passive_size,
+                });
+            }
         }
 
         // Check time limit (and parallel stop-flag)
@@ -440,6 +1704,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 .stop_flag
                 .as_ref()
                 .is_some_and(|f| f.load(Ordering::Relaxed))
+            // An LPO comparison gave up, so this iteration's inferences were
+            // decided from an incomplete comparison set. Stop now, at the top of
+            // the iteration, rather than continuing on a partially ordered term
+            // set.
+            || crate::lpo_budget_expired()
         {
             return SearchResult::Timeout;
         }
@@ -450,20 +1719,65 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             continue;
         }
 
-        let mut given = given;
-
         // Forward Subsumption Resolution
         let mut given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
-        loop {
-            let candidates = state
+        // The candidate list is built once, not once per removed literal.
+        //
+        // `subsumption_resolution_candidates_for` unions the posting lists of
+        // the target's symbols and then applies the feature-vector test. Every
+        // one of those conditions is *stricter* as the target loses literals
+        // (its symbol set shrinks, and `can_subsumption_resolve` compares the
+        // candidate's widths and counts against a shrinking target), so the
+        // list built for the widest target is a superset of the list any later
+        // iteration would build. Re-testing a few now-rejected candidates costs
+        // a feature-vector comparison; rebuilding the list costs a hash set
+        // over every processed clause that shares a symbol with the target,
+        // once per literal removed, which on an equational problem is most of
+        // the processed set.
+        let sr_candidates = if sr_width_ok(given.literals.len()) {
+            state
                 .processed
-                .get_subsumption_resolution_candidates(&given_fv);
+                .subsumption_resolution_candidates_for(&given, &given_fv)
+        } else {
+            Vec::new()
+        };
+        loop {
+            if !sr_width_ok(given.literals.len()) {
+                break;
+            }
+            if start.elapsed() >= config.time_limit {
+                return SearchResult::Timeout;
+            }
             let mut changed = false;
-            for p in candidates {
-                if p.avatar_is_subset_of(&given)
-                    && let Some(removed_idx) =
-                        subsumption::subsumption_resolution_id(&p, &given, &mut state.term_bank)
+            for candidate_id in &sr_candidates {
+                if start.elapsed() >= config.time_limit {
+                    return SearchResult::Timeout;
+                }
+                if !state
+                    .processed
+                    .feature_vector(*candidate_id)
+                    .is_some_and(|fv| fv.can_subsumption_resolve(&given_fv))
                 {
+                    continue;
+                }
+                let Some(p) = state.processed.get(*candidate_id) else {
+                    continue;
+                };
+                let removed_idx = if p.avatar_is_subset_of(&given) {
+                    subsumption::subsumption_resolution_id_until(
+                        p,
+                        &given,
+                        &mut state.term_bank,
+                        state.search_deadline,
+                    )
+                } else {
+                    None
+                };
+                if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                    return SearchResult::Timeout;
+                }
+                if let Some(removed_idx) = removed_idx {
+                    let parent = p.id;
                     let mut new_lits = given.literals.clone();
                     new_lits.remove(removed_idx);
                     given = IdClause::new_avatar(
@@ -471,11 +1785,11 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         new_lits,
                         ClauseSource::Inference {
                             rule: "subsumption_resolution",
-                            parents: vec![given.id, p.id].into(),
+                            parents: vec![given.id, parent].into(),
                         },
                         given.avatar.clone(),
                     );
-                    state.register_clause(&given.clone());
+                    state.register_clause(&given);
                     given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
                     changed = true;
                     break;
@@ -485,12 +1799,24 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 break;
             }
         }
+        if start.elapsed() >= config.time_limit {
+            return SearchResult::Timeout;
+        }
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
 
         if given.is_empty() {
             if given.avatar.is_empty() {
                 if std::env::var("TRACE_AVATAR").is_ok() {
                     eprintln!(
                         "[AVATAR] empty given {} (no avatar) → Refutation",
+                        given.id.0
+                    );
+                }
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!(
+                        "[TRACE] return site 4 (line 626) called with id = {}",
                         given.id.0
                     );
                 }
@@ -504,12 +1830,18 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         id.0, avatar
                     );
                 }
-                if !avatar_refute_branch(state, &avatar, &ordering) {
+                if matches!(
+                    avatar_refute_branch(state, id, &avatar, &ordering),
+                    AvatarBranchResult::Unsat
+                ) {
                     if std::env::var("TRACE_AVATAR").is_ok() {
                         eprintln!(
                             "[AVATAR] empty given {}: avatar_refute_branch returned false → Refutation",
                             id.0
                         );
+                    }
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!("[TRACE] return site 5 (line 643) called with id = {}", id.0);
                     }
                     return SearchResult::Refutation(id, String::new());
                 }
@@ -519,11 +1851,29 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
         // Forward subsumption: skip if given is subsumed by a processed clause
         {
-            let candidates = state.processed.get_subsumption_candidates(&given_fv);
-            if candidates.iter().any(|p| {
-                p.avatar_is_subset_of(&given)
-                    && subsumption::subsumes_id(p, &given, &mut state.term_bank)
-            }) {
+            let candidates = state.processed.subsumption_candidate_ids(&given_fv);
+            let mut subsumed = false;
+            for id in &candidates {
+                if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                    return SearchResult::Timeout;
+                }
+                if state.processed.get(*id).is_some_and(|p| {
+                    p.avatar_is_subset_of(&given)
+                        && subsumption::subsumes_id_until(
+                            p,
+                            &given,
+                            &mut state.term_bank,
+                            state.search_deadline,
+                        )
+                }) {
+                    subsumed = true;
+                    break;
+                }
+            }
+            if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                return SearchResult::Timeout;
+            }
+            if subsumed {
                 state.stats.forward_subsumed += 1;
                 iteration += 1;
                 continue;
@@ -532,25 +1882,83 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
         // Forward demodulation: simplify given using unit equalities
         let given = {
-            if let Some(simplified) = demodulation::demodulate_id(
+            let simplified = demodulation::demodulate_id_until(
                 &given,
                 &mut state.term_bank,
                 &state.demod_index,
                 &state.clause_store,
                 &mut state.id_gen,
                 &ac_syms,
-            ) {
+                Some(&mut state.demod_memo),
+                state.search_deadline,
+            );
+            if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                return SearchResult::Timeout;
+            }
+            if let Some(simplified) = simplified {
                 state.register_clause(&given);
                 simplified
             } else {
                 given
             }
         };
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
+
+        // Destructive Equality Resolution (DER)
+        let given = if let Some((simplified, steps)) =
+            crate::der::destructive_equality_resolution_id(
+                &given,
+                &mut state.term_bank,
+                &mut state.id_gen,
+            ) {
+            state.register_clause(&given);
+            for s in &steps {
+                state.register_clause(s);
+            }
+            if simplified.is_empty() {
+                if simplified.avatar.is_empty() || !config.use_avatar {
+                    return SearchResult::Refutation(simplified.id, String::new());
+                }
+                let avatar = simplified.avatar.clone();
+                let id = simplified.id;
+                if matches!(
+                    avatar_refute_branch(state, id, &avatar, &ordering),
+                    AvatarBranchResult::Unsat
+                ) {
+                    return SearchResult::Refutation(id, String::new());
+                }
+            }
+            simplified
+        } else {
+            given
+        };
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
 
         // Condensation
-        let given = if let Some(condensed) =
-            subsumption::condense_id(&given, &mut state.term_bank, &mut state.id_gen)
-        {
+        let condensed = if condense_allowed(given.literals.len()) {
+            subsumption::condense_id_until(
+                &given,
+                &mut state.term_bank,
+                &mut state.id_gen,
+                state.search_deadline,
+            )
+        } else {
+            None
+        };
+        if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+            return SearchResult::Timeout;
+        }
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
+        let given = if let Some(condensed) = condensed {
+            if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                return SearchResult::Timeout;
+            }
             state.register_clause(&given);
             condensed
         } else {
@@ -567,6 +1975,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 base
             }
         };
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
 
         // Generate inferences
         let mut new_clauses = Vec::new();
@@ -581,11 +1992,33 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     lit.positive,
                     &state.term_bank,
                 );
+                if std::env::var("TRACE_RES").is_ok() {
+                    eprintln!(
+                        "[RES] given={} dist={} sel={:?} partners={}",
+                        given.id.0,
+                        given.distance,
+                        given_sel,
+                        partners.len()
+                    );
+                }
                 for partner in partners {
                     // SOS restriction: skip if both parents are outside the support set.
-                    if config.sos_depth < u32::MAX
-                        && given.distance >= config.sos_depth
-                        && partner.distance >= config.sos_depth
+                    if std::env::var("TRACE_RES").is_ok() {
+                        eprintln!(
+                            "[RES]   partner={} dist={} sos_gate={} unit_gate={}",
+                            partner.id.0,
+                            partner.distance,
+                            sos_depth < u32::MAX
+                                && given.distance >= sos_depth
+                                && partner.distance >= sos_depth,
+                            config.unit_only_resolution
+                                && given.literals.len() > 1
+                                && partner.literals.len() > 1
+                        );
+                    }
+                    if sos_depth < u32::MAX
+                        && given.distance >= sos_depth
+                        && partner.distance >= sos_depth
                     {
                         continue;
                     }
@@ -597,6 +2030,24 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         continue;
                     }
                     if resolution_partner_ids.insert(partner.id) {
+                        #[cfg(feature = "parent-guidance")]
+                        let inference_kind =
+                            mrs_core::ml::parent_guidance::InferenceKind::Resolution;
+                        #[cfg(feature = "parent-guidance")]
+                        let (reject, sample) = state.reject_parent_pair(
+                            &given,
+                            &partner,
+                            inference_kind,
+                            given_sel.len() + partner.literals.len(),
+                        );
+                        #[cfg(not(feature = "parent-guidance"))]
+                        let reject = false;
+                        if reject {
+                            state.stats.parent_guidance_pruned += 1;
+                            continue;
+                        }
+                        #[cfg(feature = "parent-guidance")]
+                        let parent_sample = sample;
                         let active_sel = {
                             let base = selected_literals_id(
                                 &partner,
@@ -614,7 +2065,10 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                                 base
                             }
                         };
-                        let resolvents = resolution::resolve_selected_id(
+                        if crate::lpo_budget_expired() {
+                            return SearchResult::Timeout;
+                        }
+                        let resolvents = resolution::resolve_selected_id_until(
                             &given,
                             &partner,
                             &mut state.term_bank,
@@ -623,9 +2077,18 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             Some(&active_sel),
                             &state.comm_symbols,
                             &state.assoc_symbols,
+                            state.search_deadline,
                         );
-                        new_clauses.extend(resolvents);
-                        if start.elapsed() >= config.time_limit {
+                        if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                            return SearchResult::Timeout;
+                        }
+                        #[cfg(feature = "parent-guidance")]
+                        state.record_parent_pair_outcome(parent_sample, !resolvents.is_empty());
+                        for mut r in resolvents {
+                            mark_ac_resolution(&mut r, &state.ac_axiom_ids);
+                            new_clauses.push(r);
+                        }
+                        if start.elapsed() >= config.time_limit || crate::lpo_budget_expired() {
                             return SearchResult::Timeout;
                         }
                     }
@@ -645,14 +2108,50 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 .any(|l| l.positive && matches!(&l.atom, IdAtom::Eq(_, _)));
 
             if given_has_pos_eq {
-                let mut processed_clauses: Vec<IdClause> =
-                    state.processed.iter().cloned().collect();
-                processed_clauses.sort_unstable_by_key(|c| c.id);
-                for active in &processed_clauses {
-                    if config.sos_depth < u32::MAX
-                        && given.distance >= config.sos_depth
-                        && active.distance >= config.sos_depth
+                let mut candidate_targets = Vec::new();
+                let mut seen_ids = HashSet::default();
+                for lit in &given.literals {
+                    if lit.positive
+                        && let IdAtom::Eq(l, r) = &lit.atom
                     {
+                        for side in [*l, *r] {
+                            if !matches!(
+                                state.term_bank.get(side),
+                                mrs_core::term_bank::TermNode::Var(_)
+                            ) {
+                                for tgt in state
+                                    .processed
+                                    .get_superposition_targets(side, &state.term_bank)
+                                {
+                                    if seen_ids.insert(tgt.id) {
+                                        candidate_targets.push(tgt);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                candidate_targets.sort_unstable_by_key(|c| c.id);
+
+                for active in &candidate_targets {
+                    assert_indexed_clause_matches_store(state, active, "given-as-equation-source");
+                    if sos_depth < u32::MAX
+                        && given.distance >= sos_depth
+                        && active.distance >= sos_depth
+                    {
+                        continue;
+                    }
+                    #[cfg(feature = "parent-guidance")]
+                    let (reject, parent_sample) = state.reject_parent_pair(
+                        &given,
+                        active,
+                        mrs_core::ml::parent_guidance::InferenceKind::GivenAsEqualitySource,
+                        given_sel.len() + active.literals.len(),
+                    );
+                    #[cfg(not(feature = "parent-guidance"))]
+                    let reject = false;
+                    if reject {
+                        state.stats.parent_guidance_pruned += 1;
                         continue;
                     }
                     let active_sel = {
@@ -667,7 +2166,10 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             base
                         }
                     };
-                    let sp = superposition::superpose_selected_id(
+                    if crate::lpo_budget_expired() {
+                        return SearchResult::Timeout;
+                    }
+                    let sp = superposition::superpose_selected_id_until(
                         &given,
                         active,
                         &mut state.term_bank,
@@ -676,14 +2178,23 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         Some(&active_sel),
                         &state.comm_symbols,
                         &state.assoc_symbols,
+                        state.search_deadline,
                     );
-                    new_clauses.extend(sp);
-                    if start.elapsed() >= config.time_limit {
+                    #[cfg(feature = "parent-guidance")]
+                    state.record_parent_pair_outcome(parent_sample, !sp.is_empty());
+                    new_clauses.extend(sp.into_iter().map(|mut clause| {
+                        mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
+                        clause
+                    }));
+                    if start.elapsed() >= config.time_limit || crate::lpo_budget_expired() {
                         return SearchResult::Timeout;
                     }
                 }
                 // self-superposition
-                if config.sos_depth == u32::MAX || given.distance < config.sos_depth {
+                if start.elapsed() >= config.time_limit {
+                    return SearchResult::Timeout;
+                }
+                if sos_depth == u32::MAX || given.distance < sos_depth {
                     let given_sel_local = {
                         let base = selected_literals_id(
                             &given,
@@ -696,32 +2207,139 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             base
                         }
                     };
-                    let sp = superposition::superpose_selected_id(
+                    if crate::lpo_budget_expired() {
+                        return SearchResult::Timeout;
+                    }
+                    #[cfg(feature = "parent-guidance")]
+                    let (reject_self, self_sample) = state.reject_parent_pair(
                         &given,
                         &given,
-                        &mut state.term_bank,
-                        &ordering,
-                        &mut state.id_gen,
-                        Some(&given_sel_local),
-                        &state.comm_symbols,
-                        &state.assoc_symbols,
+                        mrs_core::ml::parent_guidance::InferenceKind::SelfSuperposition,
+                        given_sel_local.len() * 2,
                     );
-                    new_clauses.extend(sp);
+                    #[cfg(not(feature = "parent-guidance"))]
+                    let reject_self = false;
+                    #[cfg(not(feature = "parent-guidance"))]
+                    let _self_sample: Option<usize> = None;
+                    if reject_self {
+                        state.stats.parent_guidance_pruned += 1;
+                    } else {
+                        let sp = superposition::superpose_selected_id_until(
+                            &given,
+                            &given,
+                            &mut state.term_bank,
+                            &ordering,
+                            &mut state.id_gen,
+                            Some(&given_sel_local),
+                            &state.comm_symbols,
+                            &state.assoc_symbols,
+                            state.search_deadline,
+                        );
+                        #[cfg(feature = "parent-guidance")]
+                        state.record_parent_pair_outcome(self_sample, !sp.is_empty());
+                        new_clauses.extend(sp.into_iter().map(|mut clause| {
+                            mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
+                            clause
+                        }));
+                        if crate::lpo_budget_expired() {
+                            return SearchResult::Timeout;
+                        }
+                    }
                 }
             }
 
             // (2) Processed clause as equation source, given as target
             {
-                let eq_clauses = state.processed.get_positive_equality_clauses();
-                for active in eq_clauses {
-                    if config.sos_depth < u32::MAX
-                        && given.distance >= config.sos_depth
-                        && active.distance >= config.sos_depth
+                let mut candidate_sources = Vec::new();
+                let mut seen_ids = HashSet::default();
+                for &lit_idx in &given_sel {
+                    if let Some(lit) = given.literals.get(lit_idx) {
+                        match &lit.atom {
+                            IdAtom::Pred(_, args) => {
+                                for &arg in args {
+                                    for u in state.term_bank.non_variable_subterms(arg) {
+                                        let __st = std::time::Instant::now();
+                                        let __srcs = state
+                                            .processed
+                                            .get_superposition_sources(u, &state.term_bank);
+                                        if trace_progress
+                                            && __st.elapsed()
+                                                > std::time::Duration::from_millis(200)
+                                        {
+                                            eprintln!(
+                                                "[PROGRESS] iter={} slow_source_query n={} took={:?} terms={}",
+                                                iteration,
+                                                __srcs.len(),
+                                                __st.elapsed(),
+                                                state.term_bank.len()
+                                            );
+                                        }
+                                        for src in __srcs {
+                                            if seen_ids.insert(src.id) {
+                                                candidate_sources.push(src);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            IdAtom::Eq(l, r) => {
+                                for &side in &[l, r] {
+                                    for u in state.term_bank.non_variable_subterms(*side) {
+                                        let __st = std::time::Instant::now();
+                                        let __srcs = state
+                                            .processed
+                                            .get_superposition_sources(u, &state.term_bank);
+                                        if trace_progress
+                                            && __st.elapsed()
+                                                > std::time::Duration::from_millis(200)
+                                        {
+                                            eprintln!(
+                                                "[PROGRESS] iter={} slow_source_query n={} took={:?} terms={}",
+                                                iteration,
+                                                __srcs.len(),
+                                                __st.elapsed(),
+                                                state.term_bank.len()
+                                            );
+                                        }
+                                        for src in __srcs {
+                                            if seen_ids.insert(src.id) {
+                                                candidate_sources.push(src);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                candidate_sources.sort_unstable_by_key(|c| c.id);
+
+                for active in &candidate_sources {
+                    assert_indexed_clause_matches_store(state, active, "given-as-target-source");
+                    if sos_depth < u32::MAX
+                        && given.distance >= sos_depth
+                        && active.distance >= sos_depth
                     {
                         continue;
                     }
-                    let sp = superposition::superpose_selected_id(
-                        &active,
+                    #[cfg(feature = "parent-guidance")]
+                    let (reject, parent_sample) = state.reject_parent_pair(
+                        &given,
+                        active,
+                        mrs_core::ml::parent_guidance::InferenceKind::GivenAsTarget,
+                        given_sel.len() + active.literals.len(),
+                    );
+                    #[cfg(not(feature = "parent-guidance"))]
+                    let reject = false;
+                    if reject {
+                        state.stats.parent_guidance_pruned += 1;
+                        continue;
+                    }
+                    if crate::lpo_budget_expired() {
+                        return SearchResult::Timeout;
+                    }
+                    let sp = superposition::superpose_selected_id_until(
+                        active,
                         &given,
                         &mut state.term_bank,
                         &ordering,
@@ -729,9 +2347,15 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         Some(&given_sel),
                         &state.comm_symbols,
                         &state.assoc_symbols,
+                        state.search_deadline,
                     );
-                    new_clauses.extend(sp);
-                    if start.elapsed() >= config.time_limit {
+                    #[cfg(feature = "parent-guidance")]
+                    state.record_parent_pair_outcome(parent_sample, !sp.is_empty());
+                    new_clauses.extend(sp.into_iter().map(|mut clause| {
+                        mark_ac_superposition(&mut clause, &state.ac_axiom_ids);
+                        clause
+                    }));
+                    if start.elapsed() >= config.time_limit || crate::lpo_budget_expired() {
                         return SearchResult::Timeout;
                     }
                 }
@@ -741,31 +2365,66 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         // Unary inferences: Factoring, Equality Resolution, and Equality Factoring
         // are crucial simplification rules. They are always applied unconditionally,
         // even under SOS, to preserve the refutational completeness of the calculus.
-        new_clauses.extend(factoring::factor_id(
+        if start.elapsed() >= config.time_limit {
+            return SearchResult::Timeout;
+        }
+        new_clauses.extend(factoring::factor_id_until(
             &given,
             &mut state.term_bank,
             &mut state.id_gen,
+            state.search_deadline,
         ));
-        new_clauses.extend(equality::equality_resolve_id(
+        if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+            return SearchResult::Timeout;
+        }
+        new_clauses.extend(equality::equality_resolve_id_until(
             &given,
             &mut state.term_bank,
             &mut state.id_gen,
+            state.search_deadline,
         ));
-        new_clauses.extend(equality::equality_factor_id(
+        if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+            return SearchResult::Timeout;
+        }
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
+        new_clauses.extend(equality::equality_factor_id_until(
             &given,
             &mut state.term_bank,
             &ordering,
             &mut state.id_gen,
+            state.search_deadline,
         ));
+        if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+            return SearchResult::Timeout;
+        }
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
+        }
 
         // Backward subsumption: remove processed clauses subsumed by the given
         let mut to_remove_from_processed = Vec::new();
         {
-            let candidates = state.processed.get_subsumed_candidates(&given_fv);
-            for p in candidates {
-                if given.avatar_is_subset_of(&p)
-                    && subsumption::subsumes_id(&given, &p, &mut state.term_bank)
-                {
+            let candidates = state.processed.subsumed_candidate_ids(&given_fv);
+            for candidate_id in candidates {
+                if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                    return SearchResult::Timeout;
+                }
+                let Some(p) = state.processed.get(candidate_id).cloned() else {
+                    continue;
+                };
+                let subsumes = given.avatar_is_subset_of(&p)
+                    && subsumption::subsumes_id_until(
+                        &given,
+                        &p,
+                        &mut state.term_bank,
+                        state.search_deadline,
+                    );
+                if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                    return SearchResult::Timeout;
+                }
+                if subsumes {
                     to_remove_from_processed.push(p.id);
                 }
             }
@@ -779,18 +2438,107 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             state.dormant_unprocessed.remove(&id);
         }
 
+        // Backward Subsumption Resolution: simplify processed clauses using `given`
+        let mut backward_sr_simplified = Vec::new();
+        {
+            let candidates = if sr_width_ok(given.literals.len()) {
+                state
+                    .processed
+                    .backward_subsumption_resolution_candidates_for(&given, &given_fv)
+            } else {
+                Vec::new()
+            };
+            for candidate_id in candidates {
+                if start.elapsed() >= config.time_limit {
+                    return SearchResult::Timeout;
+                }
+                let Some(p) = state.processed.get(candidate_id).cloned() else {
+                    continue;
+                };
+                // Here `p` is the target being simplified. SR's quadratic
+                // target-copy cost depends on its width, not on `given` (the
+                // active simplifier), so gate each target independently.
+                if !sr_width_ok(p.literals.len()) {
+                    continue;
+                }
+                if given.avatar_is_subset_of(&p)
+                    && let Some(removed_idx) = subsumption::subsumption_resolution_id_until(
+                        &given,
+                        &p,
+                        &mut state.term_bank,
+                        state.search_deadline,
+                    )
+                {
+                    let mut new_lits = p.literals.clone();
+                    new_lits.remove(removed_idx);
+                    let simplified = IdClause::new_avatar(
+                        state.id_gen.next(),
+                        new_lits,
+                        ClauseSource::Inference {
+                            rule: "subsumption_resolution",
+                            parents: vec![p.id, given.id].into(),
+                        },
+                        p.avatar.clone(),
+                    );
+                    backward_sr_simplified.push((p.id, simplified));
+                }
+            }
+        }
+
+        for (old_id, simplified) in backward_sr_simplified {
+            state.stats.backward_deleted += 1;
+            state.processed.remove(old_id, &state.term_bank);
+            state.unprocessed.remove(old_id);
+            state.dormant_processed.remove(&old_id);
+            state.dormant_unprocessed.remove(&old_id);
+
+            state.register_clause(&simplified);
+            if simplified.is_empty() {
+                if simplified.avatar.is_empty() || !config.use_avatar {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] return site 4b (backward SR empty) called with id = {}",
+                            simplified.id.0
+                        );
+                    }
+                    return SearchResult::Refutation(simplified.id, String::new());
+                }
+                let avatar = simplified.avatar.clone();
+                let cid = simplified.id;
+                if matches!(
+                    avatar_refute_branch(state, cid, &avatar, &ordering),
+                    AvatarBranchResult::Unsat
+                ) {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] return site 4c (backward SR avatar refutation) called with id = {}",
+                            cid.0
+                        );
+                    }
+                    return SearchResult::Refutation(cid, String::new());
+                }
+            } else {
+                #[cfg(feature = "ml-guidance")]
+                let score = state.get_ml_score(&simplified);
+                #[cfg(not(feature = "ml-guidance"))]
+                let score = None;
+                let w = state.compute_weight(&simplified);
+                state.push_unprocessed(&simplified, w, score);
+            }
+        }
+
         // Add given to processed set (indexed)
         state.register_clause(&given.clone());
         state.processed.insert(given.clone(), &state.term_bank);
         state.stats.processed += 1;
 
-        if is_unit_positive_equality_id(&given)
-            && given.avatar.is_empty()
-            && let Some(pool_lock) = &state.shared_pool
-            && let Ok(mut pool) = pool_lock.write()
-        {
-            let legacy = state.term_bank.clause_to_legacy(&given);
-            pool.push(legacy);
+        publish_shared_chain_counted(state, &given, iteration, config.shared_pool_poll_interval);
+
+        // Ordering comparisons in this worker may have exhausted their per-call
+        // LPO budget while maintaining the demodulation index. Stop before those
+        // partial results can be consumed by later inference steps.
+        if crate::lpo_budget_expired() {
+            return SearchResult::Timeout;
         }
 
         if is_unit_positive_equality_id(&given)
@@ -801,15 +2549,17 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 state
                     .demod_index
                     .insert(*l, &state.term_bank, (*l, *r, given.id));
+                state.demod_memo.invalidate(*l, &state.term_bank);
             } else if ordering.compare_id(*r, *l, &state.term_bank) == TermComparison::Greater {
                 state
                     .demod_index
                     .insert(*r, &state.term_bank, (*r, *l, given.id));
+                state.demod_memo.invalidate(*r, &state.term_bank);
             }
         }
 
         // Backward demodulation: if given is a unit positive equality,
-        // rewrite all processed clauses using it. Iterate until fixpoint.
+        // rewrite processed clauses using it in-place. Iterate until fixpoint.
         if is_unit_positive_equality_id(&given) {
             let mut new_units: Vec<IdClause> = vec![given.clone()];
             let mut backward_demod_empty: Vec<IdClause> = Vec::new();
@@ -820,7 +2570,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 }
 
                 if start.elapsed() >= config.time_limit {
-                    break;
+                    return SearchResult::Timeout;
                 }
 
                 let mut temp_demod_index: mrs_index::stree::STreeId<(
@@ -829,6 +2579,9 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     mrs_core::clause::ClauseId,
                 )> = mrs_index::stree::STreeId::new();
                 for u in &new_units {
+                    if start.elapsed() >= config.time_limit {
+                        return SearchResult::Timeout;
+                    }
                     if let IdAtom::Eq(l, r) = &u.literals[0].atom {
                         use mrs_calculus::ordering::TermComparison;
                         if ordering.compare_id(*l, *r, &state.term_bank) == TermComparison::Greater
@@ -842,67 +2595,115 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     }
                 }
 
-                let all_processed = state.processed.drain();
-                state.demod_index = mrs_index::stree::STreeId::new();
-                let mut next_processed = Vec::new();
+                let mut candidate_ids: HashSet<ClauseId> = HashSet::default();
+                for u in &new_units {
+                    if let IdAtom::Eq(l, r) = &u.literals[0].atom {
+                        use mrs_calculus::ordering::TermComparison;
+                        let from = if ordering.compare_id(*l, *r, &state.term_bank)
+                            == TermComparison::Greater
+                        {
+                            *l
+                        } else if ordering.compare_id(*r, *l, &state.term_bank)
+                            == TermComparison::Greater
+                        {
+                            *r
+                        } else {
+                            continue;
+                        };
+                        for target in state
+                            .processed
+                            .get_superposition_targets(from, &state.term_bank)
+                        {
+                            if start.elapsed() >= config.time_limit {
+                                return SearchResult::Timeout;
+                            }
+                            if target.id != u.id {
+                                candidate_ids.insert(target.id);
+                            }
+                        }
+                    }
+                }
+
                 let mut created_units = Vec::new();
 
-                for proc in all_processed {
+                for cid in candidate_ids {
                     if start.elapsed() >= config.time_limit {
-                        next_processed.push(proc);
-                        continue;
+                        return SearchResult::Timeout;
                     }
+                    let Some(proc) = state.processed.get(cid).cloned() else {
+                        continue;
+                    };
                     if new_units.iter().any(|u| u.id == proc.id) {
-                        next_processed.push(proc);
                         continue;
                     }
-                    if let Some(simplified) = demodulation::demodulate_id(
+
+                    // No memo: `temp_demod_index` is a different index from the
+                    // one `state.demod_memo` was populated against.
+                    let simplified = demodulation::demodulate_id_until(
                         &proc,
                         &mut state.term_bank,
                         &temp_demod_index,
                         &state.clause_store,
                         &mut state.id_gen,
                         &ac_syms,
-                    ) {
+                        None,
+                        state.search_deadline,
+                    );
+                    if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                        return SearchResult::Timeout;
+                    }
+                    if let Some(simplified) = simplified {
                         state.register_clause(&proc);
 
-                        // Build index from already-processed units for chained rewriting
-                        let mut all_units_index: mrs_index::stree::STreeId<(
-                            TermId,
-                            TermId,
-                            mrs_core::clause::ClauseId,
-                        )> = mrs_index::stree::STreeId::new();
-                        for c in &next_processed {
-                            if is_unit_positive_equality_id(c)
-                                && let IdAtom::Eq(l, r) = &c.literals[0].atom
-                            {
-                                use mrs_calculus::ordering::TermComparison;
-                                if ordering.compare_id(*l, *r, &state.term_bank)
-                                    == TermComparison::Greater
-                                {
-                                    all_units_index.insert(*l, &state.term_bank, (*l, *r, c.id));
-                                } else if ordering.compare_id(*r, *l, &state.term_bank)
-                                    == TermComparison::Greater
-                                {
-                                    all_units_index.insert(*r, &state.term_bank, (*r, *l, c.id));
-                                }
+                        // Chain further rewriting using existing active unit equalities in demod_index
+                        let simplified = if let Some(further) = demodulation::demodulate_id_until(
+                            &simplified,
+                            &mut state.term_bank,
+                            &state.demod_index,
+                            &state.clause_store,
+                            &mut state.id_gen,
+                            &ac_syms,
+                            Some(&mut state.demod_memo),
+                            state.search_deadline,
+                        ) {
+                            if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                                return SearchResult::Timeout;
                             }
-                        }
-
-                        let simplified = if !all_units_index.is_empty()
-                            && let Some(further) = demodulation::demodulate_id(
-                                &simplified,
-                                &mut state.term_bank,
-                                &all_units_index,
-                                &state.clause_store,
-                                &mut state.id_gen,
-                                &ac_syms,
-                            ) {
                             state.register_clause(&simplified);
                             further
                         } else {
+                            if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                                return SearchResult::Timeout;
+                            }
                             simplified
                         };
+
+                        // Remove old clause from processed and demod_index
+                        state.processed.remove(proc.id, &state.term_bank);
+                        state.stats.backward_deleted += 1;
+                        state.dormant_processed.remove(&proc.id);
+                        state.dormant_unprocessed.remove(&proc.id);
+
+                        if is_unit_positive_equality_id(&proc)
+                            && let IdAtom::Eq(l, r) = &proc.literals[0].atom
+                        {
+                            use mrs_calculus::ordering::TermComparison;
+                            if ordering.compare_id(*l, *r, &state.term_bank)
+                                == TermComparison::Greater
+                            {
+                                state
+                                    .demod_index
+                                    .remove(*l, &state.term_bank, &(*l, *r, proc.id));
+                                state.demod_memo.invalidate(*l, &state.term_bank);
+                            } else if ordering.compare_id(*r, *l, &state.term_bank)
+                                == TermComparison::Greater
+                            {
+                                state
+                                    .demod_index
+                                    .remove(*r, &state.term_bank, &(*r, *l, proc.id));
+                                state.demod_memo.invalidate(*r, &state.term_bank);
+                            }
+                        }
 
                         if simplified.is_empty() {
                             state.register_clause(&simplified.clone());
@@ -926,45 +2727,38 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         }
                         if !simplified.is_tautology() {
                             if is_unit_positive_equality_id(&simplified) {
+                                if let IdAtom::Eq(l, r) = &simplified.literals[0].atom {
+                                    use mrs_calculus::ordering::TermComparison;
+                                    if ordering.compare_id(*l, *r, &state.term_bank)
+                                        == TermComparison::Greater
+                                    {
+                                        state.demod_index.insert(
+                                            *l,
+                                            &state.term_bank,
+                                            (*l, *r, simplified.id),
+                                        );
+                                        state.demod_memo.invalidate(*l, &state.term_bank);
+                                    } else if ordering.compare_id(*r, *l, &state.term_bank)
+                                        == TermComparison::Greater
+                                    {
+                                        state.demod_index.insert(
+                                            *r,
+                                            &state.term_bank,
+                                            (*r, *l, simplified.id),
+                                        );
+                                        state.demod_memo.invalidate(*r, &state.term_bank);
+                                    }
+                                }
                                 created_units.push(simplified.clone());
                             }
                             state.register_clause(&simplified.clone());
-                            next_processed.push(simplified);
-                        }
-                    } else {
-                        next_processed.push(proc);
-                    }
-                }
-
-                let time_ok = start.elapsed() < config.time_limit;
-                for clause in next_processed {
-                    state.processed.insert(clause.clone(), &state.term_bank);
-
-                    if is_unit_positive_equality_id(&clause)
-                        && clause.avatar.is_empty()
-                        && let Some(pool_lock) = &state.shared_pool
-                        && let Ok(mut pool) = pool_lock.write()
-                    {
-                        let legacy = state.term_bank.clause_to_legacy(&clause);
-                        pool.push(legacy);
-                    }
-
-                    if time_ok
-                        && is_unit_positive_equality_id(&clause)
-                        && let IdAtom::Eq(l, r) = &clause.literals[0].atom
-                    {
-                        use mrs_calculus::ordering::TermComparison;
-                        if ordering.compare_id(*l, *r, &state.term_bank) == TermComparison::Greater
-                        {
-                            state
-                                .demod_index
-                                .insert(*l, &state.term_bank, (*l, *r, clause.id));
-                        } else if ordering.compare_id(*r, *l, &state.term_bank)
-                            == TermComparison::Greater
-                        {
-                            state
-                                .demod_index
-                                .insert(*r, &state.term_bank, (*r, *l, clause.id));
+                            state.processed.insert(simplified.clone(), &state.term_bank);
+                            publish_shared_chain_counted(
+                                state,
+                                &simplified,
+                                iteration,
+                                config.shared_pool_poll_interval,
+                            );
                         }
                     }
                 }
@@ -973,13 +2767,54 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
 
             for empty in backward_demod_empty {
                 if empty.avatar.is_empty() || !config.use_avatar {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] return site 6 (line 1125) called with id = {}",
+                            empty.id.0
+                        );
+                    }
                     return SearchResult::Refutation(empty.id, String::new());
                 }
                 let avatar = empty.avatar.clone();
                 let id = empty.id;
-                if !avatar_refute_branch(state, &avatar, &ordering) {
+                if matches!(
+                    avatar_refute_branch(state, id, &avatar, &ordering),
+                    AvatarBranchResult::Unsat
+                ) {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] return site 7 (line 1131) called with id = {}",
+                            id.0
+                        );
+                    }
                     return SearchResult::Refutation(id, String::new());
                 }
+            }
+        }
+
+        // A set-of-support restriction that has produced nothing for a long
+        // stretch is not a restriction, it is a block. The degenerate case is
+        // a goal clause that shares no unifiable atom with the axiom side: the
+        // only productive inference is between two axiom-side clauses, which
+        // the gate forbids, so the search consumes its input and gives up. On
+        // the LCL "theoremhood" encodings that costs two whole FNE portfolio
+        // workers (s10, s13) their entire budget for zero clauses. Give the
+        // search its full inference power once the restriction has demonstrably
+        // stalled.
+        if sos_depth < u32::MAX {
+            if new_clauses.is_empty() {
+                starved_iterations = starved_iterations.saturating_add(1);
+                if starved_iterations >= SOS_STALL_LIMIT {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] set-of-support produced nothing for {SOS_STALL_LIMIT} \
+                             iterations; dropping the restriction"
+                        );
+                    }
+                    sos_depth = u32::MAX;
+                }
+            } else {
+                starved_iterations = 0;
             }
         }
 
@@ -989,11 +2824,13 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
         let mut model_violated = false;
         for clause in new_clauses {
             if config.use_avatar {
-                if let Some(splits) =
-                    state
-                        .avatar
-                        .split_clause_id(&clause, &mut state.id_gen, &state.term_bank)
-                {
+                if let Some(splits) = state.avatar.split_clause_id(
+                    &clause,
+                    &mut state.id_gen,
+                    &state.term_bank,
+                    &mut state.clause_store,
+                    std::sync::Arc::make_mut(&mut state.symbols),
+                ) {
                     if trace_avatar {
                         eprintln!(
                             "[AVATAR] split clause {} ({} lits, avatar={:?}) -> {} components",
@@ -1048,22 +2885,52 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         given.id.0
                     );
                 }
-                if matches!(state.avatar.solver.solve(), Some(true)) {
-                    update_model(state);
-                    sync_active_dormant(state, &ordering);
-                } else {
-                    if trace_avatar {
-                        eprintln!(
-                            "[AVATAR] model_violated path: SAT UNSAT → Refutation(given={})",
-                            given.id.0
+                match state.avatar.solver.solve() {
+                    mrs_cadical::SolveResult::Sat => {
+                        update_model(state);
+                        sync_active_dormant(state, &ordering);
+                        if crate::lpo_budget_expired() {
+                            return SearchResult::Timeout;
+                        }
+                    }
+                    mrs_cadical::SolveResult::Unsat => {
+                        if trace_avatar {
+                            eprintln!(
+                                "[AVATAR] model_violated path: SAT UNSAT → Refutation(given={})",
+                                given.id.0
+                            );
+                        }
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!("[TRACE] return site 8 (line 1217) called with id = 0");
+                        }
+                        return SearchResult::Refutation(
+                            mrs_core::clause::ClauseId(0),
+                            String::new(),
                         );
                     }
-                    return SearchResult::Refutation(given.id, String::new());
+                    mrs_cadical::SolveResult::Unknown => return SearchResult::Timeout,
                 }
             }
         }
 
-        for mut clause in final_new_clauses {
+        if trace_progress {
+            eprintln!(
+                "[PROGRESS] iter={} generated={} t={:?}",
+                iteration,
+                final_new_clauses.len(),
+                start.elapsed()
+            );
+        }
+
+        for (new_index, mut clause) in final_new_clauses.into_iter().enumerate() {
+            // The simplification pipeline below is a sequence of unbounded-cost
+            // stages (subsumption resolution, demodulation, condensation). A
+            // single given clause can produce many new clauses, so the deadline
+            // is enforced per new clause as well as per given clause.
+            if start.elapsed() >= config.time_limit {
+                return SearchResult::Timeout;
+            }
+            let new_started = std::time::Instant::now();
             // Propagate goal-distance from parent clauses so that GoalDirected
             // and SOS strategies can reward descendants of the negated conjecture.
             // distance = min(parent distances) + 1; defaults to 1000 if no parent
@@ -1084,6 +2951,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 state.register_clause(&clause.clone());
 
                 if clause.avatar.is_empty() || !config.use_avatar {
+                    if std::env::var("TRACE_SEARCH").is_ok() {
+                        eprintln!(
+                            "[TRACE] return site 9 (line 1243) called with id = {}",
+                            clause.id.0
+                        );
+                    }
                     return SearchResult::Refutation(clause.id, String::new());
                 } else {
                     let avatar = clause.avatar.clone();
@@ -1094,10 +2967,19 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                             id.0, avatar
                         );
                     }
-                    if !avatar_refute_branch(state, &avatar, &ordering) {
+                    if matches!(
+                        avatar_refute_branch(state, id, &avatar, &ordering),
+                        AvatarBranchResult::Unsat
+                    ) {
                         if trace_avatar {
                             eprintln!(
                                 "[AVATAR] avatar_refute_branch returned false → SAT UNSAT → Refutation({})",
+                                id.0
+                            );
+                        }
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 10 (line 1260) called with id = {}",
                                 id.0
                             );
                         }
@@ -1108,15 +2990,25 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             }
 
             if !clause.is_tautology() {
+                let stage_mark = std::time::Instant::now();
                 // Forward demodulation on new clauses
-                let clause = if let Some(simplified) = demodulation::demodulate_id(
+                let demodulated = demodulation::demodulate_id_until(
                     &clause,
                     &mut state.term_bank,
                     &state.demod_index,
                     &state.clause_store,
                     &mut state.id_gen,
                     &ac_syms,
-                ) {
+                    Some(&mut state.demod_memo),
+                    state.search_deadline,
+                );
+                if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                    return SearchResult::Timeout;
+                }
+                if crate::lpo_budget_expired() {
+                    return SearchResult::Timeout;
+                }
+                let clause = if let Some(simplified) = demodulated {
                     state.register_clause(&clause);
                     simplified
                 } else {
@@ -1126,11 +3018,26 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 if clause.is_empty() {
                     state.register_clause(&clause.clone());
                     if clause.avatar.is_empty() || !config.use_avatar {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 11 (line 1293) called with id = {}",
+                                clause.id.0
+                            );
+                        }
                         return SearchResult::Refutation(clause.id, String::new());
                     }
                     let avatar = clause.avatar.clone();
                     let id = clause.id;
-                    if !avatar_refute_branch(state, &avatar, &ordering) {
+                    if matches!(
+                        avatar_refute_branch(state, id, &avatar, &ordering),
+                        AvatarBranchResult::Unsat
+                    ) {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 12 (line 1298) called with id = {}",
+                                id.0
+                            );
+                        }
                         return SearchResult::Refutation(id, String::new());
                     }
                     continue;
@@ -1149,11 +3056,26 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     state.register_clause(&clause.clone());
                     state.register_clause(&empty.clone());
                     if empty.avatar.is_empty() || !config.use_avatar {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 13 (line 1316) called with id = {}",
+                                empty.id.0
+                            );
+                        }
                         return SearchResult::Refutation(empty.id, String::new());
                     }
                     let avatar = empty.avatar.clone();
                     let id = empty.id;
-                    if !avatar_refute_branch(state, &avatar, &ordering) {
+                    if matches!(
+                        avatar_refute_branch(state, id, &avatar, &ordering),
+                        AvatarBranchResult::Unsat
+                    ) {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 14 (line 1321) called with id = {}",
+                                id.0
+                            );
+                        }
                         return SearchResult::Refutation(id, String::new());
                     }
                     continue;
@@ -1163,13 +3085,76 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     continue;
                 }
 
-                // AC Normalization
-                let clause = state.ac_normalize_clause(clause, &ac_syms);
+                // Preserve the pre-normalized inference in the proof store;
+                // AC normalization is an operational search representation.
+                state.register_clause(&clause);
+                let clause = state.ac_normalize_for_search(clause, &ac_syms);
 
+                trace_stage(trace_progress, iteration, new_index, "demod", &stage_mark);
+                let stage_mark = std::time::Instant::now();
+                // Destructive Equality Resolution (DER)
+                let clause = if let Some((simplified, steps)) =
+                    crate::der::destructive_equality_resolution_id(
+                        &clause,
+                        &mut state.term_bank,
+                        &mut state.id_gen,
+                    ) {
+                    state.register_clause(&clause);
+                    for s in &steps {
+                        state.register_clause(s);
+                    }
+                    if simplified.is_empty() {
+                        if simplified.avatar.is_empty() || !config.use_avatar {
+                            if std::env::var("TRACE_SEARCH").is_ok() {
+                                eprintln!(
+                                    "[TRACE] return site 10 (line DER) called with id = {}",
+                                    simplified.id.0
+                                );
+                            }
+                            return SearchResult::Refutation(simplified.id, String::new());
+                        }
+                        let avatar = simplified.avatar.clone();
+                        let id = simplified.id;
+                        if matches!(
+                            avatar_refute_branch(state, id, &avatar, &ordering),
+                            AvatarBranchResult::Unsat
+                        ) {
+                            if std::env::var("TRACE_SEARCH").is_ok() {
+                                eprintln!(
+                                    "[TRACE] return site 11 (line DER) called with id = {}",
+                                    id.0
+                                );
+                            }
+                            return SearchResult::Refutation(id, String::new());
+                        }
+                        continue;
+                    }
+                    simplified
+                } else {
+                    clause
+                };
+
+                if clause.is_tautology() {
+                    continue;
+                }
+
+                trace_stage(trace_progress, iteration, new_index, "der", &stage_mark);
+                let stage_mark = std::time::Instant::now();
                 // Condensation
-                let clause = if let Some(condensed) =
-                    subsumption::condense_id(&clause, &mut state.term_bank, &mut state.id_gen)
-                {
+                let condensed = if condense_allowed(clause.literals.len()) {
+                    subsumption::condense_id_until(
+                        &clause,
+                        &mut state.term_bank,
+                        &mut state.id_gen,
+                        state.search_deadline,
+                    )
+                } else {
+                    None
+                };
+                if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                    return SearchResult::Timeout;
+                }
+                let clause = if let Some(condensed) = condensed {
                     state.register_clause(&clause);
                     condensed
                 } else {
@@ -1189,14 +3174,146 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     continue;
                 }
 
+                trace_stage(
+                    trace_progress,
+                    iteration,
+                    new_index,
+                    "condense",
+                    &stage_mark,
+                );
+                let stage_mark = std::time::Instant::now();
+                // Forward Subsumption Resolution: simplify clause using processed clauses
+                // Register the pre-simplification clause before creating a
+                // destructive child. The child cites this clause as its
+                // primary parent, and proof extraction must be able to walk
+                // that edge even when the clause never enters the passive
+                // queue unchanged.
+                state.register_clause(&clause);
+                let mut clause_fv = FeatureVector::from_id_clause(&clause, &state.term_bank);
+                let mut clause = clause;
+                // See the given-clause forward-SR loop for why the candidate
+                // list is built once and the feature-vector test re-applied per
+                // removal instead of the list being rebuilt.
+                let sr_candidates = if sr_width_ok(clause.literals.len()) {
+                    state
+                        .processed
+                        .subsumption_resolution_candidates_for(&clause, &clause_fv)
+                } else {
+                    Vec::new()
+                };
+                loop {
+                    // One pass over the subsumption-resolution candidates can be
+                    // expensive on wide clauses with a weakly selective feature
+                    // vector, and the loop repeats once per literal removed. Check
+                    // the deadline per pass so a single clause cannot run away.
+                    if start.elapsed() >= config.time_limit {
+                        return SearchResult::Timeout;
+                    }
+                    let mut changed = false;
+                    for candidate_id in &sr_candidates {
+                        if start.elapsed() >= config.time_limit {
+                            return SearchResult::Timeout;
+                        }
+                        if !state
+                            .processed
+                            .feature_vector(*candidate_id)
+                            .is_some_and(|fv| fv.can_subsumption_resolve(&clause_fv))
+                        {
+                            continue;
+                        }
+                        let Some(p) = state.processed.get(*candidate_id) else {
+                            continue;
+                        };
+                        let removed_idx = if p.avatar_is_subset_of(&clause) {
+                            subsumption::subsumption_resolution_id_until(
+                                p,
+                                &clause,
+                                &mut state.term_bank,
+                                state.search_deadline,
+                            )
+                        } else {
+                            None
+                        };
+                        if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                            return SearchResult::Timeout;
+                        }
+                        if let Some(removed_idx) = removed_idx {
+                            let parent = p.id;
+                            let mut new_lits = clause.literals.clone();
+                            new_lits.remove(removed_idx);
+                            clause = IdClause::new_avatar(
+                                state.id_gen.next(),
+                                new_lits,
+                                ClauseSource::Inference {
+                                    rule: "subsumption_resolution",
+                                    parents: vec![clause.id, parent].into(),
+                                },
+                                clause.avatar.clone(),
+                            );
+                            state.register_clause(&clause);
+                            clause_fv = FeatureVector::from_id_clause(&clause, &state.term_bank);
+                            changed = true;
+                            break;
+                        }
+                    }
+                    if !changed || clause.is_empty() {
+                        break;
+                    }
+                }
+
+                trace_stage(trace_progress, iteration, new_index, "fwd_sr", &stage_mark);
+                if clause.is_empty() {
+                    if clause.avatar.is_empty() || !config.use_avatar {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 12 (forward SR empty) called with id = {}",
+                                clause.id.0
+                            );
+                        }
+                        return SearchResult::Refutation(clause.id, String::new());
+                    }
+                    let avatar = clause.avatar.clone();
+                    let id = clause.id;
+                    if matches!(
+                        avatar_refute_branch(state, id, &avatar, &ordering),
+                        AvatarBranchResult::Unsat
+                    ) {
+                        if std::env::var("TRACE_SEARCH").is_ok() {
+                            eprintln!(
+                                "[TRACE] return site 13 (forward SR avatar refutation) called with id = {}",
+                                id.0
+                            );
+                        }
+                        return SearchResult::Refutation(id, String::new());
+                    }
+                    continue;
+                }
+
                 // Forward subsumption: skip if subsumed by a processed clause
-                let clause_fv = FeatureVector::from_id_clause(&clause, &state.term_bank);
                 {
-                    let candidates = state.processed.get_subsumption_candidates(&clause_fv);
-                    if candidates.iter().any(|p| {
-                        p.avatar_is_subset_of(&clause)
-                            && subsumption::subsumes_id(p, &clause, &mut state.term_bank)
-                    }) {
+                    let candidates = state.processed.subsumption_candidate_ids(&clause_fv);
+                    let mut subsumed = false;
+                    for id in &candidates {
+                        if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                            return SearchResult::Timeout;
+                        }
+                        if state.processed.get(*id).is_some_and(|p| {
+                            p.avatar_is_subset_of(&clause)
+                                && subsumption::subsumes_id_until(
+                                    p,
+                                    &clause,
+                                    &mut state.term_bank,
+                                    state.search_deadline,
+                                )
+                        }) {
+                            subsumed = true;
+                            break;
+                        }
+                    }
+                    if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                        return SearchResult::Timeout;
+                    }
+                    if subsumed {
                         continue;
                     }
                 }
@@ -1207,8 +3324,16 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 #[cfg(not(feature = "ml-guidance"))]
                 let score = None;
                 let w = state.compute_weight(&clause);
-                state.unprocessed.push(&clause, &state.term_bank, w, score);
+                state.push_unprocessed(&clause, w, score);
                 state.stats.generated += 1;
+                if trace_progress && new_started.elapsed() > std::time::Duration::from_millis(50) {
+                    eprintln!(
+                        "[PROGRESS] iter={} new#{} total={:?}",
+                        iteration,
+                        new_index,
+                        new_started.elapsed()
+                    );
+                }
             }
         }
 
@@ -1221,14 +3346,64 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
     // An empty queue after LRS activity is NOT a genuine saturation;
     // return GaveUp (incomplete) to prevent the portfolio stop-flag from
     // firing and producing a false CounterSatisfiable verdict.
+    if crate::lpo_budget_expired() {
+        return SearchResult::Timeout;
+    }
     if state.stats.lrs_discarded > 0 {
         return SearchResult::GaveUp;
     }
 
-    // If the literal selection is incomplete, return GaveUp rather than Saturated.
-    match config.literal_selection {
-        crate::LiteralSelection::MaxNegativeOrMaxPositive => SearchResult::GaveUp,
-        _ => SearchResult::Saturated,
+    #[cfg(feature = "parent-guidance")]
+    let parent_guidance_pruned = state.stats.parent_guidance_pruned;
+    #[cfg(not(feature = "parent-guidance"))]
+    let parent_guidance_pruned = 0;
+    if parent_guidance_pruned > 0 {
+        return SearchResult::GaveUp;
+    }
+    // A spent LPO budget means some comparisons were abandoned rather than
+    // decided, so completeness was never established even if every queue is
+    // empty. Report a timeout, never a saturation result: the run stopped
+    // early rather than exhausting the search space.
+    if crate::lpo_budget_expired() {
+        if std::env::var("TRACE_SEARCH").is_ok() {
+            eprintln!("[TRACE] LPO step budget exhausted; search aborted before saturation");
+        }
+        return SearchResult::Timeout;
+    }
+    let audit = config.check_completeness(
+        state.stats.weight_discarded,
+        state.stats.lrs_discarded,
+        false,
+        parent_guidance_pruned,
+    );
+    if std::env::var("TRACE_SEARCH").is_ok() {
+        eprintln!(
+            "[TRACE] ordinary given-clause saturation is not independently certified: audit={audit:?}"
+        );
+    }
+    // The ordinary engine has not yet been proven complete with respect to
+    // indexing, simplification, preprocessing, AC handling, and cancellation.
+    // Only `certified.rs` may return positive saturation evidence.
+    SearchResult::GaveUp
+}
+
+/// Logs a slow simplification stage when `TRACE_PROGRESS` is set.
+fn trace_stage(
+    enabled: bool,
+    iteration: u64,
+    new_index: usize,
+    stage: &str,
+    mark: &std::time::Instant,
+) {
+    if !enabled {
+        return;
+    }
+    let elapsed = mark.elapsed();
+    if elapsed > std::time::Duration::from_millis(50) {
+        eprintln!(
+            "[PROGRESS] iter={} new#{} stage={} took={:?}",
+            iteration, new_index, stage, elapsed
+        );
     }
 }
 
@@ -1251,8 +3426,440 @@ fn is_trivial_contradiction_id(clause: &IdClause) -> bool {
 mod tests {
     use super::*;
     use crate::TermOrdering;
+    use mrs_calculus::ordering::SymbolConfig;
     use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
+    use std::sync::Arc;
+
+    #[test]
+    fn fixed_lrs_target_is_independent_of_elapsed_time() {
+        assert_eq!(
+            lrs_target_size(
+                LrsPolicy::FixedIterations { budget: 10_000 },
+                2_000,
+                Duration::from_millis(1),
+                Duration::from_secs(1),
+            ),
+            Some(8_000)
+        );
+        assert_eq!(
+            lrs_target_size(
+                LrsPolicy::FixedIterations { budget: 10_000 },
+                2_000,
+                Duration::from_secs(20),
+                Duration::from_millis(1),
+            ),
+            Some(8_000)
+        );
+        assert_eq!(
+            lrs_target_size(
+                LrsPolicy::FixedIterations { budget: 1_000 },
+                2_000,
+                Duration::ZERO,
+                Duration::ZERO,
+            ),
+            Some(2_000)
+        );
+        assert_eq!(
+            lrs_target_size(LrsPolicy::Disabled, 2_000, Duration::ZERO, Duration::ZERO,),
+            None
+        );
+    }
+
+    #[test]
+    fn shared_pool_polling_uses_fixed_epochs() {
+        assert!(!should_poll_shared_pool(0, 500));
+        assert!(!should_poll_shared_pool(499, 500));
+        assert!(should_poll_shared_pool(500, 500));
+        assert!(!should_poll_shared_pool(501, 500));
+        assert!(!should_poll_shared_pool(500, 0));
+    }
+
+    #[test]
+    fn shared_pool_ready_entries_are_sorted_and_epoch_gated() {
+        let chain = |epoch: u64, key: &str| SharedClauseChain {
+            epoch,
+            key: key.into(),
+            symbol_names: Vec::new(),
+            chain: Vec::new(),
+        };
+        let pool = vec![chain(2, "z"), chain(1, "b"), chain(1, "a"), chain(1, "a")];
+        let ready = ready_shared_chains(&pool, &HashSet::default(), 1);
+        assert_eq!(
+            ready
+                .iter()
+                .map(|entry| entry.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "superposition partner differs between processed index and clause store"
+    )]
+    fn superposition_partner_consistency_check_catches_stale_index_copy() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let clause = input_clause(
+            &mut ClauseIdGen::new(),
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "p_a",
+            "axiom",
+        );
+        let mut state = SearchState::new(
+            vec![clause],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        let mut stale_copy = state
+            .clause_store
+            .values()
+            .next()
+            .expect("one input clause")
+            .clone();
+        stale_copy.literals[0].positive = false;
+        state.processed.insert(stale_copy.clone(), &state.term_bank);
+
+        assert_indexed_clause_matches_store(&state, &stale_copy, "test");
+    }
+
+    #[test]
+    fn search_imports_shared_chain_at_poll_epoch() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let mut publisher_symbols = symbols.clone();
+        let q = publisher_symbols.intern("q");
+        let mut id_gen = ClauseIdGen::new();
+        let initial = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "initial",
+            "axiom",
+        );
+        let shared = Clause::new(
+            id_gen.next(),
+            vec![Literal::pos(Atom::pred(q, vec![Term::constant(a)]))],
+            ClauseSource::Input {
+                name: "shared".into(),
+                role: "axiom".into(),
+            },
+        );
+        let mut state = SearchState::new(
+            vec![initial],
+            id_gen,
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        state.shared_pool = Some(Arc::new(std::sync::RwLock::new(vec![SharedClauseChain {
+            epoch: 0,
+            key: "shared-chain".into(),
+            symbol_names: publisher_symbols.iter_names().map(str::to_owned).collect(),
+            chain: vec![shared],
+        }])));
+        let config = SearchConfig {
+            time_limit: Duration::from_millis(50),
+            max_term_weight: None,
+            use_avatar: false,
+            shared_pool_poll_interval: 1,
+            ..SearchConfig::default()
+        };
+        let _ = search(&mut state, &config);
+        assert_eq!(state.stats.shared_imported, 1);
+        assert!(state.symbols.resolve_name("q").is_some());
+    }
+
+    #[test]
+    fn shared_chain_symbols_are_remapped_into_receiver_table() {
+        let mut publisher_symbols = SymbolTable::new();
+        let publisher_goal = publisher_symbols.intern("goal_d0");
+        let publisher_base = publisher_symbols.intern("base");
+        let mut receiver_symbols = SymbolTable::new();
+        let receiver_base = receiver_symbols.intern("base");
+
+        let mut shared = Clause::new(
+            ClauseIdGen::new().next(),
+            vec![Literal::pos(Atom::Eq(
+                Term::constant(publisher_goal),
+                Term::constant(publisher_base),
+            ))],
+            ClauseSource::Introduced {
+                symbol: publisher_goal,
+                parents: smallvec::SmallVec::new(),
+            },
+        );
+        let symbol_map = publisher_symbols
+            .iter_names()
+            .map(|name| receiver_symbols.intern(name))
+            .collect::<Vec<_>>();
+
+        assert!(remap_shared_clause_symbols(&mut shared, &symbol_map));
+        let Atom::Eq(left, right) = &shared.literals[0].atom else {
+            panic!("expected an equality");
+        };
+        let Term::App(left_symbol, _) = left else {
+            panic!("expected a function application");
+        };
+        let Term::App(right_symbol, _) = right else {
+            panic!("expected a function application");
+        };
+        assert_eq!(receiver_symbols.resolve(*left_symbol), "goal_d0");
+        assert_eq!(receiver_symbols.resolve(*right_symbol), "base");
+        let ClauseSource::Introduced { symbol, .. } = shared.source else {
+            panic!("expected an introduced clause");
+        };
+        assert_eq!(receiver_symbols.resolve(symbol), "goal_d0");
+        assert_eq!(receiver_base, *right_symbol);
+    }
+
+    #[test]
+    fn shared_chain_parent_ids_are_remapped_for_introduced_definitions() {
+        let mut symbols = SymbolTable::new();
+        let definition_symbol = symbols.intern("d");
+        let mut definition = Clause::new_formula_step(
+            ClauseId(11),
+            Formula::True,
+            ClauseSource::Introduced {
+                symbol: definition_symbol,
+                parents: vec![ClauseId(10)].into(),
+            },
+        );
+        let mut inference = Clause::new(
+            ClauseId(12),
+            Vec::<mrs_core::Literal>::new(),
+            ClauseSource::Inference {
+                rule: "resolution",
+                parents: vec![ClauseId(11)].into(),
+            },
+        );
+        let mut remap = HashMap::default();
+        remap.insert(ClauseId(10), ClauseId(20));
+        remap.insert(ClauseId(11), ClauseId(21));
+        remap.insert(ClauseId(12), ClauseId(22));
+
+        remap_shared_clause_ids(&mut definition, &remap);
+        remap_shared_clause_ids(&mut inference, &remap);
+
+        let ClauseSource::Introduced { parents, .. } = definition.source else {
+            panic!("expected introduced source");
+        };
+        assert_eq!(parents.as_slice(), &[ClauseId(20)]);
+        let ClauseSource::Inference { parents, .. } = inference.source else {
+            panic!("expected inference source");
+        };
+        assert_eq!(parents.as_slice(), &[ClauseId(21)]);
+    }
+
+    #[test]
+    fn compatible_imported_definition_reuses_receiver_symbol() {
+        let mut publisher_symbols = SymbolTable::new();
+        let publisher_goal = publisher_symbols.intern("goal_d0");
+        let publisher_base = publisher_symbols.intern("base");
+        let mut receiver_symbols = SymbolTable::new();
+        let receiver_goal = receiver_symbols.intern("goal_d0");
+        let receiver_base = receiver_symbols.intern("base");
+
+        let introduced = Clause::new(
+            ClauseIdGen::new().next(),
+            vec![Literal::pos(Atom::Eq(
+                Term::constant(publisher_base),
+                Term::constant(publisher_goal),
+            ))],
+            ClauseSource::Introduced {
+                symbol: publisher_goal,
+                parents: smallvec::SmallVec::new(),
+            },
+        );
+        let mut chain = vec![introduced];
+        let symbol_names = publisher_symbols
+            .iter_names()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut mapping = symbol_names
+            .iter()
+            .map(|name| receiver_symbols.intern(name))
+            .collect::<Vec<_>>();
+        let existing_names = receiver_symbols.iter_names().map(str::to_owned).collect();
+        let existing_definition = Clause::new(
+            ClauseIdGen::new().next(),
+            vec![Literal::pos(Atom::Eq(
+                Term::constant(receiver_base),
+                Term::constant(receiver_goal),
+            ))],
+            ClauseSource::Introduced {
+                symbol: receiver_goal,
+                parents: smallvec::SmallVec::new(),
+            },
+        );
+        let existing_definitions = vec![(ClauseId(99), receiver_goal, existing_definition)];
+
+        isolate_shared_introduced_symbols(
+            &chain,
+            &symbol_names,
+            &existing_names,
+            &existing_definitions,
+            &mut receiver_symbols,
+            &mut mapping,
+        );
+        assert_eq!(mapping[publisher_base.index() as usize], receiver_base);
+        assert_eq!(mapping[publisher_goal.index() as usize], receiver_goal);
+
+        assert!(
+            chain
+                .iter_mut()
+                .all(|clause| remap_shared_clause_symbols(clause, &mapping))
+        );
+        let ClauseSource::Introduced { symbol, .. } = chain[0].source else {
+            panic!("expected introduced source");
+        };
+        assert_eq!(symbol, mapping[publisher_goal.index() as usize]);
+        assert_eq!(receiver_symbols.resolve(symbol), "goal_d0");
+    }
+
+    #[test]
+    fn conflicting_imported_definition_gets_isolated_symbol() {
+        let mut publisher_symbols = SymbolTable::new();
+        let publisher_goal = publisher_symbols.intern("goal_d0");
+        let publisher_base = publisher_symbols.intern("publisher_base");
+        let mut receiver_symbols = SymbolTable::new();
+        let receiver_goal = receiver_symbols.intern("goal_d0");
+        let receiver_base = receiver_symbols.intern("receiver_base");
+
+        let introduced = Clause::new(
+            ClauseIdGen::new().next(),
+            vec![Literal::pos(Atom::Eq(
+                Term::constant(publisher_base),
+                Term::constant(publisher_goal),
+            ))],
+            ClauseSource::Introduced {
+                symbol: publisher_goal,
+                parents: smallvec::SmallVec::new(),
+            },
+        );
+        let mut chain = vec![introduced];
+        let symbol_names = publisher_symbols
+            .iter_names()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut mapping = symbol_names
+            .iter()
+            .map(|name| receiver_symbols.intern(name))
+            .collect::<Vec<_>>();
+        let existing_names = receiver_symbols.iter_names().map(str::to_owned).collect();
+        let existing_definition = Clause::new(
+            ClauseIdGen::new().next(),
+            vec![Literal::pos(Atom::Eq(
+                Term::constant(receiver_base),
+                Term::constant(receiver_goal),
+            ))],
+            ClauseSource::Introduced {
+                symbol: receiver_goal,
+                parents: smallvec::SmallVec::new(),
+            },
+        );
+        let existing_definitions = vec![(ClauseId(99), receiver_goal, existing_definition)];
+
+        isolate_shared_introduced_symbols(
+            &chain,
+            &symbol_names,
+            &existing_names,
+            &existing_definitions,
+            &mut receiver_symbols,
+            &mut mapping,
+        );
+        assert_ne!(mapping[publisher_goal.index() as usize], receiver_goal);
+        assert_eq!(
+            mapping[publisher_base.index() as usize],
+            receiver_symbols.resolve_name("publisher_base").unwrap()
+        );
+
+        assert!(
+            chain
+                .iter_mut()
+                .all(|clause| remap_shared_clause_symbols(clause, &mapping))
+        );
+        let ClauseSource::Introduced { symbol, .. } = chain[0].source else {
+            panic!("expected introduced source");
+        };
+        assert_eq!(symbol, mapping[publisher_goal.index() as usize]);
+        assert_ne!(receiver_symbols.resolve(symbol), "goal_d0");
+    }
+
+    #[test]
+    fn conflicting_imported_definition_chain_isolated_transitively() {
+        let mut publisher_symbols = SymbolTable::new();
+        let goal0 = publisher_symbols.intern("goal_d0");
+        let goal1 = publisher_symbols.intern("goal_d1");
+        let base = publisher_symbols.intern("base");
+        let mut receiver_symbols = SymbolTable::new();
+        let receiver_goal0 = receiver_symbols.intern("goal_d0");
+        let receiver_goal1 = receiver_symbols.intern("goal_d1");
+        let receiver_base = receiver_symbols.intern("other_base");
+        let mut ids = ClauseIdGen::new();
+        let chain = vec![
+            Clause::new(
+                ids.next(),
+                vec![Literal::pos(Atom::eq(
+                    Term::constant(base),
+                    Term::constant(goal0),
+                ))],
+                ClauseSource::Introduced {
+                    symbol: goal0,
+                    parents: smallvec::SmallVec::new(),
+                },
+            ),
+            Clause::new(
+                ids.next(),
+                vec![Literal::pos(Atom::eq(
+                    Term::app(goal0, vec![]),
+                    Term::constant(goal1),
+                ))],
+                ClauseSource::Introduced {
+                    symbol: goal1,
+                    parents: smallvec::SmallVec::new(),
+                },
+            ),
+        ];
+        let symbol_names = publisher_symbols
+            .iter_names()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut mapping = symbol_names
+            .iter()
+            .map(|name| receiver_symbols.intern(name))
+            .collect::<Vec<_>>();
+        let existing_names = receiver_symbols.iter_names().map(str::to_owned).collect();
+        let existing_definitions = vec![(
+            ClauseId(99),
+            receiver_goal0,
+            Clause::new(
+                ClauseId(99),
+                vec![Literal::pos(Atom::eq(
+                    Term::constant(receiver_base),
+                    Term::constant(receiver_goal0),
+                ))],
+                ClauseSource::Introduced {
+                    symbol: receiver_goal0,
+                    parents: smallvec::SmallVec::new(),
+                },
+            ),
+        )];
+        isolate_shared_introduced_symbols(
+            &chain,
+            &symbol_names,
+            &existing_names,
+            &existing_definitions,
+            &mut receiver_symbols,
+            &mut mapping,
+        );
+        assert_ne!(mapping[goal0.index() as usize], receiver_goal0);
+        assert_ne!(mapping[goal1.index() as usize], receiver_goal1);
+    }
 
     fn input_clause(
         id_gen: &mut ClauseIdGen,
@@ -1294,7 +3901,7 @@ mod tests {
             vec![c1, c2],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
-            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            std::sync::Arc::new(syms),
             true,
         );
         let config = SearchConfig::default();
@@ -1342,7 +3949,7 @@ mod tests {
             vec![c1, c2, c3],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
-            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            std::sync::Arc::new(syms),
             true,
         );
         let config = SearchConfig::default();
@@ -1381,7 +3988,142 @@ mod tests {
         );
         let config = SearchConfig::default();
         let result = search(&mut state, &config);
-        assert!(matches!(result, SearchResult::Saturated));
+        assert!(matches!(result, SearchResult::GaveUp));
+    }
+
+    #[test]
+    fn ordered_saturation_is_demoted_to_gave_up() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let clause = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "ax",
+            "axiom",
+        );
+
+        let mut state = crate::state::SearchState::new(
+            vec![clause],
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(syms),
+            false,
+        );
+        let config = SearchConfig {
+            ordered_inferences: true,
+            ..SearchConfig::default()
+        };
+        assert!(matches!(search(&mut state, &config), SearchResult::GaveUp));
+    }
+
+    /// A small ground problem whose queues genuinely drain: the search runs to
+    /// the end of the unprocessed set and leaves it empty.
+    fn drained_search_state(use_avatar: bool) -> crate::state::SearchState {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+                "ax1",
+                "axiom",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(q, vec![Term::constant(b)]))],
+                "ax2",
+                "axiom",
+            ),
+        ];
+        crate::state::SearchState::new(
+            clauses,
+            id_gen,
+            std::sync::Arc::new(SymbolConfig::default()),
+            std::sync::Arc::new(syms),
+            use_avatar,
+        )
+    }
+
+    /// UI-9: `GoalDirected` must not be able to end the search early, and an
+    /// end-of-search verdict from the ordinary loop is never a positive one.
+    ///
+    /// The goal queue holds an entry for every active clause, so
+    /// `select` returns `None` only when the whole set is empty; this runs the
+    /// full loop under that selector and checks both halves of that claim —
+    /// the set really drained, and the run is reported as `GaveUp`, never
+    /// `Saturated`.
+    #[test]
+    fn goal_directed_end_of_search_is_never_a_positive_verdict() {
+        for use_avatar in [false, true] {
+            for sos_depth in [u32::MAX, 100] {
+                let mut state = drained_search_state(use_avatar);
+                let config = SearchConfig {
+                    selection: crate::SelectionStrategy::GoalDirected(10),
+                    sos_depth,
+                    ..SearchConfig::default()
+                };
+                let result = search(&mut state, &config);
+                assert!(
+                    state.stats.processed > 0,
+                    "the search did not run (use_avatar={use_avatar}, sos_depth={sos_depth})",
+                );
+                assert!(
+                    state.unprocessed.is_empty(),
+                    "GoalDirected left {} clause(s) unprocessed (use_avatar={use_avatar}, \
+                     sos_depth={sos_depth})",
+                    state.unprocessed.active_count(),
+                );
+                assert!(
+                    matches!(result, SearchResult::GaveUp),
+                    "expected GaveUp, got {result:?} (use_avatar={use_avatar}, sos_depth={sos_depth})"
+                );
+            }
+        }
+    }
+
+    /// The same guarantee for every other selector, so a future queue change
+    /// cannot make some other strategy the one that truncates its own search.
+    #[test]
+    fn end_of_search_is_never_a_positive_verdict_for_any_selector() {
+        let selectors = [
+            crate::SelectionStrategy::Fifo,
+            crate::SelectionStrategy::SmallestFirst,
+            crate::SelectionStrategy::AgeWeight(5),
+            crate::SelectionStrategy::GoalDirected(10),
+            crate::SelectionStrategy::GoalDirected(0),
+            crate::SelectionStrategy::MlGuided {
+                ratio: 5,
+                alpha: 0.3,
+            },
+            crate::SelectionStrategy::MultiQueue(vec![
+                (crate::select::QueueType::Goal, 3),
+                (crate::select::QueueType::Unit, 1),
+                (crate::select::QueueType::Age, 1),
+            ]),
+        ];
+        for selection in selectors {
+            let mut state = drained_search_state(false);
+            let config = SearchConfig {
+                selection: selection.clone(),
+                ..SearchConfig::default()
+            };
+            let result = search(&mut state, &config);
+            assert!(
+                state.unprocessed.is_empty(),
+                "{selection:?} left {} clause(s) unprocessed",
+                state.unprocessed.active_count(),
+            );
+            assert!(
+                matches!(result, SearchResult::GaveUp | SearchResult::Timeout),
+                "{selection:?} produced a definitive verdict from an incomplete search: {result:?}"
+            );
+        }
     }
 
     #[test]
@@ -1459,7 +4201,7 @@ mod tests {
             clauses.clone(),
             id_gen.clone(),
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
-            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            std::sync::Arc::new(syms.clone()),
             true,
         );
         let config = SearchConfig {
@@ -1606,7 +4348,7 @@ mod tests {
             clauses,
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
-            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            std::sync::Arc::new(syms),
             true,
         );
         let config = SearchConfig {
@@ -1684,7 +4426,7 @@ mod tests {
             vec![c1, c2, c3],
             id_gen,
             std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
-            std::sync::Arc::new(mrs_core::SymbolTable::new()),
+            std::sync::Arc::new(syms),
             true,
         );
         let config = SearchConfig {
@@ -1698,5 +4440,580 @@ mod tests {
             "ordered_inferences must not cause premature saturation on \
              unsatisfiable all-positive EPR clauses (got {result:?})"
         );
+    }
+
+    /// A wide clause must not stall the search inside the new-clause
+    /// simplification pipeline. Regresses the EPS/HWV042-1 hang, where a
+    /// 202-literal ground clause made one given-clause iteration take minutes
+    /// because subsumption resolution rebuilt a modified copy of the target
+    /// for every literal against every candidate.
+    #[test]
+    fn wide_clause_search_terminates_and_does_not_refute() {
+        let mut syms = SymbolTable::new();
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        // A wide disjunction of distinct ground atoms: no pair of literals
+        // unifies, so this is satisfiable and must never be refuted.
+        let wide: Vec<Literal> = (0..60)
+            .map(|i| {
+                let p = syms.intern(&format!("p{i}"));
+                Literal::pos(Atom::pred(p, vec![Term::constant(a)]))
+            })
+            .collect();
+        let clauses = vec![input_clause(&mut id_gen, wide, "wide", "axiom")];
+
+        let mut state = crate::state::SearchState::new(
+            clauses,
+            id_gen.clone(),
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(syms.clone()),
+            false,
+        );
+        let config = SearchConfig {
+            time_limit: Duration::from_secs(5),
+            ..SearchConfig::default()
+        };
+        let started = std::time::Instant::now();
+        let result = search(&mut state, &config);
+        assert!(
+            !matches!(result, SearchResult::Refutation(..)),
+            "a satisfiable ground input must not be refuted, got {:?}",
+            result
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "search must respect its time limit, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The subsumption-resolution width bound is config driven, and a wide
+    /// clause is exempt from the check when the bound is disabled.
+    #[test]
+    fn subsumption_resolution_width_bound_is_configurable() {
+        assert_eq!(
+            SearchConfig::default().max_subsumption_resolution_literals,
+            Some(20)
+        );
+
+        let sr_width_ok = |width: usize, max: Option<usize>| max.is_none_or(|m| width <= m);
+        assert!(sr_width_ok(20, Some(20)));
+        assert!(!sr_width_ok(21, Some(20)));
+        assert!(sr_width_ok(10_000, None));
+    }
+
+    /// Condensation is quadratic in clause width with a backtracking subsumption
+    /// test per literal pair, so it is bounded the same way. The bound must be
+    /// configurable and must not reject narrow clauses.
+    #[test]
+    fn condensation_width_bound_is_configurable() {
+        assert_eq!(SearchConfig::default().max_condensation_literals, Some(10));
+
+        let condense_allowed = |width: usize, max: Option<usize>| max.is_none_or(|m| width <= m);
+        assert!(condense_allowed(10, Some(10)));
+        assert!(!condense_allowed(11, Some(10)));
+        assert!(condense_allowed(1_000, None));
+    }
+
+    #[test]
+    fn in_place_backward_demodulation_rewrites_processed_clause() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let c = syms.intern("c");
+        let mut id_gen = ClauseIdGen::new();
+
+        // c1: f(a) != b
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::eq(
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+            ))],
+            "ax1",
+            "axiom",
+        );
+        // c2: a = c
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(Term::constant(a), Term::constant(c)))],
+            "ax2",
+            "axiom",
+        );
+        // c3: f(c) = b
+        let c3 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(
+                Term::app(f, vec![Term::constant(c)]),
+                Term::constant(b),
+            ))],
+            "ax3",
+            "axiom",
+        );
+
+        let mut ordering_cfg = mrs_calculus::ordering::SymbolConfig::default();
+        let max_idx = f.index().max(a.index()).max(b.index()).max(c.index()) as usize;
+        ordering_cfg.weights = vec![1; max_idx + 1];
+        ordering_cfg.weights[a.index() as usize] = 3;
+        ordering_cfg.weights[c.index() as usize] = 1;
+
+        let mut state = crate::state::SearchState::new(
+            vec![c1, c2, c3],
+            id_gen,
+            std::sync::Arc::new(ordering_cfg),
+            std::sync::Arc::new(syms),
+            true,
+        );
+        let config = SearchConfig {
+            ordering: TermOrdering::KBO,
+            selection: crate::SelectionStrategy::Fifo,
+            literal_selection: crate::LiteralSelection::All,
+            ..SearchConfig::default()
+        };
+        let result = search(&mut state, &config);
+        assert!(
+            matches!(result, SearchResult::Refutation(..)),
+            "in-place backward demodulation should refute f(a)!=b, a=c, f(c)=b (got {result:?})"
+        );
+    }
+
+    #[test]
+    fn resource_ceiling_triggers_graceful_resource_out() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let mut id_gen = ClauseIdGen::new();
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![]))],
+            "ax1",
+            "axiom",
+        );
+        let ordering_cfg = mrs_calculus::ordering::SymbolConfig::default();
+
+        let mut state = crate::state::SearchState::new(
+            vec![c1],
+            id_gen,
+            std::sync::Arc::new(ordering_cfg),
+            std::sync::Arc::new(syms),
+            false,
+        );
+
+        // Ceiling with max_memory_mb: Some(0) triggers immediately
+        let mut config = SearchConfig::default();
+        config.resource_limits.max_memory_mb = Some(0);
+        let result = search(&mut state, &config);
+        assert!(
+            matches!(result, SearchResult::ResourceOut(_)),
+            "watchdog should trigger ResourceOut when memory limit is exceeded (got {result:?})"
+        );
+    }
+
+    #[test]
+    fn processed_limit_is_enforced_between_lrs_prune_epochs() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(p, vec![]))],
+                "p",
+                "axiom",
+            ),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(q, vec![]))],
+                "q",
+                "axiom",
+            ),
+        ];
+        let mut state = crate::state::SearchState::new(
+            clauses,
+            id_gen,
+            std::sync::Arc::new(mrs_calculus::ordering::SymbolConfig::default()),
+            std::sync::Arc::new(symbols),
+            false,
+        );
+        let mut config = SearchConfig {
+            time_limit: Duration::from_secs(5),
+            ..SearchConfig::default()
+        };
+        config.resource_limits.max_processed = Some(1);
+        config.lrs_policy = crate::LrsPolicy::FixedIterations { budget: 1_000 };
+        let result = search(&mut state, &config);
+        assert!(matches!(
+            result,
+            SearchResult::ResourceOut(crate::ResourceReason::MaxProcessed { processed: 1, .. })
+        ));
+        assert_eq!(state.stats.processed, 1);
+    }
+
+    /// Builds the three-clause "theoremhood" fragment of TPTP's LCL domain, in
+    /// the shape `LCL978+1` clausifies to: the axiom schema `a5`, the
+    /// detachment rule, and a lone negated-conjecture unit. This is the shape on
+    /// which a set-of-support restriction admits no inference at all.
+    fn cd_fragment(symbols: &mut SymbolTable, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
+        let p = symbols.intern("p");
+        let imp = symbols.intern("imp");
+        let not = symbols.intern("not");
+        let (a, b, c) = (Term::var(0), Term::var(1), Term::var(2));
+        let (d, e) = (Term::var(3), Term::var(4));
+        let axiom_arg = Term::app(
+            imp,
+            vec![
+                Term::app(
+                    imp,
+                    vec![
+                        a.clone(),
+                        Term::app(
+                            imp,
+                            vec![
+                                Term::app(imp, vec![Term::app(not, vec![a.clone()]), b.clone()]),
+                                c.clone(),
+                            ],
+                        ),
+                    ],
+                ),
+                Term::app(
+                    imp,
+                    vec![
+                        d.clone(),
+                        Term::app(
+                            imp,
+                            vec![
+                                Term::app(
+                                    imp,
+                                    vec![
+                                        Term::app(not, vec![e.clone()]),
+                                        Term::app(imp, vec![c.clone(), e.clone()]),
+                                    ],
+                                ),
+                                Term::app(imp, vec![a.clone(), d.clone()]),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        );
+        let rule_arg = Term::app(imp, vec![Term::var(0), Term::var(1)]);
+        let goal_arg = {
+            let (s0, s1, s2) = (
+                Term::constant(symbols.intern("sk0")),
+                Term::constant(symbols.intern("sk1")),
+                Term::constant(symbols.intern("sk2")),
+            );
+            Term::app(
+                imp,
+                vec![
+                    Term::app(imp, vec![s0.clone(), s1.clone()]),
+                    Term::app(
+                        imp,
+                        vec![
+                            Term::app(imp, vec![s1.clone(), s2.clone()]),
+                            Term::app(imp, vec![s0, s2]),
+                        ],
+                    ),
+                ],
+            )
+        };
+        vec![
+            Clause::new(
+                id_gen.next(),
+                vec![Literal::pos(Atom::pred(p, vec![axiom_arg]))],
+                ClauseSource::Input {
+                    name: "a5".into(),
+                    role: "axiom".into(),
+                },
+            )
+            .with_distance(100),
+            Clause::new(
+                id_gen.next(),
+                vec![
+                    Literal::neg(Atom::pred(p, vec![Term::var(0)])),
+                    Literal::pos(Atom::pred(p, vec![Term::var(1)])),
+                    Literal::neg(Atom::pred(p, vec![rule_arg])),
+                ],
+                ClauseSource::Input {
+                    name: "condensed_detachment".into(),
+                    role: "axiom".into(),
+                },
+            )
+            .with_distance(100),
+            Clause::new(
+                id_gen.next(),
+                vec![Literal::neg(Atom::pred(p, vec![goal_arg]))],
+                ClauseSource::Input {
+                    name: "prove_cn_1".into(),
+                    role: "negated_conjecture".into(),
+                },
+            )
+            .with_distance(0),
+        ]
+    }
+
+    /// A set-of-support restriction that blocks every inference the input can
+    /// make is not focusing the search, it is ending it, and must be released.
+    ///
+    /// This is the `LCL978+1` shape: with the single-negative literal selection
+    /// `casc_fne` installs, the detachment rule's only selected literal is
+    /// `~p(X => Y)`, and the only clause it unifies with is the axiom schema —
+    /// both at the axiom distance. With the restriction in place the search
+    /// reports `processed=3 generated=0 GaveUp` in 71 ms.
+    #[test]
+    fn sos_that_blocks_all_input_inference_is_released() {
+        let mut symbols = SymbolTable::new();
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = cd_fragment(&mut symbols, &mut id_gen);
+        let mut state = SearchState::new(
+            clauses,
+            id_gen,
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        let input_ids: Vec<_> = state.unprocessed.iter().collect();
+        assert_eq!(input_ids.len(), 3);
+        assert!(
+            sos_blocks_every_input_inference(
+                &mut state,
+                &input_ids,
+                100,
+                &LiteralSelection::MaxNegative
+            ),
+            "the LCL fragment admits only axiom-side inferences, so the \
+             set-of-support gate blocks all of them"
+        );
+    }
+
+    /// The escape hatch must not fire when the support set can still reach an
+    /// inference, so the restriction keeps doing its job.
+    #[test]
+    fn sos_is_kept_when_the_support_set_can_reach_an_inference() {
+        let mut symbols = SymbolTable::new();
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = cd_fragment(&mut symbols, &mut id_gen);
+        let mut state = SearchState::new(
+            clauses,
+            id_gen,
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        // Mark the detachment rule goal-connected: the restricted search can now
+        // resolve it, so the restriction is doing its job and must stay.
+        for clause in state.clause_store.values_mut() {
+            if clause.literals.len() == 3 {
+                clause.distance = 0;
+            }
+        }
+        let input_ids: Vec<_> = state.unprocessed.iter().collect();
+        assert!(!sos_blocks_every_input_inference(
+            &mut state,
+            &input_ids,
+            100,
+            &LiteralSelection::MaxNegative
+        ));
+    }
+
+    /// A support set that no input clause falls into cannot restrict anything,
+    /// only block; that is the degenerate case as well.
+    #[test]
+    fn sos_with_an_empty_support_set_is_released() {
+        let mut symbols = SymbolTable::new();
+        let mut id_gen = ClauseIdGen::new();
+        let clauses = cd_fragment(&mut symbols, &mut id_gen);
+        let mut state = SearchState::new(
+            clauses,
+            id_gen,
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+        for clause in state.clause_store.values_mut() {
+            clause.distance = 100;
+        }
+        let input_ids: Vec<_> = state.unprocessed.iter().collect();
+        assert!(sos_blocks_every_input_inference(
+            &mut state,
+            &input_ids,
+            100,
+            &LiteralSelection::MaxNegative
+        ));
+    }
+
+    /// A large input must not make the pre-flight quadratic.
+    ///
+    /// The bug this pins was an all-pairs enumeration of the post-clausification
+    /// clause set: `SWX070+1` has 148 FOF axioms and 105 772 clauses, which is
+    /// ~1.1x10^10 pairs, and the pre-flight runs before the given-clause loop so
+    /// it has no deadline check and prints nothing. The run just stopped emitting
+    /// lines after `% Problem:` and was killed by the harness.
+    ///
+    /// Many disjoint predicate symbols make that quadratic blowup visible while
+    /// keeping the test fast: a pairwise scan would do ~n^2 unify attempts, while
+    /// the predicate-indexed pass does none, because no two literals share a
+    /// predicate symbol. The time bound is therefore a regression guard, not the
+    /// property under test — the verdict is.
+    #[test]
+    fn sos_preflight_is_not_quadratic_in_the_clause_count() {
+        const CLAUSES: usize = 4_000;
+
+        let mut symbols = SymbolTable::new();
+        let mut id_gen = ClauseIdGen::new();
+        let mut clauses = Vec::with_capacity(CLAUSES);
+        // Each clause gets its own predicate symbol and remains outside the
+        // support set. The indexed scan therefore has no candidate pairs; a
+        // clause-pair scan would still examine every pair in Pass A and B.
+        for i in 0..CLAUSES {
+            let p = symbols.intern(&format!("p{i}_{i}"));
+            let mut clause = input_clause(
+                &mut id_gen,
+                vec![
+                    Literal::pos(Atom::pred(p, vec![])),
+                    Literal::neg(Atom::pred(p, vec![])),
+                ],
+                &format!("p{i}"),
+                "axiom",
+            );
+            clause.distance = 100;
+            clauses.push(clause);
+        }
+        let ids: Vec<_> = clauses.iter().map(|c| c.id).collect();
+        let mut state = SearchState::new(
+            clauses,
+            id_gen,
+            Arc::new(SymbolConfig::default()),
+            Arc::new(symbols),
+            false,
+        );
+
+        let started = std::time::Instant::now();
+        // No two clauses share a predicate, so the input admits no inference
+        // and the gate reports that there is nothing for SOS to block.
+        assert!(
+            !sos_blocks_every_input_inference(&mut state, &ids, 50, &LiteralSelection::All),
+            "a set with no complementary literals should admit no inference"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "pre-flight took {:?} over {CLAUSES} clauses; it is quadratic again",
+            started.elapsed()
+        );
+    }
+
+    /// The verdict must match the all-pairs definition on inputs where both can
+    /// be run.
+    ///
+    /// Candidate generation uses a predicate index. Its result is asserted
+    /// against a brute-force all-pairs reference so a future optimization
+    /// cannot quietly change what the gate decides.
+    #[test]
+    fn sos_verdict_matches_an_all_pairs_reference() {
+        // Exercise the four meaningful cases: support-connected inference,
+        // only out-of-support inference, no inference, and a support clause
+        // isolated alongside unrelated out-of-support inferences.
+        let expected = [false, true, false, true];
+        for (case, expected) in expected.into_iter().enumerate() {
+            let mut symbols = SymbolTable::new();
+            let mut id_gen = ClauseIdGen::new();
+            // `p`/`q` and `r`/`s` are complementary pairs; `t` has no
+            // complementary partner.
+            let p = symbols.intern("p");
+            let r = symbols.intern("r");
+            let s = symbols.intern("s");
+            let t = symbols.intern("t");
+            let mut next_name = 0usize;
+            let mut clause =
+                |sym_pos: SymbolId, sym_neg: SymbolId, dist: u32, positive_first: bool| {
+                    let pos = Literal::pos(Atom::pred(sym_pos, vec![]));
+                    let neg = Literal::neg(Atom::pred(sym_neg, vec![]));
+                    let lits = if positive_first {
+                        vec![pos, neg]
+                    } else {
+                        vec![neg, pos]
+                    };
+                    next_name += 1;
+                    let name = format!("c{next_name}");
+                    let mut c = input_clause(&mut id_gen, lits, &name, "axiom");
+                    c.distance = dist;
+                    c
+                };
+
+            let clauses = match case {
+                // A support-set negative p literal resolves with positive p.
+                0 => vec![clause(r, p, 0, true), clause(p, s, 100, true)],
+                // Inferences exist, but both complementary literals are outside
+                // the support set.
+                1 => vec![clause(r, p, 100, true), clause(p, s, 100, true)],
+                // No complementary selected literals exist.
+                2 => vec![clause(p, p, 0, true), clause(r, r, 100, true)],
+                // Support clause is isolated while unrelated non-support
+                // clauses still resolve with each other.
+                _ => vec![
+                    clause(t, t, 0, true),
+                    clause(r, p, 100, true),
+                    clause(p, s, 100, true),
+                ],
+            };
+            let ids: Vec<_> = clauses.iter().map(|c| c.id).collect();
+
+            let mut state = SearchState::new(
+                clauses,
+                id_gen,
+                Arc::new(SymbolConfig::default()),
+                Arc::new(symbols),
+                false,
+            );
+
+            let selection = LiteralSelection::All;
+            let got = sos_blocks_every_input_inference(&mut state, &ids, 100, &selection);
+            let want = all_pairs_reference(&mut state, &ids, 100, &selection);
+            assert_eq!(got, want, "case {case}");
+            assert_eq!(got, expected, "unexpected verdict for case {case}");
+        }
+    }
+
+    /// The pre-fix definition: every ordered pair, `true` only if some
+    /// inference-capable pair has both parents outside the support set.
+    fn all_pairs_reference(
+        state: &mut SearchState,
+        input_ids: &[mrs_core::clause::ClauseId],
+        sos_depth: u32,
+        literal_selection: &LiteralSelection,
+    ) -> bool {
+        let clauses: Vec<IdClause> = input_ids
+            .iter()
+            .filter_map(|id| state.clause_store.get(id).cloned())
+            .filter(|c| !c.is_empty())
+            .collect();
+        if clauses.is_empty() {
+            return false;
+        }
+        let selections: Vec<Vec<usize>> = clauses
+            .iter()
+            .map(|c| selected_literals_id(c, literal_selection, &state.term_bank))
+            .collect();
+        let mut any_inference_at_all = false;
+        for i in 0..clauses.len() {
+            for j in (i + 1)..clauses.len() {
+                if !pair_can_resolve(
+                    &clauses[i],
+                    &selections[i],
+                    &clauses[j],
+                    &selections[j],
+                    state,
+                ) {
+                    continue;
+                }
+                any_inference_at_all = true;
+                if clauses[i].distance < sos_depth || clauses[j].distance < sos_depth {
+                    return false;
+                }
+            }
+        }
+        any_inference_at_all
     }
 }

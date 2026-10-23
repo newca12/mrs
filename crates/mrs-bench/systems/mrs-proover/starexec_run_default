@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# crates/mrs-bench/systems/mrs-proover/starexec_run_default
+#
+# StarExec solver entry point for mrs-proover (as opposed to invoke.sh,
+# which is used by the local benchmark harness and takes an explicit
+# time-limit argument). See the mrs `starexec_run_default` script for the
+# StarExec calling-convention rationale (single problem-path argument,
+# STAREXEC_WALLCLOCK_LIMIT env var instead of a CLI time-limit arg).
+set -euo pipefail
+
+PROOF="${1:?Usage: starexec_run_default <proof_path>}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BINARY="${SCRIPT_DIR}/mrs-proover"
+if [[ ! -x "${BINARY}" ]]; then
+    echo "% SZS status Unknown : mrs-proover binary not found next to starexec_run_default"
+    exit 0
+fi
+
+# Bundled ATP backends, if shipped alongside the solver package.
+EPROVER="${SCRIPT_DIR}/eprover/bin/eprover"
+VAMPIRE="${SCRIPT_DIR}/vampire/bin/vampire"
+
+ARGS=()
+PROOF_DIR="$(cd "$(dirname "${PROOF}")" && pwd)"
+ARGS+=(--problems-dir "${PROOF_DIR}")
+
+if [[ -x "${EPROVER}" ]]; then
+    ARGS+=(--eprover "${EPROVER}")
+fi
+if [[ -x "${VAMPIRE}" ]]; then
+    ARGS+=(--vampire "${VAMPIRE}")
+fi
+
+WALLCLOCK="${2:-${STAREXEC_WALLCLOCK_LIMIT:-30}}"
+# Enforce a minimum of 1s. Critically, this must never evaluate to 0: GNU
+# `timeout 0s <cmd>` disables the timeout entirely (runs the command
+# unbounded) rather than killing it immediately, which would silently
+# remove our safety net if STAREXEC_WALLCLOCK_LIMIT were ever 0 or unset
+# to an empty string that parses as 0.
+SOFT_TIME=$(( WALLCLOCK > 1 ? WALLCLOCK - 1 : 1 ))
+
+# Raise the stack limit for the parsing/DAG-building phase (load() and
+# dag::build() both run on the main thread, before the parallel ATP-ladder
+# verification pass spawns worker threads -- see docs/STATUS.md). Both use
+# mrs-tptp's recursive-descent parser, which crates/mrs-tptp/doc/technical.md
+# documents as a stack-overflow risk on deeply nested formulas. Best-effort:
+# some sandboxes cap the hard limit and refuse to raise the soft limit
+# further, which prints a warning but does not abort under `set -e`.
+ulimit -s unlimited 2>/dev/null || true
+
+# `ulimit -s` above only covers the main thread. The parallel ATP-ladder
+# verification pass runs on threads of its own, and those set their stack in
+# code -- see mrs_core::RECURSION_STACK_BYTES and the spawn sites in
+# mrs-proover's verify.rs and atp/ladder.rs -- so nothing here needs to, and
+# nothing should. They run genuinely recursive code from mrs-unify, mrs-core and
+# mrs-index on every step, including the MrsAtp in-process fallback, which runs
+# a full given-clause search. A stack overflow on one of them triggers Rust's
+# abort() handler, killing the whole process with zero output, which is worse
+# than a clean timeout; 64 MiB is about 300,000 levels of headroom, and a
+# lazily committed stack is not counted against RSS until used.
+
+exec timeout --foreground "${SOFT_TIME}s" "${BINARY}" --time "${SOFT_TIME}" --workers "${PROOVER_WORKERS:-8}" "${ARGS[@]}" "${PROOF}" \
+    || echo "% SZS status Unknown : exhausted wall-clock budget"

@@ -22,7 +22,17 @@ The Otter-style loop maintains two sets of clauses — *processed* (already used
 // Run a single strategy
 search(state: &mut SearchState, config: SearchConfig) -> SearchResult
 
-enum SearchResult { Refutation(ClauseId), Saturated, Timeout, ResourceOut }
+enum SearchResult {
+    Refutation(ClauseId),
+    Saturated(CompletenessWitness),
+    Timeout,
+    GaveUp,
+    ResourceOut,
+}
+
+// Positive saturation is returned only with completeness evidence. Ordinary
+// search, ordered or otherwise, is refutation-only; the explicit certified
+// ground fragment is the only current positive-saturation path.
 
 // Portfolio
 StrategySchedule::default_schedule(total_time: Duration) -> StrategySchedule

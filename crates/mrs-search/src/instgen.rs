@@ -17,14 +17,18 @@
 //! instance-count limit (`MAX_INSTANCES`) to protect against combinatorial
 //! explosions caused by clauses with many variables.  When the limit would be
 //! exceeded we return `None` and the caller falls back to the standard loop.
+use crate::{HashMap, HashSet, SearchConfig, SearchResult};
+use smallvec::SmallVec;
+use std::time::{Duration, Instant};
 
-use crate::HashSet;
-
-use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
+use mrs_cadical::{SolveResult, Solver};
+use mrs_calculus::ordering::SymbolConfig;
+use mrs_calculus::rename::{max_var, rename_clause};
+use mrs_core::clause::{Clause, ClauseId, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::formula::Atom;
-use mrs_core::subst::Substitution;
-use mrs_core::symbol::SymbolId;
+use mrs_core::symbol::{SymbolId, SymbolTable};
 use mrs_core::term::{Term, VarId};
+use mrs_proof::tstp::format_tstp;
 
 /// Maximum total number of ground instances we are willing to generate.
 /// If expanding the clause set would exceed this, we fall back to the
@@ -113,16 +117,51 @@ pub fn preprocess_epr(clauses: &[Clause], id_gen: &mut ClauseIdGen) -> Option<Ve
 /// the full Herbrand expansion exceeds [`MAX_INSTANCES`] and `preprocess_epr`
 /// returns `None`.
 pub fn is_epr(clauses: &[Clause]) -> bool {
-    clauses.iter().all(|c| {
-        c.literals.iter().all(|lit| match &lit.atom {
-            Atom::Pred(_, args) => args.iter().all(term_is_epr),
-            Atom::Eq(l, r) => term_is_epr(l) && term_is_epr(r),
+    !clauses.is_empty()
+        && clauses.iter().all(|c| {
+            c.literals.iter().all(|lit| match &lit.atom {
+                Atom::Pred(_, args) => args.iter().all(term_is_epr),
+                Atom::Eq(l, r) => term_is_epr(l) && term_is_epr(r),
+            })
         })
-    })
+}
+
+/// Returns `true` iff every clause in `clauses` is pure relational EPR:
+/// all terms are variables or constants, and all atoms are predicates (no equality).
+pub fn is_pure_relational_epr(clauses: &[Clause]) -> bool {
+    !clauses.is_empty()
+        && clauses.iter().all(|c| {
+            c.literals.iter().all(|lit| match &lit.atom {
+                Atom::Pred(_, args) => args.iter().all(term_is_epr),
+                Atom::Eq(_, _) => false,
+            })
+        })
+}
+
+/// Classify the EPR profile of a clause set into one of:
+/// - "empty": empty clause set
+/// - "non_epr": contains function symbols of arity >= 1
+/// - "ground": all clauses are ground
+/// - "pure_relational_epr": non-ground, only constants and variables, no equality
+/// - "epr_equality": EPR with equality atoms
+pub fn classify_epr_profile(clauses: &[Clause]) -> &'static str {
+    if clauses.is_empty() {
+        return "empty";
+    }
+    if !is_epr(clauses) {
+        return "non_epr";
+    }
+    if clauses.iter().all(|c| c.free_vars().is_empty()) {
+        return "ground";
+    }
+    if is_pure_relational_epr(clauses) {
+        return "pure_relational_epr";
+    }
+    "epr_equality"
 }
 
 /// Returns `true` if `term` is a variable or a constant.
-fn term_is_epr(term: &Term) -> bool {
+pub fn term_is_epr(term: &Term) -> bool {
     match term {
         Term::Var(_) => true,
         Term::App(_, args) => args.is_empty(),
@@ -130,7 +169,12 @@ fn term_is_epr(term: &Term) -> bool {
 }
 
 /// Collects all distinct constants (nullary function symbols) from `clauses`.
-fn collect_constants(clauses: &[Clause]) -> Vec<SymbolId> {
+/// Predicate symbols, including nullary predicates, are not terms and therefore
+/// are not members of the Herbrand universe.
+///
+/// `pub` so the EPR grounding pre-pass shares this one implementation rather
+/// than carrying a second copy of the same definition.
+pub fn collect_constants(clauses: &[Clause]) -> Vec<SymbolId> {
     let mut seen: HashSet<SymbolId> = HashSet::default();
     let mut constants: Vec<SymbolId> = Vec::new();
     for clause in clauses {
@@ -195,8 +239,11 @@ fn collect_vars_term(term: &Term, vars: &mut HashSet<VarId>) {
 
 /// Enumerates all substitutions that map each variable in `vars` to some
 /// constant in `constants`.  Returns `|constants|^|vars|` substitutions.
-fn enumerate_instances(vars: &[VarId], constants: &[SymbolId]) -> Vec<Substitution> {
-    let mut result = vec![Substitution::new()];
+fn enumerate_instances(
+    vars: &[VarId],
+    constants: &[SymbolId],
+) -> Vec<mrs_core::subst::Substitution> {
+    let mut result = vec![mrs_core::subst::Substitution::new()];
     for &var in vars {
         let mut next_result = Vec::with_capacity(result.len() * constants.len());
         for subst in &result {
@@ -209,6 +256,972 @@ fn enumerate_instances(vars: &[VarId], constants: &[SymbolId]) -> Vec<Substituti
         result = next_result;
     }
     result
+}
+
+// ---------------------------------------------------------------------------
+// InstGen Calculus Loop for EPR
+// ---------------------------------------------------------------------------
+
+/// Signed propositional literal (DIMACS convention, 1-indexed).
+type PL = i32;
+
+/// A propositional clause: sorted, deduplicated literals.
+type PC = Vec<PL>;
+
+/// Maximum instances generated by InstGen before falling back to full portfolio.
+/// Baseline tier; [`adaptive_instgen_budget`] may lower this for huge
+/// estimated groundings so the pre-pass fails fast instead of OOMing.
+const MAX_TOTAL_INSTANCES: usize = 50_000;
+
+/// Maximum InstGen iterations (rounds of CaDiCaL + MGU instantiation).
+/// Baseline tier; see [`adaptive_instgen_budget`].
+const MAX_ROUNDS: usize = 200;
+
+/// Default time budget for InstGen pre-pass before falling back to portfolio.
+/// Baseline tier; see [`adaptive_instgen_budget`].
+const DEFAULT_INSTGEN_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Adaptive pre-pass budget for the InstGen loop.
+///
+/// All fields carry the *selected* tier so telemetry can attribute whether a
+/// fallback came from a fail-fast or a full-budget tier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InstGenBudget {
+    /// Wall-clock budget for the whole pre-pass.
+    pub timeout: Duration,
+    /// Maximum CaDiCaL + MGU rounds.
+    pub max_rounds: usize,
+    /// Maximum total first-order instances (input clauses + generated).
+    pub max_instances: usize,
+}
+
+/// Estimate the naive grounding size `sum_c |consts|^|vars_c|` saturating at
+/// `u64::MAX`. This is the quantity that OOMed the old `preprocess_epr`
+/// path, so it drives the fail-fast tiers below.
+fn estimate_grounding_size(clauses: &[Clause], n_constants: usize) -> u64 {
+    let mut total: u64 = 0;
+    for clause in clauses {
+        let n_vars = collect_clause_vars(clause).len() as u32;
+        let instances = (n_constants as u64).saturating_pow(n_vars);
+        total = total.saturating_add(instances);
+        if total > 1_000_000 {
+            break;
+        }
+    }
+    total
+}
+
+fn adaptive_instgen_budget_with_overrides(
+    clauses: &[Clause],
+    timeout_ms: Option<u64>,
+    max_rounds: Option<usize>,
+    max_instances: Option<usize>,
+) -> (InstGenBudget, u64) {
+    let constants = collect_constants(clauses);
+    let n_constants = constants.len();
+    let est = estimate_grounding_size(clauses, n_constants);
+    let n_clauses = clauses.len() as u64;
+
+    // Effective problem scale: estimated grounding, inflated by raw clause
+    // count so large-but-ground inputs also fail fast.
+    let scale = est.saturating_add(n_clauses);
+    let mut budget = if scale <= 10_000 {
+        InstGenBudget {
+            timeout: DEFAULT_INSTGEN_TIMEOUT,
+            max_rounds: MAX_ROUNDS,
+            max_instances: MAX_TOTAL_INSTANCES,
+        }
+    } else if scale <= 100_000 {
+        InstGenBudget {
+            timeout: Duration::from_millis(1500),
+            max_rounds: 150,
+            max_instances: MAX_TOTAL_INSTANCES,
+        }
+    } else {
+        // Huge grounding: fail fast, avoid CaDiCaL inflation.
+        InstGenBudget {
+            timeout: Duration::from_millis(750),
+            max_rounds: 80,
+            max_instances: 20_000,
+        }
+    };
+
+    if let Some(ms) = timeout_ms {
+        budget.timeout = Duration::from_millis(ms);
+    }
+    if let Some(rounds) = max_rounds {
+        budget.max_rounds = rounds;
+    }
+    if let Some(instances) = max_instances {
+        budget.max_instances = instances;
+    }
+    (budget, est)
+}
+
+/// Select an InstGen pre-pass budget from problem shape.
+///
+/// Inputs: clause count, distinct constants, per-clause variables, and the
+/// estimated naive SAT grounding size. Small problems keep the full baseline
+/// budget; huge estimated groundings get a fail-fast tier so the pre-pass
+/// yields quickly to the portfolio instead of inflating CaDiCaL.
+///
+/// Env overrides (experiments only): `MRS_INSTGEN_TIMEOUT_MS`,
+/// `MRS_INSTGEN_MAX_ROUNDS`, `MRS_INSTGEN_MAX_INSTANCES`.
+pub fn adaptive_instgen_budget(clauses: &[Clause]) -> (InstGenBudget, u64) {
+    let timeout_ms = std::env::var("MRS_INSTGEN_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+    let max_rounds = std::env::var("MRS_INSTGEN_MAX_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
+    let max_instances = std::env::var("MRS_INSTGEN_MAX_INSTANCES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
+    adaptive_instgen_budget_with_overrides(clauses, timeout_ms, max_rounds, max_instances)
+}
+
+/// Ground atom key in EPR: predicate symbol + list of constant SymbolIds.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct GroundAtom {
+    pub pred: SymbolId,
+    pub args: SmallVec<[SymbolId; 4]>,
+}
+
+/// Bijective mapping between first-order ground atoms and DIMACS variables.
+#[derive(Default)]
+pub struct PropAbstraction {
+    pub atom_to_var: HashMap<GroundAtom, i32>,
+    pub var_to_atom: Vec<GroundAtom>,
+}
+
+impl PropAbstraction {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Abstract a term to a constant SymbolId. Variables are represented by a
+    /// distinguished placeholder, while compound terms are rejected because
+    /// this abstraction is only used for the pure relational EPR fragment.
+    pub fn abstract_term(t: &Term, bot_sym: SymbolId) -> SymbolId {
+        match t {
+            Term::Var(_) => bot_sym,
+            Term::App(sym, _) => *sym,
+        }
+    }
+
+    /// Abstract a predicate literal to a signed DIMACS integer.
+    pub fn abstract_literal(&mut self, lit: &Literal, bot_sym: SymbolId) -> Option<PL> {
+        let Atom::Pred(sym, args) = &lit.atom else {
+            return None;
+        };
+        let key = GroundAtom {
+            pred: *sym,
+            args: args
+                .iter()
+                .map(|a| Self::abstract_term(a, bot_sym))
+                .collect(),
+        };
+        let var = *self.atom_to_var.entry(key.clone()).or_insert_with(|| {
+            let v = (self.var_to_atom.len() + 1) as i32;
+            self.var_to_atom.push(key);
+            v
+        });
+        Some(if lit.positive { var } else { -var })
+    }
+
+    /// Abstract a clause to a propositional clause `PC`.
+    /// Returns `None` when the clause contains an unsupported atom type.
+    /// Complementary literals after abstraction are retained: that can be a
+    /// first-order non-tautology when the original variables differ.
+    pub fn abstract_clause(&mut self, clause: &Clause, bot_sym: SymbolId) -> Option<PC> {
+        let mut pc = Vec::with_capacity(clause.literals.len());
+        for lit in &clause.literals {
+            if let Some(pl) = self.abstract_literal(lit, bot_sym) {
+                pc.push(pl);
+            }
+        }
+        pc.sort_unstable();
+        pc.dedup();
+        Some(pc)
+    }
+}
+
+fn cmp_terms(t1: &Term, t2: &Term) -> std::cmp::Ordering {
+    match (t1, t2) {
+        (Term::Var(v1), Term::Var(v2)) => v1.cmp(v2),
+        (Term::Var(_), Term::App(..)) => std::cmp::Ordering::Less,
+        (Term::App(..), Term::Var(_)) => std::cmp::Ordering::Greater,
+        (Term::App(s1, args1), Term::App(s2, args2)) => s1
+            .index()
+            .cmp(&s2.index())
+            .then_with(|| args1.len().cmp(&args2.len()))
+            .then_with(|| {
+                for (a, b) in args1.iter().zip(args2.iter()) {
+                    let ord = cmp_terms(a, b);
+                    if !ord.is_eq() {
+                        return ord;
+                    }
+                }
+                std::cmp::Ordering::Equal
+            }),
+    }
+}
+
+/// Canonicalize variable IDs to consecutive 0, 1, 2, ... and sort literals.
+fn canonicalize_clause(lits: &[Literal]) -> Vec<Literal> {
+    let mut var_map: HashMap<VarId, VarId> = HashMap::default();
+    let mut next_var: VarId = 0;
+    let mut res: Vec<Literal> = lits
+        .iter()
+        .map(|lit| {
+            let atom = match &lit.atom {
+                Atom::Pred(sym, args) => {
+                    let new_args = args
+                        .iter()
+                        .map(|t| match t {
+                            Term::Var(v) => {
+                                let nv = *var_map.entry(*v).or_insert_with(|| {
+                                    let id = next_var;
+                                    next_var += 1;
+                                    id
+                                });
+                                Term::var(nv)
+                            }
+                            Term::App(s, a) => Term::app(*s, a.clone()),
+                        })
+                        .collect();
+                    Atom::pred(*sym, new_args)
+                }
+                Atom::Eq(l, r) => {
+                    let mut map_t = |t: &Term| match t {
+                        Term::Var(v) => {
+                            let nv = *var_map.entry(*v).or_insert_with(|| {
+                                let id = next_var;
+                                next_var += 1;
+                                id
+                            });
+                            Term::var(nv)
+                        }
+                        Term::App(s, a) => Term::app(*s, a.clone()),
+                    };
+                    Atom::eq(map_t(l), map_t(r))
+                }
+            };
+            Literal {
+                positive: lit.positive,
+                atom,
+            }
+        })
+        .collect();
+
+    res.sort_by(|a, b| {
+        a.positive
+            .cmp(&b.positive)
+            .then_with(|| match (&a.atom, &b.atom) {
+                (Atom::Pred(s1, args1), Atom::Pred(s2, args2)) => s1
+                    .index()
+                    .cmp(&s2.index())
+                    .then_with(|| args1.len().cmp(&args2.len()))
+                    .then_with(|| {
+                        for (t1, t2) in args1.iter().zip(args2.iter()) {
+                            let ord = cmp_terms(t1, t2);
+                            if !ord.is_eq() {
+                                return ord;
+                            }
+                        }
+                        std::cmp::Ordering::Equal
+                    }),
+                (Atom::Eq(l1, r1), Atom::Eq(l2, r2)) => {
+                    cmp_terms(l1, l2).then_with(|| cmp_terms(r1, r2))
+                }
+                (Atom::Pred(..), Atom::Eq(..)) => std::cmp::Ordering::Less,
+                (Atom::Eq(..), Atom::Pred(..)) => std::cmp::Ordering::Greater,
+            })
+    });
+    res.dedup();
+    res
+}
+
+/// Checks if a clause contains complementary literals.
+fn is_tautology(lits: &[Literal]) -> bool {
+    for (i, l1) in lits.iter().enumerate() {
+        for l2 in &lits[i + 1..] {
+            if l1.positive != l2.positive && l1.atom == l2.atom {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[derive(Clone)]
+enum PSrc {
+    Input(usize),
+    Resolvent { left: usize, right: usize },
+}
+
+fn resolve_prop(c1: &[PL], c2: &[PL], lit: PL) -> Option<PC> {
+    let mut result: Vec<PL> = c1
+        .iter()
+        .chain(c2.iter())
+        .copied()
+        .filter(|&l| l != lit && l != -lit)
+        .collect::<HashSet<PL>>()
+        .into_iter()
+        .collect();
+    result.sort_unstable();
+    for &l in &result {
+        if l > 0 && result.binary_search(&-l).is_ok() {
+            return None;
+        }
+    }
+    Some(result)
+}
+
+fn prop_bfs_refute(input: &[PC]) -> Option<(Vec<PC>, Vec<PSrc>, usize)> {
+    let mut clauses: Vec<PC> = Vec::new();
+    let mut sources: Vec<PSrc> = Vec::new();
+    let mut seen: HashSet<PC> = HashSet::default();
+
+    for (i, c) in input.iter().enumerate() {
+        if seen.insert(c.clone()) {
+            let is_empty = c.is_empty();
+            clauses.push(c.clone());
+            sources.push(PSrc::Input(i));
+            if is_empty {
+                let idx = clauses.len() - 1;
+                return Some((clauses, sources, idx));
+            }
+        }
+    }
+
+    let mut head = 0;
+    while head < clauses.len() {
+        let c_head = clauses[head].clone();
+        for j in 0..head {
+            let c_j = clauses[j].clone();
+            for &lit in &c_head {
+                if c_j.binary_search(&-lit).is_err() {
+                    continue;
+                }
+                let Some(resolvent) = resolve_prop(&c_head, &c_j, lit) else {
+                    continue;
+                };
+                if seen.insert(resolvent.clone()) {
+                    let is_empty = resolvent.is_empty();
+                    clauses.push(resolvent);
+                    sources.push(PSrc::Resolvent {
+                        left: head,
+                        right: j,
+                    });
+                    if is_empty {
+                        let idx = clauses.len() - 1;
+                        return Some((clauses, sources, idx));
+                    }
+                    if clauses.len() > 100_000 {
+                        return None;
+                    }
+                }
+            }
+        }
+        head += 1;
+    }
+    None
+}
+
+fn dfs_topo(
+    idx: usize,
+    prop_sources: &[PSrc],
+    visited: &mut HashSet<usize>,
+    order: &mut Vec<usize>,
+) {
+    if !visited.insert(idx) {
+        return;
+    }
+    if let PSrc::Resolvent { left, right } = &prop_sources[idx] {
+        dfs_topo(*left, prop_sources, visited, order);
+        dfs_topo(*right, prop_sources, visited, order);
+    }
+    order.push(idx);
+}
+
+///// Telemetry counters for the InstGen reasoning loop.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InstGenTelemetry {
+    /// Whether InstGen was actually invoked.
+    pub attempted: bool,
+    /// Detected EPR classification route ("pure_relational_epr", "ground", "epr_equality", "non_epr").
+    pub route: &'static str,
+    /// Number of InstGen rounds executed.
+    pub rounds: usize,
+    /// Number of first-order instances generated and added.
+    pub generated_instances: usize,
+    /// Final number of propositional variables in CaDiCaL.
+    pub sat_vars: usize,
+    /// Final number of propositional clauses in CaDiCaL.
+    pub sat_clauses: usize,
+    /// Total elapsed time in milliseconds spent in InstGen.
+    pub elapsed_ms: u64,
+    /// Reason for falling back to portfolio search, if any.
+    pub fallback_reason: Option<&'static str>,
+    /// Whether a verified TSTP refutation proof was successfully extracted.
+    pub proof_extracted: bool,
+    /// Terminal outcome of the pre-pass: "refutation" (UNSAT with proof),
+    /// "saturated_ground" (conclusive ground SAT model), "gaveup_variable_model"
+    /// (variable-bearing SAT abstraction, fail-closed), "fallback" (budget or
+    /// solver gave up, caller runs the portfolio), or "none" (route unsupported,
+    /// pre-pass never attempted).
+    pub return_reason: Option<&'static str>,
+    /// Estimated naive grounding size `sum_c |consts|^|vars_c|` used to pick
+    /// the adaptive budget tier.
+    pub est_instances: u64,
+    /// Selected adaptive budget: timeout in milliseconds.
+    pub budget_ms: u64,
+    /// Selected adaptive budget: maximum rounds.
+    pub budget_rounds: usize,
+    /// Selected adaptive budget: maximum total instances.
+    pub budget_instances: usize,
+}
+
+/// Tries to decide an EPR problem using lazy SAT-guided InstGen, collecting
+/// detailed execution telemetry.
+pub fn try_instgen_epr_with_telemetry(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    id_gen: &mut ClauseIdGen,
+    symbols: &SymbolTable,
+) -> (Option<SearchResult>, InstGenTelemetry) {
+    try_instgen_epr_with_telemetry_and_timeout(clauses, provenance, id_gen, symbols, None)
+}
+
+/// As [`try_instgen_epr_with_telemetry`], with an optional caller deadline cap.
+/// The strategy scheduler uses this so InstGen shares the same wall budget as
+/// EPR grounding and the portfolio.
+pub(crate) fn try_instgen_epr_with_telemetry_and_timeout(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    id_gen: &mut ClauseIdGen,
+    symbols: &SymbolTable,
+    timeout_cap: Option<Duration>,
+) -> (Option<SearchResult>, InstGenTelemetry) {
+    let start_time = Instant::now();
+    let route = classify_epr_profile(clauses);
+    let (mut budget, est) = adaptive_instgen_budget(clauses);
+    if let Some(timeout_cap) = timeout_cap {
+        budget.timeout = budget
+            .timeout
+            .min(timeout_cap.saturating_sub(start_time.elapsed()));
+    }
+    let mut tele = InstGenTelemetry {
+        attempted: false,
+        route,
+        rounds: 0,
+        generated_instances: 0,
+        sat_vars: 0,
+        sat_clauses: 0,
+        elapsed_ms: 0,
+        fallback_reason: None,
+        proof_extracted: false,
+        return_reason: None,
+        est_instances: est,
+        budget_ms: budget.timeout.as_millis() as u64,
+        budget_rounds: budget.max_rounds,
+        budget_instances: budget.max_instances,
+    };
+
+    if !is_pure_relational_epr(clauses) {
+        tele.fallback_reason = Some("unsupported_epr_profile");
+        tele.return_reason = Some("none");
+        return (None, tele);
+    }
+
+    tele.attempted = true;
+    if budget.timeout.is_zero() {
+        tele.fallback_reason = Some("timeout");
+        tele.return_reason = Some("fallback");
+        return (None, tele);
+    }
+    // Enforce the cap before constructing the SAT solver or copying the input
+    // into the active InstGen set. The cap includes the input clauses, so a
+    // large ground EPR corpus cannot bypass the adaptive fail-fast tier.
+    if clauses.len() > budget.max_instances {
+        tele.fallback_reason = Some("max_instances_exceeded");
+        tele.return_reason = Some("fallback");
+        return (None, tele);
+    }
+    let trace = std::env::var("TRACE_INSTGEN").is_ok();
+
+    if trace {
+        eprintln!(
+            "[InstGen] Starting InstGen on {} pure relational EPR clauses",
+            clauses.len()
+        );
+    }
+
+    // Canonical dummy constant symbol for variable abstraction (⊥)
+    let mut symbols_local = symbols.clone();
+    let bot_sym = symbols_local.intern("$bot");
+
+    let mut abs = PropAbstraction::new();
+    let mut solver = Solver::new();
+
+    let mut all_clauses: Vec<Clause> = clauses.to_vec();
+    let has_variables = clauses.iter().any(|clause| !clause.free_vars().is_empty());
+    let mut seen_clauses: HashSet<Vec<Literal>> = HashSet::default();
+    for c in clauses {
+        seen_clauses.insert(canonicalize_clause(&c.literals));
+    }
+
+    // Propositional representation tracking:
+    // `prop_clauses` stores each active clause's propositional abstraction.
+    // `prop_to_clause_idx` maps propositional clause index to `all_clauses` index.
+    let mut prop_clauses: Vec<PC> = Vec::new();
+    let mut prop_to_clause_idx: Vec<usize> = Vec::new();
+
+    // Initial abstraction of all input clauses
+    for (idx, c) in all_clauses.iter().enumerate() {
+        if let Some(pc) = abs.abstract_clause(c, bot_sym) {
+            solver.add_clause(&pc);
+            prop_to_clause_idx.push(idx);
+            prop_clauses.push(pc);
+        }
+    }
+
+    let mut round: usize = 0;
+
+    while round < budget.max_rounds && start_time.elapsed() < budget.timeout {
+        round += 1;
+        tele.rounds = round;
+        tele.sat_vars = abs.atom_to_var.len();
+        tele.sat_clauses = prop_clauses.len();
+        tele.generated_instances = all_clauses.len().saturating_sub(clauses.len());
+
+        // CaDiCaL's solve call can dominate the InstGen pre-pass on large EPR
+        // inputs. Use the pre-pass deadline inside CDCL as well as between
+        // rounds; checking `start_time` only at the loop boundary lets one
+        // solve run far beyond the selected per-problem budget.
+        let (solve_result, entered_solver) =
+            solver.solve_until_with_entry(start_time + budget.timeout);
+        match solve_result {
+            SolveResult::Unsat => {
+                if trace {
+                    eprintln!(
+                        "[InstGen] CaDiCaL returned UNSAT after {} rounds! Extracting proof...",
+                        round
+                    );
+                }
+
+                // 1. Try fast propositional BFS proof extraction
+                if let Some((bfs_pcs, bfs_sources, empty_idx)) = prop_bfs_refute(&prop_clauses) {
+                    let mut visited: HashSet<usize> = HashSet::default();
+                    let mut order: Vec<usize> = Vec::new();
+                    dfs_topo(empty_idx, &bfs_sources, &mut visited, &mut order);
+
+                    let mut prop_idx_to_fof_id: HashMap<usize, ClauseId> = HashMap::default();
+                    let mut fof_proof: Vec<Clause> =
+                        Vec::with_capacity(provenance.len() + all_clauses.len() + order.len());
+
+                    fof_proof.extend(provenance.iter().cloned());
+
+                    let mut empty_id = None;
+
+                    for &idx in &order {
+                        match &bfs_sources[idx] {
+                            PSrc::Input(p_idx) => {
+                                let orig_clause = &all_clauses[prop_to_clause_idx[*p_idx]];
+                                let has_vars = !orig_clause.free_vars().is_empty();
+
+                                if has_vars {
+                                    // Ground the clause with bot_sym
+                                    let ground_lits: Vec<Literal> = orig_clause
+                                        .literals
+                                        .iter()
+                                        .map(|lit| {
+                                            let Atom::Pred(sym, args) = &lit.atom else {
+                                                unreachable!()
+                                            };
+                                            let new_args = args
+                                                .iter()
+                                                .map(|t| match t {
+                                                    Term::Var(_) => Term::constant(bot_sym),
+                                                    Term::App(s, a) => Term::app(*s, a.clone()),
+                                                })
+                                                .collect();
+                                            Literal {
+                                                positive: lit.positive,
+                                                atom: Atom::Pred(*sym, new_args),
+                                            }
+                                        })
+                                        .collect();
+
+                                    let g_id = id_gen.next();
+                                    fof_proof.push(Clause::new(
+                                        g_id,
+                                        ground_lits,
+                                        ClauseSource::Inference {
+                                            rule: "instantiation",
+                                            parents: vec![orig_clause.id].into(),
+                                        },
+                                    ));
+                                    prop_idx_to_fof_id.insert(idx, g_id);
+                                } else {
+                                    prop_idx_to_fof_id.insert(idx, orig_clause.id);
+                                }
+                            }
+                            PSrc::Resolvent { left, right } => {
+                                let fof_p1 = prop_idx_to_fof_id[left];
+                                let fof_p2 = prop_idx_to_fof_id[right];
+
+                                let pc = &bfs_pcs[idx];
+                                let mut fof_lits: Vec<Literal> = Vec::with_capacity(pc.len());
+                                for &lit in pc {
+                                    let p_atom = &abs.var_to_atom[lit.unsigned_abs() as usize - 1];
+                                    let args: Vec<Term> =
+                                        p_atom.args.iter().map(|&c| Term::constant(c)).collect();
+                                    fof_lits.push(Literal {
+                                        positive: lit > 0,
+                                        atom: Atom::Pred(p_atom.pred, args),
+                                    });
+                                }
+
+                                let res_id = id_gen.next();
+                                fof_proof.push(Clause::new(
+                                    res_id,
+                                    fof_lits.clone(),
+                                    ClauseSource::Inference {
+                                        rule: "resolution",
+                                        parents: vec![fof_p1, fof_p2].into(),
+                                    },
+                                ));
+                                prop_idx_to_fof_id.insert(idx, res_id);
+                                if fof_lits.is_empty() {
+                                    empty_id = Some(res_id);
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(eid) = empty_id {
+                        let mut clause_store: HashMap<ClauseId, Clause> = HashMap::default();
+                        for c in &fof_proof {
+                            clause_store.insert(c.id, c.clone());
+                        }
+                        for c in provenance {
+                            clause_store.insert(c.id, c.clone());
+                        }
+                        for c in &all_clauses {
+                            clause_store.insert(c.id, c.clone());
+                        }
+
+                        let mut full_proof_ids: HashSet<ClauseId> = HashSet::default();
+                        let mut queue: Vec<Clause> = fof_proof.clone();
+                        let mut complete_proof: Vec<Clause> = Vec::new();
+
+                        while let Some(c) = queue.pop() {
+                            if full_proof_ids.insert(c.id) {
+                                if let ClauseSource::Inference { parents, .. } = &c.source {
+                                    for &p in parents.iter() {
+                                        if !full_proof_ids.contains(&p) {
+                                            queue.extend(clause_store.get(&p).cloned());
+                                        }
+                                    }
+                                }
+                                complete_proof.push(c);
+                            }
+                        }
+
+                        let tstp = format_tstp(&complete_proof, &symbols_local);
+                        tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                        tele.proof_extracted = true;
+                        tele.return_reason = Some("refutation");
+                        return (Some(SearchResult::Refutation(eid, tstp)), tele);
+                    }
+                }
+
+                // 2. Fallback: run fast given-clause search on the augmented clause set
+                if trace {
+                    eprintln!("[InstGen] Running given-clause proof extraction fallback...");
+                }
+                let fallback_time = budget
+                    .timeout
+                    .saturating_sub(start_time.elapsed())
+                    .min(Duration::from_secs(2));
+                if fallback_time.is_zero() {
+                    tele.fallback_reason = Some("timeout");
+                    tele.return_reason = Some("fallback");
+                    return (None, tele);
+                }
+                let mut state = crate::state::SearchState::new_with_ml(
+                    all_clauses.clone(),
+                    provenance.to_vec(),
+                    id_gen.clone(),
+                    std::sync::Arc::new(SymbolConfig::default()),
+                    std::sync::Arc::new(symbols_local.clone()),
+                    false,
+                    None,
+                    false,
+                    crate::ClauseWeightFn::Standard,
+                );
+                let config = SearchConfig {
+                    time_limit: fallback_time,
+                    ordering: crate::TermOrdering::KBO,
+                    literal_selection: crate::LiteralSelection::AllNegative,
+                    selection: crate::SelectionStrategy::SmallestFirst,
+                    use_avatar: false,
+                    ..SearchConfig::default()
+                };
+                let res = crate::given_clause::search(&mut state, &config);
+                tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                if matches!(res, SearchResult::Refutation(..)) {
+                    tele.proof_extracted = true;
+                    tele.return_reason = Some("refutation");
+                    return (Some(res), tele);
+                }
+
+                tele.fallback_reason = Some("proof_extraction_failed");
+                tele.return_reason = Some("fallback");
+                return (None, tele);
+            }
+
+            SolveResult::Sat => {
+                // Find model-satisfied literals across all clauses
+                let mut pos_by_sym: HashMap<SymbolId, Vec<(usize, usize)>> = HashMap::default();
+                let mut neg_by_sym: HashMap<SymbolId, Vec<(usize, usize)>> = HashMap::default();
+
+                for (c_idx, c) in all_clauses.iter().enumerate() {
+                    if start_time.elapsed() >= budget.timeout {
+                        tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                        tele.fallback_reason = Some("timeout");
+                        tele.return_reason = Some("fallback");
+                        return (None, tele);
+                    }
+                    for (l_idx, lit) in c.literals.iter().enumerate() {
+                        let Atom::Pred(sym, args) = &lit.atom else {
+                            continue;
+                        };
+                        let key = GroundAtom {
+                            pred: *sym,
+                            args: args
+                                .iter()
+                                .map(|a| PropAbstraction::abstract_term(a, bot_sym))
+                                .collect(),
+                        };
+                        if let Some(&var) = abs.atom_to_var.get(&key) {
+                            let is_satisfied = if lit.positive {
+                                solver.value(var) == Some(true)
+                            } else {
+                                solver.value(var) == Some(false)
+                            };
+                            if is_satisfied {
+                                if lit.positive {
+                                    pos_by_sym.entry(*sym).or_default().push((c_idx, l_idx));
+                                } else {
+                                    neg_by_sym.entry(*sym).or_default().push((c_idx, l_idx));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Find conflicting complementary literal pairs and compute MGUs
+                let mut new_instances: Vec<Clause> = Vec::new();
+
+                for (sym, pos_list) in &pos_by_sym {
+                    if start_time.elapsed() >= budget.timeout {
+                        tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                        tele.fallback_reason = Some("timeout");
+                        tele.return_reason = Some("fallback");
+                        return (None, tele);
+                    }
+                    let Some(neg_list) = neg_by_sym.get(sym) else {
+                        continue;
+                    };
+                    for &(c1_idx, l1_idx) in pos_list {
+                        if start_time.elapsed() >= budget.timeout {
+                            tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                            tele.fallback_reason = Some("timeout");
+                            tele.return_reason = Some("fallback");
+                            return (None, tele);
+                        }
+                        let c1 = &all_clauses[c1_idx];
+                        for &(c2_idx, l2_idx) in neg_list {
+                            if start_time.elapsed() >= budget.timeout {
+                                tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                                tele.fallback_reason = Some("timeout");
+                                tele.return_reason = Some("fallback");
+                                return (None, tele);
+                            }
+                            let c2 = &all_clauses[c2_idx];
+                            if c1_idx == c2_idx && l1_idx == l2_idx {
+                                continue;
+                            }
+
+                            let offset = max_var(c1);
+                            let c2_renamed = if offset > 0 {
+                                rename_clause(c2, offset)
+                            } else {
+                                c2.clone()
+                            };
+
+                            let lit1 = &c1.literals[l1_idx];
+                            let lit2 = &c2_renamed.literals[l2_idx];
+
+                            let Atom::Pred(p1, args1) = &lit1.atom else {
+                                continue;
+                            };
+                            let Atom::Pred(p2, args2) = &lit2.atom else {
+                                continue;
+                            };
+                            debug_assert_eq!(p1, p2);
+
+                            let t1 = Term::app(*p1, args1.clone());
+                            let t2 = Term::app(*p2, args2.clone());
+
+                            if let Ok(mgu) = mrs_unify::unify(&t1, &t2) {
+                                // Instance of C1
+                                let inst1_lits: Vec<Literal> =
+                                    c1.literals.iter().map(|l| mgu.apply_literal(l)).collect();
+                                if !is_tautology(&inst1_lits) {
+                                    let canon1 = canonicalize_clause(&inst1_lits);
+                                    if seen_clauses.insert(canon1.clone()) {
+                                        new_instances.push(Clause::new(
+                                            id_gen.next(),
+                                            canon1,
+                                            ClauseSource::Inference {
+                                                rule: "instantiation",
+                                                parents: vec![c1.id].into(),
+                                            },
+                                        ));
+                                    }
+                                }
+
+                                // Instance of C2
+                                let inst2_lits: Vec<Literal> = c2_renamed
+                                    .literals
+                                    .iter()
+                                    .map(|l| mgu.apply_literal(l))
+                                    .collect();
+                                if !is_tautology(&inst2_lits) {
+                                    let canon2 = canonicalize_clause(&inst2_lits);
+                                    if seen_clauses.insert(canon2.clone()) {
+                                        new_instances.push(Clause::new(
+                                            id_gen.next(),
+                                            canon2,
+                                            ClauseSource::Inference {
+                                                rule: "instantiation",
+                                                parents: vec![c2.id].into(),
+                                            },
+                                        ));
+                                    }
+                                }
+
+                                if all_clauses.len() + new_instances.len() > budget.max_instances {
+                                    break;
+                                }
+                            }
+                        }
+                        if all_clauses.len() + new_instances.len() > budget.max_instances {
+                            break;
+                        }
+                    }
+                }
+
+                if new_instances.is_empty() {
+                    tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                    // The abstraction maps every variable position to one
+                    // placeholder atom. That model is exact for a ground
+                    // clause set, but it is not a first-order model for
+                    // universally quantified clauses: distinct constants and
+                    // variable positions may have been collapsed together.
+                    // Do not turn that incomplete check into a satisfiability
+                    // claim; a refutation remains sound, while the caller
+                    // reports GaveUp for the unresolved variable-bearing case.
+                    if has_variables {
+                        tele.fallback_reason = Some("sat_variables_model_gaveup");
+                        tele.return_reason = Some("gaveup_variable_model");
+                        return (Some(SearchResult::GaveUp), tele);
+                    }
+                    if trace {
+                        eprintln!("[InstGen] Round {}: ground SAT model verified", round);
+                    }
+                    tele.return_reason = Some("saturated_ground");
+                    return (
+                        Some(SearchResult::Saturated(crate::CompletenessWitness::ground())),
+                        tele,
+                    );
+                }
+
+                if all_clauses.len() + new_instances.len() > budget.max_instances {
+                    tele.fallback_reason = Some("max_instances_exceeded");
+                    tele.return_reason = Some("fallback");
+                    break;
+                }
+
+                if trace {
+                    eprintln!(
+                        "[InstGen] Round {}: generated {} new instances (total: {})",
+                        round,
+                        new_instances.len(),
+                        all_clauses.len() + new_instances.len()
+                    );
+                }
+
+                // Add newly generated instances into solver and active set
+                for inst in new_instances {
+                    let idx = all_clauses.len();
+                    if let Some(pc) = abs.abstract_clause(&inst, bot_sym) {
+                        solver.add_clause(&pc);
+                        prop_to_clause_idx.push(idx);
+                        prop_clauses.push(pc);
+                    }
+                    all_clauses.push(inst);
+                }
+            }
+
+            SolveResult::Unknown => {
+                tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                tele.rounds = round;
+                tele.fallback_reason = Some(if entered_solver {
+                    "sat_solver_unknown"
+                } else {
+                    "timeout"
+                });
+                tele.return_reason = Some("fallback");
+                return (None, tele);
+            }
+        }
+    }
+
+    tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+    if tele.fallback_reason.is_none() {
+        if round >= budget.max_rounds {
+            tele.fallback_reason = Some("max_rounds_reached");
+        } else if start_time.elapsed() >= budget.timeout {
+            tele.fallback_reason = Some("timeout");
+        } else {
+            tele.fallback_reason = Some("exhausted_without_model");
+        }
+    }
+    if tele.return_reason.is_none() {
+        tele.return_reason = Some("fallback");
+    }
+    (None, tele)
+}
+
+/// Tries to decide an EPR problem using lazy SAT-guided InstGen.
+///
+/// Returns `Some(SearchResult::Refutation(..))` if unsatisfiable,
+/// `Some(SearchResult::Saturated(_))` if the ground SAT model is conclusive,
+/// `Some(SearchResult::GaveUp)` if the abstraction is inconclusive for a
+/// variable-bearing clause set,
+/// or `None` if the budget/heuristics expire without a conclusive result.
+pub fn try_instgen_epr(
+    clauses: &[Clause],
+    provenance: &[Clause],
+    id_gen: &mut ClauseIdGen,
+    symbols: &SymbolTable,
+) -> Option<SearchResult> {
+    try_instgen_epr_with_telemetry(clauses, provenance, id_gen, symbols).0
 }
 
 #[cfg(test)]
@@ -226,6 +1239,29 @@ mod tests {
                 role: "axiom".into(),
             },
         )
+    }
+
+    #[test]
+    fn caller_timeout_cap_bounds_instgen_and_zero_cap_fails_closed() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let mut id_gen = ClauseIdGen::new();
+        let clause = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::var(0)]))],
+            "p",
+        );
+        let (result, telemetry) = try_instgen_epr_with_telemetry_and_timeout(
+            &[clause],
+            &[],
+            &mut id_gen,
+            &symbols,
+            Some(Duration::ZERO),
+        );
+        assert!(result.is_none());
+        assert_eq!(telemetry.budget_ms, 0);
+        assert_eq!(telemetry.fallback_reason, Some("timeout"));
+        assert_eq!(telemetry.return_reason, Some("fallback"));
     }
 
     #[test]
@@ -360,5 +1396,468 @@ mod tests {
             "EPR refutation should be found, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn instgen_propositional_unsat() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "c2",
+        );
+
+        let res = try_instgen_epr(&[c1, c2], &[], &mut id_gen, &syms);
+        assert!(
+            matches!(res, Some(SearchResult::Refutation(..))),
+            "Expected Refutation, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn instgen_variable_unsat() {
+        // C1: p(X), C2: ~p(a) -> Refutation via X -> a
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::var(0)]))],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "c2",
+        );
+
+        let res = try_instgen_epr(&[c1, c2], &[], &mut id_gen, &syms);
+        assert!(
+            matches!(res, Some(SearchResult::Refutation(..))),
+            "Expected Refutation, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn instgen_transitivity_unsat() {
+        // C1: p(a)
+        // C2: ~p(X) | q(X)
+        // C3: ~q(a)
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::neg(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(q, vec![Term::var(0)])),
+            ],
+            "c2",
+        );
+        let c3 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(q, vec![Term::constant(a)]))],
+            "c3",
+        );
+
+        let res = try_instgen_epr(&[c1, c2, c3], &[], &mut id_gen, &syms);
+        assert!(
+            matches!(res, Some(SearchResult::Refutation(..))),
+            "Expected Refutation, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn instgen_satisfiable_finite_model() {
+        // C1: p(X, X)
+        // C2: ~p(a, b) where a != b
+        // Unification fails, but the variable-bearing abstraction is not a
+        // sufficient model certificate. InstGen must fail closed here.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::var(0), Term::var(0)],
+            ))],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(
+                p,
+                vec![Term::constant(a), Term::constant(b)],
+            ))],
+            "c2",
+        );
+
+        let res = try_instgen_epr(&[c1, c2], &[], &mut id_gen, &syms);
+        assert!(
+            matches!(res, Some(SearchResult::GaveUp)),
+            "Expected GaveUp for an incomplete variable-bearing model check, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn instgen_ground_satisfiable_model() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(q, vec![Term::constant(a)]))],
+            "c2",
+        );
+
+        let res = try_instgen_epr(&[c1, c2], &[], &mut id_gen, &syms);
+        assert!(
+            matches!(res, Some(SearchResult::Saturated(_))),
+            "Expected Saturated for a ground satisfiable set, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn instgen_satisfiable_disjunction() {
+        // C1: p(X) | q(X)
+        // C2: ~p(a)
+        // C3: ~q(b)
+        // where a != b. The abstraction is not a complete first-order model
+        // certificate while variables remain, so this path must fail closed.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let q = syms.intern("q");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(q, vec![Term::var(0)])),
+            ],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "c2",
+        );
+        let c3 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(q, vec![Term::constant(b)]))],
+            "c3",
+        );
+
+        let res = try_instgen_epr(&[c1, c2, c3], &[], &mut id_gen, &syms);
+        assert!(
+            matches!(res, Some(SearchResult::GaveUp)),
+            "Expected GaveUp for an incomplete variable-bearing model check, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn instgen_does_not_drop_variable_tautology_instances() {
+        // C1: p(X) | ~p(Y) is not a first-order tautology: with p(a) true
+        // and p(b) false, its instance p(b) | ~p(a) is false.
+        // Its one-constant abstraction is nevertheless propositional-tautologous.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::neg(Atom::pred(p, vec![Term::var(1)])),
+            ],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "c2",
+        );
+        let c3 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(b)]))],
+            "c3",
+        );
+
+        let res = try_instgen_epr(&[c1, c2, c3], &[], &mut id_gen, &syms);
+        assert!(
+            matches!(res, Some(SearchResult::Refutation(..))),
+            "variable-tautology clauses must not make an unsatisfiable EPR set look satisfiable: {res:?}"
+        );
+    }
+
+    #[test]
+    fn instgen_tstp_proof_inspection() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::var(0)]))],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "c2",
+        );
+
+        let res = try_instgen_epr(&[c1, c2], &[], &mut id_gen, &syms);
+        let Some(SearchResult::Refutation(_, tstp)) = res else {
+            panic!("Expected refutation");
+        };
+        assert!(
+            tstp.contains("$false") || tstp.contains("status(thm)"),
+            "Proof should contain empty clause derivation: {}",
+            tstp
+        );
+    }
+
+    #[test]
+    fn instgen_telemetry_records_execution_and_profiles() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let f = syms.intern("f");
+        let mut id_gen = ClauseIdGen::new();
+
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::var(0)]))],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "c2",
+        );
+
+        assert_eq!(
+            classify_epr_profile(&[c1.clone(), c2.clone()]),
+            "pure_relational_epr"
+        );
+        let (res, tele) =
+            try_instgen_epr_with_telemetry(&[c1.clone(), c2.clone()], &[], &mut id_gen, &syms);
+        assert!(matches!(res, Some(SearchResult::Refutation(..))));
+        assert!(tele.attempted);
+        assert_eq!(tele.route, "pure_relational_epr");
+        assert!(tele.proof_extracted);
+        assert!(tele.rounds >= 1);
+        assert!(tele.sat_clauses >= 2);
+
+        // Non-EPR profile test
+        let c_non_epr = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::var(0)])],
+            ))],
+            "c_non_epr",
+        );
+        assert_eq!(classify_epr_profile(&[c_non_epr.clone()]), "non_epr");
+        let (res_non_epr, tele_non_epr) =
+            try_instgen_epr_with_telemetry(&[c_non_epr], &[], &mut id_gen, &syms);
+        assert!(res_non_epr.is_none());
+        assert!(!tele_non_epr.attempted);
+        assert_eq!(tele_non_epr.route, "non_epr");
+        assert_eq!(
+            tele_non_epr.fallback_reason,
+            Some("unsupported_epr_profile")
+        );
+        assert_eq!(tele_non_epr.return_reason, Some("none"));
+    }
+
+    #[test]
+    fn instgen_classifies_equality_and_ground_routes() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        // Ground route: all clauses ground, no variables. Ground inputs are a
+        // subset of the pure-relational fragment, so InstGen attempts them.
+        let g1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            "g1",
+        );
+        let g2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "g2",
+        );
+        assert_eq!(classify_epr_profile(&[g1.clone(), g2.clone()]), "ground");
+        let (res_ground, tele_ground) =
+            try_instgen_epr_with_telemetry(&[g1, g2], &[], &mut id_gen, &syms);
+        assert_eq!(tele_ground.route, "ground");
+        assert!(tele_ground.attempted);
+        assert!(matches!(res_ground, Some(SearchResult::Refutation(..))));
+        assert_eq!(tele_ground.return_reason, Some("refutation"));
+
+        // EPR-with-equality route: EPR terms but an equality atom.
+        let e1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(Term::var(0), Term::constant(a)))],
+            "e1",
+        );
+        assert_eq!(classify_epr_profile(&[e1.clone()]), "epr_equality");
+        let (res_eq, tele_eq) = try_instgen_epr_with_telemetry(&[e1], &[], &mut id_gen, &syms);
+        assert_eq!(tele_eq.route, "epr_equality");
+        assert!(!tele_eq.attempted);
+        assert_eq!(tele_eq.return_reason, Some("none"));
+        assert!(res_eq.is_none());
+    }
+
+    #[test]
+    fn instgen_return_reason_tracks_outcome() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+
+        // Refutation path.
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::var(0)]))],
+            "c1",
+        );
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "c2",
+        );
+        let (res, tele) = try_instgen_epr_with_telemetry(&[c1, c2], &[], &mut id_gen, &syms);
+        assert!(matches!(res, Some(SearchResult::Refutation(..))));
+        assert_eq!(tele.return_reason, Some("refutation"));
+
+        // Fail-closed variable-bearing model path.
+        let v1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::var(0), Term::var(0)],
+            ))],
+            "v1",
+        );
+        let v2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(
+                p,
+                vec![Term::constant(a), Term::constant(b)],
+            ))],
+            "v2",
+        );
+        let (res_v, tele_v) = try_instgen_epr_with_telemetry(&[v1, v2], &[], &mut id_gen, &syms);
+        assert!(matches!(res_v, Some(SearchResult::GaveUp)));
+        assert_eq!(tele_v.return_reason, Some("gaveup_variable_model"));
+    }
+
+    #[test]
+    fn adaptive_budget_tiers_by_estimated_size() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let mut id_gen = ClauseIdGen::new();
+
+        // Small problem: full baseline budget.
+        let small = vec![input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::var(0)]))],
+            "small",
+        )];
+        let (budget_small, est_small) = adaptive_instgen_budget(&small);
+        assert!(est_small <= 10_000);
+        assert_eq!(budget_small.max_rounds, MAX_ROUNDS);
+        assert_eq!(budget_small.max_instances, MAX_TOTAL_INSTANCES);
+        assert_eq!(budget_small.timeout, DEFAULT_INSTGEN_TIMEOUT);
+
+        // Huge problem: many constants x several variables -> fail-fast tier.
+        // 30 constants over 4 distinct variables: 30^4 = 810_000 > 100_000.
+        // The constants must actually occur in the clause set, so seed one
+        // ground unit per constant.
+        let mut big_syms = SymbolTable::new();
+        let bp = big_syms.intern("p");
+        let mut big_consts = Vec::new();
+        for i in 0..30 {
+            big_consts.push(big_syms.intern(&format!("c{i}")));
+        }
+        let mut big_id_gen = ClauseIdGen::new();
+        let mut big_clauses = Vec::new();
+        for (i, &c) in big_consts.iter().enumerate() {
+            big_clauses.push(Clause::new(
+                big_id_gen.next(),
+                vec![Literal::pos(Atom::pred(bp, vec![Term::constant(c)]))],
+                ClauseSource::Input {
+                    name: format!("seed{i}").into(),
+                    role: "axiom".into(),
+                },
+            ));
+        }
+        big_clauses.push(Clause::new(
+            big_id_gen.next(),
+            vec![Literal::pos(Atom::pred(
+                bp,
+                vec![Term::var(0), Term::var(1), Term::var(2), Term::var(3)],
+            ))],
+            ClauseSource::Input {
+                name: "big".into(),
+                role: "axiom".into(),
+            },
+        ));
+        let (budget_big, est_big) = adaptive_instgen_budget(&big_clauses);
+        assert!(est_big > 100_000);
+        assert_eq!(budget_big.max_rounds, 80);
+        assert_eq!(budget_big.max_instances, 20_000);
+        assert_eq!(budget_big.timeout, Duration::from_millis(750));
+
+        // Explicit overrides win for experiments.
+        let (budget_override, _) =
+            adaptive_instgen_budget_with_overrides(&small, None, Some(7), None);
+        assert_eq!(budget_override.max_rounds, 7);
     }
 }

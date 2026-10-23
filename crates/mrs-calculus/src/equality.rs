@@ -6,6 +6,7 @@
 
 use mrs_core::Atom;
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
+use mrs_core::witness::{ProofNodeId, ProofWitness};
 use mrs_unify::unify;
 
 use crate::ordering::{TermComparison, TermOrdering};
@@ -43,7 +44,7 @@ pub fn equality_resolve(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause
             .map(|(_, lit)| sigma.apply_literal(lit))
             .collect();
 
-        results.push(Clause::new_avatar(
+        let mut derived = Clause::new_avatar(
             id_gen.next(),
             new_lits,
             ClauseSource::Inference {
@@ -51,10 +52,109 @@ pub fn equality_resolve(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause
                 parents: vec![clause.id].into(),
             },
             clause.avatar.clone(),
-        ));
+        );
+        derived.witness = Some(ProofWitness::EqualityResolution {
+            parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+            lit_idx: i,
+            unifier: Some(sigma),
+        });
+        results.push(derived);
     }
 
     results
+}
+
+/// Destructive Equality Resolution (DER / eager variable elimination).
+///
+/// Simplifies a clause by iteratively eliminating negative equality literals of the form:
+/// 1. `s ≠ s` (trivial inequality reflexivity resolution), and
+/// 2. `X ≠ t` or `t ≠ X` where `X` is a variable not occurring in `t` (by applying `{X ↦ t}`).
+///
+/// Returns `Some((final_clause, intermediate_steps))` if at least one simplification
+/// occurred, or `None` if no DER step applied.
+pub fn destructive_equality_resolve(
+    clause: &Clause,
+    id_gen: &mut ClauseIdGen,
+) -> Option<(Clause, Vec<Clause>)> {
+    let mut current = clause.clone();
+    let mut steps = Vec::new();
+    loop {
+        let mut simplified_step = false;
+        for (i, lit) in current.literals.iter().enumerate() {
+            if lit.is_positive() {
+                continue;
+            }
+            let (s, t) = match &lit.atom {
+                Atom::Eq(s, t) => (s, t),
+                _ => continue,
+            };
+            if s == t {
+                let new_lits: Vec<Literal> = current
+                    .literals
+                    .iter()
+                    .enumerate()
+                    .filter(|&(k, _)| k != i)
+                    .map(|(_, l)| l.clone())
+                    .collect();
+                let next = Clause::new_avatar(
+                    id_gen.next(),
+                    new_lits,
+                    ClauseSource::Inference {
+                        rule: "equality_resolution",
+                        parents: vec![current.id].into(),
+                    },
+                    current.avatar.clone(),
+                );
+                steps.push(next.clone());
+                current = next;
+                simplified_step = true;
+                break;
+            }
+            let subst = match (s, t) {
+                (mrs_core::Term::Var(x), other) if !other.contains_var(*x) => {
+                    let mut s_map = mrs_core::subst::Substitution::new();
+                    s_map.bind(*x, other.clone());
+                    Some(s_map)
+                }
+                (other, mrs_core::Term::Var(x)) if !other.contains_var(*x) => {
+                    let mut s_map = mrs_core::subst::Substitution::new();
+                    s_map.bind(*x, other.clone());
+                    Some(s_map)
+                }
+                _ => None,
+            };
+            if let Some(sigma) = subst {
+                let new_lits: Vec<Literal> = current
+                    .literals
+                    .iter()
+                    .enumerate()
+                    .filter(|&(k, _)| k != i)
+                    .map(|(_, l)| sigma.apply_literal(l))
+                    .collect();
+                let next = Clause::new_avatar(
+                    id_gen.next(),
+                    new_lits,
+                    ClauseSource::Inference {
+                        rule: "equality_resolution",
+                        parents: vec![current.id].into(),
+                    },
+                    current.avatar.clone(),
+                );
+                steps.push(next.clone());
+                current = next;
+                simplified_step = true;
+                break;
+            }
+        }
+        if !simplified_step {
+            break;
+        }
+    }
+    if steps.is_empty() {
+        None
+    } else {
+        Some((current, steps))
+    }
 }
 
 /// Equality Factoring: from `s = t ∨ s' = t' ∨ C`,
@@ -128,7 +228,7 @@ pub fn equality_factor(
                     }
                 }
 
-                results.push(Clause::new_avatar(
+                let mut derived = Clause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
@@ -136,7 +236,14 @@ pub fn equality_factor(
                         parents: vec![clause.id].into(),
                     },
                     clause.avatar.clone(),
-                ));
+                );
+                derived.witness = Some(ProofWitness::EqualityFactoring {
+                    parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                    equality_lit_idx: i,
+                    other_lit_idx: j,
+                    unifier: Some(sigma),
+                });
+                results.push(derived);
             }
         }
     }
@@ -151,9 +258,26 @@ pub fn equality_resolve_id(
     bank: &mut TermBank,
     id_gen: &mut ClauseIdGen,
 ) -> Vec<IdClause> {
+    equality_resolve_id_until(clause, bank, id_gen, None)
+}
+
+/// Equality resolution with an optional deadline.
+///
+/// Returns as soon as the instant passes, possibly with a partial result set.
+/// Callers must treat a return after the deadline as "search over budget":
+/// the unbounded variant [`equality_resolve_id`] passes `None`.
+pub fn equality_resolve_id_until(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    id_gen: &mut ClauseIdGen,
+    deadline: Option<std::time::Instant>,
+) -> Vec<IdClause> {
     let mut results = Vec::new();
 
     for (i, lit) in clause.literals.iter().enumerate() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return results;
+        }
         if lit.positive {
             continue;
         }
@@ -171,7 +295,7 @@ pub fn equality_resolve_id(
                 .map(|(_, lit)| sigma.apply_literal(lit, bank))
                 .collect();
 
-            results.push(IdClause::new_avatar(
+            let mut derived = IdClause::new_avatar(
                 id_gen.next(),
                 new_lits,
                 ClauseSource::Inference {
@@ -179,7 +303,13 @@ pub fn equality_resolve_id(
                     parents: vec![clause.id].into(),
                 },
                 clause.avatar.clone(),
-            ));
+            );
+            derived.witness = Some(ProofWitness::EqualityResolution {
+                parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                lit_idx: i,
+                unifier: None,
+            });
+            results.push(derived);
         }
     }
 
@@ -192,9 +322,27 @@ pub fn equality_factor_id(
     ordering: &TermOrdering,
     id_gen: &mut ClauseIdGen,
 ) -> Vec<IdClause> {
+    equality_factor_id_until(clause, bank, ordering, id_gen, None)
+}
+
+/// Equality factoring with an optional deadline.
+///
+/// Returns as soon as the instant passes, possibly with a partial result set.
+/// Callers must treat a return after the deadline as "search over budget":
+/// the unbounded variant [`equality_factor_id`] passes `None`.
+pub fn equality_factor_id_until(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    ordering: &TermOrdering,
+    id_gen: &mut ClauseIdGen,
+    deadline: Option<std::time::Instant>,
+) -> Vec<IdClause> {
     let mut results = Vec::new();
 
     for (i, lit1) in clause.literals.iter().enumerate() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return results;
+        }
         if !lit1.positive {
             continue;
         }
@@ -204,6 +352,9 @@ pub fn equality_factor_id(
         };
 
         for (j, lit2) in clause.literals.iter().enumerate() {
+            if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                return results;
+            }
             if j <= i || !lit2.positive {
                 continue;
             }
@@ -222,6 +373,12 @@ pub fn equality_factor_id(
                     let l1s = sigma.apply_term(left1, bank);
                     let r1s = sigma.apply_term(right1, bank);
                     let comp = ordering.compare_id(l1s, r1s, bank);
+                    // An exhausted LPO comparison is only a placeholder
+                    // `Incomparable`, not an ordering decision. Do not derive
+                    // an equality-factoring inference from it.
+                    if crate::ordering::lpo_budget_expired() {
+                        return results;
+                    }
                     if comp == TermComparison::Less || comp == TermComparison::Equal {
                         continue;
                     }
@@ -244,7 +401,7 @@ pub fn equality_factor_id(
                         }
                     }
 
-                    results.push(IdClause::new_avatar(
+                    let mut derived = IdClause::new_avatar(
                         id_gen.next(),
                         new_lits,
                         ClauseSource::Inference {
@@ -252,7 +409,14 @@ pub fn equality_factor_id(
                             parents: vec![clause.id].into(),
                         },
                         clause.avatar.clone(),
-                    ));
+                    );
+                    derived.witness = Some(ProofWitness::EqualityFactoring {
+                        parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                        equality_lit_idx: i,
+                        other_lit_idx: j,
+                        unifier: None,
+                    });
+                    results.push(derived);
                 }
             }
         }
@@ -438,5 +602,138 @@ mod tests {
                 .any(|lit| lit.is_negative() && matches!(&lit.atom, Atom::Eq(_, _)))
         });
         assert!(has_diseq, "should contain a disequality literal");
+    }
+
+    #[test]
+    fn destructive_equality_resolution_variable_elimination() {
+        // Clause: X != f(a) | p(X)
+        // DER eliminates X != f(a) by substituting X -> f(a), yielding p(f(a))
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let p = syms.intern("p");
+        let x = 0;
+        let mut id_gen = ClauseIdGen::new();
+
+        let fa = Term::app(f, vec![Term::constant(a)]);
+        let clause = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::neg(Atom::eq(Term::Var(x), fa.clone())),
+                Literal::pos(Atom::pred(p, vec![Term::Var(x)])),
+            ],
+            "c1",
+        );
+
+        let res = destructive_equality_resolve(&clause, &mut id_gen);
+        assert!(res.is_some());
+        let (final_clause, steps) = res.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(final_clause.literals.len(), 1);
+        assert_eq!(
+            final_clause.literals[0],
+            Literal::pos(Atom::pred(p, vec![fa]))
+        );
+    }
+
+    #[test]
+    fn destructive_equality_resolution_trivial_inequality() {
+        // Clause: f(X) != f(X) | q(X)
+        // DER eliminates trivial inequality, yielding q(X)
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let q = syms.intern("q");
+        let x = 0;
+        let mut id_gen = ClauseIdGen::new();
+
+        let fx = Term::app(f, vec![Term::Var(x)]);
+        let clause = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::neg(Atom::eq(fx.clone(), fx)),
+                Literal::pos(Atom::pred(q, vec![Term::Var(x)])),
+            ],
+            "c1",
+        );
+
+        let res = destructive_equality_resolve(&clause, &mut id_gen);
+        assert!(res.is_some());
+        let (final_clause, steps) = res.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(final_clause.literals.len(), 1);
+        assert_eq!(
+            final_clause.literals[0],
+            Literal::pos(Atom::pred(q, vec![Term::Var(x)]))
+        );
+    }
+
+    #[test]
+    fn equality_resolve_until_expired_deadline_returns_no_results() {
+        // ¬(a = a) resolves to the empty clause, unless the deadline passed.
+        let mut syms = SymbolTable::new();
+        let a = syms.intern("a");
+        let mut id_gen = ClauseIdGen::new();
+
+        let legacy = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::eq(Term::constant(a), Term::constant(a)))],
+            "c1",
+        );
+
+        let mut bank = TermBank::new();
+        let clause = bank.clause_from_legacy(&legacy);
+
+        let full = equality_resolve_id(&clause, &mut bank, &mut id_gen);
+        assert_eq!(full.len(), 1);
+        assert!(full[0].is_empty());
+
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let partial = equality_resolve_id_until(&clause, &mut bank, &mut id_gen, Some(past));
+        assert!(partial.is_empty());
+
+        let same = equality_resolve_id_until(&clause, &mut bank, &mut id_gen, None);
+        assert_eq!(same.len(), 1);
+    }
+
+    #[test]
+    fn equality_factor_until_expired_deadline_returns_no_results() {
+        // f(a) = b ∨ f(a) = c factors (f(a) outweighs both constants under
+        // KBO), unless the deadline already passed.
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let c = syms.intern("c");
+        let mut id_gen = ClauseIdGen::new();
+        let ordering = TermOrdering::KBO;
+
+        let legacy = input_clause(
+            &mut id_gen,
+            vec![
+                Literal::pos(Atom::eq(
+                    Term::app(f, vec![Term::constant(a)]),
+                    Term::constant(b),
+                )),
+                Literal::pos(Atom::eq(
+                    Term::app(f, vec![Term::constant(a)]),
+                    Term::constant(c),
+                )),
+            ],
+            "c1",
+        );
+
+        let mut bank = TermBank::new();
+        let clause = bank.clause_from_legacy(&legacy);
+
+        let full = equality_factor_id(&clause, &mut bank, &ordering, &mut id_gen);
+        assert!(!full.is_empty());
+
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let partial =
+            equality_factor_id_until(&clause, &mut bank, &ordering, &mut id_gen, Some(past));
+        assert!(partial.is_empty());
+
+        let same = equality_factor_id_until(&clause, &mut bank, &ordering, &mut id_gen, None);
+        assert_eq!(same.len(), full.len());
     }
 }

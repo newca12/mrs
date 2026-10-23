@@ -6,7 +6,7 @@
 #[cfg(feature = "cancellation")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use winnow::ascii::digit1;
-use winnow::combinator::{alt, delimited, opt, preceded};
+use winnow::combinator::{delimited, dispatch, fail, opt, peek, preceded};
 use winnow::error::ContextError;
 use winnow::prelude::*;
 use winnow::token::{one_of, take_while};
@@ -150,27 +150,35 @@ pub fn block_comment<'a>(input: &mut &'a str) -> PResult<Comment<'a>> {
 /// Parse a lower_word: [a-z][a-zA-Z0-9_']*
 #[inline]
 pub fn lower_word<'a>(input: &mut &'a str) -> PResult<&'a str> {
-    (
-        one_of('a'..='z'),
-        take_while(0.., |c: char| {
-            c.is_ascii_alphanumeric() || c == '_' || c == '\''
-        }),
-    )
-        .take()
-        .parse_next(input)
+    scan_word(input, |b| b.is_ascii_lowercase())
 }
 
 /// Parse an upper_word (variable): [A-Z][a-zA-Z0-9_']*
 #[inline]
 pub fn upper_word<'a>(input: &mut &'a str) -> PResult<&'a str> {
-    (
-        one_of('A'..='Z'),
-        take_while(0.., |c: char| {
-            c.is_ascii_alphanumeric() || c == '_' || c == '\''
-        }),
-    )
-        .take()
-        .parse_next(input)
+    scan_word(input, |b| b.is_ascii_uppercase())
+}
+
+#[inline(always)]
+fn scan_word<'a>(input: &mut &'a str, is_start: impl FnOnce(u8) -> bool) -> PResult<&'a str> {
+    let bytes = input.as_bytes();
+    if !bytes.first().copied().is_some_and(is_start) {
+        return Err(winnow::error::ErrMode::Backtrack(ContextError::new()));
+    }
+
+    let mut end = 1;
+    while end < bytes.len() {
+        let byte = bytes[end];
+        if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'\'' {
+            end += 1;
+        } else {
+            break;
+        }
+    }
+
+    let start = *input;
+    *input = &start[end..];
+    Ok(&start[..end])
 }
 
 /// Parse a single-quoted string: 'content'
@@ -246,38 +254,45 @@ fn distinct_object_content<'a>(input: &mut &'a str) -> PResult<&'a str> {
 /// Parse a dollar_word: $[a-z][a-zA-Z0-9_]*
 #[inline]
 pub fn dollar_word<'a>(input: &mut &'a str) -> PResult<&'a str> {
-    preceded(
-        '$',
-        (
-            one_of('a'..='z'),
-            take_while(0.., |c: char| c.is_ascii_alphanumeric() || c == '_'),
-        )
-            .take(),
-    )
-    .parse_next(input)
+    scan_dollar_word(input, false)
 }
 
 /// Parse a dollar_dollar_word: $$[a-z][a-zA-Z0-9_]*
 #[inline]
 pub fn dollar_dollar_word<'a>(input: &mut &'a str) -> PResult<&'a str> {
-    preceded(
-        "$$",
-        (
-            one_of('a'..='z'),
-            take_while(0.., |c: char| c.is_ascii_alphanumeric() || c == '_'),
-        )
-            .take(),
-    )
-    .parse_next(input)
+    scan_dollar_word(input, true)
+}
+
+#[inline(always)]
+fn scan_dollar_word<'a>(input: &mut &'a str, system: bool) -> PResult<&'a str> {
+    let bytes = input.as_bytes();
+    let prefix_len = if system { 2 } else { 1 };
+    if bytes.len() <= prefix_len
+        || bytes[0] != b'$'
+        || (system && bytes[1] != b'$')
+        || !bytes[prefix_len].is_ascii_lowercase()
+    {
+        return Err(winnow::error::ErrMode::Backtrack(ContextError::new()));
+    }
+
+    let mut end = prefix_len + 1;
+    while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+        end += 1;
+    }
+
+    let start = *input;
+    *input = &start[end..];
+    Ok(&start[prefix_len..end])
 }
 
 /// Parse an atomic word
 #[inline]
 pub fn atomic_word<'a>(input: &mut &'a str) -> PResult<AtomicWord<'a>> {
-    alt((
-        single_quoted.map(AtomicWord::SingleQuoted),
-        lower_word.map(AtomicWord::Lower),
-    ))
+    dispatch! {peek(winnow::token::any);
+        '\'' => single_quoted.map(AtomicWord::SingleQuoted),
+        'a'..='z' => lower_word.map(AtomicWord::Lower),
+        _ => fail,
+    }
     .parse_next(input)
 }
 
@@ -359,12 +374,12 @@ pub fn number<'a>(input: &mut &'a str) -> PResult<Number<'a>> {
 /// Parse a name (lower_word, single_quoted, or integer for anonymous)
 #[inline]
 pub fn name<'a>(input: &mut &'a str) -> PResult<Name<'a>> {
-    alt((
-        lower_word.map(Name::Lower),
-        single_quoted.map(Name::SingleQuoted),
-        // Anonymous names can be integers
-        digit1.map(Name::Integer),
-    ))
+    dispatch! {peek(winnow::token::any);
+        'a'..='z' => lower_word.map(Name::Lower),
+        '\'' => single_quoted.map(Name::SingleQuoted),
+        '0'..='9' => digit1.map(Name::Integer),
+        _ => fail,
+    }
     .parse_next(input)
 }
 

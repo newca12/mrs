@@ -26,9 +26,13 @@ case "${EDITION}" in
         BASE_URL="https://tptp.org/CASC/30"
         DEST="${SCRIPT_DIR}/problems/casc-30"
         ;;
+    casc-j13)
+        BASE_URL="https://tptp.org/CASC/J13"
+        DEST="${SCRIPT_DIR}/problems/casc-j13"
+        ;;
     *)
         echo "Unknown edition: ${EDITION}" >&2
-        echo "Supported: casc-30" >&2
+        echo "Supported: casc-30, casc-j13" >&2
         exit 1
         ;;
 esac
@@ -49,10 +53,19 @@ download_and_extract() {
         dest_check="${DEST}/${name}"
     fi
 
-    if [[ -d "${dest_check}" ]] && [[ "${name}" != "Problems" ]]; then
-        local count
-        count=$(find "${dest_check}" \( -name "*.p" -o -name "*.ax" \) 2>/dev/null | wc -l)
-        echo "[setup] ${name}/ already present (${count} files) — skipping download."
+    local count=0
+    if [[ -d "${dest_check}" ]]; then
+        if [[ "${name}" == "Problems" ]]; then
+            # Since Problems are extracted directly under DEST as division subdirectories,
+            # we check for any .p files up to maxdepth 2 under DEST.
+            count=$(find -L "${dest_check}" -maxdepth 2 -name "*.p" 2>/dev/null | wc -l)
+        else
+            count=$(find -L "${dest_check}" -maxdepth 2 -name "*.ax" 2>/dev/null | wc -l)
+        fi
+    fi
+
+    if [[ "${count}" -gt 0 ]]; then
+        echo "[setup] ${name} already present (${count} files) — skipping download."
         return
     fi
 
@@ -68,7 +81,7 @@ download_and_extract() {
     rm -f "${archive}"
 
     local count
-    count=$(find "${dest_check}" \( -name "*.p" -o -name "*.ax" \) 2>/dev/null | wc -l) || true
+    count=$(find -L "${dest_check}" \( -name "*.p" -o -name "*.ax" \) 2>/dev/null | wc -l) || true
     if [[ "${count:-0}" -gt 0 ]]; then
         echo "[setup] ${name}/ extracted: ${count} files."
     else
@@ -80,6 +93,32 @@ download_and_extract() {
 download_and_extract "Problems"
 download_and_extract "Axioms"
 
+# Generate division list files dynamically if they are not already present or empty
+lists_present=0
+if [[ -d "${DEST}/lists" ]]; then
+    list_count=$(find -L "${DEST}/lists" -maxdepth 1 -name "*.list" 2>/dev/null | wc -l)
+    if [[ "${list_count}" -gt 0 ]]; then
+        lists_present=1
+    fi
+fi
+
+if [[ "${lists_present}" -eq 0 ]]; then
+    echo "[setup] Generating lists directory at ${DEST}/lists..."
+    mkdir -p "${DEST}/lists"
+    # Find all directories directly under DEST (except Axioms and lists)
+    for d_path in "${DEST}"/*/; do
+        # Ignore wildcards if directory is empty
+        [[ -d "${d_path}" ]] || continue
+        d=$(basename "${d_path}")
+        if [[ "${d}" != "Axioms" && "${d}" != "lists" ]]; then
+            list_file="${DEST}/lists/${d,,}.list"
+            # Get sorted names of all .p files in the directory, removing .p extension
+            find -L "${d_path}" -maxdepth 1 -name "*.p" -exec basename {} .p \; | sort > "${list_file}"
+            echo "[setup] Generated list for division '${d,,}' with $(wc -l < "${list_file}") problems."
+        fi
+    done
+fi
+
 echo ""
-echo "[setup] Done. Set TPTP=${DEST} before running mrs."
+echo "[setup] Done. Set TPTP=${DEST} before running mrs. "
 echo "        Example: TPTP=${DEST} crates/mrs-bench/casc.sh --systems mrs --divisions fne"

@@ -1,0 +1,118 @@
+CASC-J13 Sample Solutions for mrs 0.2.1
+========================================
+
+FOF sample: SEU140+2
+---------------------
+
+% Problem: SEU140+2 (55 axioms, 1 conjectures, 0 cnf clauses)
+% SZS status Theorem for SEU140+2
+% SZS output start Proof for SEU140+2
+fof(c47, axiom, ![X0]: (![X1]: ((subset(X0, X1) <=> ![X2]: ((in(X2, X0) => in(X2, X1)))))), file('/home/user/pve/TPTP-v9.2.1/Problems/SEU/SEU140+2.p', d3_tarski)).
+fof(c285, conjecture, ![X0]: (![X1]: (![X2]: (((subset(X0, X1) & disjoint(X1, X2)) => disjoint(X0, X2))))), file('/home/user/pve/TPTP-v9.2.1/Problems/SEU/SEU140+2.p', t63_xboole_1)).
+fof(c48, plain, ![X0]: (![X1]: (((~(subset(X0, X1)) | ![X2]: ((~(in(X2, X0)) | in(X2, X1)))) & (subset(X0, X1) | ?[X2]: ((in(X2, X0) & ~(in(X2, X1)))))))), inference(fof_nnf_transformation, [status(thm)], [c47])).
+fof(c286, negated_conjecture, ~(![X0]: (![X1]: (![X2]: (((subset(X0, X1) & disjoint(X1, X2)) => disjoint(X0, X2)))))), inference(negated_conjecture, [status(cth)], [c285])).
+fof(c228, lemma, ![X0]: (![X1]: ((~((~(disjoint(X0, X1)) & ![X2]: (~((in(X2, X0) & in(X2, X1)))))) & ~((?[X3]: ((in(X3, X0) & in(X3, X1))) & disjoint(X0, X1)))))), file('/home/user/pve/TPTP-v9.2.1/Problems/SEU/SEU140+2.p', t3_xboole_0)).
+fof(c49, plain, (![X0]: (![X1]: ((~(subset(X0, X1)) | ![X2]: ((~(in(X2, X0)) | in(X2, X1)))))) & ![X0]: (![X1]: ((subset(X0, X1) | (in(sk_d3_tarski_0(X0, X1), X0) & ~(in(sk_d3_tarski_0(X0, X1), X1))))))), inference(skolemisation, [status(esa)], [c48])).
+fof(c287, plain, ?[X0]: (?[X1]: (?[X2]: (((subset(X0, X1) & disjoint(X1, X2)) & ~(disjoint(X0, X2)))))), inference(fof_nnf_transformation, [status(thm)], [c286])).
+fof(c229, plain, ![X0]: (![X1]: (((disjoint(X0, X1) | ?[X2]: ((in(X2, X0) & in(X2, X1)))) & (![X3]: ((~(in(X3, X0)) | ~(in(X3, X1)))) | ~(disjoint(X0, X1)))))), inference(fof_nnf_transformation, [status(thm)], [c228])).
+cnf(c232, plain, ~def_t3_xboole_0_0(X0, X1) | in(sk_t3_xboole_0_0(X0, X1), X0), inference(cnf_transformation, [status(thm)], [c230, c231])).
+cnf(c289, plain, subset(sk_t63_xboole_1_0, sk_t63_xboole_1_1), inference(cnf_transformation, [status(thm)], [c288])).
+cnf(c53, plain, ~subset(X0, X1) | ~in(X2, X0) | in(X2, X1), inference(cnf_transformation, [status(thm)], [c49])).
+fof(c288, plain, ((subset(sk_t63_xboole_1_0, sk_t63_xboole_1_1) & disjoint(sk_t63_xboole_1_1, sk_t63_xboole_1_2)) & ~(disjoint(sk_t63_xboole_1_0, sk_t63_xboole_1_2))), inference(skolemisation, [status(esa)], [c287])).
+cnf(c291, plain, ~disjoint(sk_t63_xboole_1_0, sk_t63_xboole_1_2), inference(cnf_transformation, [status(thm)], [c288])).
+cnf(c234, plain, disjoint(X0, X1) | def_t3_xboole_0_0(X0, X1), inference(cnf_transformation, [status(thm)], [c230, c231])).
+fof(c231, definition, ![X0]: (![X1]: ((def_t3_xboole_0_0(X0, X1) <=> (in(sk_t3_xboole_0_0(X0, X1), X0) & in(sk_t3_xboole_0_0(X0, X1), X1))))), introduced(definition, [new_symbols(definition, [def_t3_xboole_0_0])])).
+fof(c230, plain, (![X0]: (![X1]: ((disjoint(X0, X1) | (in(sk_t3_xboole_0_0(X0, X1), X0) & in(sk_t3_xboole_0_0(X0, X1), X1))))) & ![X0]: (![X1]: ((![X3]: ((~(in(X3, X0)) | ~(in(X3, X1)))) | ~(disjoint(X0, X1)))))), inference(skolemisation, [status(esa)], [c229])).
+cnf(c82331, plain, in(sk_t3_xboole_0_0(sk_t63_xboole_1_0, sk_t63_xboole_1_2), sk_t63_xboole_1_0), inference(resolution, [status(thm)], [c232, c1039])).
+cnf(c238447, plain, ~in(X2, sk_t63_xboole_1_0) | in(X2, sk_t63_xboole_1_1), inference(resolution, [status(thm)], [c53, c289])).
+cnf(c290, plain, disjoint(sk_t63_xboole_1_1, sk_t63_xboole_1_2), inference(cnf_transformation, [status(thm)], [c288])).
+cnf(c235, plain, ~in(X3, X0) | ~in(X3, X1) | ~disjoint(X0, X1), inference(cnf_transformation, [status(thm)], [c230])).
+cnf(c1039, plain, def_t3_xboole_0_0(sk_t63_xboole_1_0, sk_t63_xboole_1_2), inference(resolution, [status(thm)], [c234, c291])).
+cnf(c233, plain, ~def_t3_xboole_0_0(X0, X1) | in(sk_t3_xboole_0_0(X0, X1), X1), inference(cnf_transformation, [status(thm)], [c230, c231])).
+cnf(c238534, plain, in(sk_t3_xboole_0_0(sk_t63_xboole_1_0, sk_t63_xboole_1_2), sk_t63_xboole_1_1), inference(resolution, [status(thm)], [c238447, c82331])).
+cnf(c261227, plain, ~in(X3, sk_t63_xboole_1_1) | ~in(X3, sk_t63_xboole_1_2), inference(resolution, [status(thm)], [c235, c290])).
+cnf(c84107, plain, in(sk_t3_xboole_0_0(sk_t63_xboole_1_0, sk_t63_xboole_1_2), sk_t63_xboole_1_2), inference(resolution, [status(thm)], [c233, c1039])).
+cnf(c261347, plain, ~in(sk_t3_xboole_0_0(sk_t63_xboole_1_0, sk_t63_xboole_1_2), sk_t63_xboole_1_2), inference(resolution, [status(thm)], [c261227, c238534])).
+cnf(c261559, plain, $false, inference(subsumption_resolution, [status(thm)], [c261347, c84107])).
+% SZS output end Proof for SEU140+2
+% ------------------------------
+% Version: mrs 0.2.1
+% Termination reason: Refutation
+% Time elapsed: 12.622 s
+% Peak memory usage: 2571 MB
+% ------------------------------
+% SZS detail strategies=4 result=Refutation processed=14292 generated=284437
+
+
+UEQ sample: BOO001-1
+---------------------
+
+% Resolved 1 include directive(s)
+% Problem: BOO001-1 (0 axioms, 0 conjectures, 6 cnf clauses)
+% SZS status Unsatisfiable for BOO001-1
+% SZS output start Proof for BOO001-1
+cnf(c2881, axiom, multiply(X0, X0, X1) = X0, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', ternary_multiply_2)).
+cnf(c2882, axiom, multiply(multiply(X0, X1, X2), X3, multiply(X0, X1, X4)) = multiply(X0, X1, multiply(X2, X3, X4)), file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', associativity)).
+cnf(c2883, plain, multiply(X0, X1, multiply(X2, multiply(X0, X1, X2), X4)) = multiply(X0, X1, X2), inference(superposition, [status(thm)], [c2882, c2881])).
+cnf(c2884, axiom, multiply(X0, X1, inverse(X1)) = X0, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', right_inverse)).
+cnf(c2885, plain, multiply(X2, X3, multiply(inverse(X3), X2, X6)) = multiply(X2, X3, inverse(X3)), inference(superposition, [status(thm)], [c2884, c2883])).
+cnf(c2886, axiom, multiply(multiply(X0, X1, X2), X3, multiply(X0, X1, X4)) = multiply(X0, X1, multiply(X2, X3, X4)), file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', associativity)).
+cnf(c2, axiom, multiply(X0, X1, X1) = X1, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', ternary_multiply_1)).
+cnf(c2887, plain, multiply(X2, X3, multiply(inverse(X3), X2, X6)) = X2, inference(demodulation, [status(thm)], [c2885, c2884])).
+cnf(c2888, plain, multiply(X4, X5, multiply(X2, X4, X6)) = multiply(X2, X4, multiply(X4, X5, X6)), inference(superposition, [status(thm)], [c2, c2886])).
+cnf(c2889, plain, multiply(inverse(X10), X9, multiply(X9, X10, X13)) = X9, inference(superposition, [status(thm)], [c2888, c2887])).
+cnf(c2890, axiom, multiply(X0, X1, X1) = X1, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', ternary_multiply_1)).
+cnf(c5, axiom, multiply(X0, X1, inverse(X1)) = X0, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', right_inverse)).
+cnf(c2891, plain, multiply(inverse(X15), X11, X15) = X11, inference(superposition, [status(thm)], [c2890, c2889])).
+cnf(c2966, plain, X17 = inverse(inverse(X17)), inference(superposition, [status(thm)], [c2891, c5])).
+cnf(c0, negated_conjecture, inverse(inverse(a)) != a, file('/home/user/pve/TPTP-v9.2.1/Problems/BOO/BOO001-1.p', prove_inverse_is_self_cancelling)).
+cnf(c3365, plain, a != a, inference(demodulation, [status(thm)], [c0, c2966])).
+cnf(c3366, plain, $false, inference(equality_resolution, [status(thm)], [c3365])).
+% SZS output end Proof for BOO001-1
+% ------------------------------
+% Version: mrs 0.2.1
+% Termination reason: Refutation
+% Time elapsed: 0.155 s
+% Peak memory usage: 1611 MB
+% ------------------------------
+% SZS detail strategies=4 result=Refutation processed=74 generated=751
+
+Notes for the organizer
+------------------------
+
+mrs is entered in FOF and UEQ only (withdrawn from FNT — no
+finite-model-building component).
+
+Thank you for running SEU140+2 through GDV — it found two real bugs, both
+now fixed and re-verified against a locally-built GDV:
+
+1. **The negated_conjecture step now has role `negated_conjecture`.** The
+   synthetic step that negates the conjecture (`c286` above) was previously
+   given the generic role `plain`, like every other derived step. GDV
+   requires this step to carry role `negated_conjecture` itself to
+   legitimize a derived formula having a `conjecture`-role parent, and
+   reported "illegal relationship with its (non-)conjecture parent"
+   otherwise.
+
+2. **Definitional (Tseitin) CNF clauses now properly cite the fresh
+   symbol's definition.** SEU140+2's `t3_xboole_0` lemma has a conjunction
+   nested under a disjunction, which mrs resolves with definitional CNF,
+   introducing a fresh predicate (`def_t3_xboole_0_0` above). Clauses that
+   mention this predicate (`c232`, `c233`, `c234`) previously cited only the
+   pre-CNF Skolemization step (`c230`) as their parent — but that step's
+   formula never mentions the fresh symbol at all, so no ATP can prove them
+   as a full consequence of it alone; GDV correctly reported a genuine
+   CounterSatisfiable countermodel. The fresh predicate's full closed
+   biconditional is now emitted as its own step (`c231` above), with role
+   `definition` and an explicit `new_symbols(definition, [...])` info entry
+   (both required by GDV's `IsCorrectlySpecifiedDefinition` check — a bare
+   `introduced(definition)` with role `plain`, which is what E emits, is
+   not accepted by GDV). Every clause that mentions the fresh predicate now
+   cites this definition step as an additional parent alongside the
+   Skolemization step, as shown above.
+
+The BOO001-1 (UEQ) proof is included again for completeness; it is
+unaffected by either fix, since UEQ problems are supplied already in
+clausal form, never go through the FOF-to-CNF pipeline, and its
+`negated_conjecture` clause (`c0` above) is a raw input leaf from the
+problem file rather than a synthetic derived step.

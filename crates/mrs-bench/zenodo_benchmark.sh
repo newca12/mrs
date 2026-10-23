@@ -11,12 +11,12 @@
 #   - falsified: mutated/evil proofs         (a checker SHOULD FailedVerify)
 #
 # So the two soundness invariants we care about are:
-#   * original  -> never FailedVerified   (a false reject costs -1 at competition)
-#   * falsified -> never Verified          (a false accept costs -10, fatal)
+#   * original  -> never VerifiedBad   (a false reject costs -1 at competition)
+#   * falsified -> never VerifiedGood          (a false accept costs -10, fatal)
 #
 # Only PyRes ships problem files; Otter proofs are self-contained leaves with no
 # linked problem, so original-Otter leaves cannot be validated against a problem
-# (they fall back to NotVerified) while falsified-Otter mutations on inference
+# (they fall back to Unknown) while falsified-Otter mutations on inference
 # steps are still caught by the entailment check.
 #
 # Usage:
@@ -122,7 +122,7 @@ run_backend() {
 
     line=$(grep -m1 '% SZS status' "${tmp}" 2>/dev/null || true)
     if [[ -z "${line}" ]]; then
-        verdict="NotVerified"
+        verdict="Unknown"
         detail="no SZS line emitted (timeout or crash)"
     else
         verdict=$(awk '{print $4}' <<< "${line}")
@@ -173,29 +173,29 @@ awk -F, '
 NR>1 {
     k=$1"/"$2"/"$4; keys[k]=1; t[k]+=$6; c[k]++;
     v=$5;
-    if (v!="Verified" && v!="FailedVerified" && v!="NotVerified") v="Other";
+    if (v!="VerifiedGood" && v!="VerifiedBad" && v!="Unknown") v="Other";
     n[k,v]++;
 }
 END {
     printf "  %-34s %-10s %-16s %-12s %-8s %-10s\n",
-           "dataset/category/backend","Verified","FailedVerified","NotVerified","Other","mean(s)" > "/dev/stderr"
+           "dataset/category/backend","VerifiedGood","VerifiedBad","Unknown","Other","mean(s)" > "/dev/stderr"
     m = asorti(keys, sk)
     for (i=1; i<=m; i++) {
         k = sk[i]
         printf "  %-34s %-10d %-16d %-12d %-8d %-10.3f\n",
-               k, n[k,"Verified"]+0, n[k,"FailedVerified"]+0, n[k,"NotVerified"]+0, n[k,"Other"]+0, t[k]/c[k] > "/dev/stderr"
+               k, n[k,"VerifiedGood"]+0, n[k,"VerifiedBad"]+0, n[k,"Unknown"]+0, n[k,"Other"]+0, t[k]/c[k] > "/dev/stderr"
     }
 }' "${CSV}"
 
-# Soundness invariants: original must never FailedVerified; falsified must never Verified.
-BAD_ORIG=$(awk -F, 'NR>1 && $2=="original"  && $5=="FailedVerified"' "${CSV}" | wc -l)
-BAD_FALS=$(awk -F, 'NR>1 && $2=="falsified" && $5=="Verified"'       "${CSV}" | wc -l)
+# Soundness invariants: original must never VerifiedBad; falsified must never VerifiedGood.
+BAD_ORIG=$(awk -F, 'NR>1 && $2=="original"  && $5=="VerifiedBad"' "${CSV}" | wc -l)
+BAD_FALS=$(awk -F, 'NR>1 && $2=="falsified" && $5=="VerifiedGood"'       "${CSV}" | wc -l)
 echo "" >&2
 echo "[zenodo] Soundness check:" >&2
-echo "[zenodo]   original  reported FailedVerified : ${BAD_ORIG} (must be 0)" >&2
-echo "[zenodo]   falsified reported Verified       : ${BAD_FALS} (must be 0)" >&2
+echo "[zenodo]   original  reported VerifiedBad : ${BAD_ORIG} (must be 0)" >&2
+echo "[zenodo]   falsified reported VerifiedGood       : ${BAD_FALS} (must be 0)" >&2
 echo "" >&2
 echo "[zenodo] CSV: ${CSV}" >&2
 
 # Only a falsely-accepted evil proof is fatal; a false reject is a soft -1.
-[[ "${BAD_FALS}" -eq 0 ]] || { echo "[zenodo] FAIL: an evil proof was Verified." >&2; exit 1; }
+[[ "${BAD_FALS}" -eq 0 ]] || { echo "[zenodo] FAIL: an evil proof was VerifiedGood." >&2; exit 1; }

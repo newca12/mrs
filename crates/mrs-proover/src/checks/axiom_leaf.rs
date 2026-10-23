@@ -13,8 +13,10 @@
 //! the leaf still has to be α-equivalent to *some* declared axiom of the
 //! problem, which is exactly the same standard as the named-axiom check.
 
-use mrs_core::SymbolTable;
+use std::collections::HashMap;
+
 use mrs_core::alpha::alpha_equiv;
+use mrs_core::{SymbolId, SymbolTable};
 use mrs_tptp::{AnnotatedFormula, FormulaRole, TPTPProblem};
 
 use crate::lower::{LowerCtx, lower_annotated_formula};
@@ -22,14 +24,16 @@ use crate::verdict::StepOutcome;
 
 /// Check a single proof leaf whose source is `file('…', name)`.
 ///
-/// `problem` is the parsed linked problem file. The proof-node's `name` is
-/// looked up in `problem` and compared α-equivalently. If the recorded name
-/// is the literal `unknown` (common in Vampire output), we instead try every
-/// axiom-role formula in the problem and accept the leaf if any α-matches.
+/// `problem` is the parsed linked problem file along with its precomputed
+/// [`ProblemLeafIndex`]. The proof-node's `name` is looked up in the index
+/// and compared α-equivalently. If the recorded name is the literal
+/// `unknown` (common in Vampire output), we instead try every axiom-role
+/// formula in the problem and accept the leaf if any α-matches.
 pub fn check_leaf<'p>(
     node: &AnnotatedFormula<'p>,
-    problem: Option<&TPTPProblem<'_>>,
+    problem: Option<(&TPTPProblem<'p>, &ProblemLeafIndex<'p>)>,
     symbols: &mut SymbolTable,
+    strict: bool,
 ) -> StepOutcome {
     let Some(ann) = node.annotations() else {
         // No annotation → cannot prove provenance. Conservative.
@@ -38,18 +42,30 @@ pub fn check_leaf<'p>(
     let Some((_path, expected_name)) = ann.file_source() else {
         return StepOutcome::Unknown("leaf source is not file(_,_)".into());
     };
-    let Some(problem) = problem else {
-        // If no problem file is loaded (e.g. Otter subset of Zenodo benchmark),
-        // we cannot verify if the leaf is a valid axiom in the problem file.
-        // We fallback to treating the leaf as Sound (verifying the proof
-        // modulo assumptions).
-        return StepOutcome::Sound;
+    let Some((problem, index)) = problem else {
+        // Fail closed in every mode. Accepting a leaf we cannot check is
+        // "verify modulo assumptions", which turns an unresolvable
+        // `% Proof :` link into a free pass for *every* axiom of the proof:
+        // the evil ProoVer-2026 fixtures PRV051+1 (leaf declared with the
+        // problem's `conjecture` role) and PRV074+1 (Skolem symbol clashing
+        // with a problem symbol) are both reported `VerifiedGood` when the
+        // problem file cannot be located, and `VerifiedBad` when it can.
+        // The competition always supplies the problem, so refusing here can
+        // only cost a `VerifiedGood` on proof sets that ship no problem file
+        // (e.g. the Zenodo Otter half); it can never cost soundness.
+        let _ = strict;
+        return StepOutcome::Unknown(
+            "leaf provenance unverifiable: the linked problem file could not be loaded".into(),
+        );
     };
 
     // Lower the proof leaf formula once for either matching strategy.
     let mut ctx = LowerCtx::new(symbols);
     ctx.reset_vars();
-    let proof_f = lower_annotated_formula(&mut ctx, node);
+    let Some(proof_f) = lower_annotated_formula(&mut ctx, node) else {
+        return StepOutcome::Unknown("unsupported proof leaf formula type".into());
+    };
+    let algebraic_symbols = &index.algebraic;
 
     // --- Anonymous-provenance fallback (Vampire's `file(_, unknown)`) -----
     if expected_name == "unknown" {
@@ -63,9 +79,16 @@ pub fn check_leaf<'p>(
                 continue;
             }
             ctx.reset_vars();
-            let prob_f = lower_annotated_formula(&mut ctx, af);
+            let Some(prob_f) = lower_annotated_formula(&mut ctx, af) else {
+                continue;
+            };
             if alpha_equiv(&proof_f, &prob_f)
-                || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f)
+                || crate::checks::definition_folding::canon_eq_free(
+                    &proof_f,
+                    &prob_f,
+                    Some(ctx.symbols),
+                )
+                || ac_alpha_equiv(&proof_f, &prob_f, algebraic_symbols)
             {
                 return StepOutcome::Sound;
             }
@@ -75,7 +98,12 @@ pub fn check_leaf<'p>(
             let clauses = mrs_cnf::clausify(&prob_f, ctx.symbols, &mut id_gen, "prob", "axiom");
             for c in clauses {
                 let c_form = clause_to_formula_with_forall(&c);
-                if crate::checks::definition_folding::canon_eq(&proof_f, &c_form) {
+                if crate::checks::definition_folding::canon_eq_free(
+                    &proof_f,
+                    &c_form,
+                    Some(ctx.symbols),
+                ) || ac_alpha_equiv(&proof_f, &c_form, algebraic_symbols)
+                {
                     return StepOutcome::Sound;
                 }
             }
@@ -92,7 +120,7 @@ pub fn check_leaf<'p>(
         // NOT α- or AC-equivalent to the named axiom, so our structural
         // comparison legitimately cannot confirm them.
         //
-        // Reporting `Unsound` here costs a false `FailedVerified` (−1) on
+        // Reporting `Unsound` here costs a false `VerifiedBad` (−1) on
         // such valid proofs, which are common. We therefore downgrade to
         // `Unknown` (0 pts) — *except* for the one shape that is positive
         // evidence of tampering: a leaf that is itself contradictory
@@ -122,20 +150,38 @@ pub fn check_leaf<'p>(
     // --- Named-axiom path -------------------------------------------------
     // Look up the named entry in either dialect (the prover may have
     // converted a CNF problem to FOF in the proof, or vice versa). We
-    // accept the entry whose name matches, regardless of dialect.
-    let mut target_af: Option<&AnnotatedFormula<'_>> = None;
-    let mut prob_role = None;
-    for af in &problem.formulas {
-        if af.name() == expected_name {
-            target_af = Some(af);
-            prob_role = Some(af.role());
-            break;
-        }
-    }
+    // accept the entry whose name matches, regardless of dialect. The
+    // lookup is O(1) via the precomputed per-run index; a linear scan here
+    // would make proofs with many leaves quadratic (e.g. PRV072+1's 5000
+    // axioms × 5000 leaves).
+    let (target_af, prob_role) = match index.lookup(expected_name) {
+        Some(af) => (Some(af), Some(af.role())),
+        None => (None, None),
+    };
     if target_af.is_none() {
-        return StepOutcome::Unknown(format!(
-            "leaf references axiom '{expected_name}' not present in problem file \
-             (the prover may have renamed or inlined the original axiom)"
+        for af in &problem.formulas {
+            let role = af.role();
+            if !roles_compatible(node.role(), role) {
+                continue;
+            }
+            ctx.reset_vars();
+            let Some(prob_f) = lower_annotated_formula(&mut ctx, af) else {
+                continue;
+            };
+            if alpha_equiv(&proof_f, &prob_f)
+                || crate::checks::definition_folding::canon_eq_free(
+                    &proof_f,
+                    &prob_f,
+                    Some(ctx.symbols),
+                )
+                || ac_alpha_equiv(&proof_f, &prob_f, algebraic_symbols)
+            {
+                return StepOutcome::Sound;
+            }
+        }
+
+        return StepOutcome::Unsound(format!(
+            "leaf references non-existent axiom '{expected_name}' whose formula is not present in problem file"
         ));
     }
 
@@ -148,25 +194,422 @@ pub fn check_leaf<'p>(
     }
 
     ctx.reset_vars();
-    let prob_f = lower_annotated_formula(&mut ctx, target_af.unwrap());
+    let Some(prob_f) = lower_annotated_formula(&mut ctx, target_af.unwrap()) else {
+        return StepOutcome::Unknown("unsupported target formula type in problem".into());
+    };
 
     if alpha_equiv(&proof_f, &prob_f)
-        || crate::checks::definition_folding::canon_eq(&proof_f, &prob_f)
+        || crate::checks::definition_folding::canon_eq_free(&proof_f, &prob_f, Some(ctx.symbols))
+        || crate::checks::propositional_sat::try_propositional(
+            std::slice::from_ref(&prob_f),
+            &proof_f,
+        ) == Some(crate::checks::propositional_sat::PropOutcome::Sound)
+        || ac_alpha_equiv(&proof_f, &prob_f, algebraic_symbols)
     {
         StepOutcome::Sound
     } else {
-        // The proof leaf does not α-match the named axiom. This can be a
-        // genuine soundness violation, but in practice it most often
-        // happens when the proof tool (e.g. E) reparses and normalises
-        // the conjecture, reordering disjuncts under commutative
-        // operators or rearranging parenthesisation. Our `alpha_equiv`
-        // purely positional and did not account for AC-rewriting,
-        // but now it does! So a mismatch is a genuine Unsound.
+        // The proof leaf does not α-match the named axiom.
         StepOutcome::Unsound(format!(
             "leaf formula does not syntactically α-match axiom '{expected_name}' \
              (may differ only by AC-rewriting of commutative operators)"
         ))
     }
+}
+
+#[derive(Default)]
+pub struct AlgebraicSymbols {
+    commutative: std::collections::HashSet<SymbolId>,
+    associative: std::collections::HashSet<SymbolId>,
+}
+
+impl AlgebraicSymbols {
+    /// Lower every axiom/hypothesis/definition formula in the problem once
+    /// and record explicitly-declared commutativity/associativity axioms.
+    /// This is O(problem size) and must be computed once per verification
+    /// run (see [`ProblemLeafIndex`]), never once per leaf.
+    pub fn collect(problem: &TPTPProblem<'_>, symbols: &mut SymbolTable) -> Self {
+        let mut algebraic = AlgebraicSymbols::default();
+        let mut ctx = LowerCtx::new(symbols);
+        for annotated in &problem.formulas {
+            let role = annotated.role();
+            if !matches!(
+                role,
+                FormulaRole::Axiom | FormulaRole::Hypothesis | FormulaRole::Definition
+            ) {
+                continue;
+            }
+            ctx.reset_vars();
+            if let Some(formula) = lower_annotated_formula(&mut ctx, annotated) {
+                collect_algebraic_axiom(&formula, &mut algebraic);
+            }
+        }
+        algebraic
+    }
+}
+
+/// Per-run lookup structures for leaf checks, built once in `verify` and
+/// shared across all leaves of a proof.
+///
+/// Both the by-name lookup and the algebraic-symbol collection are
+/// O(problem size) to build; rebuilding either per leaf turns proofs with
+/// many leaves quadratic (PRV072+1: 5000 leaves × 5000 problem formulas).
+pub struct ProblemLeafIndex<'p> {
+    by_name: HashMap<&'p str, &'p AnnotatedFormula<'p>>,
+    algebraic: AlgebraicSymbols,
+}
+
+impl<'p> ProblemLeafIndex<'p> {
+    pub fn new(problem: &'p TPTPProblem<'p>, symbols: &mut SymbolTable) -> Self {
+        let mut by_name = HashMap::with_capacity(problem.formulas.len());
+        for af in &problem.formulas {
+            // Keep the first entry on duplicate names, matching the old
+            // linear scan's first-match behaviour.
+            by_name.entry(af.name()).or_insert(af);
+        }
+        let algebraic = AlgebraicSymbols::collect(problem, symbols);
+        Self { by_name, algebraic }
+    }
+
+    fn lookup(&self, name: &str) -> Option<&'p AnnotatedFormula<'p>> {
+        self.by_name.get(name).copied()
+    }
+}
+
+impl AlgebraicSymbols {
+    fn is_commutative(&self, symbol: SymbolId) -> bool {
+        self.commutative.contains(&symbol)
+    }
+
+    fn is_ac(&self, symbol: SymbolId) -> bool {
+        self.commutative.contains(&symbol) && self.associative.contains(&symbol)
+    }
+}
+
+fn collect_algebraic_axiom(formula: &mrs_core::Formula, symbols: &mut AlgebraicSymbols) {
+    let mut body = formula;
+    while let mrs_core::Formula::Forall(_, inner) = body {
+        body = inner;
+    }
+    let mrs_core::Formula::Atom(mrs_core::Atom::Eq(left, right)) = body else {
+        return;
+    };
+    let (
+        mrs_core::Term::App(left_symbol, left_args),
+        mrs_core::Term::App(right_symbol, right_args),
+    ) = (left, right)
+    else {
+        return;
+    };
+    if left_symbol != right_symbol || left_args.len() != 2 || right_args.len() != 2 {
+        return;
+    }
+    if matches!(
+        (&left_args[0], &left_args[1], &right_args[0], &right_args[1]),
+        (
+            mrs_core::Term::Var(x),
+            mrs_core::Term::Var(y),
+            mrs_core::Term::Var(y2),
+            mrs_core::Term::Var(x2),
+        ) if x != y && x == x2 && y == y2
+    ) {
+        symbols.commutative.insert(*left_symbol);
+    }
+
+    fn variable(term: &mrs_core::Term) -> Option<u32> {
+        match term {
+            mrs_core::Term::Var(variable) => Some(*variable),
+            _ => None,
+        }
+    }
+
+    fn binary_variable_pair(term: &mrs_core::Term, symbol: SymbolId) -> Option<(u32, u32)> {
+        let mrs_core::Term::App(function, args) = term else {
+            return None;
+        };
+        if *function != symbol || args.len() != 2 {
+            return None;
+        }
+        Some((variable(&args[0])?, variable(&args[1])?))
+    }
+
+    let forward = match (
+        binary_variable_pair(&left_args[0], *left_symbol),
+        variable(&left_args[1]),
+        variable(&right_args[0]),
+        binary_variable_pair(&right_args[1], *left_symbol),
+    ) {
+        (Some((x, y)), Some(z), Some(x2), Some((y2, z2))) => {
+            x == x2 && y == y2 && z == z2 && x != y && y != z && x != z
+        }
+        _ => false,
+    };
+    let reverse = match (
+        variable(&left_args[0]),
+        binary_variable_pair(&left_args[1], *left_symbol),
+        binary_variable_pair(&right_args[0], *left_symbol),
+        variable(&right_args[1]),
+    ) {
+        (Some(x), Some((y, z)), Some((x2, y2)), Some(z2)) => {
+            x == x2 && y == y2 && z == z2 && x != y && y != z && x != z
+        }
+        _ => false,
+    };
+    let associative = forward || reverse;
+    if associative {
+        symbols.associative.insert(*left_symbol);
+    }
+}
+
+fn collect_ac_leaves<'a>(
+    t: &'a mrs_core::Term,
+    ac_sym: mrs_core::SymbolId,
+    symbols: &AlgebraicSymbols,
+    out: &mut Vec<&'a mrs_core::Term>,
+) {
+    if let mrs_core::Term::App(f, args) = t
+        && *f == ac_sym
+        && symbols.is_ac(*f)
+        && args.len() == 2
+    {
+        for arg in args {
+            collect_ac_leaves(arg, ac_sym, symbols, out);
+        }
+    } else {
+        out.push(t);
+    }
+}
+
+fn ac_alpha_equiv(
+    f1: &mrs_core::Formula,
+    f2: &mrs_core::Formula,
+    symbols: &AlgebraicSymbols,
+) -> bool {
+    use std::collections::HashMap;
+
+    fn term_eq(
+        t1: &mrs_core::Term,
+        t2: &mrs_core::Term,
+        left: &HashMap<mrs_core::VarId, u32>,
+        right: &HashMap<mrs_core::VarId, u32>,
+        symbols: &AlgebraicSymbols,
+    ) -> bool {
+        match (t1, t2) {
+            (mrs_core::Term::Var(v1), mrs_core::Term::Var(v2)) => {
+                match (left.get(v1), right.get(v2)) {
+                    (Some(d1), Some(d2)) => d1 == d2,
+                    (None, None) => v1 == v2,
+                    _ => false,
+                }
+            }
+            (mrs_core::Term::App(f1, args1), mrs_core::Term::App(f2, args2)) => {
+                if f1 != f2 {
+                    return false;
+                }
+                if symbols.is_ac(*f1) && args1.len() == 2 && args2.len() == 2 {
+                    let mut leaves1 = Vec::new();
+                    let mut leaves2 = Vec::new();
+                    collect_ac_leaves(t1, *f1, symbols, &mut leaves1);
+                    collect_ac_leaves(t2, *f2, symbols, &mut leaves2);
+                    if leaves1.len() != leaves2.len() {
+                        return false;
+                    }
+                    match_terms(&leaves1, &leaves2, left, right, symbols)
+                } else if symbols.is_commutative(*f1) && args1.len() == 2 && args2.len() == 2 {
+                    (term_eq(&args1[0], &args2[0], left, right, symbols)
+                        && term_eq(&args1[1], &args2[1], left, right, symbols))
+                        || (term_eq(&args1[0], &args2[1], left, right, symbols)
+                            && term_eq(&args1[1], &args2[0], left, right, symbols))
+                } else {
+                    args1.len() == args2.len()
+                        && args1
+                            .iter()
+                            .zip(args2)
+                            .all(|(a1, a2)| term_eq(a1, a2, left, right, symbols))
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn match_terms(
+        left_terms: &[&mrs_core::Term],
+        right_terms: &[&mrs_core::Term],
+        left: &HashMap<mrs_core::VarId, u32>,
+        right: &HashMap<mrs_core::VarId, u32>,
+        symbols: &AlgebraicSymbols,
+    ) -> bool {
+        fn visit(
+            index: usize,
+            left_terms: &[&mrs_core::Term],
+            right_terms: &[&mrs_core::Term],
+            used: &mut [bool],
+            left: &HashMap<mrs_core::VarId, u32>,
+            right: &HashMap<mrs_core::VarId, u32>,
+            symbols: &AlgebraicSymbols,
+        ) -> bool {
+            if index == left_terms.len() {
+                return true;
+            }
+            for (j, right_term) in right_terms.iter().enumerate() {
+                if used[j] {
+                    continue;
+                }
+                used[j] = true;
+                if term_eq(left_terms[index], right_term, left, right, symbols)
+                    && visit(
+                        index + 1,
+                        left_terms,
+                        right_terms,
+                        used,
+                        left,
+                        right,
+                        symbols,
+                    )
+                {
+                    return true;
+                }
+                used[j] = false;
+            }
+            false
+        }
+
+        let mut used = vec![false; right_terms.len()];
+        visit(0, left_terms, right_terms, &mut used, left, right, symbols)
+    }
+
+    fn formula_eq(
+        f1: &mrs_core::Formula,
+        f2: &mrs_core::Formula,
+        left: &mut HashMap<mrs_core::VarId, u32>,
+        right: &mut HashMap<mrs_core::VarId, u32>,
+        depth: &mut u32,
+        symbols: &AlgebraicSymbols,
+    ) -> bool {
+        match (f1, f2) {
+            (mrs_core::Formula::True, mrs_core::Formula::True)
+            | (mrs_core::Formula::False, mrs_core::Formula::False) => true,
+            (mrs_core::Formula::Neg(n1), mrs_core::Formula::Neg(n2)) => {
+                formula_eq(n1, n2, left, right, depth, symbols)
+            }
+            (mrs_core::Formula::Atom(a1), mrs_core::Formula::Atom(a2)) => match (a1, a2) {
+                (mrs_core::Atom::Pred(p1, args1), mrs_core::Atom::Pred(p2, args2)) => {
+                    p1 == p2
+                        && args1.len() == args2.len()
+                        && args1
+                            .iter()
+                            .zip(args2)
+                            .all(|(t1, t2)| term_eq(t1, t2, left, right, symbols))
+                }
+                (mrs_core::Atom::Eq(l1, r1), mrs_core::Atom::Eq(l2, r2)) => {
+                    (term_eq(l1, l2, left, right, symbols) && term_eq(r1, r2, left, right, symbols))
+                        || (term_eq(l1, r2, left, right, symbols)
+                            && term_eq(r1, l2, left, right, symbols))
+                }
+                _ => false,
+            },
+            (mrs_core::Formula::And(cs1), mrs_core::Formula::And(cs2))
+            | (mrs_core::Formula::Or(cs1), mrs_core::Formula::Or(cs2)) => {
+                if cs1.len() != cs2.len() {
+                    return false;
+                }
+                let mut used = vec![false; cs2.len()];
+                for c1 in cs1 {
+                    let mut matched = false;
+                    for (j, c2) in cs2.iter().enumerate() {
+                        if used[j] {
+                            continue;
+                        }
+                        let mut left_snapshot = left.clone();
+                        let mut right_snapshot = right.clone();
+                        let mut depth_snapshot = *depth;
+                        if formula_eq(
+                            c1,
+                            c2,
+                            &mut left_snapshot,
+                            &mut right_snapshot,
+                            &mut depth_snapshot,
+                            symbols,
+                        ) {
+                            used[j] = true;
+                            *left = left_snapshot;
+                            *right = right_snapshot;
+                            *depth = depth_snapshot;
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if !matched {
+                        return false;
+                    }
+                }
+                true
+            }
+            (mrs_core::Formula::Implies(a1, b1), mrs_core::Formula::Implies(a2, b2)) => {
+                formula_eq(a1, a2, left, right, depth, symbols)
+                    && formula_eq(b1, b2, left, right, depth, symbols)
+            }
+            (mrs_core::Formula::Iff(a1, b1), mrs_core::Formula::Iff(a2, b2)) => {
+                let mut left_snapshot = left.clone();
+                let mut right_snapshot = right.clone();
+                let mut depth_snapshot = *depth;
+                if formula_eq(
+                    a1,
+                    a2,
+                    &mut left_snapshot,
+                    &mut right_snapshot,
+                    &mut depth_snapshot,
+                    symbols,
+                ) && formula_eq(
+                    b1,
+                    b2,
+                    &mut left_snapshot,
+                    &mut right_snapshot,
+                    &mut depth_snapshot,
+                    symbols,
+                ) {
+                    *left = left_snapshot;
+                    *right = right_snapshot;
+                    *depth = depth_snapshot;
+                    true
+                } else {
+                    formula_eq(a1, b2, left, right, depth, symbols)
+                        && formula_eq(b1, a2, left, right, depth, symbols)
+                }
+            }
+            (mrs_core::Formula::Forall(v1, b1), mrs_core::Formula::Forall(v2, b2))
+            | (mrs_core::Formula::Exists(v1, b1), mrs_core::Formula::Exists(v2, b2)) => {
+                let marker = *depth;
+                *depth += 1;
+                let old_left = left.insert(*v1, marker);
+                let old_right = right.insert(*v2, marker);
+                let result = formula_eq(b1, b2, left, right, depth, symbols);
+                match old_left {
+                    Some(value) => {
+                        left.insert(*v1, value);
+                    }
+                    None => {
+                        left.remove(v1);
+                    }
+                }
+                match old_right {
+                    Some(value) => {
+                        right.insert(*v2, value);
+                    }
+                    None => {
+                        right.remove(v2);
+                    }
+                }
+                *depth -= 1;
+                result
+            }
+            _ => false,
+        }
+    }
+
+    let mut left = HashMap::new();
+    let mut right = HashMap::new();
+    let mut depth = 0;
+    formula_eq(f1, f2, &mut left, &mut right, &mut depth, symbols)
 }
 
 fn is_truth_role(r: FormulaRole) -> bool {
@@ -228,4 +671,131 @@ fn clause_to_formula_with_forall(clause: &mrs_core::clause::Clause) -> mrs_core:
         body = mrs_core::Formula::Forall(v, Box::new(body));
     }
     body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mrs_tptp::parse_tptp;
+
+    fn leaf(input: &'static str) -> &'static AnnotatedFormula<'static> {
+        let problem = Box::leak(Box::new(parse_tptp(input).expect("parse")));
+        &problem.formulas[0]
+    }
+
+    #[test]
+    fn strict_mode_requires_linked_problem_for_leaf() {
+        let node = leaf("fof(a, axiom, p(a), file('problem.p', a)).");
+        let mut symbols = SymbolTable::new();
+        assert!(matches!(
+            check_leaf(node, None, &mut symbols, true),
+            StepOutcome::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn competition_mode_also_requires_linked_problem_for_leaf() {
+        // Accepting an unchecked leaf would make the whole proof
+        // "verified modulo assumptions", which turns an unresolvable
+        // `% Proof :` link into a free pass for every axiom. Fail closed in
+        // both modes.
+        let node = leaf("fof(a, axiom, p(a), file('problem.p', a)).");
+        let mut symbols = SymbolTable::new();
+        assert!(matches!(
+            check_leaf(node, None, &mut symbols, false),
+            StepOutcome::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn ac_matching_does_not_reorder_unknown_binary_functions() {
+        let problem = parse_tptp("fof(a, axiom, p(f(a,b))).").expect("problem parses");
+        let mut symbols = SymbolTable::new();
+        let mut proof =
+            parse_tptp("fof(a, axiom, p(f(b,a)), file('problem.p', a)).").expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
+        assert!(matches!(
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
+            StepOutcome::Unsound(_)
+        ));
+    }
+
+    #[test]
+    fn ac_matching_accepts_explicitly_commutative_function() {
+        let problem = parse_tptp(
+            "fof(comm, axiom, ![X,Y]: f(X,Y) = f(Y,X)).\n\
+             fof(a, axiom, p(f(a,b))).",
+        )
+        .expect("problem parses");
+        let mut proof =
+            parse_tptp("fof(a, axiom, p(f(b,a)), file('problem.p', a)).").expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        let mut symbols = SymbolTable::new();
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
+        assert_eq!(
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
+            StepOutcome::Sound
+        );
+    }
+
+    #[test]
+    fn ac_matching_preserves_quantifier_kind() {
+        let problem = parse_tptp("fof(a, axiom, ![X]: p(X)).").expect("problem parses");
+        let mut proof =
+            parse_tptp("fof(a, axiom, ?[X]: p(X), file('problem.p', a)).").expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        let mut symbols = SymbolTable::new();
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
+        assert!(matches!(
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
+            StepOutcome::Unsound(_)
+        ));
+    }
+
+    #[test]
+    fn indexed_named_lookup_preserves_first_duplicate_name_match() {
+        let problem = parse_tptp(
+            "fof(dup, axiom, p(a)).\n\
+             fof(dup, axiom, q(a)).",
+        )
+        .expect("problem parses");
+        let mut proof =
+            parse_tptp("fof(dup, axiom, q(a), file('problem.p', dup)).").expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        let mut symbols = SymbolTable::new();
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
+        assert!(matches!(
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
+            StepOutcome::Unsound(_)
+        ));
+    }
+
+    #[test]
+    fn indexed_missing_name_keeps_formula_fallback() {
+        let problem = parse_tptp("fof(actual, axiom, p(a)).").expect("problem parses");
+        let mut proof = parse_tptp("fof(other, axiom, p(a), file('problem.p', absent)).")
+            .expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        let mut symbols = SymbolTable::new();
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
+        assert_eq!(
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
+            StepOutcome::Sound
+        );
+    }
+
+    #[test]
+    fn indexed_lookup_does_not_match_compatible_but_wrong_role() {
+        let problem = parse_tptp("fof(goal, conjecture, p(a)).").expect("problem parses");
+        let mut proof =
+            parse_tptp("fof(goal, axiom, p(a), file('problem.p', goal)).").expect("proof parses");
+        let proof_node = proof.formulas.pop().expect("proof formula");
+        let mut symbols = SymbolTable::new();
+        let index = ProblemLeafIndex::new(&problem, &mut symbols);
+        assert!(matches!(
+            check_leaf(&proof_node, Some((&problem, &index)), &mut symbols, true),
+            StepOutcome::Unsound(_)
+        ));
+    }
 }

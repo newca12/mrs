@@ -1,0 +1,25 @@
+{
+  "run_id": "mrs_bench_20261001_114146_ce884876",
+  "timestamp": "20261001_114146",
+  "git_commit": "38e1f85d927a955ca4a18f68fa57fe1db88075e2",
+  "git_branch": "main",
+  "git_dirty": true,
+  "binary_path": "/DATA/ai/mrs/crates/mrs-bench/../../target/release/mrs",
+  "binary_sha256": "2bc47db95f339e6262db3f7549fb58c10b5f26650e23e8d3843bc02fdb3a14bb",
+  "edition": "casc-30",
+  "systems": "mrs",
+  "divisions": "fne",
+  "jobs": 2,
+  "default_time_limit": 120,
+  "use_casc_times": 1,
+  "host": {
+    "hostname": "teenf9901",
+    "kernel": "5.14.0-570.18.1.el9_6.x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Silver 4108 CPU @ 1.80GHz",
+    "cpu_cores": 32,
+    "memory_mb": 128019
+  },
+  "toolchain": {
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)"
+  }
+}

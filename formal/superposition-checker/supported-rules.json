@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "checker_status": "prototype_non_certifying",
+  "ir_schema_status": "wire_v1_verified_bounded_decoder_and_unverified_tptp_bridge",
+  "rules": [
+    {
+      "id": "ground-unit-positive-equality-unary-predicate-whole-argument",
+      "module": "superposition_checker.rs",
+      "status": "verified_executable_slice",
+      "description": "Positive ground unit equality rewrites the whole argument of a positive unary-predicate unit clause.",
+      "production_certification": false
+    },
+    {
+      "id": "fixed-variable-two-literal-schema",
+      "module": "variable_superposition.rs",
+      "status": "verified_fixed_schema",
+      "description": "The fixed f(a)=b, q(X) | p(f(X)) schema, with whole-target substitution.",
+      "production_certification": false
+    },
+    {
+      "id": "general-standardized-apart-superposition-semantics",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_replay_soundness",
+      "description": "Accepted exact ordered replay preserves universal clause validity via standardized_superposition_sound, with independent parent freshening, common simultaneous one-step unifier, whole-parent substitution, arbitrary selected indices and explicit target position. Includes a manually encoded executable IR replay of archived SWV406+1:c502; the fixture is not parsed. Complete hygiene/resource refinement remains open. See RULE_CONTRACT.md.",
+      "production_certification": false
+    },
+    {
+      "id": "nullary-predicate-resolution",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Bounded exact ordered resolution on positive-left/negative-right occurrences of the same 0-ary predicate. Accepted replay proves universal validity preservation; DAG dispatch binds cited parents and conclusion to local entailment. Unit and multi-step refutations certify without empty inputs. No first-order unification or context normalization.",
+      "production_certification": false
+    },
+    {
+      "id": "exact-atom-resolution",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Positive-left/negative-right identical predicate or equality atoms, exact ordered contexts, no pivot unification. Enables complete superposition plus exact-resolution refutation DAGs through wire v1.",
+      "production_certification": false
+    },
+    {
+      "id": "first-order-resolution",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Standardized-apart first-order binary resolution with independent parent freshening, common simultaneous one-step unifier, positive-left/negative-right unified atom pivot equation, and exact concatenated resolvent construction. Dispatched in proof DAGs via ProofNodeKind::FirstOrderResolution; proven by standardized_first_order_resolution_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "equality-resolution",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Equality resolution (reflexivity resolution) on a negative equality literal: from C | s != t where s and t unify under unifier sigma, derive C sigma. Dispatched in proof DAGs via ProofNodeKind::EqualityResolution; proven by equality_resolution_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "clause-factoring",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "First-order clause factoring: from C | L1 | L2 where L1 and L2 have the same polarity and their atoms unify under unifier sigma, derive (C | L1) sigma. Dispatched in proof DAGs via ProofNodeKind::Factoring; proven by clause_factoring_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "equality-factoring",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Equality factoring on positive equality literals: from C | s = t | u = v where s and u unify under unifier sigma, derive (C | t != v | s = t) sigma. Dispatched in proof DAGs via ProofNodeKind::EqualityFactoring; proven by equality_factoring_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "subsumption-resolution",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Subsumption resolution (contextual literal elimination): from target clause C | L and active clause A | ~L' where L' unifies with L under unifier sigma and all other literals of A sigma match literals in C, derive C without instantiating C. Dispatched in proof DAGs via ProofNodeKind::SubsumptionResolution; proven by subsumption_resolution_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "clause-weakening",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Clause weakening: from universally valid parent clause C, any superset clause D containing all literals of C is universally valid. Dispatched in proof DAGs via ProofNodeKind::Weakening; proven by clause_weakening_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "demodulation",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Demodulation (unit equality rewriting): from target clause C and unit positive equality parent s = t (or t = s), replacing an occurrence of s sigma (or t sigma) at position p in literal k of C by t sigma (or s sigma) derives C with literal k rewritten, preserving all other literals and their positions. Dispatched in proof DAGs via ProofNodeKind::Demodulation; proven by demodulation_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "clause-instantiation",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Clause instantiation: from universally valid parent clause C and arbitrary simultaneous substitution sigma, the instance C sigma is universally valid. Dispatched in proof DAGs via ProofNodeKind::Instantiation; proven by instantiation_sound and clause_valid_after_substitution to preserve universal validity.",
+      "production_certification": false
+    },
+    {
+      "id": "proof-dag-refutation",
+      "module": "first_order_core.rs",
+      "status": "verified_ir_dag_certification",
+      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution, first-order resolution, equality resolution, clause and equality factoring, subsumption resolution, weakening, demodulation, and clause instantiation. Wire v1 decoding is verified; the CNF TPTP bridge remains trusted and provides opt-in MRS shadow and dual-check APIs.",
+      "production_certification": false
+    }
+  ],
+  "limits": {
+    "term_constructors": ["variable", "constant", "unary_function", "binary_function"],
+    "atom_constructors": ["predicate_arity_0", "predicate_arity_1", "predicate_arity_2", "equality"],
+    "variable_arity_functions": false,
+    "general_clause_replay": true,
+    "ordered_calculus_conditions": false,
+    "ac_reasoning": false,
+    "tstp_parser": false,
+    "proof_dag_certification": true,
+    "dag_requires_root_ancestor_closure": true,
+    "dag_closure_work_bounded": true,
+    "dag_work_budget_partitioned_by_phase_and_node": true,
+    "dag_parent_validation_charged_to_node_budget": true,
+    "dag_parent_and_conclusion_structure_charged_before_replay": true,
+    "dag_input_leaf_repeated_comparisons_charge_both_clauses": true,
+    "dag_zero_per_node_budget_fails_closed": true,
+    "dag_exact_cumulative_replay_work": false,
+    "dag_resolution_nullary": true,
+    "standalone_resolution_nullary": true,
+    "standalone_resolution_first_order_unifier": true,
+    "dag_resolution_first_order_unifier": true,
+    "equality_resolution_rule": true,
+    "dag_equality_resolution": true,
+    "clause_factoring_rule": true,
+    "dag_clause_factoring": true,
+    "equality_factoring_rule": true,
+    "dag_equality_factoring": true,
+    "subsumption_resolution_rule": true,
+    "dag_subsumption_resolution": true,
+    "clause_weakening_rule": true,
+    "dag_weakening": true,
+    "demodulation_rule": true,
+    "dag_demodulation": true,
+    "clause_instantiation_rule": true,
+    "dag_instantiation": true,
+    "archived_c502_step_replay": true,
+    "archived_c502_full_proof_translation": false,
+    "source_variable_unification_regression": true,
+    "adversarial_hygiene_and_position_guards_tested": true,
+    "same_host_runtime_build_hash_reproducibility_checked": true,
+    "cross_host_artifact_reproducibility_checked": false,
+    "serialized_interchange_version": 1,
+    "wire_max_bytes": 4194304,
+    "wire_max_nodes": 512,
+    "wire_max_term_depth": 64,
+    "wire_max_clause_literals": 64,
+    "wire_max_bindings": 256,
+    "wire_structural_decoder_verified": true,
+    "wire_byte_tokenizer_verified": true,
+    "wire_token_value_correspondence_postcondition": true,
+    "wire_token_value_examples_tested": true,
+    "wire_tokenizer_malformed_mutation_checked": true,
+    "wire_decoder_fully_verified": false,
+    "child_env_cleared": true,
+    "child_cwd_fixed": true,
+    "child_process_group_isolated": true,
+    "child_cpu_seconds_max": 60,
+    "child_address_space_bytes_max": 805306368,
+    "child_file_size_bytes_max": 1048576,
+    "child_core_dumps_disabled": true,
+    "linux_no_new_privs": true,
+    "child_sandbox_behavior_tested_unix": true,
+    "dag_root_empty_clause_in_certification_contract": true,
+    "supported_inference_requires_exact_binary_parents": true,
+    "tptp_bridge_verified": false,
+    "loaded_job_include_selections_applied": true,
+    "include_resolver_verified": false,
+    "nested_include_selection_tested": true,
+    "loaded_job_include_dag_bridge_tested": true,
+    "dag_resolution_exact_atoms": true,
+    "mrs_integration": true,
+    "mrs_integration_modes": ["shadow", "opt_in_dual_check_trusted_adapter"],
+    "archived_c502_tptp_local_step_translation": true,
+    "c502_verdict": "accepted_as_sound_local_superposition_step"
+  }
+}

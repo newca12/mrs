@@ -9,6 +9,7 @@
 
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
 use mrs_core::term::Term;
+use mrs_core::witness::{ProofNodeId, ProofWitness};
 use mrs_core::{Atom, Literal};
 
 /// Converts an atom to a term for unification purposes.
@@ -52,7 +53,7 @@ pub fn factor(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
                     }
                 }
 
-                factors.push(Clause::new_avatar(
+                let mut derived = Clause::new_avatar(
                     id_gen.next(),
                     lits,
                     ClauseSource::Inference {
@@ -60,7 +61,14 @@ pub fn factor(clause: &Clause, id_gen: &mut ClauseIdGen) -> Vec<Clause> {
                         parents: vec![clause.id].into(),
                     },
                     clause.avatar.clone(),
-                ));
+                );
+                derived.witness = Some(ProofWitness::Factoring {
+                    parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                    retained_lit_idx: i,
+                    removed_lit_idx: j,
+                    unifier: Some(mgu),
+                });
+                factors.push(derived);
             }
         }
     }
@@ -82,10 +90,30 @@ pub fn factor_id(
     bank: &mut TermBank,
     id_gen: &mut ClauseIdGen,
 ) -> Vec<IdClause> {
+    factor_id_until(clause, bank, id_gen, None)
+}
+
+/// Factoring with an optional deadline.
+///
+/// Returns as soon as the instant passes, possibly with a partial factor set.
+/// Callers must treat a return after the deadline as "search over budget":
+/// the unbounded variant [`factor_id`] passes `None`.
+pub fn factor_id_until(
+    clause: &IdClause,
+    bank: &mut TermBank,
+    id_gen: &mut ClauseIdGen,
+    deadline: Option<std::time::Instant>,
+) -> Vec<IdClause> {
     let mut factors = Vec::new();
 
     for i in 0..clause.literals.len() {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return factors;
+        }
         for j in (i + 1)..clause.literals.len() {
+            if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+                return factors;
+            }
             let l1 = &clause.literals[i];
             let l2 = &clause.literals[j];
 
@@ -110,7 +138,7 @@ pub fn factor_id(
                     }
                 }
 
-                factors.push(IdClause::new_avatar(
+                let mut derived = IdClause::new_avatar(
                     id_gen.next(),
                     lits,
                     ClauseSource::Inference {
@@ -118,7 +146,14 @@ pub fn factor_id(
                         parents: vec![clause.id].into(),
                     },
                     clause.avatar.clone(),
-                ));
+                );
+                derived.witness = Some(ProofWitness::Factoring {
+                    parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                    retained_lit_idx: i,
+                    removed_lit_idx: j,
+                    unifier: None,
+                });
+                factors.push(derived);
             }
         }
     }
@@ -249,5 +284,35 @@ mod tests {
         let mut id_gen = ClauseIdGen::new();
         let factors = factor(&c, &mut id_gen);
         assert!(factors.is_empty());
+    }
+
+    #[test]
+    fn factor_until_expired_deadline_returns_no_factors() {
+        // {p(X), p(a)} factors to {p(a)}, unless the deadline already passed.
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+
+        let legacy = input_clause(
+            0,
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(p, vec![Term::constant(a)])),
+            ],
+        );
+
+        let mut bank = TermBank::new();
+        let clause = bank.clause_from_legacy(&legacy);
+
+        let mut id_gen = ClauseIdGen::new();
+        let full = factor_id(&clause, &mut bank, &mut id_gen);
+        assert_eq!(full.len(), 1);
+
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let partial = factor_id_until(&clause, &mut bank, &mut id_gen, Some(past));
+        assert!(partial.is_empty());
+
+        let same = factor_id_until(&clause, &mut bank, &mut id_gen, None);
+        assert_eq!(same.len(), 1);
     }
 }
