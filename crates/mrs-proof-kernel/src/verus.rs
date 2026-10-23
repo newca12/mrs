@@ -1279,8 +1279,8 @@ fn instantiation_certificate(
     }
     let expected: Vec<_> = parent
         .iter()
-        .map(|l| apply_substitution_literal(l, &subst))
-        .collect();
+        .map(|literal| instantiate(literal, &subst, &mut fuel))
+        .collect::<Result<_, _>>()?;
     if expected != goal {
         return Err("instantiate conclusion mismatch".into());
     }
