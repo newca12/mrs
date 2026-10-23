@@ -84,16 +84,21 @@ names must be unique; missing parents, cycles, nonempty roots and disconnected
 nodes cannot obtain a formal positive result. The whole DAG is transmitted;
 unused proof nodes are not silently deleted to obtain closure.
 
-Rules: ordinary superposition, and resolution with positive-left/negative-right
-**identical** atom pivots, including predicate and equality atoms. No resolution
-unification is implemented. Superposition discovery independently freshens the
-parents, finds a bounded syntactic unifier and preserves both complete contexts.
-It compares ordered conclusions up to a bijective variable renaming. The local
-step adapter can orient the selected source equality in either direction;
-whole-DAG lowering currently requires the original left-to-right orientation
-so its certificate still matches its cited parent exactly. Alpha-normalized
-superposition conclusions become the representation used by subsequent nodes.
-These trusted transformations are not advertised as Verus-refined lowering.
+Rules include ordinary superposition; exact complementary-atom resolution;
+standardized-apart first-order resolution; equality resolution; clause and
+equality factoring; subsumption resolution; weakening; unit-equality
+demodulation; and clause instantiation. The executable checker validates each
+certificate and its exact cited parents and conclusion. Superposition and
+first-order resolution discovery independently freshen the parents and find a
+bounded syntactic unifier. Superposition preserves both complete contexts and
+compares ordered conclusions up to a bijective variable renaming. The local
+superposition adapter can orient the selected source equality in either
+direction; whole-DAG lowering currently requires the original left-to-right
+orientation so its certificate still matches its cited parent exactly.
+Alpha-normalized superposition conclusions become the representation used by
+subsequent nodes. These trusted transformations are not advertised as
+Verus-refined lowering. AC reasoning, ordered-calculus conditions and broader
+transformations remain unsupported.
 
 The archived artifact contains only c27/c39/c502, not the complete archived
 refutation. Its local step is translated and replayed; **full SWV406+1 proof

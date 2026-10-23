@@ -149,14 +149,14 @@ valuation, because substitutions can select different parent instances.
 Whole-DAG IR acceptance is now proved by `certify_dag`: acceptance implies no
 well-formed model of the supplied universally closed input clauses. Exact input
 membership is checked; no runtime semantic-validity test is required.
-DAG-dispatched inference rules include superposition and nullary-predicate
-resolution. `check_nullary_resolution` postconditions validity preservation,
-and `check_dag_resolution_step` composes that with the cited node parents and
-conclusion. Pivots are positive-left/negative-right occurrences of the same
-nullary predicate, with exactly one occurrence deleted from each parent and
-exact left-context/right-context order, including duplicate literals. No
-substitution, standardization or normalization is applied by this resolution
-slice. Complete hygiene/resource refinement, conclusion comparison
-modulo proved clause equivalences, an MRS interchange format, and c502 analysis
+The proof DAG also dispatches nullary and exact-atom resolution,
+standardized-apart first-order resolution, equality resolution, clause and
+equality factoring, subsumption resolution, weakening, demodulation, and clause
+instantiation. Each rule's replay is bound to cited parents and conclusion and
+has a universal-validity preservation postcondition. The nullary-resolution
+slice uses positive-left/negative-right occurrences of the same nullary
+predicate, deletes exactly one occurrence from each parent and preserves exact
+left-context/right-context order, including duplicates. Complete
+hygiene/resource refinement, conclusion comparison modulo proved clause
 remain open. See `ASSURANCE.md` and
 `supported-rules.json` for the current claim boundary.

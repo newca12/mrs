@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "checker_status": "prototype_non_certifying",
-  "ir_schema_status": "wire_v1_bounded_unverified_decoder_and_tptp_bridge",
+  "ir_schema_status": "wire_v1_verified_bounded_decoder_and_unverified_tptp_bridge",
   "rules": [
     {
       "id": "ground-unit-positive-equality-unary-predicate-whole-argument",
@@ -98,7 +98,7 @@
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
-      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution. Wire v1 and a trusted CNF TPTP bridge provide opt-in MRS shadow and dual-check APIs. The byte decoder and TPTP bridge are unverified.",
+      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution, first-order resolution, equality resolution, clause and equality factoring, subsumption resolution, weakening, demodulation, and clause instantiation. Wire v1 decoding is verified; the CNF TPTP bridge remains trusted and provides opt-in MRS shadow and dual-check APIs.",
       "production_certification": false
     }
   ],
