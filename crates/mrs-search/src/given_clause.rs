@@ -1274,6 +1274,14 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 sym_config.clone(),
                 std::sync::Arc::new(ac_syms.clone()),
             );
+        } else if matches!(
+            ordering,
+            crate::TermOrdering::LPO | crate::TermOrdering::CustomLPO(_)
+        ) {
+            ordering = crate::TermOrdering::CustomACRPO(
+                sym_config.clone(),
+                std::sync::Arc::new(ac_syms.clone()),
+            );
         }
     }
 

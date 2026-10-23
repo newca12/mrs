@@ -506,6 +506,7 @@ impl Default for KBO {
 #[derive(Clone, Debug)]
 pub struct LPO {
     config: Arc<SymbolConfig>,
+    ac_symbols: Option<Arc<HashSet<SymbolId>>>,
 }
 
 /// Memo of `lpo_gt`/`lpo_gt_id` results for one top-level comparison.
@@ -669,11 +670,22 @@ impl LPO {
     pub fn new() -> Self {
         Self {
             config: Arc::new(SymbolConfig::default()),
+            ac_symbols: None,
         }
     }
 
     pub fn with_config(config: Arc<SymbolConfig>) -> Self {
-        Self { config }
+        Self {
+            config,
+            ac_symbols: None,
+        }
+    }
+
+    pub fn with_ac(config: Arc<SymbolConfig>, ac_symbols: Arc<HashSet<SymbolId>>) -> Self {
+        Self {
+            config,
+            ac_symbols: Some(ac_symbols),
+        }
     }
 
     pub fn compare_id(
@@ -693,7 +705,13 @@ impl LPO {
             Some(true) => TermComparison::Greater,
             Some(false) => match self.lpo_gt_id(t, s, bank, &mut memo) {
                 Some(true) => TermComparison::Less,
-                Some(false) => TermComparison::Incomparable,
+                Some(false) => {
+                    if self.ac_equal_id(s, t, bank) {
+                        TermComparison::Equal
+                    } else {
+                        TermComparison::Incomparable
+                    }
+                }
                 None => budget::mark_expired(),
             },
             None => budget::mark_expired(),
@@ -778,7 +796,11 @@ impl LPO {
                         if prec_f > prec_g {
                             Some(true)
                         } else if prec_f == prec_g {
-                            self.lex_gt_id(s_args, t_args, bank, memo)
+                            if f == g && self.ac_symbols.as_ref().is_some_and(|ac| ac.contains(f)) {
+                                self.ac_multiset_gt_id(s, t, *f, bank, memo)
+                            } else {
+                                self.lex_gt_id(s_args, t_args, bank, memo)
+                            }
                         } else {
                             Some(false)
                         }
@@ -788,6 +810,152 @@ impl LPO {
                     }
                 }
             }
+        }
+    }
+
+    fn ac_multiset_gt_id(
+        &self,
+        s: mrs_core::term_bank::TermId,
+        t: mrs_core::term_bank::TermId,
+        f: SymbolId,
+        bank: &mrs_core::term_bank::TermBank,
+        memo: &mut LpoMemo,
+    ) -> Option<bool> {
+        let mut s_flat = Vec::new();
+        let mut stack = vec![s];
+        while let Some(curr) = stack.pop() {
+            if let mrs_core::term_bank::TermNode::App(g, args) = bank.get(curr)
+                && *g == f
+            {
+                stack.extend(args.iter().copied());
+                continue;
+            }
+            s_flat.push(curr);
+        }
+        let mut t_flat = Vec::new();
+        let mut stack = vec![t];
+        while let Some(curr) = stack.pop() {
+            if let mrs_core::term_bank::TermNode::App(g, args) = bank.get(curr)
+                && *g == f
+            {
+                stack.extend(args.iter().copied());
+                continue;
+            }
+            t_flat.push(curr);
+        }
+
+        // Cancel identical elements modulo AC
+        let mut i = 0;
+        while i < s_flat.len() {
+            if let Some(j) = t_flat
+                .iter()
+                .position(|&x| x == s_flat[i] || self.ac_equal_id(x, s_flat[i], bank))
+            {
+                s_flat.swap_remove(i);
+                t_flat.swap_remove(j);
+            } else {
+                i += 1;
+            }
+        }
+
+        if s_flat.is_empty() && t_flat.is_empty() {
+            return Some(false);
+        }
+        if s_flat.is_empty() {
+            return Some(false);
+        }
+        if t_flat.is_empty() {
+            return Some(true);
+        }
+
+        memo.charge_many(s_flat.len().saturating_mul(t_flat.len()), budget::limit())?;
+        for &tj in &t_flat {
+            let mut dominated = false;
+            for &si in &s_flat {
+                if self.lpo_gt_id(si, tj, bank, memo)? {
+                    dominated = true;
+                    break;
+                }
+            }
+            if !dominated {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+
+    fn ac_equal_id(
+        &self,
+        s: mrs_core::term_bank::TermId,
+        t: mrs_core::term_bank::TermId,
+        bank: &mrs_core::term_bank::TermBank,
+    ) -> bool {
+        if s == t {
+            return true;
+        }
+        let Some(ac) = &self.ac_symbols else {
+            return false;
+        };
+        match (bank.get(s), bank.get(t)) {
+            (
+                mrs_core::term_bank::TermNode::App(f1, args1),
+                mrs_core::term_bank::TermNode::App(f2, args2),
+            ) => {
+                if f1 != f2 {
+                    return false;
+                }
+                if ac.contains(f1) {
+                    let mut s_flat = Vec::new();
+                    let mut stack = vec![s];
+                    while let Some(curr) = stack.pop() {
+                        if let mrs_core::term_bank::TermNode::App(g, args) = bank.get(curr)
+                            && g == f1
+                        {
+                            stack.extend(args.iter().copied());
+                            continue;
+                        }
+                        s_flat.push(curr);
+                    }
+                    let mut t_flat = Vec::new();
+                    let mut stack = vec![t];
+                    while let Some(curr) = stack.pop() {
+                        if let mrs_core::term_bank::TermNode::App(g, args) = bank.get(curr)
+                            && g == f2
+                        {
+                            stack.extend(args.iter().copied());
+                            continue;
+                        }
+                        t_flat.push(curr);
+                    }
+                    if s_flat.len() != t_flat.len() {
+                        return false;
+                    }
+                    let mut used = vec![false; t_flat.len()];
+                    for si in s_flat {
+                        let mut found = false;
+                        for (j, &tj) in t_flat.iter().enumerate() {
+                            if !used[j] && self.ac_equal_id(si, tj, bank) {
+                                used[j] = true;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            return false;
+                        }
+                    }
+                    true
+                } else {
+                    if args1.len() != args2.len() {
+                        return false;
+                    }
+                    args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(&a1, &a2)| self.ac_equal_id(a1, a2, bank))
+                }
+            }
+            _ => false,
         }
     }
 
@@ -856,7 +1024,13 @@ impl LPO {
             Some(true) => TermComparison::Greater,
             Some(false) => match self.lpo_gt(t, s, &mut memo) {
                 Some(true) => TermComparison::Less,
-                Some(false) => TermComparison::Incomparable,
+                Some(false) => {
+                    if self.ac_equal(s, t) {
+                        TermComparison::Equal
+                    } else {
+                        TermComparison::Incomparable
+                    }
+                }
                 None => budget::mark_expired(),
             },
             None => budget::mark_expired(),
@@ -934,9 +1108,12 @@ impl LPO {
                             // Case 2b: f ≻ g and s >_lpo all tj
                             Some(true)
                         } else if prec_f == prec_g {
-                            // Case 2c: same precedence, lexicographic comparison
-                            // and s >_lpo all tj (already checked)
-                            self.lex_gt(s_args, t_args, memo)
+                            // Case 2c: same precedence, multiset comparison if AC or lexicographic
+                            if f == g && self.ac_symbols.as_ref().is_some_and(|ac| ac.contains(f)) {
+                                self.ac_multiset_gt(s, t, *f, memo)
+                            } else {
+                                self.lex_gt(s_args, t_args, memo)
+                            }
                         } else {
                             Some(false)
                         }
@@ -985,6 +1162,136 @@ impl LPO {
         }
         Some(false)
     }
+
+    fn ac_multiset_gt(&self, s: &Term, t: &Term, f: SymbolId, memo: &mut LpoMemo) -> Option<bool> {
+        let mut s_flat = Vec::new();
+        let mut stack = vec![s];
+        while let Some(curr) = stack.pop() {
+            if let Term::App(g, args) = curr
+                && *g == f
+            {
+                stack.extend(args.iter());
+                continue;
+            }
+            s_flat.push(curr);
+        }
+        let mut t_flat = Vec::new();
+        let mut stack = vec![t];
+        while let Some(curr) = stack.pop() {
+            if let Term::App(g, args) = curr
+                && *g == f
+            {
+                stack.extend(args.iter());
+                continue;
+            }
+            t_flat.push(curr);
+        }
+
+        let mut i = 0;
+        while i < s_flat.len() {
+            if let Some(j) = t_flat
+                .iter()
+                .position(|&x| x == s_flat[i] || self.ac_equal(x, s_flat[i]))
+            {
+                s_flat.swap_remove(i);
+                t_flat.swap_remove(j);
+            } else {
+                i += 1;
+            }
+        }
+
+        if s_flat.is_empty() && t_flat.is_empty() {
+            return Some(false);
+        }
+        if s_flat.is_empty() {
+            return Some(false);
+        }
+        if t_flat.is_empty() {
+            return Some(true);
+        }
+
+        memo.charge_many(s_flat.len().saturating_mul(t_flat.len()), budget::limit())?;
+        for &tj in &t_flat {
+            let mut dominated = false;
+            for &si in &s_flat {
+                if self.lpo_gt(si, tj, memo)? {
+                    dominated = true;
+                    break;
+                }
+            }
+            if !dominated {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+
+    fn ac_equal(&self, s: &Term, t: &Term) -> bool {
+        if s == t {
+            return true;
+        }
+        let Some(ac) = &self.ac_symbols else {
+            return false;
+        };
+        match (s, t) {
+            (Term::App(f1, args1), Term::App(f2, args2)) => {
+                if f1 != f2 {
+                    return false;
+                }
+                if ac.contains(f1) {
+                    let mut s_flat = Vec::new();
+                    let mut stack = vec![s];
+                    while let Some(curr) = stack.pop() {
+                        if let Term::App(g, args) = curr
+                            && g == f1
+                        {
+                            stack.extend(args.iter());
+                            continue;
+                        }
+                        s_flat.push(curr);
+                    }
+                    let mut t_flat = Vec::new();
+                    let mut stack = vec![t];
+                    while let Some(curr) = stack.pop() {
+                        if let Term::App(g, args) = curr
+                            && g == f2
+                        {
+                            stack.extend(args.iter());
+                            continue;
+                        }
+                        t_flat.push(curr);
+                    }
+                    if s_flat.len() != t_flat.len() {
+                        return false;
+                    }
+                    let mut used = vec![false; t_flat.len()];
+                    for si in s_flat {
+                        let mut found = false;
+                        for (j, &tj) in t_flat.iter().enumerate() {
+                            if !used[j] && self.ac_equal(si, tj) {
+                                used[j] = true;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            return false;
+                        }
+                    }
+                    true
+                } else {
+                    if args1.len() != args2.len() {
+                        return false;
+                    }
+                    args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(a1, a2)| self.ac_equal(a1, a2))
+                }
+            }
+            _ => false,
+        }
+    }
 }
 
 impl Default for LPO {
@@ -1010,6 +1317,8 @@ pub enum TermOrdering {
     CustomACKBO(Arc<SymbolConfig>, Arc<HashSet<SymbolId>>),
     /// LPO with custom configuration.
     CustomLPO(Arc<SymbolConfig>),
+    /// LPO (AC-RPO) with custom configuration and AC symbols.
+    CustomACRPO(Arc<SymbolConfig>, Arc<HashSet<SymbolId>>),
 }
 
 impl TermOrdering {
@@ -1023,6 +1332,9 @@ impl TermOrdering {
                 KBO::with_ac(config.clone(), ac.clone()).compare(s, t)
             }
             TermOrdering::CustomLPO(config) => LPO::with_config(config.clone()).compare(s, t),
+            TermOrdering::CustomACRPO(config, ac) => {
+                LPO::with_ac(config.clone(), ac.clone()).compare(s, t)
+            }
         }
     }
 
@@ -1044,6 +1356,9 @@ impl TermOrdering {
             TermOrdering::CustomLPO(config) => {
                 LPO::with_config(config.clone()).compare_id(s, t, bank)
             }
+            TermOrdering::CustomACRPO(config, ac) => {
+                LPO::with_ac(config.clone(), ac.clone()).compare_id(s, t, bank)
+            }
         }
     }
 
@@ -1053,7 +1368,8 @@ impl TermOrdering {
             TermOrdering::KBO | TermOrdering::LPO => Arc::new(SymbolConfig::default()),
             TermOrdering::CustomKBO(config)
             | TermOrdering::CustomACKBO(config, _)
-            | TermOrdering::CustomLPO(config) => config.clone(),
+            | TermOrdering::CustomLPO(config)
+            | TermOrdering::CustomACRPO(config, _) => config.clone(),
         }
     }
 }
@@ -1621,5 +1937,95 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn ac_rpo_and_ac_kbo_ordering() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("plus");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let c = syms.intern("c");
+
+        let mut ac_set = HashSet::default();
+        ac_set.insert(f);
+        let ac_set = Arc::new(ac_set);
+
+        // Precedence: a > b > c
+        let mut precedence = Vec::new();
+        let max_idx = f.index().max(a.index()).max(b.index()).max(c.index()) as usize;
+        precedence.resize(max_idx + 1, 0);
+        precedence[a.index() as usize] = 30;
+        precedence[b.index() as usize] = 20;
+        precedence[c.index() as usize] = 10;
+        precedence[f.index() as usize] = 5;
+
+        let config = Arc::new(SymbolConfig {
+            precedence,
+            weights: vec![1; max_idx + 1],
+            w0: 1,
+        });
+
+        let ac_rpo = LPO::with_ac(config.clone(), ac_set.clone());
+        let ac_kbo = KBO::with_ac(config.clone(), ac_set.clone());
+
+        let t_ab = Term::app(f, vec![Term::constant(a), Term::constant(b)]);
+        let t_ba = Term::app(f, vec![Term::constant(b), Term::constant(a)]);
+        assert_eq!(ac_rpo.compare(&t_ab, &t_ba), TermComparison::Equal);
+        assert_eq!(ac_kbo.compare(&t_ab, &t_ba), TermComparison::Equal);
+
+        // Associative re-parenthesizing: (a + b) + c == a + (b + c)
+        let t_assoc_left = Term::app(f, vec![t_ab.clone(), Term::constant(c)]);
+        let t_assoc_right = Term::app(
+            f,
+            vec![
+                Term::constant(a),
+                Term::app(f, vec![Term::constant(b), Term::constant(c)]),
+            ],
+        );
+        assert_eq!(
+            ac_rpo.compare(&t_assoc_left, &t_assoc_right),
+            TermComparison::Equal
+        );
+        assert_eq!(
+            ac_kbo.compare(&t_assoc_left, &t_assoc_right),
+            TermComparison::Equal
+        );
+
+        // a > b, so (a + c) > (b + c)
+        let t_ac = Term::app(f, vec![Term::constant(a), Term::constant(c)]);
+        let t_bc = Term::app(f, vec![Term::constant(b), Term::constant(c)]);
+        assert_eq!(ac_rpo.compare(&t_ac, &t_bc), TermComparison::Greater);
+        assert_eq!(ac_rpo.compare(&t_bc, &t_ac), TermComparison::Less);
+        assert_eq!(ac_kbo.compare(&t_ac, &t_bc), TermComparison::Greater);
+        assert_eq!(ac_kbo.compare(&t_bc, &t_ac), TermComparison::Less);
+
+        // Test with TermBank (compare_id)
+        let mut bank = mrs_core::term_bank::TermBank::new();
+        let const_a = bank.intern_app(a, Vec::new());
+        let const_b = bank.intern_app(b, Vec::new());
+        let id_ab = bank.intern_app(f, vec![const_a, const_b]);
+        let id_ba = bank.intern_app(f, vec![const_b, const_a]);
+        assert_eq!(
+            ac_rpo.compare_id(id_ab, id_ba, &bank),
+            TermComparison::Equal
+        );
+        assert_eq!(
+            ac_kbo.compare_id(id_ab, id_ba, &bank),
+            TermComparison::Equal
+        );
+
+        let ord_rpo = TermOrdering::CustomACRPO(config.clone(), ac_set.clone());
+        let ord_kbo = TermOrdering::CustomACKBO(config.clone(), ac_set.clone());
+        assert_eq!(ord_rpo.compare(&t_ab, &t_ba), TermComparison::Equal);
+        assert_eq!(ord_kbo.compare(&t_ab, &t_ba), TermComparison::Equal);
+        assert_eq!(
+            ord_rpo.compare_id(id_ab, id_ba, &bank),
+            TermComparison::Equal
+        );
+        assert_eq!(
+            ord_kbo.compare_id(id_ab, id_ba, &bank),
+            TermComparison::Equal
+        );
     }
 }

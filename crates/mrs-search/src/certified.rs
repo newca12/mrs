@@ -1495,7 +1495,10 @@ fn is_lpo(ordering: &TermOrdering) -> bool {
 }
 
 fn validate_ordering_kind(ordering: &TermOrdering) -> Result<(), CertificationFailure> {
-    if matches!(ordering, TermOrdering::CustomACKBO(_, _)) {
+    if matches!(
+        ordering,
+        TermOrdering::CustomACKBO(_, _) | TermOrdering::CustomACRPO(_, _)
+    ) {
         return Err(CertificationFailure::Unsupported(
             "AC ordering is outside the certified fragment",
         ));

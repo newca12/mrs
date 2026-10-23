@@ -9684,6 +9684,27 @@ fn ac_term_matches(
                     limits,
                     callback,
                 )
+            } else if associative.contains(left_symbol)
+                && left_args.len() >= 2
+                && right_args.len() >= 2
+            {
+                let left_leaves = flatten_ac_term(left, *left_symbol, associative);
+                let right_leaves = flatten_ac_term(right, *right_symbol, associative);
+                if left_leaves.len() != right_leaves.len() {
+                    return false;
+                }
+                match_assoc_leaves_ordered(
+                    &left_leaves,
+                    &right_leaves,
+                    0,
+                    mapping,
+                    reverse,
+                    commutative,
+                    associative,
+                    steps,
+                    limits,
+                    callback,
+                )
             } else if commutative.contains(left_symbol)
                 && left_args.len() == 2
                 && right_args.len() == 2
@@ -9843,6 +9864,53 @@ fn match_ac_leaves(
         }
     }
     false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn match_assoc_leaves_ordered(
+    left: &[&Term],
+    right: &[&Term],
+    index: usize,
+    mapping: &mut HashMap<VarId, VarId>,
+    reverse: &mut HashMap<VarId, VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    steps: &mut usize,
+    limits: VerificationLimits,
+    callback: AcCallback<'_>,
+) -> bool {
+    if *steps >= limits.max_equivalence_steps {
+        return false;
+    }
+    if index == left.len() {
+        return callback(mapping, reverse, steps);
+    }
+    ac_term_matches(
+        left[index],
+        right[index],
+        mapping,
+        reverse,
+        commutative,
+        associative,
+        steps,
+        limits,
+        &mut |next_m, next_r, steps| {
+            let mut m = next_m.clone();
+            let mut r = next_r.clone();
+            match_assoc_leaves_ordered(
+                left,
+                right,
+                index + 1,
+                &mut m,
+                &mut r,
+                commutative,
+                associative,
+                steps,
+                limits,
+                &mut *callback,
+            )
+        },
+    )
 }
 
 fn ac_match_priority(
@@ -10375,6 +10443,14 @@ fn background_ac_fallback(
             background_associative,
             limits,
         ) == AcReplay::Matched
+            || ac_subset_superposition_replay(
+                &equation_clause,
+                &target_clause,
+                goal,
+                background_commutative,
+                background_associative,
+                limits,
+            ) == AcReplay::Matched
         {
             return true;
         }
@@ -10553,14 +10629,24 @@ fn verify_ac_superposition(
                 &associative,
                 limits,
             ) {
-                AcReplay::NotFound => ac_subset_superposition_replay(
+                AcReplay::NotFound => match ac_subset_superposition_replay(
                     &source,
                     &target,
                     &goal,
                     &commutative,
                     &associative,
                     limits,
-                ),
+                ) {
+                    AcReplay::NotFound => ac_subset_superposition_replay(
+                        &target,
+                        &source,
+                        &goal,
+                        &commutative,
+                        &associative,
+                        limits,
+                    ),
+                    other => other,
+                },
                 other => other,
             }
         }
@@ -10806,16 +10892,23 @@ fn ac_subset_superposition_replay(
                     let target_operands = flatten_ac_term(subterm, symbol, associative);
                     let mut rewritten_operands =
                         Vec::with_capacity(target_operands.len() - consumed.len() + 1);
+                    let mut inserted_to = false;
                     let mut consumed_index = 0;
                     for (index, operand) in target_operands.iter().enumerate() {
                         if consumed_index < consumed.len() && consumed[consumed_index] == index {
+                            if !inserted_to {
+                                rewritten_operands.push(apply_substitution_term(to, &substitution));
+                                inserted_to = true;
+                            }
                             consumed_index += 1;
                         } else {
                             rewritten_operands
                                 .push(apply_substitution_term(operand, &substitution));
                         }
                     }
-                    rewritten_operands.push(apply_substitution_term(to, &substitution));
+                    if !inserted_to {
+                        rewritten_operands.push(apply_substitution_term(to, &substitution));
+                    }
                     let replacement = rebuild_ac_term(rewritten_operands, symbol);
                     let replaced_base = replace_term_at(base, &position, replacement);
                     let replaced_atom =
@@ -10840,9 +10933,18 @@ fn ac_subset_superposition_replay(
                         }
                     }
                     if clause_alpha_equiv(&expected, goal)
+                        || clause_alpha_equiv(&condense_clause(&expected), &condense_clause(goal))
                         || ac_clause_alpha_equiv(
                             &expected,
                             goal,
+                            commutative,
+                            associative,
+                            limits,
+                            &std::cell::Cell::new(false),
+                        )
+                        || ac_clause_alpha_equiv(
+                            &condense_clause(&expected),
+                            &condense_clause(goal),
                             commutative,
                             associative,
                             limits,
@@ -11347,6 +11449,31 @@ enum AcReplay {
     BudgetExhausted,
 }
 
+/// Checks whether two terms are equal modulo AC without allowing variable renaming.
+fn ac_terms_equal_mod(
+    left: &Term,
+    right: &Term,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    limits: VerificationLimits,
+) -> bool {
+    if left == right {
+        return true;
+    }
+    let mut steps = 0;
+    ac_term_matches(
+        left,
+        right,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        commutative,
+        associative,
+        &mut steps,
+        limits,
+        &mut |mapping, _reverse, _steps| mapping.iter().all(|(k, v)| k == v),
+    )
+}
+
 fn ac_superposition_replay(
     equation_clause: &[Literal],
     target_clause: &[Literal],
@@ -11412,6 +11539,17 @@ fn ac_superposition_replay(
                             {
                                 return false;
                             }
+                            let from_sub = apply_substitution_term(from, substitution);
+                            let subterm_sub = apply_substitution_term(subterm, substitution);
+                            if !ac_terms_equal_mod(
+                                &from_sub,
+                                &subterm_sub,
+                                commutative,
+                                associative,
+                                limits,
+                            ) {
+                                return false;
+                            }
                             let replacement = apply_substitution_term(to, substitution);
                             let replaced_base = replace_term_at(base, &position, replacement);
                             let replaced_atom =
@@ -11442,6 +11580,14 @@ fn ac_superposition_replay(
                                 || ac_clause_alpha_equiv(
                                     &expected,
                                     goal,
+                                    commutative,
+                                    associative,
+                                    limits,
+                                    &exhausted,
+                                )
+                                || ac_clause_alpha_equiv(
+                                    &condense_clause(&expected),
+                                    &condense_clause(goal),
                                     commutative,
                                     associative,
                                     limits,
@@ -11534,6 +11680,26 @@ fn for_each_ac_unifier(
                 &right_leaves,
                 0,
                 &mut used,
+                substitution,
+                commutative,
+                associative,
+                limits,
+                budget,
+                callback,
+            )
+        }
+        (Term::App(left_symbol, _), Term::App(right_symbol, _))
+            if left_symbol == right_symbol && associative.contains(left_symbol) =>
+        {
+            let left_leaves = flatten_ac_term(&left_sub, *left_symbol, associative);
+            let right_leaves = flatten_ac_term(&right_sub, *right_symbol, associative);
+            if left_leaves.len() != right_leaves.len() {
+                return false;
+            }
+            for_each_ac_unify_ordered(
+                &left_leaves,
+                &right_leaves,
+                0,
                 substitution,
                 commutative,
                 associative,
@@ -11712,6 +11878,48 @@ fn for_each_ac_unify_multiset(
         }
     }
     false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn for_each_ac_unify_ordered(
+    left: &[&Term],
+    right: &[&Term],
+    index: usize,
+    substitution: &mut HashMap<VarId, Term>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    limits: VerificationLimits,
+    budget: &AcUnifierBudget,
+    callback: &mut dyn FnMut(&HashMap<VarId, Term>) -> bool,
+) -> bool {
+    if !budget.consume() {
+        return false;
+    }
+    if index == left.len() {
+        return callback(substitution);
+    }
+    for_each_ac_unifier(
+        left[index],
+        right[index],
+        substitution,
+        commutative,
+        associative,
+        limits,
+        budget,
+        &mut |next_sub| {
+            for_each_ac_unify_ordered(
+                left,
+                right,
+                index + 1,
+                &mut next_sub.clone(),
+                commutative,
+                associative,
+                limits,
+                budget,
+                callback,
+            )
+        },
+    )
 }
 
 fn verify_paramodulation(
@@ -14965,6 +15173,188 @@ mod tests {
         );
         // target x=a makes f(x,b) exactly the source side f(a,b).
         assert_eq!(verdict, KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_associative_only_reassociation_superposition() {
+        let mut symbols = SymbolTable::new();
+        let mult = symbols.intern("assoc_mult");
+        let p = symbols.intern("assoc_p");
+        let a = symbols.intern("assoc_a");
+        let b = symbols.intern("assoc_b");
+        let c = symbols.intern("assoc_c");
+        let d = symbols.intern("assoc_d");
+        let associativity = Formula::atom(Atom::eq(
+            Term::app(
+                mult,
+                vec![
+                    Term::app(mult, vec![Term::var(0), Term::var(1)]),
+                    Term::var(2),
+                ],
+            ),
+            Term::app(
+                mult,
+                vec![
+                    Term::var(0),
+                    Term::app(mult, vec![Term::var(1), Term::var(2)]),
+                ],
+            ),
+        ));
+        // source: mult(mult(a, b), c) = d
+        let source = Formula::atom(Atom::eq(
+            Term::app(
+                mult,
+                vec![
+                    Term::app(mult, vec![Term::constant(a), Term::constant(b)]),
+                    Term::constant(c),
+                ],
+            ),
+            Term::constant(d),
+        ));
+        // target: p(mult(a, mult(b, c)))
+        let target = Formula::atom(Atom::Pred(
+            p,
+            vec![Term::app(
+                mult,
+                vec![
+                    Term::constant(a),
+                    Term::app(mult, vec![Term::constant(b), Term::constant(c)]),
+                ],
+            )],
+        ));
+        let conclusion = Formula::atom(Atom::Pred(p, vec![Term::constant(d)]));
+        let verdict = verify_ac_superposition(
+            &[source, target, associativity],
+            &conclusion,
+            VerificationLimits::default(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(verdict, KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_associative_only_subset_superposition_preserving_operand_order() {
+        let mut symbols = SymbolTable::new();
+        let mult = symbols.intern("seq_mult");
+        let p = symbols.intern("seq_p");
+        let a = symbols.intern("seq_a");
+        let b = symbols.intern("seq_b");
+        let c = symbols.intern("seq_c");
+        let d = symbols.intern("seq_d");
+        let x = symbols.intern("seq_x");
+        let associativity = Formula::atom(Atom::eq(
+            Term::app(
+                mult,
+                vec![
+                    Term::app(mult, vec![Term::var(0), Term::var(1)]),
+                    Term::var(2),
+                ],
+            ),
+            Term::app(
+                mult,
+                vec![
+                    Term::var(0),
+                    Term::app(mult, vec![Term::var(1), Term::var(2)]),
+                ],
+            ),
+        ));
+        // source: mult(b, c) = x
+        let source = Formula::atom(Atom::eq(
+            Term::app(mult, vec![Term::constant(b), Term::constant(c)]),
+            Term::constant(x),
+        ));
+        // target: p(mult(a, mult(b, mult(c, d))))
+        let target = Formula::atom(Atom::Pred(
+            p,
+            vec![Term::app(
+                mult,
+                vec![
+                    Term::constant(a),
+                    Term::app(
+                        mult,
+                        vec![
+                            Term::constant(b),
+                            Term::app(mult, vec![Term::constant(c), Term::constant(d)]),
+                        ],
+                    ),
+                ],
+            )],
+        ));
+        // Valid conclusion preserves order: p(mult(a, mult(x, d)))
+        let valid_conclusion = Formula::atom(Atom::Pred(
+            p,
+            vec![Term::app(
+                mult,
+                vec![
+                    Term::constant(a),
+                    Term::app(mult, vec![Term::constant(x), Term::constant(d)]),
+                ],
+            )],
+        ));
+        assert_eq!(
+            verify_ac_superposition(
+                &[source.clone(), target.clone(), associativity.clone()],
+                &valid_conclusion,
+                VerificationLimits::default(),
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Certified
+        );
+
+        // Also test symmetric parent order (target first, source second)
+        assert_eq!(
+            verify_ac_superposition(
+                &[target.clone(), source.clone(), associativity.clone()],
+                &valid_conclusion,
+                VerificationLimits::default(),
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Certified
+        );
+
+        // Invalid conclusion with scrambled non-commutative operand order: p(mult(a, mult(d, x)))
+        let scrambled = Formula::atom(Atom::Pred(
+            p,
+            vec![Term::app(
+                mult,
+                vec![
+                    Term::constant(a),
+                    Term::app(mult, vec![Term::constant(d), Term::constant(x)]),
+                ],
+            )],
+        ));
+        assert!(matches!(
+            verify_ac_superposition(
+                &[source, target, associativity],
+                &scrambled,
+                VerificationLimits::default(),
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn ac_terms_equal_mod_validates_exact_candidate_equivalence() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f_ac");
+        let a = symbols.intern("a_ac");
+        let b = symbols.intern("b_ac");
+        let comm: HashSet<_> = [f].into_iter().collect();
+        let assoc: HashSet<_> = [f].into_iter().collect();
+        let limits = VerificationLimits::default();
+
+        let t1 = Term::app(f, vec![Term::constant(a), Term::constant(b)]);
+        let t2 = Term::app(f, vec![Term::constant(b), Term::constant(a)]);
+        assert!(ac_terms_equal_mod(&t1, &t2, &comm, &assoc, limits));
+
+        // Different terms do not match modulo AC
+        let t3 = Term::app(f, vec![Term::constant(a), Term::constant(a)]);
+        assert!(!ac_terms_equal_mod(&t1, &t3, &comm, &assoc, limits));
     }
 
     #[test]
