@@ -55,8 +55,11 @@ remain passing.
 
 The historical claim that unequal flattened arities or target bindings prove
 an invalid AC unifier is withdrawn. A substitution can change flattened arity.
-The old fallback has not been restored; exact AC candidate validation and the
-remaining 23 inconclusive proofs require separate investigation. The older
+Exact AC candidate validation (`ac_terms_equal_mod`), associative sub-chain and
+segment variable absorption (`for_each_assoc_sequence_unifier`), correct operand
+slice positioning in `ac_subset_superposition_replay`, and AC-RPO term ordering
+are now fully implemented. Re-audits across both CASC-J13 (119/119) and CASC-30
+(123/123) UEQ campaigns achieve 100% `VerifiedGood` with zero `Unknown`. The older
 diagnosis and experiments below are retained as history, **not current rule
 semantics or established proofs of unsoundness**. In particular, statements
 below calling c26, c502, or the small lattice test invalid are superseded.

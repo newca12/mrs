@@ -602,7 +602,13 @@ fn verify_strict_with_source_internal(
                 limits,
             ),
             "resolution" => verify_resolution(&parents, conclusion, limits),
-            "ac_resolution" => verify_ac_resolution(&parents, conclusion, limits),
+            "ac_resolution" => verify_ac_resolution(
+                &parents,
+                conclusion,
+                limits,
+                &background_commutative,
+                &background_associative,
+            ),
             "subsumption_resolution" => verify_subsumption_resolution(&parents, conclusion, limits),
             "factoring" => verify_factoring(&parents, conclusion, limits),
             "equality_resolution" | "destructive_equality_resolution" => {
@@ -10585,8 +10591,8 @@ fn verify_ac_superposition(
         Some(clause) => clause,
         None => return KernelVerdict::Inconclusive("AC conclusion is not a clause".into()),
     };
-    let mut commutative = HashSet::new();
-    let mut associative = HashSet::new();
+    let mut commutative = background_commutative.clone();
+    let mut associative = background_associative.clone();
     for parent in &parents[2..] {
         let Some(clause) = clause_from_formula(parent, limits) else {
             return KernelVerdict::Inconclusive("AC axiom is not a clause".into());
@@ -10670,6 +10676,8 @@ fn verify_ac_resolution(
     parents: &[Formula],
     conclusion: &Formula,
     limits: VerificationLimits,
+    background_commutative: &HashSet<mrs_core::SymbolId>,
+    background_associative: &HashSet<mrs_core::SymbolId>,
 ) -> KernelVerdict {
     if parents.len() < 3 {
         return KernelVerdict::Rejected(
@@ -10688,8 +10696,8 @@ fn verify_ac_resolution(
         Some(clause) => clause,
         None => return KernelVerdict::Inconclusive("AC conclusion is not a clause".into()),
     };
-    let mut commutative = HashSet::new();
-    let mut associative = HashSet::new();
+    let mut commutative = background_commutative.clone();
+    let mut associative = background_associative.clone();
     for parent in &parents[2..] {
         let Some(clause) = clause_from_formula(parent, limits) else {
             return KernelVerdict::Inconclusive("AC axiom is not a clause".into());
@@ -11693,12 +11701,11 @@ fn for_each_ac_unifier(
         {
             let left_leaves = flatten_ac_term(&left_sub, *left_symbol, associative);
             let right_leaves = flatten_ac_term(&right_sub, *right_symbol, associative);
-            if left_leaves.len() != right_leaves.len() {
-                return false;
-            }
-            for_each_ac_unify_ordered(
+            for_each_assoc_sequence_unifier(
+                *left_symbol,
                 &left_leaves,
                 &right_leaves,
+                0,
                 0,
                 substitution,
                 commutative,
@@ -11881,10 +11888,12 @@ fn for_each_ac_unify_multiset(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn for_each_ac_unify_ordered(
+fn for_each_assoc_sequence_unifier(
+    symbol: mrs_core::SymbolId,
     left: &[&Term],
     right: &[&Term],
-    index: usize,
+    l_idx: usize,
+    r_idx: usize,
     substitution: &mut HashMap<VarId, Term>,
     commutative: &HashSet<mrs_core::SymbolId>,
     associative: &HashSet<mrs_core::SymbolId>,
@@ -11895,22 +11904,141 @@ fn for_each_ac_unify_ordered(
     if !budget.consume() {
         return false;
     }
-    if index == left.len() {
-        return callback(substitution);
+    if l_idx == left.len() {
+        return if r_idx == right.len() {
+            callback(substitution)
+        } else {
+            false
+        };
     }
+    if r_idx == right.len() {
+        return false;
+    }
+
+    let left_rem = left.len() - l_idx;
+    let right_rem = right.len() - r_idx;
+
+    let l_curr = apply_substitution_term(left[l_idx], substitution);
+    let r_curr = apply_substitution_term(right[r_idx], substitution);
+
+    if l_curr == r_curr {
+        let found = for_each_assoc_sequence_unifier(
+            symbol,
+            left,
+            right,
+            l_idx + 1,
+            r_idx + 1,
+            substitution,
+            commutative,
+            associative,
+            limits,
+            budget,
+            callback,
+        );
+        if found {
+            return true;
+        }
+    }
+
+    let l_var = match &l_curr {
+        Term::Var(v) if !substitution.contains_key(v) => Some(*v),
+        _ => None,
+    };
+    let r_var = match &r_curr {
+        Term::Var(v) if !substitution.contains_key(v) => Some(*v),
+        _ => None,
+    };
+
+    if let Some(v) = l_var {
+        let max_k = right_rem.saturating_sub(left_rem - 1);
+        for k in 1..=max_k {
+            if budget.exhausted.get() {
+                return false;
+            }
+            let mut value = (*right[r_idx]).clone();
+            for operand in &right[r_idx + 1..r_idx + k] {
+                value = Term::app(symbol, vec![value, (*operand).clone()]);
+            }
+            let value_sub = apply_substitution_term(&value, substitution);
+            if occurs(v, &value_sub, substitution) {
+                continue;
+            }
+            let mut next = substitution.clone();
+            next.insert(v, value_sub);
+            let found = for_each_assoc_sequence_unifier(
+                symbol,
+                left,
+                right,
+                l_idx + 1,
+                r_idx + k,
+                &mut next,
+                commutative,
+                associative,
+                limits,
+                budget,
+                callback,
+            );
+            if found {
+                return true;
+            }
+        }
+    }
+
+    if let Some(v) = r_var {
+        let min_k = if l_var.is_some() { 2 } else { 1 };
+        let max_k = left_rem.saturating_sub(right_rem - 1);
+        for k in min_k..=max_k {
+            if budget.exhausted.get() {
+                return false;
+            }
+            let mut value = (*left[l_idx]).clone();
+            for operand in &left[l_idx + 1..l_idx + k] {
+                value = Term::app(symbol, vec![value, (*operand).clone()]);
+            }
+            let value_sub = apply_substitution_term(&value, substitution);
+            if occurs(v, &value_sub, substitution) {
+                continue;
+            }
+            let mut next = substitution.clone();
+            next.insert(v, value_sub);
+            let found = for_each_assoc_sequence_unifier(
+                symbol,
+                left,
+                right,
+                l_idx + k,
+                r_idx + 1,
+                &mut next,
+                commutative,
+                associative,
+                limits,
+                budget,
+                callback,
+            );
+            if found {
+                return true;
+            }
+        }
+    }
+
+    if l_var.is_some() || r_var.is_some() {
+        return false;
+    }
+
     for_each_ac_unifier(
-        left[index],
-        right[index],
+        &l_curr,
+        &r_curr,
         substitution,
         commutative,
         associative,
         limits,
         budget,
         &mut |next_sub| {
-            for_each_ac_unify_ordered(
+            for_each_assoc_sequence_unifier(
+                symbol,
                 left,
                 right,
-                index + 1,
+                l_idx + 1,
+                r_idx + 1,
                 &mut next_sub.clone(),
                 commutative,
                 associative,
@@ -15172,6 +15300,58 @@ mod tests {
             &HashSet::new(),
         );
         // target x=a makes f(x,b) exactly the source side f(a,b).
+        assert_eq!(verdict, KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_grp179_node_c2012820_associative_subchain_unification() {
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let problem = parse_tptp(input).expect("formula parses");
+            lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
+                .expect("formula lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let c19704 = lower(
+            "cnf(c19704, plain, least_upper_bound(X5, multiply(X3, X5)) = multiply(least_upper_bound(identity, least_upper_bound(goal_d2, X3)), X5)).",
+            &mut symbols,
+        );
+        let c36993 = lower(
+            "cnf(c36993, plain, X3 = least_upper_bound(X3, multiply(goal_d2, multiply(goal_d0, X3)))).",
+            &mut symbols,
+        );
+        let c4 = lower(
+            "cnf(c4, axiom, least_upper_bound(least_upper_bound(X0, X1), X2) = least_upper_bound(X0, least_upper_bound(X1, X2))).",
+            &mut symbols,
+        );
+        let c10 = lower(
+            "cnf(c10, axiom, least_upper_bound(X0, X1) = least_upper_bound(X1, X0)).",
+            &mut symbols,
+        );
+        let c12 = lower(
+            "cnf(c12, axiom, greatest_lower_bound(X0, X1) = greatest_lower_bound(X1, X0)).",
+            &mut symbols,
+        );
+        let c15 = lower(
+            "cnf(c15, axiom, greatest_lower_bound(X0, greatest_lower_bound(X1, X2)) = greatest_lower_bound(greatest_lower_bound(X0, X1), X2)).",
+            &mut symbols,
+        );
+        let c2012820 = lower(
+            "cnf(c2012820, plain, X9 = multiply(least_upper_bound(identity, least_upper_bound(goal_d2, multiply(goal_d2, goal_d0))), X9)).",
+            &mut symbols,
+        );
+
+        let mult = symbols.intern("multiply");
+        let mut bg_assoc = HashSet::new();
+        bg_assoc.insert(mult);
+
+        let verdict = verify_ac_superposition(
+            &[c19704, c36993, c4, c10, c12, c15],
+            &c2012820,
+            VerificationLimits::default(),
+            &HashSet::new(),
+            &bg_assoc,
+        );
         assert_eq!(verdict, KernelVerdict::Certified);
     }
 
