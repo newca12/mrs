@@ -88,6 +88,13 @@
       "production_certification": false
     },
     {
+      "id": "clause-instantiation",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Clause instantiation: from universally valid parent clause C and arbitrary simultaneous substitution sigma, the instance C sigma is universally valid. Dispatched in proof DAGs via ProofNodeKind::Instantiation; proven by instantiation_sound and clause_valid_after_substitution to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
@@ -128,6 +135,8 @@
     "dag_weakening": true,
     "demodulation_rule": true,
     "dag_demodulation": true,
+    "clause_instantiation_rule": true,
+    "dag_instantiation": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,

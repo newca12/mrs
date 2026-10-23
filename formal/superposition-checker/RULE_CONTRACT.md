@@ -57,6 +57,12 @@ rewritten, preserving all other literals and their positions. Its theorem
 `demodulation_sound` and checker `check_demodulation_and_replay` prove universal
 validity preservation.
 
+DAG support also includes **clause instantiation**:
+from universally valid parent clause `C` and arbitrary simultaneous substitution `sigma`,
+the instantiated clause `C sigma` is derived. Its theorem `instantiation_sound`
+(via `clause_valid_after_substitution`) and checker `check_instantiation_and_replay`
+prove universal validity preservation.
+
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered
 first-order superposition rule**: no KBO/LPO maximality or literal-selection
