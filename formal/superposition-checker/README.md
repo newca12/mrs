@@ -53,15 +53,15 @@ including `assume_specification`, even if they evade a lexical audit. See
 [`supported-rules.json`](supported-rules.json) for the current trust boundary
 and machine-readable supported-slice declaration.
 
-It also runs `mutation-check.py`: temporary copies of the first-order core omit
-literal substitution, ignore literal polarity, replace selected-position
-lookup with root lookup, omit appending the rewritten target clause, skip DAG-step
-replay, ignore its cited source parent, or skip replay during DAG-node validation.
-The verification gate requires Verus to reject all sixteen broken refinements,
-including skipped node validation, forged input membership, forward parents,
-and nonempty-root acceptance. Compiled-runtime mutations remove the root-ancestor
-closure guard, repeated input-comparison node charge and target-parent freshness
-guard; each must fail its corresponding regression. The
+It also runs `mutation-check.py`, which mutates replay and DAG-validation
+conditions across superposition, resolution, equality resolution, factoring,
+subsumption resolution, weakening, demodulation, instantiation, and wire
+tokenization. The verification gate requires Verus to reject all 43 broken
+refinements, including skipped node validation, forged input membership,
+forward parents, and nonempty-root acceptance. Four compiled-runtime mutations
+remove the root-ancestor closure guard, repeated input-comparison node charge,
+duplicate-ID rejection, or decimal-token guard; each must fail its corresponding
+regression. The
 source tree is not modified by these negative checks.
 `runtime-check.py` compiles the verified core and runs DAG regressions in a
 temporary directory. It performs the compile twice and requires byte-identical
@@ -72,12 +72,12 @@ then requires Verus `--no-cheating` to reject it. It also rejects the actual
 forbidden-image freshness mutation; removing a redundant check alone is not a
 valid negative test.
 
-The checks use Verus `0.2026.10.18.7d82994` (the latest published release).
+The checks use pinned Verus `0.2026.10.18.7d82994`.
 This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `223 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `349 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -122,16 +122,15 @@ guard must fail the collision regression.
 a total valuation into the nonempty carrier. No interpretation or assumed input
 validity is supplied to the executable API.
 
-This certifies the supplied IR input clauses, not a parsed TPTP problem.
-Nullary-predicate resolution is now DAG-dispatched: `Resolution(lp, rp)` selects
-one positive pivot in the left parent and one negative pivot in the right parent.
-The checker removes exactly those occurrences, preserves all remaining literals
-in left-context/right-context order, and compares the node conclusion exactly.
-`check_dag_resolution_step` proves local entailment using the accepted replay's
-universal validity-preservation postcondition. The generic induction supports
-both inference rules. Compiled unit and multi-step refutations certify without
-empty input clauses. General first-order resolution, production adapters and
-cumulative replay-work accounting remain open.
+This certifies the supplied wire-decoded IR input clauses, not a parsed TPTP
+problem. Wire-v1 structural decoding and decimal tokenization are verified; the
+TPTP/MRS lowering remains trusted adapter code. The DAG dispatch includes
+first-order resolution, equality resolution, clause and equality factoring,
+subsumption resolution, weakening, demodulation, and clause instantiation in
+addition to superposition and exact-atom resolution. Every accepted replay is
+bound to its cited parents and conclusion and proves local universal-validity
+preservation. Compiled refutations certify from nonempty inputs; exact cumulative
+replay-work accounting and broader rules remain open.
 
 `first_order_core.rs` adds recursive first-order terms and formal,
 simultaneous-substitution semantics. It includes executable term copying,
@@ -181,7 +180,8 @@ Verus `0.2026.10.18.7d82994` is pinned in
 the corresponding Linux binary. CI runs this as a regular required project
 check. See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md)
 for the staged scope. Remaining obligations include complete hygiene/resource
-refinement, general first-order refutation rules, and production integration.
+refinement, broader calculus coverage, independent adapter review, and a
+default-certification enablement gate.
 The supplied substitution checker establishes equality of instances, not MGU
 computation.
 In standard first-order semantics, target variables may be

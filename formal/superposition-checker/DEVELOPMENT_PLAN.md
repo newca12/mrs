@@ -24,6 +24,26 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-23 clause instantiation checkpoint
+
+- **DONE:** clause instantiation is proved sound in `instantiation_sound` (via `clause_valid_after_substitution`):
+  from universally valid parent clause $C$ and arbitrary simultaneous substitution $\sigma$,
+  the instantiated clause $C\sigma$ is universally valid.
+- **DONE:** implemented `InstantiationCertificate` and `check_instantiation_and_replay`
+  with bounded syntax charging, substitution domain-uniqueness validation,
+  exact clause substitution execution, and conclusion comparison.
+- **DONE:** integrated instantiation into the proof DAG via `ProofNodeKind::Instantiation`
+  and `check_dag_instantiation_step`.
+- **DONE:** wire v1 tag 11 and command 10 decoded via `wire_instantiation_certificate`.
+- **DONE:** added instantiation certificate discovery in `mrs-proof-kernel::verus`
+  and an integration test in `verus_bridge.rs` certifying an instantiation refutation
+  through the formal dual-check gate.
+- **DONE:** executable examples and refutation DAG regressions in
+  `executable_instantiation_examples` and `executable_instantiation_dag_examples`
+  verify positive refutations and fail-closed behavior for forged conclusions and duplicate domains.
+- **DONE:** 2 verifier-negative mutations in `mutation-check.py` covering conclusion agreement
+  and DAG replay dispatch.
+
 ### 2026-10-22 demodulation checkpoint
 
 - **DONE:** demodulation (unit equality rewriting) is proved sound in `demodulation_sound`:
@@ -313,12 +333,12 @@ invalidate the original code. The gate now removes the actual forbidden-image
 check and requires Verus to reject that mutation. The no-cheating self-test first
 accepts a valid assumption probe without the flag, then requires rejection with
 the flag; the earlier malformed `assume_specification` probe was not evidence.
-Current module counts: **5 / 338 / 5 / 5**, with **41 verifier-negative mutations,
-three runtime mutations and one no-cheating probe**. The newest tokenizer mutation
-is compiled by Verus but rejected before runtime because the weakened source no
-longer proves the tokenizer invariant; it does not count as a runtime mutation.
-The other three counts cover root closure, repeated input comparison accounting,
-and runtime root/node regressions (see `mutation-check.py`).
+Current module counts: **5 / 349 / 5 / 5**, with **43 verifier-negative mutations,
+four compiled-runtime mutations, and one no-cheating probe**. The tokenizer
+mutation is rejected at compile time because the weakened source no longer proves
+the tokenizer invariant. The other runtime mutations cover root closure,
+repeated input comparison accounting, and duplicate node IDs (see
+`mutation-check.py`).
 
 ## Implementation status (historical 2026-10-18 ledger, updated where indicated)
 
@@ -332,17 +352,17 @@ the item itself is explicitly marked `ABANDONED`.
 
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
-| M0 — Verus baseline and environment | **PARTIAL** | Verus release and Linux x86_64 SHA-256 are pinned; the requested Rust toolchain follows the release's `rust-toolchain.toml` (`1.99.1`). The pinned release is `0.2026.10.18.7d82994`; `verify.sh` records both requested and effective toolchains. The installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. The full `verify.sh` run passes. A lexical escape-hatch audit and Verus `--no-cheating` gate cover verifier-recognized cheats, including `assume_specification`. The gate requires rejection of forty-one verifier-negative mutations and four compiled-runtime/boundary mutations. Remaining: broader mutation coverage and auditing intentionally ignored/unverified modules. |
+| M0 — Verus baseline and environment | **PARTIAL** | Verus release and Linux x86_64 SHA-256 are pinned; the requested Rust toolchain follows the release's `rust-toolchain.toml` (`1.99.1`). The pinned release is `0.2026.10.18.7d82994`; `verify.sh` records both requested and effective toolchains. The installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. The full `verify.sh` run passes. A lexical escape-hatch audit and Verus `--no-cheating` gate cover verifier-recognized cheats, including `assume_specification`. The gate requires rejection of forty-three verifier-negative mutations and four compiled-runtime/boundary mutations. Remaining: broader mutation coverage and auditing intentionally ignored/unverified modules. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule, whole-parent simultaneous one-step substitution and selected position. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Adversarial unifier conflict/match, var-to-var, subterm variable and parent avoid-set cases are verified, and remaining work is propagated through replay. Remaining: larger-arity generalization. |
-| M3 — Superposition checker | **PARTIAL: general replay soundness proved** | `check_superposition_and_replay` postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Bounded executable certificates accept archived `SWV406+1:c502` and a source-variable binding case, rejecting forged conclusions. Full TSTP fixture translation/proof-DAG replay, equivalence modulo literal order/renaming, exact cumulative resource refinement, and independent calculus review remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition, positive-left/negative-right nullary/exact-atom resolution, first-order binary resolution, unary equality resolution, unary clause factoring, unary equality factoring, subsumption resolution, clause weakening, and demodulation nodes. Accepted replay postconditions universal validity preservation; the generic induction consumes local entailment. The certified root is required empty by the semantic specification; supported inference contracts require their valid parent edges. Compiled refutations certify without empty inputs. Root-ancestor closure rejects disconnected nodes and returns `Unknown` on bounded traversal exhaustion. The certifier partitions work across structural preflight, closure and per-node validation; input-leaf membership charges both clauses for every repeated candidate comparison. Node-level parent and conclusion charging is unified across resolution and superposition. Remaining: exact cumulative local replay accounting, production input bridge refinement and broader rules/fixtures. |
+| M3 — Superposition checker | **PARTIAL: general replay soundness proved** | `check_superposition_and_replay` postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Bounded executable certificates accept archived `SWV406+1:c502` and a source-variable binding case, rejecting forged conclusions. The supported CNF adapter and proof-DAG bridge are exercised by integration fixtures; full archived SWV406+1 TSTP translation/proof-DAG replay, broader equivalence modulo literal order/renaming, exact cumulative resource refinement, and independent calculus review remain. |
+| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition, positive-left/negative-right nullary/exact-atom resolution, first-order binary resolution, unary equality resolution, unary clause factoring, unary equality factoring, subsumption resolution, clause weakening, demodulation, and instantiation nodes. Accepted replay postconditions universal validity preservation; the generic induction consumes local entailment. The certified root is required empty by the semantic specification; supported inference contracts require their valid parent edges. Compiled refutations certify without empty inputs. Root-ancestor closure rejects disconnected nodes and returns `Unknown` on bounded traversal exhaustion. The certifier partitions work across structural preflight, closure and per-node validation; input-leaf membership charges both clauses for every repeated candidate comparison. Inference wrappers charge node parents and conclusions before local replay. Remaining: exact cumulative local replay accounting, verified TPTP input bridge refinement and broader rules/fixtures. |
 | M5 — MRS integration | **PARTIAL: verified wire decoder, trusted TPTP bridge** | Wire v1 structural decoding and decimal byte tokenization with verified span correspondence are verified in Verus; bounded byte acquisition shim, CNF TPTP adapter, certificate discovery, kernel/ProoVer shadow and opt-in dual-check APIs, archived local c502 translation, complete supported DAG integration, artifact provenance and CI boundary tests exist. TPTP bridge refinement, independent review and default-enable gate remain. See `INTERCHANGE.md`. |
-| M6 — Broader rules | **PARTIAL** | Nullary-predicate, exact-atom, first-order resolution with unifier, equality resolution, clause factoring, equality factoring, subsumption resolution, clause weakening, and demodulation are verified and DAG-dispatched; AC, transformations, and AVATAR/LRAT remain unimplemented. |
+| M6 — Broader rules | **PARTIAL** | Nullary-predicate, exact-atom, first-order resolution with unifier, equality resolution, clause factoring, equality factoring, subsumption resolution, clause weakening, demodulation, and clause instantiation are verified and DAG-dispatched; AC, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `338`, `5`, and `5` verified functions
+passes all four Verus files (currently `5`, `349`, `5`, and `5` verified functions
 respectively), the compiled runtime fixtures pass, and all mutation gates pass.
 The general replay accepts the manually encoded local c502 step with its semantic
 validity-preservation theorem. These results establish the implemented bounded
@@ -1107,7 +1127,7 @@ front-end or a separately justified premise transformation.
   exact-atom resolution, standardized-apart first-order binary resolution with unifier,
   unary equality resolution (reflexivity resolution), first-order clause factoring,
   positive equality factoring, subsumption resolution (contextual literal elimination),
-  clause weakening, and demodulation (unit equality rewriting) are specified, proved sound for universal validity preservation,
+  clause weakening, demodulation (unit equality rewriting), and clause instantiation are specified, proved sound for universal validity preservation,
   have bounded exact executable checkers, and are dispatched in the verified proof DAG with wire v1 protocol decoding.
 - **TODO:** equality simplification (ground equality normalization, rewrite traces),
   associative/commutative reasoning, formula/proof transformations, AVATAR/LRAT, and
@@ -1150,9 +1170,9 @@ archived cases, and a versioned support declaration.
 - **DONE, evidence slice:** CI stores the verification log, including source
   commit, Verus binary SHA-256, Rust toolchain, verifier version, and per-module
   proof output.
-- **DONE, mutation gates:** `verify.sh` requires sixteen verifier-negative
-  mutations and three compiled-runtime mutations to fail; this is a targeted set,
-  not a complete threat-model proof.
+- **DONE, mutation gates:** `verify.sh` requires 43 verifier-negative mutations
+  and four compiled-runtime mutations to fail; this is a targeted set, not a
+  complete threat-model proof.
 - **DONE, no-cheating self-test:** each module is checked with Verus
   `--no-cheating`, and the mutation gate injects an
   `#[verifier::assume_specification]` probe and requires that strict option to

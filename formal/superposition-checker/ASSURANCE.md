@@ -43,9 +43,9 @@ process group, 60 s CPU, 768 MiB address-space, 1 MiB file-size and zero core-du
 limits; Linux also sets `NO_NEW_PRIVS`. Startup or rlimit failures cannot certify.
 Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
-is checked; cross-host reproducibility and a verified decoder remain open.
+is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now forty-one verifier-negative checks and four
+The mutation inventory is now forty-three verifier-negative checks and four
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -93,16 +93,16 @@ target-parent freshening guard must fail the collision regression.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
-This certifies the supplied IR input clauses, not a parsed TPTP problem.
-The current IR is constructed directly as Verus data types; it has no byte-level
-serialization or verified TPTP/MRS lowering. Consequently, the local c502 and
-DAG runtime fixtures do not exercise an interchange boundary.
-Nullary-predicate resolution is DAG-dispatched in addition to superposition.
-Accepted exact resolution replay proves universal validity preservation;
-`check_dag_resolution_step` consumes that postcondition for the actual cited
-parents and node conclusion. The generic induction consumes local entailment
-for either rule. Compiled unit and multi-step refutations certify from nonempty
-inputs. General first-order resolution and other inference rules remain open.
+This certifies the supplied wire-decoded IR input clauses, not a parsed TPTP
+problem. Wire-v1 structural decoding and decimal tokenization are verified; the
+TPTP/MRS lowering remains trusted adapter code. The bridge and runtime fixtures
+exercise the interchange boundary. The DAG dispatch includes first-order
+resolution, equality resolution, clause and equality factoring, subsumption
+resolution, weakening, demodulation, and clause instantiation in addition to
+superposition and exact-atom resolution. Each accepted replay is bound to its
+cited parents and conclusion and proves local universal-validity preservation.
+Compiled refutations certify from nonempty inputs; exact cumulative replay-work
+accounting and broader rules remain open.
 
 The compiled runtime regression also exercises an exact `SWV406+1:c502` local
 superposition certificate. It standardizes the c27 and c39 parents apart, binds
@@ -158,20 +158,15 @@ retain a build artifact unless `VERUS_LOG` is set.
 values before running it; this currently checks byte reproducibility on one
 host and toolchain only.
 
-The verification gate also runs sixteen verifier-negative checks: omitting
-substitution from executable literal replay, ignoring literal polarity,
-replacing selected-position lookup with root lookup, and omitting the rewritten
-target clause from resolvent construction, skipping DAG-step replay, ignoring
-the cited source parent, and skipping local replay in DAG-node validation. Each mutated temporary source must
+The verification gate runs 43 verifier-negative mutations across inference
+replay, DAG dispatch and wire tokenization. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
-contracts; it is not comprehensive threat-model coverage.
-The four Verus-negative certification mutations skip node validation, forge
-input membership, allow forward parents and accept a nonempty root. Compiled-
-runtime mutations skip root-ancestor closure, omit the repeated node-clause
-charge during input membership checks, and remove target-parent freshening.
-The gate also compiles
-and runs positive/negative DAG examples via `runtime-check.py`; the ordinary Rust `main`
-assertion is a test oracle outside the verified certification API.
+contracts; it is not comprehensive threat-model coverage. Four compiled-runtime
+mutations cover root-ancestor closure, repeated node-clause charging,
+duplicate-ID rejection and decimal-token validation; each must fail its
+corresponding runtime regression. The gate also compiles and runs positive and
+negative DAG examples via `runtime-check.py`; the ordinary Rust `main` assertion
+is a test oracle outside the verified certification API.
 The mutation suite injects `#[verifier::assume_specification]` into a temporary
 source copy and requires `--no-cheating` to reject it.
 Resolution-step fixtures additionally cover complementary pivots, wrong symbols,

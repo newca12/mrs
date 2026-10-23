@@ -225,6 +225,16 @@ def main() -> int:
             "|| !check_demodulation_and_replay(step, remaining_work)",
             "|| false",
         ),
+        (
+            "instantiation ignores conclusion agreement",
+            "let expected = substitute_clause_exec(&certificate.parent, &certificate.substitution);\n    if !same_clause_exact(&expected, &certificate.conclusion) {\n        return false;\n    }",
+            "let expected = substitute_clause_exec(&certificate.parent, &certificate.substitution);\n    if false {\n        return false;\n    }",
+        ),
+        (
+            "DAG instantiation skips rule replay",
+            "|| !check_instantiation_and_replay(step, remaining_work)",
+            "|| false",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:

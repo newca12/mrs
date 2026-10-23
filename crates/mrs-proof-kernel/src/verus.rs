@@ -330,6 +330,12 @@ struct DemodulationCertificate {
     reversed: bool,
 }
 
+struct InstantiationCertificate {
+    parent: Vec<Literal>,
+    substitution: Vec<(VarId, Term)>,
+    conclusion: Vec<Literal>,
+}
+
 fn instance(
     term: &Term,
     subst: &HashMap<VarId, Term>,
@@ -518,6 +524,15 @@ impl DemodulationCertificate {
             wire.n(*child)?;
         }
         wire.n(if self.reversed { 1 } else { 0 })?;
+        Ok(())
+    }
+}
+
+impl InstantiationCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.parent)?;
+        wire.bindings(&self.substitution)?;
+        wire.clause(&self.conclusion)?;
         Ok(())
     }
 }
@@ -1243,6 +1258,44 @@ fn demodulation_certificate(
     Err("no supported demodulation certificate".into())
 }
 
+fn instantiation_certificate(
+    parent: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Result<InstantiationCertificate, String> {
+    if parent.len() != goal.len() {
+        return Err("instantiate parent and conclusion literal count mismatch".into());
+    }
+    let mut subst = HashMap::new();
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+    for (p, g) in parent.iter().zip(goal.iter()) {
+        if p.positive != g.positive {
+            return Err("instantiate literal polarity mismatch".into());
+        }
+        consume_search_fuel(&mut fuel)?;
+        if !bounded_unify_atoms_into(&p.atom, &g.atom, &mut subst, &mut fuel)? {
+            return Err("instantiate atoms do not match under substitution".into());
+        }
+    }
+    let expected: Vec<_> = parent
+        .iter()
+        .map(|literal| instantiate(literal, &subst, &mut fuel))
+        .collect::<Result<_, _>>()?;
+    if expected != goal {
+        return Err("instantiate conclusion mismatch".into());
+    }
+    let mut substitution: Vec<_> = subst
+        .iter()
+        .map(|(v, t)| Ok((*v, instance(t, &subst, &mut fuel, 0)?)))
+        .collect::<Result<_, String>>()?;
+    substitution.sort_by_key(|(v, _)| *v);
+    Ok(InstantiationCertificate {
+        parent: parent.to_vec(),
+        substitution,
+        conclusion: goal.to_vec(),
+    })
+}
+
 fn supported_clause(
     symbols: &mut SymbolTable,
     formula: &AnnotatedFormula<'_>,
@@ -1398,6 +1451,7 @@ enum Kind {
     SubsumptionResolution(SubsumptionResolutionCertificate),
     Weakening(WeakeningCertificate),
     Demodulation(DemodulationCertificate),
+    Instantiation(InstantiationCertificate),
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -1624,6 +1678,11 @@ fn dag_request(
                     let conclusion = c.conclusion.clone();
                     (Kind::Weakening(c), conclusion, parents)
                 }
+                Some("instantiate") | Some("instantiation") => {
+                    let c = instantiation_certificate(parent, &raw, limits)?;
+                    let conclusion = c.conclusion.clone();
+                    (Kind::Instantiation(c), conclusion, parents)
+                }
                 _ => return Err("unsupported inference rule".into()),
             }
         } else {
@@ -1666,6 +1725,7 @@ fn dag_request(
             Kind::SubsumptionResolution(_) => 8,
             Kind::Weakening(_) => 9,
             Kind::Demodulation(_) => 10,
+            Kind::Instantiation(_) => 11,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -1685,6 +1745,7 @@ fn dag_request(
             Kind::SubsumptionResolution(c) => c.encode(&mut wire)?,
             Kind::Weakening(c) => c.encode(&mut wire)?,
             Kind::Demodulation(c) => c.encode(&mut wire)?,
+            Kind::Instantiation(c) => c.encode(&mut wire)?,
         }
     }
     Ok((wire.finish()?, nodes.len()))

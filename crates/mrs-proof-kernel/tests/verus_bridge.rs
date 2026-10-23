@@ -412,6 +412,51 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 5);
 
+    // Instantiation:
+    let inst_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,p(X)|q(X)). cnf(b,axiom,~p(a)). cnf(c,axiom,~q(a)).")
+            .unwrap();
+    let inst_text = "cnf(a,axiom,p(X)|q(X),file('input',a)).
+        cnf(b,axiom,~p(a),file('input',b)).
+        cnf(c,axiom,~q(a),file('input',c)).
+        cnf(i,plain,p(a)|q(a),inference(instantiate,[status(thm)],[a])).
+        cnf(r1,plain,q(a),inference(resolution,[status(thm)],[i,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,c])).";
+    let inst_proof = mrs_tptp::parse_tptp(inst_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &inst_problem,
+        &inst_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 6);
+
+    // Instantiation may rename a universally quantified variable to another
+    // variable; the rule is not limited to grounding substitutions.
+    let variable_inst_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,p(X)|q(Z)). cnf(b,axiom,~p(Y)). cnf(c,axiom,~q(Y)).")
+            .unwrap();
+    let variable_inst_text = "cnf(a,axiom,p(X)|q(Z),file('input',a)).
+        cnf(b,axiom,~p(Y),file('input',b)).
+        cnf(c,axiom,~q(Y),file('input',c)).
+        cnf(i,plain,p(Y)|q(Y),inference(instantiate,[status(thm)],[a])).
+        cnf(r1,plain,q(Y),inference(resolution,[status(thm)],[i,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,c])).";
+    let variable_inst_proof = mrs_tptp::parse_tptp(variable_inst_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &variable_inst_problem,
+        &variable_inst_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 6);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(

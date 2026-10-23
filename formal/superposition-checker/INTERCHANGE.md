@@ -84,16 +84,21 @@ names must be unique; missing parents, cycles, nonempty roots and disconnected
 nodes cannot obtain a formal positive result. The whole DAG is transmitted;
 unused proof nodes are not silently deleted to obtain closure.
 
-Rules: ordinary superposition, and resolution with positive-left/negative-right
-**identical** atom pivots, including predicate and equality atoms. No resolution
-unification is implemented. Superposition discovery independently freshens the
-parents, finds a bounded syntactic unifier and preserves both complete contexts.
-It compares ordered conclusions up to a bijective variable renaming. The local
-step adapter can orient the selected source equality in either direction;
-whole-DAG lowering currently requires the original left-to-right orientation
-so its certificate still matches its cited parent exactly. Alpha-normalized
-superposition conclusions become the representation used by subsequent nodes.
-These trusted transformations are not advertised as Verus-refined lowering.
+Rules include ordinary superposition; exact complementary-atom resolution;
+standardized-apart first-order resolution; equality resolution; clause and
+equality factoring; subsumption resolution; weakening; unit-equality
+demodulation; and clause instantiation. The executable checker validates each
+certificate and its exact cited parents and conclusion. Superposition and
+first-order resolution discovery independently freshen the parents and find a
+bounded syntactic unifier. Superposition preserves both complete contexts and
+compares ordered conclusions up to a bijective variable renaming. The local
+superposition adapter can orient the selected source equality in either
+direction; whole-DAG lowering currently requires the original left-to-right
+orientation so its certificate still matches its cited parent exactly.
+Alpha-normalized superposition conclusions become the representation used by
+subsequent nodes. These trusted transformations are not advertised as
+Verus-refined lowering. AC reasoning, ordered-calculus conditions and broader
+transformations remain unsupported.
 
 The archived artifact contains only c27/c39/c502, not the complete archived
 refutation. Its local step is translated and replayed; **full SWV406+1 proof
@@ -114,22 +119,22 @@ command       := 0 (identity) | 1 (superposition step) | 2 (DAG)
                | 3 (first-order resolution step) | 4 (equality resolution step)
                | 5 (clause factoring step) | 6 (equality factoring step)
                | 7 (subsumption resolution step) | 8 (clause weakening step)
-               | 9 (demodulation step)
+               | 9 (demodulation step) | 10 (instantiation step)
 step payload  := certificate | resolution_certificate | eq_resolution_certificate
                | factoring_certificate | eq_factoring_certificate
                | subsumption_resolution_certificate | weakening_certificate
-               | demodulation_certificate
+               | demodulation_certificate | instantiation_certificate
 DAG payload   := node_count root input_count clause* node*
 node          := id clause kind parent_count parent_index* rule_payload
 kind          := 0 (input) | 1 (superposition) | 2 (nullary resolution)
                | 3 (exact atom resolution) | 4 (first-order resolution)
                | 5 (equality resolution) | 6 (clause factoring)
                | 7 (equality factoring) | 8 (subsumption resolution)
-               | 9 (clause weakening) | 10 (demodulation)
+               | 9 (clause weakening) | 10 (demodulation) | 11 (instantiation)
 rule_payload  := empty | certificate | resolution_certificate | eq_resolution_certificate
                | factoring_certificate | eq_factoring_certificate
                | subsumption_resolution_certificate | weakening_certificate
-               | demodulation_certificate
+               | demodulation_certificate | instantiation_certificate
                | left_pivot right_pivot
 certificate   := source_clause target_clause conclusion_clause
                  source_freshening target_freshening unifier
@@ -150,6 +155,7 @@ demodulation_certificate := target_clause equality_clause conclusion_clause
                             equality_freshening unifier
                             target_literal_index argument_slot
                             raw_path fresh_path reversed
+instantiation_certificate := parent_clause substitution conclusion_clause
 clause        := literal_count (polarity atom)*
 polarity      := 0 (negative) | 1 (positive)
 atom          := 0 symbol | 1 symbol term | 2 symbol term term | 3 term term
