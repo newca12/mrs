@@ -729,7 +729,7 @@ fn bounded_unify_atoms(
 fn consume_search_fuel(fuel: &mut usize) -> Result<(), String> {
     *fuel = fuel
         .checked_sub(1)
-        .ok_or("subsumption matching work ceiling")?;
+        .ok_or("certificate search work ceiling")?;
     Ok(())
 }
 
@@ -1188,6 +1188,7 @@ fn demodulation_certificate(
                 continue;
             };
             for reversed in [false, true] {
+                consume_search_fuel(&mut fuel)?;
                 let (from, to) = if !reversed {
                     (fresh_lhs, fresh_rhs)
                 } else {
@@ -1518,10 +1519,7 @@ fn dag_request(
                     } else if let Ok(c) = certificate(right, left, &raw, false, limits) {
                         (c, true)
                     } else {
-                        return Err(
-                            "no supported superposition/paramodulation/demodulation certificate"
-                                .into(),
-                        );
+                        return Err("no supported superposition/paramodulation certificate".into());
                     };
                     let conclusion = c.conclusion.clone();
                     let parents = if flipped {
