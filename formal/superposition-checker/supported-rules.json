@@ -81,6 +81,13 @@
       "production_certification": false
     },
     {
+      "id": "demodulation",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Demodulation (unit equality rewriting): from target clause C and unit positive equality parent s = t (or t = s), replacing an occurrence of s sigma (or t sigma) at position p in literal k of C by t sigma (or s sigma) derives C with literal k rewritten, preserving all other literals and their positions. Dispatched in proof DAGs via ProofNodeKind::Demodulation; proven by demodulation_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
@@ -119,6 +126,8 @@
     "dag_subsumption_resolution": true,
     "clause_weakening_rule": true,
     "dag_weakening": true,
+    "demodulation_rule": true,
+    "dag_demodulation": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,

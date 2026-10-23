@@ -317,6 +317,19 @@ struct WeakeningCertificate {
     conclusion: Vec<Literal>,
 }
 
+struct DemodulationCertificate {
+    target: Vec<Literal>,
+    equality: Vec<Literal>,
+    conclusion: Vec<Literal>,
+    equality_freshening: Vec<(VarId, Term)>,
+    unifier: Vec<(VarId, Term)>,
+    target_literal_index: usize,
+    target_argument_slot: usize,
+    raw_target_path: Vec<usize>,
+    fresh_target_path: Vec<usize>,
+    reversed: bool,
+}
+
 fn instance(
     term: &Term,
     subst: &HashMap<VarId, Term>,
@@ -483,6 +496,28 @@ impl WeakeningCertificate {
         for inc in &self.inclusions {
             wire.n(*inc)?;
         }
+        Ok(())
+    }
+}
+
+impl DemodulationCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.target)?;
+        wire.clause(&self.equality)?;
+        wire.clause(&self.conclusion)?;
+        wire.bindings(&self.equality_freshening)?;
+        wire.bindings(&self.unifier)?;
+        wire.n(self.target_literal_index)?;
+        wire.n(self.target_argument_slot)?;
+        wire.n(self.raw_target_path.len())?;
+        for child in &self.raw_target_path {
+            wire.n(*child)?;
+        }
+        wire.n(self.fresh_target_path.len())?;
+        for child in &self.fresh_target_path {
+            wire.n(*child)?;
+        }
+        wire.n(if self.reversed { 1 } else { 0 })?;
         Ok(())
     }
 }
@@ -694,7 +729,7 @@ fn bounded_unify_atoms(
 fn consume_search_fuel(fuel: &mut usize) -> Result<(), String> {
     *fuel = fuel
         .checked_sub(1)
-        .ok_or("subsumption matching work ceiling")?;
+        .ok_or("certificate search work ceiling")?;
     Ok(())
 }
 
@@ -1103,6 +1138,111 @@ fn weakening_certificate(
     })
 }
 
+fn demodulation_certificate(
+    target: &[Literal],
+    equality: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Result<DemodulationCertificate, String> {
+    if equality.len() != 1 {
+        return Err("demodulation equality parent must be a unit clause".into());
+    }
+    let eq_lit = &equality[0];
+    if !eq_lit.positive {
+        return Err("demodulation equality parent must be positive".into());
+    }
+    if !matches!(eq_lit.atom, Atom::Eq(_, _)) {
+        return Err("demodulation equality parent must be an equality".into());
+    }
+    if target.len() != goal.len() {
+        return Err("demodulation target and goal must have same literal count".into());
+    }
+
+    let mut next = max_var_clause(target)
+        .max(max_var_clause(equality))
+        .checked_add(1)
+        .ok_or("variable-id overflow")?;
+    let (fresh_eq, equality_freshening) = freshen(equality, &mut next)?;
+    let Atom::Eq(fresh_lhs, fresh_rhs) = &fresh_eq[0].atom else {
+        unreachable!();
+    };
+
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+
+    for (ti, literal) in target.iter().enumerate() {
+        if literal.positive != goal[ti].positive {
+            continue;
+        }
+        for (slot, path) in atom_term_positions(&literal.atom) {
+            let base = match &literal.atom {
+                Atom::Pred(_, args) => &args[slot],
+                Atom::Eq(a, b) => {
+                    if slot == 0 {
+                        a
+                    } else {
+                        b
+                    }
+                }
+            };
+            let Some(selected) = term_at_position(base, &path) else {
+                continue;
+            };
+            for reversed in [false, true] {
+                consume_search_fuel(&mut fuel)?;
+                let (from, to) = if !reversed {
+                    (fresh_lhs, fresh_rhs)
+                } else {
+                    (fresh_rhs, fresh_lhs)
+                };
+                let Some(subst) = bounded_unify(from, selected, &mut fuel)? else {
+                    continue;
+                };
+                let replacement = instance(to, &subst, &mut fuel, 0)?;
+                let new_atom = replace_atom_side(
+                    &literal.atom,
+                    slot,
+                    replace_term_at(base, &path, replacement),
+                );
+                let new_lit = Literal {
+                    positive: literal.positive,
+                    atom: new_atom,
+                };
+                if new_lit != goal[ti] {
+                    continue;
+                }
+                let mut all_match = true;
+                for (j, l) in target.iter().enumerate() {
+                    if j != ti && *l != goal[j] {
+                        all_match = false;
+                        break;
+                    }
+                }
+                if !all_match {
+                    continue;
+                }
+                let mut unifier: Vec<_> = subst
+                    .iter()
+                    .map(|(v, t)| Ok((*v, instance(t, &subst, &mut fuel, 0)?)))
+                    .collect::<Result<_, String>>()?;
+                unifier.sort_by_key(|(v, _)| *v);
+                return Ok(DemodulationCertificate {
+                    target: target.to_vec(),
+                    equality: equality.to_vec(),
+                    conclusion: goal.to_vec(),
+                    equality_freshening,
+                    unifier,
+                    target_literal_index: ti,
+                    target_argument_slot: slot,
+                    raw_target_path: path.clone(),
+                    fresh_target_path: path,
+                    reversed,
+                });
+            }
+        }
+    }
+    Err("no supported demodulation certificate".into())
+}
+
 fn supported_clause(
     symbols: &mut SymbolTable,
     formula: &AnnotatedFormula<'_>,
@@ -1257,6 +1397,7 @@ enum Kind {
     EqualityFactoring(EqualityFactoringCertificate),
     SubsumptionResolution(SubsumptionResolutionCertificate),
     Weakening(WeakeningCertificate),
+    Demodulation(DemodulationCertificate),
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -1346,17 +1487,39 @@ fn dag_request(
         } else if parents.len() == 2 {
             let (left, right) = (&nodes[parents[0]].clause, &nodes[parents[1]].clause);
             match node.rule {
-                Some("superposition") | Some("paramodulation") | Some("demodulation") => {
+                Some("demodulation") | Some("equality_normalization") => {
+                    if let Ok(c) = demodulation_certificate(left, right, &raw, limits) {
+                        let conclusion = c.conclusion.clone();
+                        (Kind::Demodulation(c), conclusion, parents)
+                    } else if let Ok(c) = demodulation_certificate(right, left, &raw, limits) {
+                        let conclusion = c.conclusion.clone();
+                        (
+                            Kind::Demodulation(c),
+                            conclusion,
+                            vec![parents[1], parents[0]],
+                        )
+                    } else if let Ok(c) = certificate(left, right, &raw, false, limits) {
+                        let conclusion = c.conclusion.clone();
+                        (Kind::Superposition(c), conclusion, parents)
+                    } else if let Ok(c) = certificate(right, left, &raw, false, limits) {
+                        let conclusion = c.conclusion.clone();
+                        (
+                            Kind::Superposition(c),
+                            conclusion,
+                            vec![parents[1], parents[0]],
+                        )
+                    } else {
+                        return Err("no supported demodulation certificate".into());
+                    }
+                }
+                Some("superposition") | Some("paramodulation") => {
                     let (c, flipped) = if let Ok(c) = certificate(left, right, &raw, false, limits)
                     {
                         (c, false)
                     } else if let Ok(c) = certificate(right, left, &raw, false, limits) {
                         (c, true)
                     } else {
-                        return Err(
-                            "no supported superposition/paramodulation/demodulation certificate"
-                                .into(),
-                        );
+                        return Err("no supported superposition/paramodulation certificate".into());
                     };
                     let conclusion = c.conclusion.clone();
                     let parents = if flipped {
@@ -1502,6 +1665,7 @@ fn dag_request(
             Kind::EqualityFactoring(_) => 7,
             Kind::SubsumptionResolution(_) => 8,
             Kind::Weakening(_) => 9,
+            Kind::Demodulation(_) => 10,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -1520,6 +1684,7 @@ fn dag_request(
             Kind::EqualityFactoring(c) => c.encode(&mut wire)?,
             Kind::SubsumptionResolution(c) => c.encode(&mut wire)?,
             Kind::Weakening(c) => c.encode(&mut wire)?,
+            Kind::Demodulation(c) => c.encode(&mut wire)?,
         }
     }
     Ok((wire.finish()?, nodes.len()))

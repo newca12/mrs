@@ -210,6 +210,21 @@ def main() -> int:
             "|| !check_weakening_and_replay(step, remaining_work)",
             "|| false",
         ),
+        (
+            "demodulation ignores equality positive polarity",
+            "if !eq_lit.positive {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "demodulation ignores unified term equality",
+            "if !same_term(&from_inst, &selected_subterm) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "DAG demodulation skips rule replay",
+            "|| !check_demodulation_and_replay(step, remaining_work)",
+            "|| false",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
@@ -249,7 +264,7 @@ def main() -> int:
                 return (index, name, 1, f"Verus accepted mutation: {name}")
             return (index, name, 0, f"mutation rejected: {name}")
 
-        workers = 2
+        workers = int(os.environ.get("VERUS_MUTATION_WORKERS", 2))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(check_mutation, item) for item in enumerate(mutations)]
             for future in concurrent.futures.as_completed(futures):
