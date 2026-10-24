@@ -565,6 +565,7 @@ fn verify_strict_with_source_internal(
             "ex_falso" => verify_ex_falso(&parents, limits),
             "weaken" => verify_weakening(&parents, conclusion, limits),
             "reflexivity" => verify_reflexivity(&parents, conclusion),
+            "symmetry" | "equality_symmetry" => verify_symmetry(&parents, conclusion),
             "transitivity" => verify_transitivity(&parents, conclusion, limits),
             "instantiate" | "instantiation" => verify_instantiation(&parents, conclusion, limits),
             "definition_renaming" => verify_definition_renaming(
@@ -917,6 +918,8 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "ex_falso"
         | "weaken"
         | "reflexivity"
+        | "symmetry"
+        | "equality_symmetry"
         | "transitivity"
         | "instantiate"
         | "instantiation"
@@ -5620,6 +5623,40 @@ fn verify_reflexivity(parents: &[Formula], conclusion: &Formula) -> KernelVerdic
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("reflexivity conclusion is not t = t".into())
+    }
+}
+
+fn equality_parts(formula: &Formula) -> Option<(bool, &Term, &Term)> {
+    match formula {
+        Formula::Atom(Atom::Eq(s, t)) => Some((true, s, t)),
+        Formula::Neg(inner) => match inner.as_ref() {
+            Formula::Atom(Atom::Eq(s, t)) => Some((false, s, t)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn verify_symmetry(parents: &[Formula], conclusion: &Formula) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("symmetry must have one parent".into());
+    }
+    let Some((parent_pos, parent_s, parent_t)) = equality_parts(&parents[0]) else {
+        return KernelVerdict::Rejected("symmetry parent is not an equality".into());
+    };
+    let Some((concl_pos, concl_u, concl_v)) = equality_parts(conclusion) else {
+        return KernelVerdict::Rejected("symmetry conclusion is not an equality".into());
+    };
+    if parent_pos != concl_pos {
+        return KernelVerdict::Rejected(
+            "symmetry conclusion polarity does not match parent".into(),
+        );
+    }
+    if (concl_u == parent_t && concl_v == parent_s) || (concl_u == parent_s && concl_v == parent_t)
+    {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Rejected("symmetry conclusion is not commuted parent equality".into())
     }
 }
 

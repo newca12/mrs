@@ -81,6 +81,12 @@ conclusion `u1 = u2` matching a transitive orientation is derived.
 Its theorem `equality_transitivity_sound` and checker `check_transitivity_and_replay`
 prove universal validity preservation.
 
+DAG support also includes **equality symmetry**:
+from universally valid unit equality parent `s = t` (or `s != t`), the commuted
+conclusion `t = s` (or `t != s`) is derived.
+Its theorem `equality_symmetry_sound` and checker `check_symmetry_and_replay`
+prove universal validity preservation.
+
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered
 first-order superposition rule**: no KBO/LPO maximality or literal-selection
@@ -170,7 +176,7 @@ membership is checked; no runtime semantic-validity test is required.
 The proof DAG also dispatches nullary and exact-atom resolution,
 standardized-apart first-order resolution, equality resolution, clause and
 equality factoring, subsumption resolution, weakening, demodulation, clause
-instantiation, clause condensation, equality reflexivity, and equality transitivity. Each rule's replay is bound to cited parents and conclusion and
+instantiation, clause condensation, equality reflexivity, equality transitivity, and equality symmetry. Each rule's replay is bound to cited parents and conclusion and
 has a universal-validity preservation postcondition. The nullary-resolution
 slice uses positive-left/negative-right occurrences of the same nullary
 predicate, deletes exactly one occurrence from each parent and preserves exact

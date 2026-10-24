@@ -537,6 +537,62 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 5);
 
+    // Symmetry:
+    let symm_problem = mrs_tptp::parse_tptp("cnf(a,axiom,a=b). cnf(b,axiom,b!=a).").unwrap();
+    let symm_text = "cnf(a,axiom,a=b,file('input',a)).
+        cnf(b,axiom,b!=a,file('input',b)).
+        cnf(s,plain,b=a,inference(symmetry,[status(thm)],[a])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[s,b])).";
+    let symm_proof = mrs_tptp::parse_tptp(symm_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &symm_problem,
+        &symm_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 4);
+
+    // Copy / rename via instantiation:
+    let rename_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p(X)). cnf(b,axiom,~p(Y)).").unwrap();
+    let rename_text = "cnf(a,axiom,p(X),file('input',a)).
+        cnf(b,axiom,~p(Y),file('input',b)).
+        cnf(r,plain,p(Z),inference(copy,[status(thm)],[a])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r,b])).";
+    let rename_proof = mrs_tptp::parse_tptp(rename_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &rename_problem,
+        &rename_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 4);
+
+    // Disjunctive syllogism via resolution:
+    let ds_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,p|q). cnf(b,axiom,~p). cnf(c,axiom,~q).").unwrap();
+    let ds_text = "cnf(a,axiom,p|q,file('input',a)).
+        cnf(b,axiom,~p,file('input',b)).
+        cnf(c,axiom,~q,file('input',c)).
+        cnf(d,plain,q,inference(disjunctive_syllogism,[status(thm)],[a,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[d,c])).";
+    let ds_proof = mrs_tptp::parse_tptp(ds_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &ds_problem,
+        &ds_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 5);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(

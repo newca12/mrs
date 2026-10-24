@@ -116,10 +116,17 @@
       "production_certification": false
     },
     {
+      "id": "equality-symmetry",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Equality symmetry: from unit equality parent s = t (or s != t), the commuted conclusion t = s (or t != s) is universally valid. Dispatched in proof DAGs via ProofNodeKind::Symmetry; proven by equality_symmetry_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
-      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution, first-order resolution, equality resolution, clause and equality factoring, subsumption resolution, weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, and equality transitivity. Wire v1 decoding is verified; the CNF TPTP bridge remains trusted and provides opt-in MRS shadow and dual-check APIs.",
+      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution, first-order resolution, equality resolution, clause and equality factoring, subsumption resolution, weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, equality transitivity, and equality symmetry. Wire v1 decoding is verified; the CNF TPTP bridge remains trusted and provides opt-in MRS shadow and dual-check APIs.",
       "production_certification": false
     }
   ],
@@ -164,6 +171,8 @@
     "dag_equality_reflexivity": true,
     "equality_transitivity_rule": true,
     "dag_equality_transitivity": true,
+    "equality_symmetry_rule": true,
+    "dag_equality_symmetry": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,

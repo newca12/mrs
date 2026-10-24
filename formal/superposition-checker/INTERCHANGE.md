@@ -88,7 +88,7 @@ Rules include ordinary superposition; exact complementary-atom resolution;
 standardized-apart first-order resolution; equality resolution; clause and
 equality factoring; subsumption resolution; weakening; unit-equality
 demodulation; clause instantiation; clause condensation; equality reflexivity;
-and equality transitivity. The executable checker validates each
+equality transitivity; and equality symmetry. The executable checker validates each
 certificate and its exact cited parents and conclusion. Superposition and
 first-order resolution discovery independently freshen the parents and find a
 bounded syntactic unifier. Superposition preserves both complete contexts and
