@@ -128,7 +128,7 @@ problem. Wire-v1 structural decoding and decimal tokenization are verified; the
 TPTP/MRS lowering remains trusted adapter code. The DAG dispatch includes
 first-order resolution, equality resolution, clause and equality factoring,
 subsumption resolution, weakening, demodulation, clause instantiation,
-clause condensation, equality reflexivity, and equality transitivity in
+clause condensation, equality reflexivity, equality transitivity, and equality symmetry in
 addition to superposition and exact-atom resolution. Every accepted replay is
 bound to its cited parents and conclusion and proves local universal-validity
 preservation. Compiled refutations certify from nonempty inputs; exact cumulative

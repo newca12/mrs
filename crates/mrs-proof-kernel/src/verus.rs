@@ -1635,6 +1635,7 @@ enum Kind {
     Condensation(CondensationCertificate),
     Reflexivity,
     Transitivity,
+    Symmetry,
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -1919,6 +1920,22 @@ fn dag_request(
                     }
                     (Kind::Reflexivity, raw.clone(), parents)
                 }
+                Some("symmetry") | Some("equality_symmetry") | Some("commute") => {
+                    if parent.len() != 1 || raw.len() != 1 {
+                        return Err("symmetry requires unit clauses".into());
+                    }
+                    if parent[0].positive != raw[0].positive {
+                        return Err("symmetry requires matching polarity".into());
+                    }
+                    let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&parent[0].atom, &raw[0].atom) else {
+                        return Err("symmetry requires equality atoms".into());
+                    };
+                    if (u == t && v == s) || (u == s && v == t) {
+                        (Kind::Symmetry, raw.clone(), parents)
+                    } else {
+                        return Err("symmetry conclusion terms do not match parent".into());
+                    }
+                }
                 _ => return Err("unsupported inference rule".into()),
             }
         } else {
@@ -1965,6 +1982,7 @@ fn dag_request(
             Kind::Condensation(_) => 12,
             Kind::Reflexivity => 13,
             Kind::Transitivity => 14,
+            Kind::Symmetry => 15,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -1988,6 +2006,7 @@ fn dag_request(
             Kind::Condensation(c) => c.encode(&mut wire)?,
             Kind::Reflexivity => {}
             Kind::Transitivity => {}
+            Kind::Symmetry => {}
         }
     }
     Ok((wire.finish()?, nodes.len()))

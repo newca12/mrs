@@ -537,6 +537,24 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 5);
 
+    // Symmetry:
+    let symm_problem = mrs_tptp::parse_tptp("cnf(a,axiom,a=b). cnf(b,axiom,b!=a).").unwrap();
+    let symm_text = "cnf(a,axiom,a=b,file('input',a)).
+        cnf(b,axiom,b!=a,file('input',b)).
+        cnf(s,plain,b=a,inference(symmetry,[status(thm)],[a])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[s,b])).";
+    let symm_proof = mrs_tptp::parse_tptp(symm_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &symm_problem,
+        &symm_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 4);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(

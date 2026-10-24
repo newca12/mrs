@@ -255,6 +255,16 @@ def main() -> int:
             "if !check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {\n        return false;\n    }",
             "if false {\n        return false;\n    }",
         ),
+        (
+            "symmetry ignores valid commuted orientation",
+            "if !check_symmetry_step_exec(s, t, u, v) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "DAG symmetry skips rule replay",
+            "if !check_symmetry_and_replay(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
@@ -294,7 +304,7 @@ def main() -> int:
                 return (index, name, 1, f"Verus accepted mutation: {name}")
             return (index, name, 0, f"mutation rejected: {name}")
 
-        workers = int(os.environ.get("VERUS_MUTATION_WORKERS", 2))
+        workers = int(os.environ.get("VERUS_MUTATION_WORKERS", os.cpu_count() or 2))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(check_mutation, item) for item in enumerate(mutations)]
             for future in concurrent.futures.as_completed(futures):

@@ -2904,6 +2904,45 @@ proof fn equality_transitivity_sound(
     }
 }
 
+spec fn valid_symmetry_step(
+    s: Term, t: Term,
+    u: Term, v: Term,
+) -> bool {
+    (u == t && v == s) || (u == s && v == t)
+}
+
+/// Soundness theorem for equality symmetry:
+/// from universally valid unit equality parent s = t (or s != t),
+/// the commuted conclusion u = v (or u != v) matching the symmetric orientation
+/// is universally valid.
+proof fn equality_symmetry_sound(
+    parent: Clause,
+    conclusion: Clause,
+    s: Term, t: Term,
+    u: Term, v: Term,
+    positive: bool,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(parent, interp),
+        parent.literals.len() == 1,
+        parent.literals[0] == (Literal { positive, atom: Atom::Eq(s, t) }),
+        conclusion.literals.len() == 1,
+        conclusion.literals[0] == (Literal { positive, atom: Atom::Eq(u, v) }),
+        valid_symmetry_step(s, t, u, v),
+    ensures
+        clause_valid(conclusion, interp),
+{
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(conclusion, interp, valuation) by {
+        assert(clause_holds(parent, interp, valuation));
+        assert(literal_holds(parent.literals[0], interp, valuation));
+        assert(literal_holds(conclusion.literals[0], interp, valuation));
+        assert(clause_holds(conclusion, interp, valuation));
+    }
+}
+
 /// Soundness theorem for demodulation (unit equality rewriting):
 /// from universally valid target clause C and universally valid unit equality clause s = t (or t = s),
 /// replacing an occurrence of s\sigma (or t\sigma) at position p in literal k of C by t\sigma (or s\sigma)
@@ -3352,6 +3391,8 @@ pub enum ProofNodeKind {
     Reflexivity,
     /// Equality transitivity (t1 = t3 conclusion from t1 = t2 and t2 = t3).
     Transitivity,
+    /// Equality symmetry (t = s conclusion from s = t, or t != s from s != t).
+    Symmetry,
     Unsupported,
 }
 
@@ -3363,6 +3404,7 @@ spec fn supported_inference(kind: ProofNodeKind) -> bool {
         || kind == ProofNodeKind::Weakening || kind == ProofNodeKind::Demodulation
         || kind == ProofNodeKind::Instantiation || kind == ProofNodeKind::Condensation
         || kind == ProofNodeKind::Reflexivity || kind == ProofNodeKind::Transitivity
+        || kind == ProofNodeKind::Symmetry
 }
 
 pub struct ProofNode {
@@ -7367,6 +7409,62 @@ fn check_transitivity_and_replay(
     true
 }
 
+fn check_symmetry_step_exec(
+    s: &ExecTerm, t: &ExecTerm,
+    u: &ExecTerm, v: &ExecTerm,
+) -> (valid: bool)
+    ensures valid ==> valid_symmetry_step(view(*s), view(*t), view(*u), view(*v)),
+{
+    (same_term(u, t) && same_term(v, s)) || (same_term(u, s) && same_term(v, t))
+}
+
+fn check_symmetry_and_replay(
+    parent: &ExecClause,
+    conclusion: &ExecClause,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        && clause_valid(view_clause(*parent), interp)
+        ==> clause_valid(view_clause(*conclusion), interp),
+{
+    let mut work: usize = 0;
+    if !charge_clause_structure(parent, &mut work, work_limit)
+        || !charge_clause_structure(conclusion, &mut work, work_limit)
+    {
+        return false;
+    }
+    if parent.literals.len() != 1 || conclusion.literals.len() != 1 {
+        return false;
+    }
+    let parent_lit = &parent.literals[0];
+    let concl_lit = &conclusion.literals[0];
+    if parent_lit.positive != concl_lit.positive {
+        return false;
+    }
+    let ExecAtom::Eq(s, t) = &parent_lit.atom else { return false; };
+    let ExecAtom::Eq(u, v) = &concl_lit.atom else { return false; };
+
+    if !check_symmetry_step_exec(s, t, u, v) {
+        return false;
+    }
+
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(*parent), interp)
+            implies clause_valid(view_clause(*conclusion), interp) by {
+            equality_symmetry_sound(
+                view_clause(*parent),
+                view_clause(*conclusion),
+                view(*s), view(*t),
+                view(*u), view(*v),
+                parent_lit.positive,
+                interp,
+            );
+        };
+    }
+    true
+}
+
 fn replace_literal_position_exec_refines_substitution(
     literal: &ExecLiteral,
     bindings: &Vec<ExecBinding>,
@@ -8815,6 +8913,44 @@ fn check_dag_transitivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     true
 }
 
+fn check_dag_symmetry_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::Symmetry || node.parents.len() != 1 {
+        return false;
+    }
+    if node.parents[0] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !check_symmetry_and_replay(
+        &nodes[node.parents[0]].clause,
+        &node.clause,
+        remaining_work,
+    ) {
+        return false;
+    }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
+                assert(clause_valid(view_clause(node.clause), interp));
+            }
+        };
+    }
+    true
+}
+
 proof fn replayed_conclusion_has_source_target_context_split(
     certificate: SuperpositionCertificate,
     work_limit: nat,
@@ -8898,6 +9034,8 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                     && dag.nodes[i].parents@.len() == 1
                 || dag.nodes[i].kind == ProofNodeKind::Transitivity
                     && dag.nodes[i].parents@.len() == 2
+                || dag.nodes[i].kind == ProofNodeKind::Symmetry
+                    && dag.nodes[i].parents@.len() == 1
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < j < dag.nodes.len() ==> dag.nodes[i].id != dag.nodes[j].id
         && verdict == DagVerdict::Unknown ==> forall|i: int|
@@ -9253,6 +9391,25 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 return DagVerdict::Rejected;
             }
         }
+        if node.kind == ProofNodeKind::Symmetry {
+            if node.parents.len() != 1 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            let p = &dag.nodes[node.parents[0]].clause;
+            if p.literals.len() != 1 || node.clause.literals.len() != 1 {
+                return DagVerdict::Rejected;
+            }
+            if p.literals[0].positive != node.clause.literals[0].positive {
+                return DagVerdict::Rejected;
+            }
+            let (ExecAtom::Eq(s, t), ExecAtom::Eq(u, v)) = (
+                &p.literals[0].atom, &node.clause.literals[0].atom,
+            ) else {
+                return DagVerdict::Rejected;
+            };
+            if !check_symmetry_step_exec(s, t, u, v) {
+                return DagVerdict::Rejected;
+            }
+        }
         i += 1;
     }
     let mut input_index: usize = 0;
@@ -9442,6 +9599,11 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         if node.parents.len() != 2 { return false; }
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         check_dag_transitivity_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::Symmetry => {
+        if node.parents.len() != 1 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_symmetry_step(node, &dag.nodes, work_limit - work)
         },
         ProofNodeKind::Unsupported => false,
     }
@@ -11254,6 +11416,108 @@ fn executable_transitivity_dag_examples() -> bool {
     certify_dag(&dag, 10, 10000) == DagVerdict::Certified
 }
 
+fn executable_symmetry_examples() -> bool {
+    // Unit equality: a = b -> b = a
+    let c = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] };
+    let concl = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)) },
+    ] };
+    if !check_symmetry_and_replay(&c, &concl, 1000) {
+        return false;
+    }
+
+    // Compound terms: f(a) = g(b) -> g(b) = f(a)
+    let c_comp = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(1, Box::new(ExecTerm::Const(2))),
+            ExecTerm::App1(2, Box::new(ExecTerm::Const(3))),
+        ) },
+    ] };
+    let concl_comp = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(2, Box::new(ExecTerm::Const(3))),
+            ExecTerm::App1(1, Box::new(ExecTerm::Const(2))),
+        ) },
+    ] };
+    if !check_symmetry_and_replay(&c_comp, &concl_comp, 1000) {
+        return false;
+    }
+
+    // Negative equality: a != b -> b != a
+    let c_neg = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] };
+    let concl_neg = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)) },
+    ] };
+    if !check_symmetry_and_replay(&c_neg, &concl_neg, 1000) {
+        return false;
+    }
+
+    // Forged: a = b -> b = c fails closed
+    let forged = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(3)) },
+    ] };
+    if check_symmetry_and_replay(&c, &forged, 1000) {
+        return false;
+    }
+
+    // Polarity mismatch: a = b -> b != a fails closed
+    let forged_pol = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)) },
+    ] };
+    if check_symmetry_and_replay(&c, &forged_pol, 1000) {
+        return false;
+    }
+
+    // Predicate atom: p(a) -> p(a) fails closed
+    let pred_c = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] };
+    if check_symmetry_and_replay(&pred_c, &pred_c, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn symm_in1() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] }
+}
+
+fn symm_in2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)) },
+    ] }
+}
+
+fn executable_symmetry_dag_examples() -> bool {
+    let empty = ExecClause { literals: Vec::new() };
+    let symm_concl = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)) },
+    ] };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: symm_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 2, clause: symm_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 3, clause: symm_concl, kind: ProofNodeKind::Symmetry,
+                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 4, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![2usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+        ],
+        input_clauses: vec![symm_in1(), symm_in2()],
+        root: 3,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
 fn check_dag_with_local_soundness(
     dag: &ProofDag,
     node_limit: usize,
@@ -11802,6 +12066,7 @@ fn wire_dag(tokens: &Vec<u64>, cursor: &mut usize) -> (dag: Option<ProofDag>)
             },
             13 => (ProofNodeKind::Reflexivity, None, None, None, None, None, None, None, None, None, None),
             14 => (ProofNodeKind::Transitivity, None, None, None, None, None, None, None, None, None, None),
+            15 => (ProofNodeKind::Symmetry, None, None, None, None, None, None, None, None, None, None),
             _ => return None,
         };
         nodes.push(ProofNode { id, clause, kind, parents, step, res_step, eq_step, fact_step, eq_fact_step, sub_step, weaken_step, demod_step, inst_step, cond_step }); n += 1;
@@ -11876,6 +12141,11 @@ fn check_wire_tokens(tokens: &Vec<u64>) -> (response: u64)
             let Some(right) = wire_clause(tokens, &mut cursor) else { return 4; };
             let Some(concl) = wire_clause(tokens, &mut cursor) else { return 4; };
             if check_transitivity_and_replay(&left, &right, &concl, work) { 1 } else { 4 }
+        },
+        14 => {
+            let Some(parent) = wire_clause(tokens, &mut cursor) else { return 4; };
+            let Some(concl) = wire_clause(tokens, &mut cursor) else { return 4; };
+            if check_symmetry_and_replay(&parent, &concl, work) { 1 } else { 4 }
         },
         _ => return 4,
     };
@@ -12248,6 +12518,8 @@ fn run_examples() -> bool {
     if !executable_reflexivity_dag_examples() { return false; }
     if !executable_transitivity_examples() { return false; }
     if !executable_transitivity_dag_examples() { return false; }
+    if !executable_symmetry_examples() { return false; }
+    if !executable_symmetry_dag_examples() { return false; }
     if !executable_resolution_chain_examples() { return false; }
     if !wire_dispatch_regressions() { return false; }
     if !wire_tokenizer_boundary_regression() { return false; }
@@ -12313,6 +12585,10 @@ fn regression_main() {
         "transitivity regression failed");
     assert!(executable_transitivity_dag_examples(),
         "transitivity DAG regression failed");
+    assert!(executable_symmetry_examples(),
+        "symmetry regression failed");
+    assert!(executable_symmetry_dag_examples(),
+        "symmetry DAG regression failed");
     assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
     assert!(wire_dispatch_regressions(), "verified wire-dispatch regression failed");
     assert!(wire_tokenizer_boundary_regression(), "verified wire-tokenizer boundary failed");
