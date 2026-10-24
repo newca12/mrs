@@ -336,6 +336,13 @@ struct InstantiationCertificate {
     conclusion: Vec<Literal>,
 }
 
+struct CondensationCertificate {
+    parent: Vec<Literal>,
+    substitution: Vec<(VarId, Term)>,
+    inclusions: Vec<usize>,
+    conclusion: Vec<Literal>,
+}
+
 fn instance(
     term: &Term,
     subst: &HashMap<VarId, Term>,
@@ -533,6 +540,19 @@ impl InstantiationCertificate {
         wire.clause(&self.parent)?;
         wire.bindings(&self.substitution)?;
         wire.clause(&self.conclusion)?;
+        Ok(())
+    }
+}
+
+impl CondensationCertificate {
+    fn encode(&self, wire: &mut Wire) -> Result<(), String> {
+        wire.clause(&self.parent)?;
+        wire.bindings(&self.substitution)?;
+        wire.clause(&self.conclusion)?;
+        wire.n(self.inclusions.len())?;
+        for inc in &self.inclusions {
+            wire.n(*inc)?;
+        }
         Ok(())
     }
 }
@@ -739,6 +759,46 @@ fn bounded_unify_atoms(
     } else {
         Ok(None)
     }
+}
+
+fn bounded_match_atoms_into(
+    pattern: &Atom,
+    target: &Atom,
+    subst: &mut HashMap<VarId, Term>,
+    fuel: &mut usize,
+) -> Result<bool, String> {
+    let mut pending = Vec::new();
+    match (pattern, target) {
+        (Atom::Pred(p1, args1), Atom::Pred(p2, args2)) => {
+            if p1 != p2 || args1.len() != args2.len() {
+                return Ok(false);
+            }
+            pending.extend(args1.iter().cloned().zip(args2.iter().cloned()));
+        }
+        (Atom::Eq(a1, a2), Atom::Eq(b1, b2)) => {
+            pending.push((a1.clone(), b1.clone()));
+            pending.push((a2.clone(), b2.clone()));
+        }
+        _ => return Ok(false),
+    }
+    while let Some((pat, tgt)) = pending.pop() {
+        let pat = instance(&pat, subst, fuel, 0)?;
+        if pat == tgt {
+            continue;
+        }
+        match pat {
+            Term::Var(v) => {
+                subst.insert(v, tgt);
+            }
+            Term::App(f, a) => match tgt {
+                Term::App(g, b) if f == g && a.len() == b.len() => {
+                    pending.extend(a.into_iter().zip(b));
+                }
+                _ => return Ok(false),
+            },
+        }
+    }
+    Ok(true)
 }
 
 fn consume_search_fuel(fuel: &mut usize) -> Result<(), String> {
@@ -1296,6 +1356,126 @@ fn instantiation_certificate(
     })
 }
 
+fn condensation_certificate(
+    parent: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Result<CondensationCertificate, String> {
+    if parent.is_empty() || goal.is_empty() {
+        return Err("condensation parent or conclusion is empty".into());
+    }
+    if goal.len() > parent.len() {
+        return Err("condensation conclusion larger than parent".into());
+    }
+
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+
+    let mut candidate_substs = vec![HashMap::new()];
+
+    for i in 0..parent.len() {
+        for j in (i + 1)..parent.len() {
+            if parent[i].positive != parent[j].positive {
+                continue;
+            }
+            let mut subst = HashMap::new();
+            if bounded_unify_atoms_into(&parent[i].atom, &parent[j].atom, &mut subst, &mut fuel)
+                .unwrap_or(false)
+                && !candidate_substs.iter().any(|c| c == &subst)
+            {
+                candidate_substs.push(subst);
+            }
+            if let (Atom::Eq(_, _), Atom::Eq(s2, t2)) = (&parent[i].atom, &parent[j].atom) {
+                let mut subst_flip = HashMap::new();
+                let flipped_atom = Atom::Eq(t2.clone(), s2.clone());
+                if bounded_unify_atoms_into(
+                    &parent[i].atom,
+                    &flipped_atom,
+                    &mut subst_flip,
+                    &mut fuel,
+                )
+                .unwrap_or(false)
+                    && !candidate_substs.iter().any(|c| c == &subst_flip)
+                {
+                    candidate_substs.push(subst_flip);
+                }
+            }
+        }
+    }
+
+    for p in parent {
+        for g in goal {
+            if p.positive != g.positive {
+                continue;
+            }
+            let mut subst = HashMap::new();
+            if bounded_match_atoms_into(&p.atom, &g.atom, &mut subst, &mut fuel).unwrap_or(false)
+                && !candidate_substs.iter().any(|c| c == &subst)
+            {
+                candidate_substs.push(subst);
+            }
+        }
+    }
+
+    let mut idx = 0;
+    while idx < candidate_substs.len() && candidate_substs.len() < 64 {
+        let current = candidate_substs[idx].clone();
+        for p in parent {
+            for g in goal {
+                if p.positive != g.positive {
+                    continue;
+                }
+                let mut extended = current.clone();
+                if bounded_match_atoms_into(&p.atom, &g.atom, &mut extended, &mut fuel)
+                    .unwrap_or(false)
+                    && !candidate_substs.iter().any(|c| c == &extended)
+                {
+                    candidate_substs.push(extended);
+                }
+            }
+        }
+        idx += 1;
+    }
+
+    for candidate in candidate_substs {
+        let mut ok = true;
+        let mut inclusions = Vec::with_capacity(parent.len());
+        for p_lit in parent {
+            let Ok(inst_lit) = instantiate(p_lit, &candidate, &mut fuel) else {
+                ok = false;
+                break;
+            };
+            let mut found = None;
+            for (g_idx, g_lit) in goal.iter().enumerate() {
+                if inst_lit.positive == g_lit.positive && inst_lit.atom == g_lit.atom {
+                    found = Some(g_idx);
+                    break;
+                }
+            }
+            if let Some(i) = found {
+                inclusions.push(i);
+            } else {
+                ok = false;
+                break;
+            }
+        }
+        if ok && (0..goal.len()).all(|g| inclusions.contains(&g)) {
+            let mut substitution: Vec<_> = candidate
+                .iter()
+                .map(|(v, t)| Ok((*v, instance(t, &candidate, &mut fuel, 0)?)))
+                .collect::<Result<_, String>>()?;
+            substitution.sort_by_key(|(v, _)| *v);
+            return Ok(CondensationCertificate {
+                parent: parent.to_vec(),
+                substitution,
+                inclusions,
+                conclusion: goal.to_vec(),
+            });
+        }
+    }
+
+    Err("no supported condensation certificate".into())
+}
+
 fn supported_clause(
     symbols: &mut SymbolTable,
     formula: &AnnotatedFormula<'_>,
@@ -1452,6 +1632,7 @@ enum Kind {
     Weakening(WeakeningCertificate),
     Demodulation(DemodulationCertificate),
     Instantiation(InstantiationCertificate),
+    Condensation(CondensationCertificate),
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -1663,10 +1844,17 @@ fn dag_request(
                     let conclusion = c.conclusion.clone();
                     (Kind::EqualityResolution(c), conclusion, parents)
                 }
-                Some("factoring") | Some("condensation") => {
+                Some("factoring") => {
                     let c = factoring_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::Factoring(c), conclusion, parents)
+                }
+                Some("condensation")
+                | Some("remove_duplicate_literals")
+                | Some("duplicate_literal_removal") => {
+                    let c = condensation_certificate(parent, &raw, limits)?;
+                    let conclusion = c.conclusion.clone();
+                    (Kind::Condensation(c), conclusion, parents)
                 }
                 Some("equality_factoring") => {
                     let c = equality_factoring_certificate(parent, &raw, limits)?;
@@ -1726,6 +1914,7 @@ fn dag_request(
             Kind::Weakening(_) => 9,
             Kind::Demodulation(_) => 10,
             Kind::Instantiation(_) => 11,
+            Kind::Condensation(_) => 12,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -1746,6 +1935,7 @@ fn dag_request(
             Kind::Weakening(c) => c.encode(&mut wire)?,
             Kind::Demodulation(c) => c.encode(&mut wire)?,
             Kind::Instantiation(c) => c.encode(&mut wire)?,
+            Kind::Condensation(c) => c.encode(&mut wire)?,
         }
     }
     Ok((wire.finish()?, nodes.len()))

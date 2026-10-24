@@ -235,6 +235,16 @@ def main() -> int:
             "|| !check_instantiation_and_replay(step, remaining_work)",
             "|| false",
         ),
+        (
+            "condensation ignores literal agreement",
+            "if !same_literal(&instantiated, &certificate.conclusion.literals[target_idx]) {\n            return false;\n        }",
+            "if false {\n            return false;\n        }",
+        ),
+        (
+            "DAG condensation skips rule replay",
+            "|| !check_condensation_and_replay(step, remaining_work)",
+            "|| false",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:

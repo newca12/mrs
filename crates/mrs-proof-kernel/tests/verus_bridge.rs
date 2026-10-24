@@ -457,6 +457,47 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 6);
 
+    // Condensation:
+    let cond_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,p(X)|q(X)|p(Y)). cnf(b,axiom,~p(a)). cnf(c,axiom,~q(a)).",
+    )
+    .unwrap();
+    let cond_text = "cnf(a,axiom,p(X)|q(X)|p(Y),file('input',a)).
+        cnf(b,axiom,~p(a),file('input',b)).
+        cnf(c,axiom,~q(a),file('input',c)).
+        cnf(cond,plain,p(X)|q(X),inference(condensation,[status(thm)],[a])).
+        cnf(r1,plain,q(a),inference(resolution,[status(thm)],[cond,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,c])).";
+    let cond_proof = mrs_tptp::parse_tptp(cond_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &cond_problem,
+        &cond_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 6);
+
+    // Duplicate literal removal via condensation:
+    let dup_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p(a)|p(a)). cnf(b,axiom,~p(a)).").unwrap();
+    let dup_text = "cnf(a,axiom,p(a)|p(a),file('input',a)).
+        cnf(b,axiom,~p(a),file('input',b)).
+        cnf(cond,plain,p(a),inference(condensation,[status(thm)],[a])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[cond,b])).";
+    let dup_proof = mrs_tptp::parse_tptp(dup_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &dup_problem,
+        &dup_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 4);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(

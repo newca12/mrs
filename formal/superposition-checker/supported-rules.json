@@ -95,10 +95,17 @@
       "production_certification": false
     },
     {
+      "id": "clause-condensation",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Clause condensation: from universally valid parent clause C, simultaneous substitution sigma, and conclusion clause D containing all literals of C sigma, the instance D is universally valid. Dispatched in proof DAGs via ProofNodeKind::Condensation; proven by condensation_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
-      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution, first-order resolution, equality resolution, clause and equality factoring, subsumption resolution, weakening, demodulation, and clause instantiation. Wire v1 decoding is verified; the CNF TPTP bridge remains trusted and provides opt-in MRS shadow and dual-check APIs.",
+      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution, first-order resolution, equality resolution, clause and equality factoring, subsumption resolution, weakening, demodulation, clause instantiation, and clause condensation. Wire v1 decoding is verified; the CNF TPTP bridge remains trusted and provides opt-in MRS shadow and dual-check APIs.",
       "production_certification": false
     }
   ],
@@ -137,6 +144,8 @@
     "dag_demodulation": true,
     "clause_instantiation_rule": true,
     "dag_instantiation": true,
+    "clause_condensation_rule": true,
+    "dag_condensation": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,
