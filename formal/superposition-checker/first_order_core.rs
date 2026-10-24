@@ -2993,18 +2993,54 @@ spec fn same_or_commuted_terms(s: Term, t: Term, a: Term, b: Term) -> bool {
 spec fn valid_oriented_congruence(
     s: Term, t: Term,
     u: Term, v: Term,
-) -> bool {
+) -> bool
+    decreases u,
+{
     match (u, v) {
         (Term::App1(f1, a1), Term::App1(f2, a2)) => {
-            f1 == f2 && same_or_commuted_terms(s, t, *a1, *a2)
+            f1 == f2 && (same_or_commuted_terms(s, t, *a1, *a2)
+                || valid_oriented_congruence(s, t, *a1, *a2))
         },
         (Term::App2(f1, a1, b1), Term::App2(f2, a2, b2)) => {
             f1 == f2 && (
-                (same_or_commuted_terms(s, t, *a1, *a2) && *b1 == *b2)
-                || (*a1 == *a2 && same_or_commuted_terms(s, t, *b1, *b2))
+                ((same_or_commuted_terms(s, t, *a1, *a2)
+                    || valid_oriented_congruence(s, t, *a1, *a2)) && *b1 == *b2)
+                || (*a1 == *a2 && (same_or_commuted_terms(s, t, *b1, *b2)
+                    || valid_oriented_congruence(s, t, *b1, *b2)))
             )
         },
         _ => false,
+    }
+}
+
+/// Congruence through a nonempty, single-hole unary/binary term context.
+proof fn oriented_congruence_preserves_value(
+    s: Term, t: Term, u: Term, v: Term,
+    interp: Interpretation, valuation: Valuation,
+)
+    requires
+        valid_oriented_congruence(s, t, u, v),
+        eval(s, interp, valuation) == eval(t, interp, valuation),
+    ensures eval(u, interp, valuation) == eval(v, interp, valuation),
+    decreases u,
+{
+    match (u, v) {
+        (Term::App1(_, a1), Term::App1(_, a2)) => {
+            if !same_or_commuted_terms(s, t, *a1, *a2) {
+                oriented_congruence_preserves_value(s, t, *a1, *a2, interp, valuation);
+            }
+        },
+        (Term::App2(_, a1, b1), Term::App2(_, a2, b2)) => {
+            if (same_or_commuted_terms(s, t, *a1, *a2)
+                || valid_oriented_congruence(s, t, *a1, *a2)) && *b1 == *b2 {
+                if !same_or_commuted_terms(s, t, *a1, *a2) {
+                    oriented_congruence_preserves_value(s, t, *a1, *a2, interp, valuation);
+                }
+            } else if !same_or_commuted_terms(s, t, *b1, *b2) {
+                oriented_congruence_preserves_value(s, t, *b1, *b2, interp, valuation);
+            }
+        },
+        _ => {},
     }
 }
 
@@ -3017,7 +3053,7 @@ spec fn valid_congruence_step(
 
 /// Soundness theorem for equality congruence:
 /// from universally valid unit equality parent s = t, any congruent
-/// unit equality conclusion f(s) = f(t) or f(s, w) = f(t, w) or f(w, s) = f(w, t)
+/// unit equality conclusion C[s] = C[t] in a nonempty single-hole term context
 /// is universally valid.
 proof fn equality_congruence_sound(
     parent: Clause,
@@ -3043,26 +3079,9 @@ proof fn equality_congruence_sound(
         assert(literal_holds(parent.literals[0], interp, valuation));
         assert(eval(s, interp, valuation) == eval(t, interp, valuation));
         if valid_oriented_congruence(s, t, u, v) {
-            match (u, v) {
-                (Term::App1(f1, a1), Term::App1(f2, a2)) => {
-                    assert(eval(u, interp, valuation) == eval(v, interp, valuation));
-                },
-                (Term::App2(f1, a1, b1), Term::App2(f2, a2, b2)) => {
-                    assert(eval(u, interp, valuation) == eval(v, interp, valuation));
-                },
-                _ => {},
-            }
+            oriented_congruence_preserves_value(s, t, u, v, interp, valuation);
         } else {
-            assert(valid_oriented_congruence(s, t, v, u));
-            match (v, u) {
-                (Term::App1(f1, a1), Term::App1(f2, a2)) => {
-                    assert(eval(v, interp, valuation) == eval(u, interp, valuation));
-                },
-                (Term::App2(f1, a1, b1), Term::App2(f2, a2, b2)) => {
-                    assert(eval(v, interp, valuation) == eval(u, interp, valuation));
-                },
-                _ => {},
-            }
+            oriented_congruence_preserves_value(s, t, v, u, interp, valuation);
         }
         assert(eval(u, interp, valuation) == eval(v, interp, valuation));
         assert(literal_holds(conclusion.literals[0], interp, valuation));
@@ -7659,15 +7678,19 @@ fn check_oriented_congruence_exec(
     u: &ExecTerm, v: &ExecTerm,
 ) -> (valid: bool)
     ensures valid ==> valid_oriented_congruence(view(*s), view(*t), view(*u), view(*v)),
+    decreases u,
 {
     match (u, v) {
         (ExecTerm::App1(f1, a1), ExecTerm::App1(f2, a2)) => {
-            *f1 == *f2 && same_or_commuted_exec(s, t, a1, a2)
+            *f1 == *f2 && (same_or_commuted_exec(s, t, a1, a2)
+                || check_oriented_congruence_exec(s, t, a1, a2))
         },
         (ExecTerm::App2(f1, a1, b1), ExecTerm::App2(f2, a2, b2)) => {
             *f1 == *f2 && (
-                (same_or_commuted_exec(s, t, a1, a2) && same_term(b1, b2))
-                || (same_term(a1, a2) && same_or_commuted_exec(s, t, b1, b2))
+                ((same_or_commuted_exec(s, t, a1, a2)
+                    || check_oriented_congruence_exec(s, t, a1, a2)) && same_term(b1, b2))
+                || (same_term(a1, a2) && (same_or_commuted_exec(s, t, b1, b2)
+                    || check_oriented_congruence_exec(s, t, b1, b2)))
             )
         },
         _ => false,
@@ -12024,6 +12047,18 @@ fn executable_congruence_examples() -> bool {
         return false;
     }
 
+    // Mixed nested context h(g(c, f(_)), d), with deep boundary mutations.
+    let nested = nested_congruence_clause(2, 10, 3, true);
+    if !check_congruence_and_replay(&c, &nested, 1000)
+        || check_congruence_and_replay(&c, &nested_congruence_clause(2, 10, 3, false), 1000)
+        || check_congruence_and_replay(&c, &nested, 0)
+        || check_congruence_and_replay(&c, &nested_congruence_clause(4, 10, 3, true), 1000)
+        || check_congruence_and_replay(&c, &nested_congruence_clause(2, 11, 3, true), 1000)
+        || check_congruence_and_replay(&c, &nested_congruence_clause(2, 10, 4, true), 1000)
+    {
+        return false;
+    }
+
     // Binary function arg 1: a = b -> g(a, c) = g(b, c)
     let concl_bin1 = ExecClause { literals: vec![
         ExecLiteral { positive: true, atom: ExecAtom::Eq(
@@ -12107,23 +12142,30 @@ fn cong_in1() -> ExecClause {
     ] }
 }
 
-fn cong_in2() -> ExecClause {
+fn nested_congruence_term(value: u64, inner_symbol: u64, sibling: u64) -> ExecTerm {
+    ExecTerm::App2(30, Box::new(ExecTerm::App2(20,
+        Box::new(ExecTerm::Const(sibling)),
+        Box::new(ExecTerm::App1(inner_symbol, Box::new(ExecTerm::Const(value)))),
+    )), Box::new(ExecTerm::Const(5)))
+}
+
+fn nested_congruence_clause(value: u64, inner_symbol: u64, sibling: u64,
+    positive: bool) -> ExecClause {
     ExecClause { literals: vec![
-        ExecLiteral { positive: false, atom: ExecAtom::Eq(
-            ExecTerm::App1(10, Box::new(ExecTerm::Const(1))),
-            ExecTerm::App1(10, Box::new(ExecTerm::Const(2))),
+        ExecLiteral { positive, atom: ExecAtom::Eq(
+            nested_congruence_term(1, 10, 3),
+            nested_congruence_term(value, inner_symbol, sibling),
         ) },
     ] }
 }
 
+fn cong_in2() -> ExecClause {
+    nested_congruence_clause(2, 10, 3, false)
+}
+
 fn executable_congruence_dag_examples() -> bool {
     let empty = ExecClause { literals: Vec::new() };
-    let cong_concl = ExecClause { literals: vec![
-        ExecLiteral { positive: true, atom: ExecAtom::Eq(
-            ExecTerm::App1(10, Box::new(ExecTerm::Const(1))),
-            ExecTerm::App1(10, Box::new(ExecTerm::Const(2))),
-        ) },
-    ] };
+    let cong_concl = nested_congruence_clause(2, 10, 3, true);
 
     let dag = ProofDag {
         nodes: vec![

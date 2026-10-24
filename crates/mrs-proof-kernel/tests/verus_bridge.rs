@@ -677,6 +677,66 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
 
 #[test]
 #[ignore = "requires the pinned compiled Verus artifact; run by formal CI"]
+fn nested_congruence_refutations_and_deep_mutations() {
+    let cfg = config();
+    for (parent, left, right) in [
+        ("a=b", "h(g(c,f(a)),d)", "h(g(c,f(b)),d)"),
+        ("b=a", "h(g(c,f(a)),d)", "h(g(c,f(b)),d)"),
+        ("a=b", "h(g(c,f(b)),d)", "h(g(c,f(a)),d)"),
+        ("f(X)=g(X)", "h(k(f(X),c))", "h(k(g(X),c))"),
+    ] {
+        let problem_text = format!("cnf(a,axiom,{parent}). cnf(b,axiom,{left}!={right}).");
+        let problem = mrs_tptp::parse_tptp(&problem_text).unwrap();
+        for rule in ["congruence", "equality_congruence"] {
+            let text = format!(
+                "cnf(a,axiom,{parent},file('input',a)).
+                 cnf(b,axiom,{left}!={right},file('input',b)).
+                 cnf(c,plain,{left}={right},inference({rule},[status(thm)],[a])).
+                 cnf(bot,plain,$false,inference(resolution,[status(thm)],[c,b]))."
+            );
+            let proof = mrs_tptp::parse_tptp(&text).unwrap();
+            let (kernel, report) = verify_with_verus_gate(
+                &problem,
+                &proof,
+                Some("input"),
+                VerificationLimits::default(),
+                &cfg,
+            );
+            assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+            assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+        }
+    }
+
+    for right in [
+        "h(g(c,f(e)),d)", // Deep replacement not justified by a=b.
+        "h(g(c,k(b)),d)", // Deep function symbol mismatch.
+        "h(g(e,f(b)),d)", // Inner sibling changed.
+        "h(g(c,f(b)),e)", // Outer sibling changed.
+        "h(g(b,f(b)),d)", // Two holes require separate replay steps.
+    ] {
+        let problem_text = format!("cnf(a,axiom,a=b). cnf(b,axiom,h(g(c,f(a)),d)!={right}).");
+        let problem = mrs_tptp::parse_tptp(&problem_text).unwrap();
+        let text = format!(
+            "cnf(a,axiom,a=b,file('input',a)).
+             cnf(b,axiom,h(g(c,f(a)),d)!={right},file('input',b)).
+             cnf(c,plain,h(g(c,f(a)),d)={right},inference(congruence,[status(thm)],[a])).
+             cnf(bot,plain,$false,inference(resolution,[status(thm)],[c,b]))."
+        );
+        let proof = mrs_tptp::parse_tptp(&text).unwrap();
+        let (kernel, report) = verify_with_verus_gate(
+            &problem,
+            &proof,
+            Some("input"),
+            VerificationLimits::default(),
+            &cfg,
+        );
+        assert_ne!(kernel, KernelVerdict::Certified);
+        assert_ne!(report.verdict, ShadowVerdict::CertifiedDagIr);
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned compiled Verus artifact; run by formal CI"]
 fn loaded_job_with_selected_include_closure_reaches_the_formal_checker() {
     use mrs_proover::load::load_text;
     use std::path::Path;

@@ -281,6 +281,16 @@ def main() -> int:
             "if false {\n        return false;\n    }",
         ),
         (
+            "nested congruence ignores unchanged binary sibling",
+            "&& same_term(b1, b2))\n                || (same_term(a1, a2) && (same_or_commuted_exec",
+            "&& true)\n                || (same_term(a1, a2) && (same_or_commuted_exec",
+        ),
+        (
+            "nested congruence ignores inner unary function symbol",
+            "*f1 == *f2 && (same_or_commuted_exec(s, t, a1, a2)",
+            "true && (same_or_commuted_exec(s, t, a1, a2)",
+        ),
+        (
             "DAG congruence skips rule replay",
             "if !check_congruence_and_replay(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
             "if false {\n        return false;\n    }",

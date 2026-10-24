@@ -94,9 +94,15 @@ prove universal validity.
 
 DAG support also includes **equality congruence**:
 from universally valid unit equality parent `s = t`, the congruent conclusion
-`f(s) = f(t)` or `f(s, w) = f(t, w)` or `f(w, s) = f(w, t)` is derived.
+`C[s] = C[t]` is derived, allowing either orientation of the parent equality.
+`C` is a nonempty single-hole context formed recursively from unary functions
+and either argument of binary functions. Function symbols and all off-path
+sibling terms must agree exactly; no substitution or simultaneous multi-hole
+replacement is implicit. Nested contexts such as `h(g(c, f(_)), d)` are supported.
 Its theorem `equality_congruence_sound` and checker `check_congruence_and_replay`
-prove universal validity preservation.
+prove universal validity preservation via `oriented_congruence_preserves_value`.
+The existing clause-structure preflight bounds syntax before recursive replay;
+this extension does not claim exact cumulative comparison-work accounting.
 
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered

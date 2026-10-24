@@ -24,6 +24,25 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-24 nested equality congruence checkpoint
+
+- **DONE:** extended equality congruence to arbitrary-depth nonempty single-hole
+  unary/binary function contexts, with either parent/conclusion orientation.
+  `oriented_congruence_preserves_value` proves the recursive semantic bridge;
+  executable recursion has a structural termination proof.
+- **DONE:** strict-kernel and trusted-adapter discovery recognize the same nested
+  contexts; existing wire v1 tag 17 and command 16 remain sufficient.
+- **DONE:** compiled local and refutation-DAG examples exercise mixed nested
+  contexts, zero-budget rejection, deep forged replacements, inner function
+  symbols, sibling changes, and negative equality rejection. Bridge regressions
+  cover both aliases, commuted orientations, variable-bearing terms, and
+  fail-closed deep mutations through the opt-in dual-check gate.
+- **DONE:** verifier-negative mutations independently remove the inner unary
+  symbol guard and the unchanged binary sibling guard.
+- **Scope:** this completes the nested-context congruence slice of M6. General
+  multi-step equality normalization/rewrite traces, verified TPTP refinement,
+  and the other open M0–M7 gates remain open.
+
 ### 2026-10-24 equality congruence checkpoint
 
 - **DONE:** equality congruence is proved sound in `equality_congruence_sound`:

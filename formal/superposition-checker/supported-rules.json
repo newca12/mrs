@@ -133,7 +133,7 @@
       "id": "equality-congruence",
       "module": "first_order_core.rs",
       "status": "verified_executable_step_and_dag_dispatch",
-      "description": "Equality congruence: from unit equality parent s = t, the congruent conclusion f(s) = f(t) or f(s, w) = f(t, w) or f(w, s) = f(w, t) is universally valid. Dispatched in proof DAGs via ProofNodeKind::Congruence; proven by equality_congruence_sound to preserve universal validity.",
+      "description": "Equality congruence: from unit positive equality parent s = t, derive C[s] = C[t] in either orientation through any nonempty single-hole unary/binary function context, with exact symbols and unchanged siblings. Dispatched in proof DAGs via ProofNodeKind::Congruence; proven by equality_congruence_sound and oriented_congruence_preserves_value to preserve universal validity.",
       "production_certification": false
     },
     {
@@ -191,6 +191,7 @@
     "dag_clause_excluded_middle": true,
     "equality_congruence_rule": true,
     "dag_equality_congruence": true,
+    "equality_congruence_nested_single_hole_contexts": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,

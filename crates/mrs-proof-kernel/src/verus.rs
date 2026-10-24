@@ -1969,25 +1969,7 @@ fn dag_request(
                     let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&parent[0].atom, &raw[0].atom) else {
                         return Err("congruence requires equality atoms".into());
                     };
-                    let same_or_commuted =
-                        |a: &Term, b: &Term| (a == s && b == t) || (a == t && b == s);
-                    let check_oriented = |u: &Term, v: &Term| match (u, v) {
-                        (Term::App(f1, args1), Term::App(f2, args2))
-                            if f1 == f2 && args1.len() == args2.len() =>
-                        {
-                            if args1.len() == 1 {
-                                same_or_commuted(&args1[0], &args2[0])
-                            } else if args1.len() == 2 {
-                                (same_or_commuted(&args1[0], &args2[0]) && args1[1] == args2[1])
-                                    || (args1[0] == args2[0]
-                                        && same_or_commuted(&args1[1], &args2[1]))
-                            } else {
-                                false
-                            }
-                        }
-                        _ => false,
-                    };
-                    if check_oriented(u, v) || check_oriented(v, u) {
+                    if congruent_term_context(s, t, u, v) {
                         (Kind::Congruence, raw.clone(), parents)
                     } else {
                         return Err("congruence conclusion terms do not match parent".into());
