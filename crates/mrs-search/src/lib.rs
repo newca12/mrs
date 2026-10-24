@@ -64,8 +64,8 @@ pub use goal_distance::GoalDistanceMap;
 
 pub use epr_ground::{EprBudget, EprTelemetry, epr_budget, try_epr_ground_refutation};
 pub use instgen::{
-    InstGenTelemetry, classify_epr_profile, is_epr, is_pure_relational_epr, try_instgen_epr,
-    try_instgen_epr_with_telemetry,
+    InstGenTelemetry, classify_epr_profile, has_equality, is_epr, is_pure_relational_epr,
+    try_instgen_epr, try_instgen_epr_with_telemetry,
 };
 pub use mrs_calculus::literal_selection::LiteralSelection;
 pub use mrs_calculus::ordering::{LpoBudgetGuard, TermOrdering, lpo_budget_expired};
