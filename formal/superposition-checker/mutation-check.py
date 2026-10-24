@@ -304,7 +304,10 @@ def main() -> int:
                 return (index, name, 1, f"Verus accepted mutation: {name}")
             return (index, name, 0, f"mutation rejected: {name}")
 
-        workers = int(os.environ.get("VERUS_MUTATION_WORKERS", os.cpu_count() or 2))
+        # Each verifier process can consume substantial memory and CPU; keep
+        # the default concurrency bounded even on large hosts. CI/developers
+        # may explicitly raise it when resources permit.
+        workers = int(os.environ.get("VERUS_MUTATION_WORKERS", 2))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(check_mutation, item) for item in enumerate(mutations)]
             for future in concurrent.futures.as_completed(futures):
