@@ -1637,6 +1637,7 @@ enum Kind {
     Transitivity,
     Symmetry,
     ExcludedMiddle,
+    Congruence,
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -1958,6 +1959,40 @@ fn dag_request(
                     }
                     (Kind::ExcludedMiddle, raw.clone(), parents)
                 }
+                Some("congruence") | Some("equality_congruence") => {
+                    if parent.len() != 1 || raw.len() != 1 {
+                        return Err("congruence requires unit clauses".into());
+                    }
+                    if !parent[0].positive || !raw[0].positive {
+                        return Err("congruence requires positive equalities".into());
+                    }
+                    let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&parent[0].atom, &raw[0].atom) else {
+                        return Err("congruence requires equality atoms".into());
+                    };
+                    let same_or_commuted =
+                        |a: &Term, b: &Term| (a == s && b == t) || (a == t && b == s);
+                    let check_oriented = |u: &Term, v: &Term| match (u, v) {
+                        (Term::App(f1, args1), Term::App(f2, args2))
+                            if f1 == f2 && args1.len() == args2.len() =>
+                        {
+                            if args1.len() == 1 {
+                                same_or_commuted(&args1[0], &args2[0])
+                            } else if args1.len() == 2 {
+                                (same_or_commuted(&args1[0], &args2[0]) && args1[1] == args2[1])
+                                    || (args1[0] == args2[0]
+                                        && same_or_commuted(&args1[1], &args2[1]))
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    };
+                    if check_oriented(u, v) || check_oriented(v, u) {
+                        (Kind::Congruence, raw.clone(), parents)
+                    } else {
+                        return Err("congruence conclusion terms do not match parent".into());
+                    }
+                }
                 Some("tautology") => {
                     if raw.len() == 2
                         && raw[0].positive != raw[1].positive
@@ -2021,6 +2056,7 @@ fn dag_request(
             Kind::Transitivity => 14,
             Kind::Symmetry => 15,
             Kind::ExcludedMiddle => 16,
+            Kind::Congruence => 17,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -2046,6 +2082,7 @@ fn dag_request(
             Kind::Transitivity => {}
             Kind::Symmetry => {}
             Kind::ExcludedMiddle => {}
+            Kind::Congruence => {}
         }
     }
     Ok((wire.finish()?, nodes.len()))

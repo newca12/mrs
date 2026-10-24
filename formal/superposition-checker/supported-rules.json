@@ -130,10 +130,17 @@
       "production_certification": false
     },
     {
+      "id": "equality-congruence",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Equality congruence: from unit equality parent s = t, the congruent conclusion f(s) = f(t) or f(s, w) = f(t, w) or f(w, s) = f(w, t) is universally valid. Dispatched in proof DAGs via ProofNodeKind::Congruence; proven by equality_congruence_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
-      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution, first-order resolution, equality resolution, clause and equality factoring, subsumption resolution, weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, and clause excluded middle. Wire v1 decoding is verified; the CNF TPTP bridge remains trusted and provides opt-in MRS shadow and dual-check APIs.",
+      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution, first-order resolution, equality resolution, clause and equality factoring, subsumption resolution, weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, and equality congruence. Wire v1 decoding is verified; the CNF TPTP bridge remains trusted and provides opt-in MRS shadow and dual-check APIs.",
       "production_certification": false
     }
   ],
@@ -182,6 +189,8 @@
     "dag_equality_symmetry": true,
     "clause_excluded_middle_rule": true,
     "dag_clause_excluded_middle": true,
+    "equality_congruence_rule": true,
+    "dag_equality_congruence": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,

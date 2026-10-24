@@ -2986,6 +2986,90 @@ proof fn excluded_middle_sound(
     }
 }
 
+spec fn same_or_commuted_terms(s: Term, t: Term, a: Term, b: Term) -> bool {
+    (a == s && b == t) || (a == t && b == s)
+}
+
+spec fn valid_oriented_congruence(
+    s: Term, t: Term,
+    u: Term, v: Term,
+) -> bool {
+    match (u, v) {
+        (Term::App1(f1, a1), Term::App1(f2, a2)) => {
+            f1 == f2 && same_or_commuted_terms(s, t, *a1, *a2)
+        },
+        (Term::App2(f1, a1, b1), Term::App2(f2, a2, b2)) => {
+            f1 == f2 && (
+                (same_or_commuted_terms(s, t, *a1, *a2) && *b1 == *b2)
+                || (*a1 == *a2 && same_or_commuted_terms(s, t, *b1, *b2))
+            )
+        },
+        _ => false,
+    }
+}
+
+spec fn valid_congruence_step(
+    s: Term, t: Term,
+    u: Term, v: Term,
+) -> bool {
+    valid_oriented_congruence(s, t, u, v) || valid_oriented_congruence(s, t, v, u)
+}
+
+/// Soundness theorem for equality congruence:
+/// from universally valid unit equality parent s = t, any congruent
+/// unit equality conclusion f(s) = f(t) or f(s, w) = f(t, w) or f(w, s) = f(w, t)
+/// is universally valid.
+proof fn equality_congruence_sound(
+    parent: Clause,
+    conclusion: Clause,
+    s: Term, t: Term,
+    u: Term, v: Term,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(parent, interp),
+        parent.literals.len() == 1,
+        parent.literals[0] == (Literal { positive: true, atom: Atom::Eq(s, t) }),
+        conclusion.literals.len() == 1,
+        conclusion.literals[0] == (Literal { positive: true, atom: Atom::Eq(u, v) }),
+        valid_congruence_step(s, t, u, v),
+    ensures
+        clause_valid(conclusion, interp),
+{
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(conclusion, interp, valuation) by {
+        assert(clause_holds(parent, interp, valuation));
+        assert(literal_holds(parent.literals[0], interp, valuation));
+        assert(eval(s, interp, valuation) == eval(t, interp, valuation));
+        if valid_oriented_congruence(s, t, u, v) {
+            match (u, v) {
+                (Term::App1(f1, a1), Term::App1(f2, a2)) => {
+                    assert(eval(u, interp, valuation) == eval(v, interp, valuation));
+                },
+                (Term::App2(f1, a1, b1), Term::App2(f2, a2, b2)) => {
+                    assert(eval(u, interp, valuation) == eval(v, interp, valuation));
+                },
+                _ => {},
+            }
+        } else {
+            assert(valid_oriented_congruence(s, t, v, u));
+            match (v, u) {
+                (Term::App1(f1, a1), Term::App1(f2, a2)) => {
+                    assert(eval(v, interp, valuation) == eval(u, interp, valuation));
+                },
+                (Term::App2(f1, a1, b1), Term::App2(f2, a2, b2)) => {
+                    assert(eval(v, interp, valuation) == eval(u, interp, valuation));
+                },
+                _ => {},
+            }
+        }
+        assert(eval(u, interp, valuation) == eval(v, interp, valuation));
+        assert(literal_holds(conclusion.literals[0], interp, valuation));
+        assert(clause_holds(conclusion, interp, valuation));
+    }
+}
+
 /// Soundness theorem for demodulation (unit equality rewriting):
 /// from universally valid target clause C and universally valid unit equality clause s = t (or t = s),
 /// replacing an occurrence of s\sigma (or t\sigma) at position p in literal k of C by t\sigma (or s\sigma)
@@ -3438,6 +3522,8 @@ pub enum ProofNodeKind {
     Symmetry,
     /// Law of excluded middle (P | ~P conclusion).
     ExcludedMiddle,
+    /// Equality congruence (f(s) = f(t) conclusion from s = t).
+    Congruence,
     Unsupported,
 }
 
@@ -3450,6 +3536,7 @@ spec fn supported_inference(kind: ProofNodeKind) -> bool {
         || kind == ProofNodeKind::Instantiation || kind == ProofNodeKind::Condensation
         || kind == ProofNodeKind::Reflexivity || kind == ProofNodeKind::Transitivity
         || kind == ProofNodeKind::Symmetry || kind == ProofNodeKind::ExcludedMiddle
+        || kind == ProofNodeKind::Congruence
 }
 
 pub struct ProofNode {
@@ -7558,6 +7645,90 @@ fn check_excluded_middle_and_replay(
     true
 }
 
+fn same_or_commuted_exec(
+    s: &ExecTerm, t: &ExecTerm,
+    a: &ExecTerm, b: &ExecTerm,
+) -> (valid: bool)
+    ensures valid ==> same_or_commuted_terms(view(*s), view(*t), view(*a), view(*b)),
+{
+    (same_term(a, s) && same_term(b, t)) || (same_term(a, t) && same_term(b, s))
+}
+
+fn check_oriented_congruence_exec(
+    s: &ExecTerm, t: &ExecTerm,
+    u: &ExecTerm, v: &ExecTerm,
+) -> (valid: bool)
+    ensures valid ==> valid_oriented_congruence(view(*s), view(*t), view(*u), view(*v)),
+{
+    match (u, v) {
+        (ExecTerm::App1(f1, a1), ExecTerm::App1(f2, a2)) => {
+            *f1 == *f2 && same_or_commuted_exec(s, t, a1, a2)
+        },
+        (ExecTerm::App2(f1, a1, b1), ExecTerm::App2(f2, a2, b2)) => {
+            *f1 == *f2 && (
+                (same_or_commuted_exec(s, t, a1, a2) && same_term(b1, b2))
+                || (same_term(a1, a2) && same_or_commuted_exec(s, t, b1, b2))
+            )
+        },
+        _ => false,
+    }
+}
+
+fn check_congruence_step_exec(
+    s: &ExecTerm, t: &ExecTerm,
+    u: &ExecTerm, v: &ExecTerm,
+) -> (valid: bool)
+    ensures valid ==> valid_congruence_step(view(*s), view(*t), view(*u), view(*v)),
+{
+    check_oriented_congruence_exec(s, t, u, v) || check_oriented_congruence_exec(s, t, v, u)
+}
+
+fn check_congruence_and_replay(
+    parent: &ExecClause,
+    conclusion: &ExecClause,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        && clause_valid(view_clause(*parent), interp)
+        ==> clause_valid(view_clause(*conclusion), interp),
+{
+    let mut work: usize = 0;
+    if !charge_clause_structure(parent, &mut work, work_limit)
+        || !charge_clause_structure(conclusion, &mut work, work_limit)
+    {
+        return false;
+    }
+    if parent.literals.len() != 1 || conclusion.literals.len() != 1 {
+        return false;
+    }
+    let parent_lit = &parent.literals[0];
+    let concl_lit = &conclusion.literals[0];
+    if !parent_lit.positive || !concl_lit.positive {
+        return false;
+    }
+    let ExecAtom::Eq(s, t) = &parent_lit.atom else { return false; };
+    let ExecAtom::Eq(u, v) = &concl_lit.atom else { return false; };
+
+    if !check_congruence_step_exec(s, t, u, v) {
+        return false;
+    }
+
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(*parent), interp)
+            implies clause_valid(view_clause(*conclusion), interp) by {
+            equality_congruence_sound(
+                view_clause(*parent),
+                view_clause(*conclusion),
+                view(*s), view(*t),
+                view(*u), view(*v),
+                interp,
+            );
+        };
+    }
+    true
+}
+
 fn replace_literal_position_exec_refines_substitution(
     literal: &ExecLiteral,
     bindings: &Vec<ExecBinding>,
@@ -9081,6 +9252,44 @@ fn check_dag_excluded_middle_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     true
 }
 
+fn check_dag_congruence_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::Congruence || node.parents.len() != 1 {
+        return false;
+    }
+    if node.parents[0] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !check_congruence_and_replay(
+        &nodes[node.parents[0]].clause,
+        &node.clause,
+        remaining_work,
+    ) {
+        return false;
+    }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
+                assert(clause_valid(view_clause(node.clause), interp));
+            }
+        };
+    }
+    true
+}
+
 proof fn replayed_conclusion_has_source_target_context_split(
     certificate: SuperpositionCertificate,
     work_limit: nat,
@@ -9167,6 +9376,8 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 || dag.nodes[i].kind == ProofNodeKind::Symmetry
                     && dag.nodes[i].parents@.len() == 1
                 || dag.nodes[i].kind == ProofNodeKind::ExcludedMiddle
+                    && dag.nodes[i].parents@.len() == 1
+                || dag.nodes[i].kind == ProofNodeKind::Congruence
                     && dag.nodes[i].parents@.len() == 1
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < j < dag.nodes.len() ==> dag.nodes[i].id != dag.nodes[j].id
@@ -9554,6 +9765,25 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 return DagVerdict::Rejected;
             }
         }
+        if node.kind == ProofNodeKind::Congruence {
+            if node.parents.len() != 1 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            let p = &dag.nodes[node.parents[0]].clause;
+            if p.literals.len() != 1 || node.clause.literals.len() != 1 {
+                return DagVerdict::Rejected;
+            }
+            if !p.literals[0].positive || !node.clause.literals[0].positive {
+                return DagVerdict::Rejected;
+            }
+            let (ExecAtom::Eq(s, t), ExecAtom::Eq(u, v)) = (
+                &p.literals[0].atom, &node.clause.literals[0].atom,
+            ) else {
+                return DagVerdict::Rejected;
+            };
+            if !check_congruence_step_exec(s, t, u, v) {
+                return DagVerdict::Rejected;
+            }
+        }
         i += 1;
     }
     let mut input_index: usize = 0;
@@ -9753,6 +9983,11 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         if node.parents.len() != 1 { return false; }
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         check_dag_excluded_middle_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::Congruence => {
+        if node.parents.len() != 1 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_congruence_step(node, &dag.nodes, work_limit - work)
         },
         ProofNodeKind::Unsupported => false,
     }
@@ -11774,6 +12009,139 @@ fn executable_excluded_middle_dag_examples() -> bool {
     certify_dag(&dag, 10, 10000) == DagVerdict::Certified
 }
 
+fn executable_congruence_examples() -> bool {
+    // Unary function: a = b -> f(a) = f(b)
+    let c = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] };
+    let concl_unary = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(1))),
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(2))),
+        ) },
+    ] };
+    if !check_congruence_and_replay(&c, &concl_unary, 1000) {
+        return false;
+    }
+
+    // Binary function arg 1: a = b -> g(a, c) = g(b, c)
+    let concl_bin1 = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App2(20, Box::new(ExecTerm::Const(1)), Box::new(ExecTerm::Const(3))),
+            ExecTerm::App2(20, Box::new(ExecTerm::Const(2)), Box::new(ExecTerm::Const(3))),
+        ) },
+    ] };
+    if !check_congruence_and_replay(&c, &concl_bin1, 1000) {
+        return false;
+    }
+
+    // Binary function arg 2: a = b -> g(c, a) = g(c, b)
+    let concl_bin2 = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App2(20, Box::new(ExecTerm::Const(3)), Box::new(ExecTerm::Const(1))),
+            ExecTerm::App2(20, Box::new(ExecTerm::Const(3)), Box::new(ExecTerm::Const(2))),
+        ) },
+    ] };
+    if !check_congruence_and_replay(&c, &concl_bin2, 1000) {
+        return false;
+    }
+
+    // Commuted parent: b = a -> f(a) = f(b)
+    let c_rev = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)) },
+    ] };
+    if !check_congruence_and_replay(&c_rev, &concl_unary, 1000) {
+        return false;
+    }
+
+    // Commuted conclusion: a = b -> f(b) = f(a)
+    let concl_comm = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(2))),
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(1))),
+        ) },
+    ] };
+    if !check_congruence_and_replay(&c, &concl_comm, 1000) {
+        return false;
+    }
+
+    // Forged function symbol: a = b -> f(a) = g(b) fails closed
+    let forged_fn = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(1))),
+            ExecTerm::App1(11, Box::new(ExecTerm::Const(2))),
+        ) },
+    ] };
+    if check_congruence_and_replay(&c, &forged_fn, 1000) {
+        return false;
+    }
+
+    // Forged term: a = b -> f(a) = f(c) fails closed
+    let forged_term = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(1))),
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(3))),
+        ) },
+    ] };
+    if check_congruence_and_replay(&c, &forged_term, 1000) {
+        return false;
+    }
+
+    // Negative equality: a = b -> f(a) != f(b) fails closed
+    let forged_neg = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(1))),
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(2))),
+        ) },
+    ] };
+    if check_congruence_and_replay(&c, &forged_neg, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn cong_in1() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] }
+}
+
+fn cong_in2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(1))),
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(2))),
+        ) },
+    ] }
+}
+
+fn executable_congruence_dag_examples() -> bool {
+    let empty = ExecClause { literals: Vec::new() };
+    let cong_concl = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(1))),
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(2))),
+        ) },
+    ] };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: cong_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 2, clause: cong_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 3, clause: cong_concl, kind: ProofNodeKind::Congruence,
+                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 4, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![2usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+        ],
+        input_clauses: vec![cong_in1(), cong_in2()],
+        root: 3,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
 fn check_dag_with_local_soundness(
     dag: &ProofDag,
     node_limit: usize,
@@ -12324,6 +12692,7 @@ fn wire_dag(tokens: &Vec<u64>, cursor: &mut usize) -> (dag: Option<ProofDag>)
             14 => (ProofNodeKind::Transitivity, None, None, None, None, None, None, None, None, None, None),
             15 => (ProofNodeKind::Symmetry, None, None, None, None, None, None, None, None, None, None),
             16 => (ProofNodeKind::ExcludedMiddle, None, None, None, None, None, None, None, None, None, None),
+            17 => (ProofNodeKind::Congruence, None, None, None, None, None, None, None, None, None, None),
             _ => return None,
         };
         nodes.push(ProofNode { id, clause, kind, parents, step, res_step, eq_step, fact_step, eq_fact_step, sub_step, weaken_step, demod_step, inst_step, cond_step }); n += 1;
@@ -12407,6 +12776,11 @@ fn check_wire_tokens(tokens: &Vec<u64>) -> (response: u64)
         15 => {
             let Some(concl) = wire_clause(tokens, &mut cursor) else { return 4; };
             if check_excluded_middle_and_replay(&concl, work) { 1 } else { 4 }
+        },
+        16 => {
+            let Some(parent) = wire_clause(tokens, &mut cursor) else { return 4; };
+            let Some(concl) = wire_clause(tokens, &mut cursor) else { return 4; };
+            if check_congruence_and_replay(&parent, &concl, work) { 1 } else { 4 }
         },
         _ => return 4,
     };
@@ -12783,6 +13157,8 @@ fn run_examples() -> bool {
     if !executable_symmetry_dag_examples() { return false; }
     if !executable_excluded_middle_examples() { return false; }
     if !executable_excluded_middle_dag_examples() { return false; }
+    if !executable_congruence_examples() { return false; }
+    if !executable_congruence_dag_examples() { return false; }
     if !executable_resolution_chain_examples() { return false; }
     if !wire_dispatch_regressions() { return false; }
     if !wire_tokenizer_boundary_regression() { return false; }
@@ -12856,6 +13232,10 @@ fn regression_main() {
         "excluded middle regression failed");
     assert!(executable_excluded_middle_dag_examples(),
         "excluded middle DAG regression failed");
+    assert!(executable_congruence_examples(),
+        "congruence regression failed");
+    assert!(executable_congruence_dag_examples(),
+        "congruence DAG regression failed");
     assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
     assert!(wire_dispatch_regressions(), "verified wire-dispatch regression failed");
     assert!(wire_tokenizer_boundary_regression(), "verified wire-tokenizer boundary failed");

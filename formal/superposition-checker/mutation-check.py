@@ -275,6 +275,16 @@ def main() -> int:
             "if !check_excluded_middle_and_replay(\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
             "if false {\n        return false;\n    }",
         ),
+        (
+            "congruence ignores function symbol or argument agreement",
+            "if !check_congruence_step_exec(s, t, u, v) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "DAG congruence skips rule replay",
+            "if !check_congruence_and_replay(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:

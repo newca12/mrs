@@ -92,6 +92,12 @@ for any first-order atom `A`, the binary clause `A | ~A` (or `~A | A`) is derive
 Its theorem `excluded_middle_sound` and checker `check_excluded_middle_and_replay`
 prove universal validity.
 
+DAG support also includes **equality congruence**:
+from universally valid unit equality parent `s = t`, the congruent conclusion
+`f(s) = f(t)` or `f(s, w) = f(t, w)` or `f(w, s) = f(w, t)` is derived.
+Its theorem `equality_congruence_sound` and checker `check_congruence_and_replay`
+prove universal validity preservation.
+
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered
 first-order superposition rule**: no KBO/LPO maximality or literal-selection
@@ -181,7 +187,7 @@ membership is checked; no runtime semantic-validity test is required.
 The proof DAG also dispatches nullary and exact-atom resolution,
 standardized-apart first-order resolution, equality resolution, clause and
 equality factoring, subsumption resolution, weakening, demodulation, clause
-instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, and clause excluded middle. Each rule's replay is bound to cited parents and conclusion and
+instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, and equality congruence. Each rule's replay is bound to cited parents and conclusion and
 has a universal-validity preservation postcondition. The nullary-resolution
 slice uses positive-left/negative-right occurrences of the same nullary
 predicate, deletes exactly one occurrence from each parent and preserves exact

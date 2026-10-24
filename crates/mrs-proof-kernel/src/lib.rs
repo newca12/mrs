@@ -566,6 +566,7 @@ fn verify_strict_with_source_internal(
             "weaken" => verify_weakening(&parents, conclusion, limits),
             "reflexivity" => verify_reflexivity(&parents, conclusion),
             "symmetry" | "equality_symmetry" => verify_symmetry(&parents, conclusion),
+            "congruence" | "equality_congruence" => verify_congruence(&parents, conclusion),
             "transitivity" => verify_transitivity(&parents, conclusion, limits),
             "instantiate" | "instantiation" => verify_instantiation(&parents, conclusion, limits),
             "definition_renaming" => verify_definition_renaming(
@@ -920,6 +921,8 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "reflexivity"
         | "symmetry"
         | "equality_symmetry"
+        | "congruence"
+        | "equality_congruence"
         | "transitivity"
         | "instantiate"
         | "instantiation"
@@ -5659,6 +5662,41 @@ fn verify_symmetry(parents: &[Formula], conclusion: &Formula) -> KernelVerdict {
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("symmetry conclusion is not commuted parent equality".into())
+    }
+}
+
+fn verify_congruence(parents: &[Formula], conclusion: &Formula) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("congruence must have one parent".into());
+    }
+    let Some((parent_pos, parent_s, parent_t)) = equality_parts(&parents[0]) else {
+        return KernelVerdict::Rejected("congruence parent is not an equality".into());
+    };
+    let Some((concl_pos, concl_u, concl_v)) = equality_parts(conclusion) else {
+        return KernelVerdict::Rejected("congruence conclusion is not an equality".into());
+    };
+    if !parent_pos || !concl_pos {
+        return KernelVerdict::Rejected("congruence requires positive equalities".into());
+    }
+    let same_or_commuted =
+        |a: &Term, b: &Term| (a == parent_s && b == parent_t) || (a == parent_t && b == parent_s);
+    let check_oriented = |u: &Term, v: &Term| match (u, v) {
+        (Term::App(f1, args1), Term::App(f2, args2)) if f1 == f2 && args1.len() == args2.len() => {
+            if args1.len() == 1 {
+                same_or_commuted(&args1[0], &args2[0])
+            } else if args1.len() == 2 {
+                (same_or_commuted(&args1[0], &args2[0]) && args1[1] == args2[1])
+                    || (args1[0] == args2[0] && same_or_commuted(&args1[1], &args2[1]))
+            } else {
+                false
+            }
+        }
+        _ => false,
+    };
+    if check_oriented(concl_u, concl_v) || check_oriented(concl_v, concl_u) {
+        KernelVerdict::Certified
+    } else {
+        KernelVerdict::Rejected("congruence conclusion is not congruent to parent equality".into())
     }
 }
 
