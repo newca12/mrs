@@ -602,7 +602,7 @@ fn verify_strict_with_source_internal(
                 &proof_var_names,
                 limits,
             ),
-            "resolution" => verify_resolution(&parents, conclusion, limits),
+            "resolution" | "resolve" => verify_resolution(&parents, conclusion, limits),
             "ac_resolution" => verify_ac_resolution(
                 &parents,
                 conclusion,
@@ -675,7 +675,7 @@ fn verify_strict_with_source_internal(
                 &background_commutative,
                 &background_associative,
             ),
-            "paramodulation" => verify_paramodulation(
+            "paramodulation" | "paramodulate" => verify_paramodulation(
                 &parents,
                 conclusion,
                 limits,
@@ -929,6 +929,7 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "split_conjunct"
         | "cnf_transformation"
         | "resolution"
+        | "resolve"
         | "subsumption_resolution"
         | "factoring"
         | "equality_resolution"
@@ -944,7 +945,8 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "superposition"
         | "ac_superposition"
         | "ac_resolution"
-        | "paramodulation" => Some("thm"),
+        | "paramodulation"
+        | "paramodulate" => Some("thm"),
         _ => None,
     }
 }

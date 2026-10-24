@@ -593,6 +593,62 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 5);
 
+    // Excluded middle:
+    let em_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p). cnf(b,axiom,~p).").unwrap();
+    let em_text = "cnf(a,axiom,p,file('input',a)).
+        cnf(b,axiom,~p,file('input',b)).
+        cnf(em,plain,p|~p,inference(excluded_middle,[status(thm)],[a])).
+        cnf(m1,plain,~p,inference(resolution,[status(thm)],[em,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,m1])).";
+    let em_proof = mrs_tptp::parse_tptp(em_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &em_problem,
+        &em_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 5);
+
+    // Tautology alias:
+    let tau_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p). cnf(b,axiom,~p).").unwrap();
+    let tau_text = "cnf(a,axiom,p,file('input',a)).
+        cnf(b,axiom,~p,file('input',b)).
+        cnf(tau,plain,p|~p,inference(tautology,[status(thm)],[a])).
+        cnf(m1,plain,~p,inference(resolution,[status(thm)],[tau,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,m1])).";
+    let tau_proof = mrs_tptp::parse_tptp(tau_text).unwrap();
+    let (_, report) = verify_with_shadow(
+        &tau_problem,
+        &tau_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // Resolve and consequence aliases:
+    let res_alias_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,p|q). cnf(b,axiom,~p). cnf(c,axiom,~q).").unwrap();
+    let res_alias_text = "cnf(a,axiom,p|q,file('input',a)).
+        cnf(b,axiom,~p,file('input',b)).
+        cnf(c,axiom,~q,file('input',c)).
+        cnf(d,plain,q,inference(resolve,[status(thm)],[a,b])).
+        cnf(bot,plain,$false,inference(consequence,[status(thm)],[d,c])).";
+    let res_alias_proof = mrs_tptp::parse_tptp(res_alias_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &res_alias_problem,
+        &res_alias_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 5);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(

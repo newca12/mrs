@@ -1636,6 +1636,7 @@ enum Kind {
     Reflexivity,
     Transitivity,
     Symmetry,
+    ExcludedMiddle,
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -1750,7 +1751,7 @@ fn dag_request(
                         return Err("no supported demodulation certificate".into());
                     }
                 }
-                Some("superposition") | Some("paramodulation") => {
+                Some("superposition") | Some("paramodulation") | Some("paramodulate") => {
                     let (c, flipped) = if let Ok(c) = certificate(left, right, &raw, false, limits)
                     {
                         (c, false)
@@ -1767,7 +1768,10 @@ fn dag_request(
                     };
                     (Kind::Superposition(c), conclusion, parents)
                 }
-                Some("resolution") | Some("disjunctive_syllogism") => {
+                Some("resolution")
+                | Some("disjunctive_syllogism")
+                | Some("resolve")
+                | Some("consequence") => {
                     let mut exact_pivot = None;
                     for (lp, l) in left.iter().enumerate() {
                         for (rp, r) in right.iter().enumerate() {
@@ -1942,6 +1946,33 @@ fn dag_request(
                         return Err("symmetry conclusion terms do not match parent".into());
                     }
                 }
+                Some("excluded_middle") => {
+                    if raw.len() != 2 {
+                        return Err("excluded_middle requires binary clause".into());
+                    }
+                    if raw[0].positive == raw[1].positive {
+                        return Err("excluded_middle requires opposite polarities".into());
+                    }
+                    if raw[0].atom != raw[1].atom {
+                        return Err("excluded_middle requires identical atoms".into());
+                    }
+                    (Kind::ExcludedMiddle, raw.clone(), parents)
+                }
+                Some("tautology") => {
+                    if raw.len() == 2
+                        && raw[0].positive != raw[1].positive
+                        && raw[0].atom == raw[1].atom
+                    {
+                        (Kind::ExcludedMiddle, raw.clone(), parents)
+                    } else if raw.len() == 1
+                        && raw[0].positive
+                        && matches!(&raw[0].atom, Atom::Eq(s, t) if s == t)
+                    {
+                        (Kind::Reflexivity, raw.clone(), parents)
+                    } else {
+                        return Err("unsupported tautology clause shape".into());
+                    }
+                }
                 _ => return Err("unsupported inference rule".into()),
             }
         } else {
@@ -1989,6 +2020,7 @@ fn dag_request(
             Kind::Reflexivity => 13,
             Kind::Transitivity => 14,
             Kind::Symmetry => 15,
+            Kind::ExcludedMiddle => 16,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -2013,6 +2045,7 @@ fn dag_request(
             Kind::Reflexivity => {}
             Kind::Transitivity => {}
             Kind::Symmetry => {}
+            Kind::ExcludedMiddle => {}
         }
     }
     Ok((wire.finish()?, nodes.len()))

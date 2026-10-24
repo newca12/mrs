@@ -2943,6 +2943,49 @@ proof fn equality_symmetry_sound(
     }
 }
 
+spec fn valid_excluded_middle_step(
+    l1: Literal,
+    l2: Literal,
+) -> bool {
+    l1.positive != l2.positive && l1.atom == l2.atom
+}
+
+/// Soundness theorem for the law of excluded middle:
+/// for any first-order atom, the binary clause A | ~A (or ~A | A)
+/// is universally valid in every interpretation.
+proof fn excluded_middle_sound(
+    conclusion: Clause,
+    atom: Atom,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        conclusion.literals.len() == 2,
+        (conclusion.literals[0] == (Literal { positive: true, atom })
+            && conclusion.literals[1] == (Literal { positive: false, atom }))
+        || (conclusion.literals[0] == (Literal { positive: false, atom })
+            && conclusion.literals[1] == (Literal { positive: true, atom })),
+    ensures
+        clause_valid(conclusion, interp),
+{
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(conclusion, interp, valuation) by {
+        if atom_holds(atom, interp, valuation) {
+            let idx: int = if conclusion.literals[0].positive { 0 } else { 1 };
+            assert(0 <= idx < conclusion.literals.len());
+            assert(conclusion.literals[idx] == (Literal { positive: true, atom }));
+            assert(literal_holds(conclusion.literals[idx], interp, valuation));
+            assert(clause_holds(conclusion, interp, valuation));
+        } else {
+            let idx: int = if !conclusion.literals[0].positive { 0 } else { 1 };
+            assert(0 <= idx < conclusion.literals.len());
+            assert(conclusion.literals[idx] == (Literal { positive: false, atom }));
+            assert(literal_holds(conclusion.literals[idx], interp, valuation));
+            assert(clause_holds(conclusion, interp, valuation));
+        }
+    }
+}
+
 /// Soundness theorem for demodulation (unit equality rewriting):
 /// from universally valid target clause C and universally valid unit equality clause s = t (or t = s),
 /// replacing an occurrence of s\sigma (or t\sigma) at position p in literal k of C by t\sigma (or s\sigma)
@@ -3393,6 +3436,8 @@ pub enum ProofNodeKind {
     Transitivity,
     /// Equality symmetry (t = s conclusion from s = t, or t != s from s != t).
     Symmetry,
+    /// Law of excluded middle (P | ~P conclusion).
+    ExcludedMiddle,
     Unsupported,
 }
 
@@ -3404,7 +3449,7 @@ spec fn supported_inference(kind: ProofNodeKind) -> bool {
         || kind == ProofNodeKind::Weakening || kind == ProofNodeKind::Demodulation
         || kind == ProofNodeKind::Instantiation || kind == ProofNodeKind::Condensation
         || kind == ProofNodeKind::Reflexivity || kind == ProofNodeKind::Transitivity
-        || kind == ProofNodeKind::Symmetry
+        || kind == ProofNodeKind::Symmetry || kind == ProofNodeKind::ExcludedMiddle
 }
 
 pub struct ProofNode {
@@ -7465,6 +7510,54 @@ fn check_symmetry_and_replay(
     true
 }
 
+fn check_excluded_middle_step_exec(
+    l1: &ExecLiteral,
+    l2: &ExecLiteral,
+) -> (valid: bool)
+    ensures valid ==> valid_excluded_middle_step(view_literal(*l1), view_literal(*l2)),
+{
+    l1.positive != l2.positive && same_atom(&l1.atom, &l2.atom)
+}
+
+fn check_excluded_middle_and_replay(
+    conclusion: &ExecClause,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> clause_valid(view_clause(*conclusion), interp),
+{
+    let mut work: usize = 0;
+    if !charge_clause_structure(conclusion, &mut work, work_limit) {
+        return false;
+    }
+    if conclusion.literals.len() != 2 {
+        return false;
+    }
+    let l1 = &conclusion.literals[0];
+    let l2 = &conclusion.literals[1];
+
+    if !check_excluded_middle_step_exec(l1, l2) {
+        return false;
+    }
+
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies clause_valid(view_clause(*conclusion), interp) by {
+            let spec_atom = view_literal(*l1).atom;
+            assert(valid_excluded_middle_step(view_literal(*l1), view_literal(*l2)));
+            assert(view_clause(*conclusion).literals.len() == 2);
+            assert(view_clause(*conclusion).literals[0] == view_literal(*l1));
+            assert(view_clause(*conclusion).literals[1] == view_literal(*l2));
+            excluded_middle_sound(
+                view_clause(*conclusion),
+                spec_atom,
+                interp,
+            );
+        };
+    }
+    true
+}
+
 fn replace_literal_position_exec_refines_substitution(
     literal: &ExecLiteral,
     bindings: &Vec<ExecBinding>,
@@ -8951,6 +9044,43 @@ fn check_dag_symmetry_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     true
 }
 
+fn check_dag_excluded_middle_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::ExcludedMiddle || node.parents.len() != 1 {
+        return false;
+    }
+    if node.parents[0] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !check_excluded_middle_and_replay(
+        &node.clause,
+        remaining_work,
+    ) {
+        return false;
+    }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
+                assert(clause_valid(view_clause(node.clause), interp));
+            }
+        };
+    }
+    true
+}
+
 proof fn replayed_conclusion_has_source_target_context_split(
     certificate: SuperpositionCertificate,
     work_limit: nat,
@@ -9035,6 +9165,8 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 || dag.nodes[i].kind == ProofNodeKind::Transitivity
                     && dag.nodes[i].parents@.len() == 2
                 || dag.nodes[i].kind == ProofNodeKind::Symmetry
+                    && dag.nodes[i].parents@.len() == 1
+                || dag.nodes[i].kind == ProofNodeKind::ExcludedMiddle
                     && dag.nodes[i].parents@.len() == 1
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < j < dag.nodes.len() ==> dag.nodes[i].id != dag.nodes[j].id
@@ -9410,6 +9542,18 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 return DagVerdict::Rejected;
             }
         }
+        if node.kind == ProofNodeKind::ExcludedMiddle {
+            if node.parents.len() != 1 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            if node.clause.literals.len() != 2 {
+                return DagVerdict::Rejected;
+            }
+            let l1 = &node.clause.literals[0];
+            let l2 = &node.clause.literals[1];
+            if !check_excluded_middle_step_exec(l1, l2) {
+                return DagVerdict::Rejected;
+            }
+        }
         i += 1;
     }
     let mut input_index: usize = 0;
@@ -9604,6 +9748,11 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         if node.parents.len() != 1 { return false; }
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         check_dag_symmetry_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::ExcludedMiddle => {
+        if node.parents.len() != 1 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_excluded_middle_step(node, &dag.nodes, work_limit - work)
         },
         ProofNodeKind::Unsupported => false,
     }
@@ -11518,6 +11667,113 @@ fn executable_symmetry_dag_examples() -> bool {
     certify_dag(&dag, 10, 10000) == DagVerdict::Certified
 }
 
+fn executable_excluded_middle_examples() -> bool {
+    // Proposition: p | ~p
+    let p_em = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred0(1) },
+    ] };
+    if !check_excluded_middle_and_replay(&p_em, 1000) {
+        return false;
+    }
+
+    // Reversed polarity: ~p | p
+    let p_rev = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred0(1) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+    ] };
+    if !check_excluded_middle_and_replay(&p_rev, 1000) {
+        return false;
+    }
+
+    // Unary predicate: q(a) | ~q(a)
+    let q_em = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] };
+    if !check_excluded_middle_and_replay(&q_em, 1000) {
+        return false;
+    }
+
+    // Equality: a = b | a != b
+    let eq_em = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] };
+    if !check_excluded_middle_and_replay(&eq_em, 1000) {
+        return false;
+    }
+
+    // Forged: p(a) | ~p(b) fails closed
+    let forged_atom = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(2))) },
+    ] };
+    if check_excluded_middle_and_replay(&forged_atom, 1000) {
+        return false;
+    }
+
+    // Same polarity: p(a) | p(a) fails closed
+    let forged_pol = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] };
+    if check_excluded_middle_and_replay(&forged_pol, 1000) {
+        return false;
+    }
+
+    // Unit clause: p(a) fails closed
+    let unit = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] };
+    if check_excluded_middle_and_replay(&unit, 1000) {
+        return false;
+    }
+
+    true
+}
+
+fn em_in1() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn em_in2() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] }
+}
+
+fn executable_excluded_middle_dag_examples() -> bool {
+    let empty = ExecClause { literals: Vec::new() };
+    let em_concl = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] };
+    let mid_concl = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: em_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 2, clause: em_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 3, clause: em_concl, kind: ProofNodeKind::ExcludedMiddle,
+                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 4, clause: mid_concl, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![2usize, 0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 5, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![1usize, 3usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+        ],
+        input_clauses: vec![em_in1(), em_in2()],
+        root: 4,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
 fn check_dag_with_local_soundness(
     dag: &ProofDag,
     node_limit: usize,
@@ -12067,6 +12323,7 @@ fn wire_dag(tokens: &Vec<u64>, cursor: &mut usize) -> (dag: Option<ProofDag>)
             13 => (ProofNodeKind::Reflexivity, None, None, None, None, None, None, None, None, None, None),
             14 => (ProofNodeKind::Transitivity, None, None, None, None, None, None, None, None, None, None),
             15 => (ProofNodeKind::Symmetry, None, None, None, None, None, None, None, None, None, None),
+            16 => (ProofNodeKind::ExcludedMiddle, None, None, None, None, None, None, None, None, None, None),
             _ => return None,
         };
         nodes.push(ProofNode { id, clause, kind, parents, step, res_step, eq_step, fact_step, eq_fact_step, sub_step, weaken_step, demod_step, inst_step, cond_step }); n += 1;
@@ -12146,6 +12403,10 @@ fn check_wire_tokens(tokens: &Vec<u64>) -> (response: u64)
             let Some(parent) = wire_clause(tokens, &mut cursor) else { return 4; };
             let Some(concl) = wire_clause(tokens, &mut cursor) else { return 4; };
             if check_symmetry_and_replay(&parent, &concl, work) { 1 } else { 4 }
+        },
+        15 => {
+            let Some(concl) = wire_clause(tokens, &mut cursor) else { return 4; };
+            if check_excluded_middle_and_replay(&concl, work) { 1 } else { 4 }
         },
         _ => return 4,
     };
@@ -12520,6 +12781,8 @@ fn run_examples() -> bool {
     if !executable_transitivity_dag_examples() { return false; }
     if !executable_symmetry_examples() { return false; }
     if !executable_symmetry_dag_examples() { return false; }
+    if !executable_excluded_middle_examples() { return false; }
+    if !executable_excluded_middle_dag_examples() { return false; }
     if !executable_resolution_chain_examples() { return false; }
     if !wire_dispatch_regressions() { return false; }
     if !wire_tokenizer_boundary_regression() { return false; }
@@ -12589,6 +12852,10 @@ fn regression_main() {
         "symmetry regression failed");
     assert!(executable_symmetry_dag_examples(),
         "symmetry DAG regression failed");
+    assert!(executable_excluded_middle_examples(),
+        "excluded middle regression failed");
+    assert!(executable_excluded_middle_dag_examples(),
+        "excluded middle DAG regression failed");
     assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
     assert!(wire_dispatch_regressions(), "verified wire-dispatch regression failed");
     assert!(wire_tokenizer_boundary_regression(), "verified wire-tokenizer boundary failed");

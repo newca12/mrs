@@ -88,7 +88,7 @@ Rules include ordinary superposition; exact complementary-atom resolution;
 standardized-apart first-order resolution; equality resolution; clause and
 equality factoring; subsumption resolution; weakening; unit-equality
 demodulation; clause instantiation; clause condensation; equality reflexivity;
-equality transitivity; and equality symmetry. The executable checker validates each
+equality transitivity; equality symmetry; and clause excluded middle. The executable checker validates each
 certificate and its exact cited parents and conclusion. Superposition and
 first-order resolution discovery independently freshen the parents and find a
 bounded syntactic unifier. Superposition preserves both complete contexts and
@@ -135,6 +135,7 @@ kind          := 0 (input) | 1 (superposition) | 2 (nullary resolution)
                | 7 (equality factoring) | 8 (subsumption resolution)
                | 9 (clause weakening) | 10 (demodulation) | 11 (instantiation)
                | 12 (condensation) | 13 (reflexivity) | 14 (transitivity)
+               | 15 (symmetry) | 16 (excluded middle)
 rule_payload  := empty | certificate | resolution_certificate | eq_resolution_certificate
                | factoring_certificate | eq_factoring_certificate
                | subsumption_resolution_certificate | weakening_certificate

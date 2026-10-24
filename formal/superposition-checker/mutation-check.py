@@ -265,6 +265,16 @@ def main() -> int:
             "if !check_symmetry_and_replay(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
             "if false {\n        return false;\n    }",
         ),
+        (
+            "excluded middle ignores opposite polarity or atom agreement",
+            "if !check_excluded_middle_step_exec(l1, l2) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "DAG excluded middle skips rule replay",
+            "if !check_excluded_middle_and_replay(\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
