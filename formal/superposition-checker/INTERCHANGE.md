@@ -87,7 +87,8 @@ unused proof nodes are not silently deleted to obtain closure.
 Rules include ordinary superposition; exact complementary-atom resolution;
 standardized-apart first-order resolution; equality resolution; clause and
 equality factoring; subsumption resolution; weakening; unit-equality
-demodulation; clause instantiation; and clause condensation. The executable checker validates each
+demodulation; clause instantiation; clause condensation; equality reflexivity;
+and equality transitivity. The executable checker validates each
 certificate and its exact cited parents and conclusion. Superposition and
 first-order resolution discovery independently freshen the parents and find a
 bounded syntactic unifier. Superposition preserves both complete contexts and
@@ -120,10 +121,12 @@ command       := 0 (identity) | 1 (superposition step) | 2 (DAG)
                | 5 (clause factoring step) | 6 (equality factoring step)
                | 7 (subsumption resolution step) | 8 (clause weakening step)
                | 9 (demodulation step) | 10 (instantiation step) | 11 (condensation step)
+               | 12 (reflexivity step) | 13 (transitivity step)
 step payload  := certificate | resolution_certificate | eq_resolution_certificate
                | factoring_certificate | eq_factoring_certificate
                | subsumption_resolution_certificate | weakening_certificate
                | demodulation_certificate | instantiation_certificate | condensation_certificate
+               | clause | clause clause clause
 DAG payload   := node_count root input_count clause* node*
 node          := id clause kind parent_count parent_index* rule_payload
 kind          := 0 (input) | 1 (superposition) | 2 (nullary resolution)
@@ -131,7 +134,7 @@ kind          := 0 (input) | 1 (superposition) | 2 (nullary resolution)
                | 5 (equality resolution) | 6 (clause factoring)
                | 7 (equality factoring) | 8 (subsumption resolution)
                | 9 (clause weakening) | 10 (demodulation) | 11 (instantiation)
-               | 12 (condensation)
+               | 12 (condensation) | 13 (reflexivity) | 14 (transitivity)
 rule_payload  := empty | certificate | resolution_certificate | eq_resolution_certificate
                | factoring_certificate | eq_factoring_certificate
                | subsumption_resolution_certificate | weakening_certificate

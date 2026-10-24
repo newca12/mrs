@@ -1633,6 +1633,8 @@ enum Kind {
     Demodulation(DemodulationCertificate),
     Instantiation(InstantiationCertificate),
     Condensation(CondensationCertificate),
+    Reflexivity,
+    Transitivity,
 }
 struct WireNode {
     clause: Vec<Literal>,
@@ -1832,6 +1834,40 @@ fn dag_request(
                     };
                     (Kind::SubsumptionResolution(c), conclusion, parents)
                 }
+                Some("transitivity") => {
+                    let p1 = left;
+                    let p2 = right;
+                    if p1.len() != 1 || p2.len() != 1 || raw.len() != 1 {
+                        return Err("transitivity requires unit equality clauses".into());
+                    }
+                    if !p1[0].positive || !p2[0].positive || !raw[0].positive {
+                        return Err("transitivity requires positive equalities".into());
+                    }
+                    let (Atom::Eq(s1, s2), Atom::Eq(t1, t2), Atom::Eq(u1, u2)) =
+                        (&p1[0].atom, &p2[0].atom, &raw[0].atom)
+                    else {
+                        return Err("transitivity requires equality atoms".into());
+                    };
+                    let s2_t1 = s2 == t1;
+                    let s2_t2 = s2 == t2;
+                    let s1_t1 = s1 == t1;
+                    let s1_t2 = s1 == t2;
+                    let u_s1_t2 = (u1 == s1 && u2 == t2) || (u1 == t2 && u2 == s1);
+                    let u_s1_t1 = (u1 == s1 && u2 == t1) || (u1 == t1 && u2 == s1);
+                    let u_s2_t2 = (u1 == s2 && u2 == t2) || (u1 == t2 && u2 == s2);
+                    let u_s2_t1 = (u1 == s2 && u2 == t1) || (u1 == t1 && u2 == s2);
+                    if (s2_t1 && u_s1_t2)
+                        || (s2_t2 && u_s1_t1)
+                        || (s1_t1 && u_s2_t2)
+                        || (s1_t2 && u_s2_t1)
+                    {
+                        (Kind::Transitivity, raw.clone(), parents)
+                    } else {
+                        return Err(
+                            "transitivity conclusion does not match parent equality chain".into(),
+                        );
+                    }
+                }
                 _ => return Err("unsupported inference rule".into()),
             }
         } else if parents.len() == 1 {
@@ -1870,6 +1906,18 @@ fn dag_request(
                     let c = instantiation_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::Instantiation(c), conclusion, parents)
+                }
+                Some("reflexivity") => {
+                    if raw.len() != 1 || !raw[0].positive {
+                        return Err("reflexivity conclusion is not positive unit".into());
+                    }
+                    let Atom::Eq(s, t) = &raw[0].atom else {
+                        return Err("reflexivity conclusion is not equality".into());
+                    };
+                    if s != t {
+                        return Err("reflexivity conclusion is not t = t".into());
+                    }
+                    (Kind::Reflexivity, raw.clone(), parents)
                 }
                 _ => return Err("unsupported inference rule".into()),
             }
@@ -1915,6 +1963,8 @@ fn dag_request(
             Kind::Demodulation(_) => 10,
             Kind::Instantiation(_) => 11,
             Kind::Condensation(_) => 12,
+            Kind::Reflexivity => 13,
+            Kind::Transitivity => 14,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -1936,6 +1986,8 @@ fn dag_request(
             Kind::Demodulation(c) => c.encode(&mut wire)?,
             Kind::Instantiation(c) => c.encode(&mut wire)?,
             Kind::Condensation(c) => c.encode(&mut wire)?,
+            Kind::Reflexivity => {}
+            Kind::Transitivity => {}
         }
     }
     Ok((wire.finish()?, nodes.len()))

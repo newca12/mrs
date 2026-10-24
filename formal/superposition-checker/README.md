@@ -55,8 +55,9 @@ and machine-readable supported-slice declaration.
 
 It also runs `mutation-check.py`, which mutates replay and DAG-validation
 conditions across superposition, resolution, equality resolution, factoring,
-subsumption resolution, weakening, demodulation, instantiation, condensation, and wire
-tokenization. The verification gate requires Verus to reject all 45 broken
+subsumption resolution, weakening, demodulation, instantiation, condensation,
+reflexivity, transitivity, and wire
+tokenization. The verification gate requires Verus to reject all 47 broken
 refinements, including skipped node validation, forged input membership,
 forward parents, and nonempty-root acceptance. Four compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
@@ -77,7 +78,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `362 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `378 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -126,7 +127,8 @@ This certifies the supplied wire-decoded IR input clauses, not a parsed TPTP
 problem. Wire-v1 structural decoding and decimal tokenization are verified; the
 TPTP/MRS lowering remains trusted adapter code. The DAG dispatch includes
 first-order resolution, equality resolution, clause and equality factoring,
-subsumption resolution, weakening, demodulation, clause instantiation, and clause condensation in
+subsumption resolution, weakening, demodulation, clause instantiation,
+clause condensation, equality reflexivity, and equality transitivity in
 addition to superposition and exact-atom resolution. Every accepted replay is
 bound to its cited parents and conclusion and proves local universal-validity
 preservation. Compiled refutations certify from nonempty inputs; exact cumulative

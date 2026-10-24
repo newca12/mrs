@@ -498,6 +498,45 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 4);
 
+    // Reflexivity:
+    let refl_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p(a)). cnf(b,axiom,a!=a|~p(a)).").unwrap();
+    let refl_text = "cnf(a,axiom,p(a),file('input',a)).
+        cnf(b,axiom,a!=a|~p(a),file('input',b)).
+        cnf(r,plain,a=a,inference(reflexivity,[status(thm)],[a])).
+        cnf(m1,plain,~p(a),inference(resolution,[status(thm)],[r,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[m1,a])).";
+    let refl_proof = mrs_tptp::parse_tptp(refl_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &refl_problem,
+        &refl_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 5);
+
+    // Transitivity:
+    let trans_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,a=b). cnf(b,axiom,b=c). cnf(c,axiom,a!=c).").unwrap();
+    let trans_text = "cnf(a,axiom,a=b,file('input',a)).
+        cnf(b,axiom,b=c,file('input',b)).
+        cnf(c,axiom,a!=c,file('input',c)).
+        cnf(t,plain,a=c,inference(transitivity,[status(thm)],[a,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[t,c])).";
+    let trans_proof = mrs_tptp::parse_tptp(trans_text).unwrap();
+    let (kernel, report) = verify_with_shadow(
+        &trans_problem,
+        &trans_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified);
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    assert_eq!(report.checked_nodes, 5);
+
     let mut bad = cfg.clone();
     bad.expected_sha256 = "0".repeat(64);
     assert!(matches!(

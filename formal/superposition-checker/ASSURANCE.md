@@ -45,7 +45,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now forty-five verifier-negative checks and four
+The mutation inventory is now forty-seven verifier-negative checks and four
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -98,7 +98,8 @@ problem. Wire-v1 structural decoding and decimal tokenization are verified; the
 TPTP/MRS lowering remains trusted adapter code. The bridge and runtime fixtures
 exercise the interchange boundary. The DAG dispatch includes first-order
 resolution, equality resolution, clause and equality factoring, subsumption
-resolution, weakening, demodulation, clause instantiation, and clause condensation in addition to
+resolution, weakening, demodulation, clause instantiation, clause condensation,
+equality reflexivity, and equality transitivity in addition to
 superposition and exact-atom resolution. Each accepted replay is bound to its
 cited parents and conclusion and proves local universal-validity preservation.
 Compiled refutations certify from nonempty inputs; exact cumulative replay-work

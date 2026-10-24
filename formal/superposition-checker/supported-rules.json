@@ -102,10 +102,24 @@
       "production_certification": false
     },
     {
+      "id": "equality-reflexivity",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Equality reflexivity: the unit equality clause t = t is universally valid. Dispatched in proof DAGs via ProofNodeKind::Reflexivity; proven by equality_reflexivity_sound to be universally valid.",
+      "production_certification": false
+    },
+    {
+      "id": "equality-transitivity",
+      "module": "first_order_core.rs",
+      "status": "verified_executable_step_and_dag_dispatch",
+      "description": "Equality transitivity: from unit positive equality parents s1 = s2 and t1 = t2, any chained conclusion u1 = u2 matching a transitive orientation is universally valid. Dispatched in proof DAGs via ProofNodeKind::Transitivity; proven by equality_transitivity_sound to preserve universal validity.",
+      "production_certification": false
+    },
+    {
       "id": "proof-dag-refutation",
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
-      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution, first-order resolution, equality resolution, clause and equality factoring, subsumption resolution, weakening, demodulation, clause instantiation, and clause condensation. Wire v1 decoding is verified; the CNF TPTP bridge remains trusted and provides opt-in MRS shadow and dual-check APIs.",
+      "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution, first-order resolution, equality resolution, clause and equality factoring, subsumption resolution, weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, and equality transitivity. Wire v1 decoding is verified; the CNF TPTP bridge remains trusted and provides opt-in MRS shadow and dual-check APIs.",
       "production_certification": false
     }
   ],
@@ -146,6 +160,10 @@
     "dag_instantiation": true,
     "clause_condensation_rule": true,
     "dag_condensation": true,
+    "equality_reflexivity_rule": true,
+    "dag_equality_reflexivity": true,
+    "equality_transitivity_rule": true,
+    "dag_equality_transitivity": true,
     "archived_c502_step_replay": true,
     "archived_c502_full_proof_translation": false,
     "source_variable_unification_regression": true,

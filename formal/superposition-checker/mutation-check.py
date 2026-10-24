@@ -245,6 +245,16 @@ def main() -> int:
             "|| !check_condensation_and_replay(step, remaining_work)",
             "|| false",
         ),
+        (
+            "reflexivity ignores identical terms",
+            "if !same_term(s, t) { return false; }",
+            "if false { return false; }",
+        ),
+        (
+            "transitivity ignores valid chained orientation",
+            "if !check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
