@@ -42,6 +42,9 @@ that no interchange or caller exists are superseded by this update.
   and non-equality atoms.
 - **DONE:** 2 verifier-negative mutations in `mutation-check.py` covering symmetry term agreement
   and DAG replay dispatch.
+- **DONE:** expanded resolution and instantiation rule aliases in `mrs-proof-kernel::verus`
+  covering `disjunctive_syllogism`, `copy`, `rename`, `variable_rename`, `rename_variable`,
+  and `rectify`, with integration tests certifying refutation DAGs.
 
 ### 2026-10-24 equality reflexivity and transitivity checkpoint
 

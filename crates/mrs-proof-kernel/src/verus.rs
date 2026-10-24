@@ -1767,7 +1767,7 @@ fn dag_request(
                     };
                     (Kind::Superposition(c), conclusion, parents)
                 }
-                Some("resolution") => {
+                Some("resolution") | Some("disjunctive_syllogism") => {
                     let mut exact_pivot = None;
                     for (lp, l) in left.iter().enumerate() {
                         for (rp, r) in right.iter().enumerate() {
@@ -1903,7 +1903,13 @@ fn dag_request(
                     let conclusion = c.conclusion.clone();
                     (Kind::Weakening(c), conclusion, parents)
                 }
-                Some("instantiate") | Some("instantiation") => {
+                Some("instantiate")
+                | Some("instantiation")
+                | Some("copy")
+                | Some("rename")
+                | Some("variable_rename")
+                | Some("rename_variable")
+                | Some("rectify") => {
                     let c = instantiation_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::Instantiation(c), conclusion, parents)
