@@ -138,12 +138,21 @@ pub fn is_pure_relational_epr(clauses: &[Clause]) -> bool {
         })
 }
 
+/// Returns `true` iff any literal in `clauses` is an equality atom.
+pub fn has_equality(clauses: &[Clause]) -> bool {
+    clauses.iter().any(|c| {
+        c.literals
+            .iter()
+            .any(|lit| matches!(lit.atom, Atom::Eq(..)))
+    })
+}
+
 /// Classify the EPR profile of a clause set into one of:
 /// - "empty": empty clause set
 /// - "non_epr": contains function symbols of arity >= 1
-/// - "ground": all clauses are ground
-/// - "pure_relational_epr": non-ground, only constants and variables, no equality
 /// - "epr_equality": EPR with equality atoms
+/// - "ground": all clauses are ground, pure relational (no equality)
+/// - "pure_relational_epr": non-ground, only constants and variables, no equality
 pub fn classify_epr_profile(clauses: &[Clause]) -> &'static str {
     if clauses.is_empty() {
         return "empty";
@@ -151,13 +160,13 @@ pub fn classify_epr_profile(clauses: &[Clause]) -> &'static str {
     if !is_epr(clauses) {
         return "non_epr";
     }
+    if has_equality(clauses) {
+        return "epr_equality";
+    }
     if clauses.iter().all(|c| c.free_vars().is_empty()) {
         return "ground";
     }
-    if is_pure_relational_epr(clauses) {
-        return "pure_relational_epr";
-    }
-    "epr_equality"
+    "pure_relational_epr"
 }
 
 /// Returns `true` if `term` is a variable or a constant.
@@ -729,6 +738,9 @@ pub(crate) fn try_instgen_epr_with_telemetry_and_timeout(
         budget_instances: budget.max_instances,
     };
 
+    // Pure-relational EPR InstGen is supported.
+    // Equality InstGen is unsupported: problems with equality return
+    // unsupported_epr_profile and fall back to the given-clause loop.
     if !is_pure_relational_epr(clauses) {
         tele.fallback_reason = Some("unsupported_epr_profile");
         tele.return_reason = Some("none");
@@ -1128,6 +1140,8 @@ pub(crate) fn try_instgen_epr_with_telemetry_and_timeout(
 
                 if new_instances.is_empty() {
                     tele.elapsed_ms = start_time.elapsed().as_millis() as u64;
+                    // Variable-bearing finite models in InstGen fail closed
+                    // to GaveUp (no certified finite-model certificate path).
                     // The abstraction maps every variable position to one
                     // placeholder atom. That model is exact for a ground
                     // clause set, but it is not a first-order model for
@@ -1717,10 +1731,12 @@ mod tests {
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");
         let a = syms.intern("a");
+        let b = syms.intern("b");
+        let f = syms.intern("f");
         let mut id_gen = ClauseIdGen::new();
 
-        // Ground route: all clauses ground, no variables. Ground inputs are a
-        // subset of the pure-relational fragment, so InstGen attempts them.
+        // Ground route: all clauses ground, no variables, no equality.
+        // Pure-relational EPR InstGen is supported.
         let g1 = input_clause(
             &mut id_gen,
             vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
@@ -1739,7 +1755,28 @@ mod tests {
         assert!(matches!(res_ground, Some(SearchResult::Refutation(..))));
         assert_eq!(tele_ground.return_reason, Some("refutation"));
 
-        // EPR-with-equality route: EPR terms but an equality atom.
+        // Pure-relational EPR with variables: supported.
+        let v1 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(p, vec![Term::var(0)]))],
+            "v1",
+        );
+        let v2 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::pred(p, vec![Term::constant(a)]))],
+            "v2",
+        );
+        assert_eq!(
+            classify_epr_profile(&[v1.clone(), v2.clone()]),
+            "pure_relational_epr"
+        );
+        let (res_v, tele_v) = try_instgen_epr_with_telemetry(&[v1, v2], &[], &mut id_gen, &syms);
+        assert_eq!(tele_v.route, "pure_relational_epr");
+        assert!(tele_v.attempted);
+        assert!(matches!(res_v, Some(SearchResult::Refutation(..))));
+        assert_eq!(tele_v.return_reason, Some("refutation"));
+
+        // EPR-with-equality route (with variables): unsupported.
         let e1 = input_clause(
             &mut id_gen,
             vec![Literal::pos(Atom::eq(Term::var(0), Term::constant(a)))],
@@ -1749,8 +1786,40 @@ mod tests {
         let (res_eq, tele_eq) = try_instgen_epr_with_telemetry(&[e1], &[], &mut id_gen, &syms);
         assert_eq!(tele_eq.route, "epr_equality");
         assert!(!tele_eq.attempted);
+        assert_eq!(tele_eq.fallback_reason, Some("unsupported_epr_profile"));
         assert_eq!(tele_eq.return_reason, Some("none"));
         assert!(res_eq.is_none());
+
+        // EPR-with-equality route (ground equality): unsupported.
+        let ge = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(Term::constant(a), Term::constant(b)))],
+            "ge",
+        );
+        assert_eq!(classify_epr_profile(&[ge.clone()]), "epr_equality");
+        let (res_ge, tele_ge) = try_instgen_epr_with_telemetry(&[ge], &[], &mut id_gen, &syms);
+        assert_eq!(tele_ge.route, "epr_equality");
+        assert!(!tele_ge.attempted);
+        assert_eq!(tele_ge.fallback_reason, Some("unsupported_epr_profile"));
+        assert_eq!(tele_ge.return_reason, Some("none"));
+        assert!(res_ge.is_none());
+
+        // Non-EPR route (function symbols with arity >= 1): unsupported.
+        let f_clause = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(
+                Term::app(f, vec![Term::constant(a)]),
+                Term::constant(b),
+            ))],
+            "f_clause",
+        );
+        assert_eq!(classify_epr_profile(&[f_clause.clone()]), "non_epr");
+        let (res_f, tele_f) = try_instgen_epr_with_telemetry(&[f_clause], &[], &mut id_gen, &syms);
+        assert_eq!(tele_f.route, "non_epr");
+        assert!(!tele_f.attempted);
+        assert_eq!(tele_f.fallback_reason, Some("unsupported_epr_profile"));
+        assert_eq!(tele_f.return_reason, Some("none"));
+        assert!(res_f.is_none());
     }
 
     #[test]

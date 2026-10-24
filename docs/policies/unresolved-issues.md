@@ -962,9 +962,13 @@ rows, not CPU time or full-division wall time, and should not be expressed as a
 share of the 100 × 120 s sum of per-problem limits. It does not establish total
 resource cost or potential benefit with another profile/budget.
 
-`crates/mrs-search/src/instgen.rs:713-716` confirms that non-pure-relational
-profiles return before InstGen starts. The specific 43-row count is from this
-archived run's telemetry.
+`crates/mrs-search/src/instgen.rs` confirms that non-pure-relational profiles
+return with `unsupported_epr_profile` before InstGen starts. Pure-relational EPR
+InstGen is supported. Equality InstGen is unsupported: problems with equality
+return `unsupported_epr_profile` and fall back to the given-clause loop.
+Variable-bearing finite models in InstGen fail closed to `GaveUp` (no certified
+finite-model certificate path). The specific 43-row count is from this archived
+run's telemetry.
 
 ### Four GaveUp rows have worker telemetry short of their wall limit
 

@@ -2643,6 +2643,79 @@ mod tests {
     }
 
     #[test]
+    fn instgen_equality_profile_unsupported_falls_back_to_given_clause() {
+        let mut syms = SymbolTable::new();
+        let p = syms.intern("p");
+        let a = syms.intern("a");
+        let b = syms.intern("b");
+        let mut id_gen = ClauseIdGen::new();
+        // EPR clauses with equality:
+        // C1: a = b
+        // C2: p(a)
+        // C3: ~p(b)
+        // Pure-relational EPR InstGen is supported.
+        // Equality InstGen is unsupported: problems with equality return
+        // unsupported_epr_profile and fall back to the given-clause loop.
+        let clauses = vec![
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::eq(Term::constant(a), Term::constant(b)))],
+                "eq",
+            )
+            .with_distance(0),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+                "p_a",
+            )
+            .with_distance(0),
+            input_clause(
+                &mut id_gen,
+                vec![Literal::neg(Atom::pred(p, vec![Term::constant(b)]))],
+                "not_p_b",
+            )
+            .with_distance(0),
+        ];
+        let schedule = StrategySchedule {
+            strategies: vec![(
+                SearchConfig {
+                    time_limit: Duration::from_millis(200),
+                    max_term_weight: None,
+                    use_avatar: false,
+                    ..SearchConfig::default()
+                },
+                Duration::from_millis(200),
+            )],
+        };
+        let (result, report) = run_schedule(
+            &clauses,
+            &[],
+            id_gen,
+            &schedule,
+            &syms,
+            MlOptions::default(),
+            Some(1),
+        );
+        // The given-clause loop refutes via equational superposition reasoning.
+        assert!(
+            matches!(result, SearchResult::Refutation(..)),
+            "Expected Refutation from given-clause fallback, got {:?}",
+            result
+        );
+        // InstGen pre-pass correctly detected the equality profile, declined it with
+        // unsupported_epr_profile, and did not attempt propositional solving.
+        let instgen = report
+            .instgen
+            .expect("InstGen telemetry should be present for EPR problem");
+        assert_eq!(instgen.route, "epr_equality");
+        assert!(!instgen.attempted);
+        assert_eq!(instgen.fallback_reason, Some("unsupported_epr_profile"));
+        assert_eq!(instgen.return_reason, Some("none"));
+        assert_eq!(report.strategies.len(), 1);
+        assert!(report.strategies[0].stats.iterations > 0);
+    }
+
+    #[test]
     fn incomplete_saturation_cannot_stop_the_portfolio() {
         let mut syms = SymbolTable::new();
         let p = syms.intern("p");
