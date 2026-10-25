@@ -91,6 +91,8 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
   stages/formulas and return no partial clause set on expiry; normal CLI runs
   propagate their existing process deadline. Preparation, search and candidate
   certification now share one allowance, including extended casc-sim budgets.
+  CaDiCaL's CDCL terminator now observes portfolio stop flags during an AVATAR
+  solve as well as the deadline, so sibling completion need not wait for expiry.
 - [x] Isolate strict candidate verification in a private same-binary subprocess;
   parent enforces the original deadline, kills/reaps stalled checkers, bounds
   response bytes and refuses crash/malformed/late responses. Request-file I/O,

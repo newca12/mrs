@@ -649,14 +649,29 @@ impl Solver {
     /// the same method; callers should not try to reconstruct it with a second
     /// clock read.
     pub fn solve_until_with_entry(&mut self, deadline: Instant) -> (SolveResult, bool) {
-        if Instant::now() >= deadline {
+        self.solve_until_or_cancel_with_entry(deadline, None)
+    }
+
+    /// Cooperatively observe portfolio cancellation inside CDCL as well as the
+    /// deadline. The atomic flag is borrowed until the synchronous solve ends.
+    pub fn solve_until_or_cancel_with_entry(
+        &mut self,
+        deadline: Instant,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> (SolveResult, bool) {
+        if Instant::now() >= deadline
+            || cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+        {
             return (SolveResult::Unknown, false);
         }
-        let mut state = DeadlineState { deadline };
+        let mut state = DeadlineState {
+            deadline,
+            cancellation,
+        };
         unsafe {
             sys::mrs_cadical_set_terminate(
                 self.raw.as_ptr(),
-                (&mut state as *mut DeadlineState).cast::<c_void>(),
+                (&mut state as *mut DeadlineState<'_>).cast::<c_void>(),
                 Some(deadline_terminate),
             );
         }
@@ -829,13 +844,17 @@ impl Solver {
     }
 }
 
-struct DeadlineState {
+struct DeadlineState<'a> {
     deadline: Instant,
+    cancellation: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 unsafe extern "C" fn deadline_terminate(state: *mut c_void) -> c_int {
-    let state = unsafe { &*(state.cast::<DeadlineState>()) };
-    (Instant::now() >= state.deadline) as c_int
+    let state = unsafe { &*(state.cast::<DeadlineState<'_>>()) };
+    (Instant::now() >= state.deadline
+        || state
+            .cancellation
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))) as c_int
 }
 
 impl Default for Solver {
@@ -1059,6 +1078,27 @@ unsafe extern "C" fn notify_equivalence(userdata: *mut std::ffi::c_void, first: 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cancellation_is_observed_before_and_during_solver_callback() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = AtomicBool::new(true);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut solver = super::Solver::new();
+        solver.add_clause(&[]);
+        assert_eq!(
+            solver.solve_until_or_cancel_with_entry(deadline, Some(&stop)),
+            (super::SolveResult::Unknown, false)
+        );
+        stop.store(false, Ordering::Relaxed);
+        let mut state = super::DeadlineState {
+            deadline,
+            cancellation: Some(&stop),
+        };
+        let pointer = (&mut state as *mut super::DeadlineState<'_>).cast();
+        assert_eq!(unsafe { super::deadline_terminate(pointer) }, 0);
+        stop.store(true, Ordering::Relaxed);
+        assert_eq!(unsafe { super::deadline_terminate(pointer) }, 1);
+    }
     use super::*;
 
     #[test]

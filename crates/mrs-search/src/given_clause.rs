@@ -3570,7 +3570,13 @@ fn solve_avatar_with_budget(state: &mut SearchState) -> mrs_cadical::SolveResult
         return mrs_cadical::SolveResult::Unknown;
     }
     match state.search_deadline {
-        Some(deadline) => state.avatar.solver.solve_until(deadline),
+        Some(deadline) => {
+            state
+                .avatar
+                .solver
+                .solve_until_or_cancel_with_entry(deadline, state.stop_flag.as_deref())
+                .0
+        }
         None => state.avatar.solver.solve(),
     }
 }
