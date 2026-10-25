@@ -155,6 +155,26 @@ mod tests {
     }
 
     #[test]
+    fn expired_deadline_never_certifies_a_valid_refutation() {
+        let problem = "cnf(a,axiom,p). cnf(b,axiom,~p).";
+        let proof = "cnf(a,axiom,p,file('problem.p',a)). \
+            cnf(b,axiom,~p,file('problem.p',b)). \
+            cnf(c,plain,$false,inference(resolution,[status(thm)],[a,b])).";
+        let verdict = verify_text(
+            problem,
+            proof,
+            Some("problem.p"),
+            VerificationLimits {
+                deadline: Some(std::time::Instant::now()),
+                ..VerificationLimits::default()
+            },
+        );
+        assert!(
+            matches!(verdict, KernelVerdict::Inconclusive(reason) if reason.contains("deadline"))
+        );
+    }
+
+    #[test]
     fn parse_failure_is_inconclusive() {
         assert!(matches!(
             verify_text("not tptp", "not tptp", None, VerificationLimits::default()),

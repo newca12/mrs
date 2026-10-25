@@ -305,6 +305,10 @@ fn verify_candidate_proof(
     temp_proof_text: &str,
 ) -> (KernelVerdict, Option<String>) {
     let tptp_root = std::env::var("TPTP").ok().map(PathBuf::from);
+    let limits = mrs_proof_kernel::VerificationLimits {
+        deadline: config.start_time.checked_add(config.time_limit),
+        ..mrs_proof_kernel::VerificationLimits::default()
+    };
 
     if config.problem_path == "-" {
         let Some(root) = config.include_root.as_deref() else {
@@ -315,7 +319,7 @@ fn verify_candidate_proof(
             config.input_text.clone(),
             temp_proof_text.to_string(),
             root,
-            mrs_proof_kernel::VerificationLimits::default(),
+            limits,
         );
         let reason = if matches!(verdict, KernelVerdict::Certified) {
             None
@@ -328,7 +332,7 @@ fn verify_candidate_proof(
             &config.input_text,
             temp_proof_text,
             Some(&config.problem_path),
-            mrs_proof_kernel::VerificationLimits::default(),
+            limits,
         );
         let reason = if matches!(verdict, KernelVerdict::Certified) {
             None
@@ -346,7 +350,7 @@ fn verify_candidate_proof(
             Ok(temp_file) => match std::fs::write(temp_file.path(), temp_proof_text) {
                 Ok(()) => match mrs_proover::load::load(temp_file.path(), tptp_root.as_deref()) {
                     Ok(job) => {
-                        let verdict = mrs_proover::strict::verify_loaded_job_default(&job);
+                        let verdict = mrs_proover::strict::verify_loaded_job(&job, limits);
                         let reason = if matches!(verdict, KernelVerdict::Certified) {
                             None
                         } else {

@@ -84,6 +84,10 @@ impl std::fmt::Display for KernelVerdict {
 /// number means anything for the other.
 #[derive(Debug, Clone, Copy)]
 pub struct VerificationLimits {
+    /// Optional run-level cooperative deadline. Checked between preparation and
+    /// replay nodes; local work bounds still guard individual rule checks.
+    /// This is not preemption of parsing, SAT calls or one long replay step.
+    pub deadline: Option<Instant>,
     pub max_nodes: usize,
     /// Ceiling on the number of annotated formulas in the proof file itself.
     ///
@@ -177,6 +181,7 @@ const MAX_CADICAL_VARIABLE: u32 = i32::MAX as u32;
 impl Default for VerificationLimits {
     fn default() -> Self {
         Self {
+            deadline: None,
             max_nodes: 100_000,
             max_proof_nodes: 1_000_000,
             max_formula_nodes: 100_000,
@@ -287,6 +292,12 @@ fn verify_strict_with_source_internal(
     limits: VerificationLimits,
     mut telemetry: Option<&mut Vec<VerificationStepTelemetry>>,
 ) -> KernelVerdict {
+    if limits
+        .deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        return KernelVerdict::Inconclusive("strict verification deadline expired".into());
+    }
     let dag = match build_dag(proof, limits) {
         Ok(dag) => dag,
         Err(v) => return v,
@@ -296,6 +307,12 @@ fn verify_strict_with_source_internal(
     let mut proof_formulas = HashMap::with_capacity(dag.nodes.len());
     let mut proof_var_names = HashMap::with_capacity(dag.nodes.len());
     for &idx in &dag.topo {
+        if limits
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return KernelVerdict::Inconclusive("strict verification deadline expired".into());
+        }
         let node = &dag.nodes[idx];
         let (formula, var_names) =
             match lower_annotated_with_var_names(&mut symbols, node.formula, limits) {
@@ -362,6 +379,12 @@ fn verify_strict_with_source_internal(
     let mut background_commutative: HashSet<mrs_core::SymbolId> = HashSet::new();
     let mut background_associative: HashSet<mrs_core::SymbolId> = HashSet::new();
     for formula in &problem.formulas {
+        if limits
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return KernelVerdict::Inconclusive("strict verification deadline expired".into());
+        }
         collect_function_symbols(formula, &mut known_function_symbols);
         collect_function_symbols(formula, &mut known_non_skolem_function_symbols);
         collect_all_symbols(formula, &mut known_symbols);
@@ -409,6 +432,12 @@ fn verify_strict_with_source_internal(
     }
 
     for &idx in &dag.topo {
+        if limits
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return KernelVerdict::Inconclusive("strict verification deadline expired".into());
+        }
         let node = &dag.nodes[idx];
         let conclusion = proof_formulas.get(&idx).expect("lowered proof formula");
         if let Err(reason) = register_signatures(conclusion, &mut signatures) {
@@ -853,7 +882,14 @@ fn verify_strict_with_source_internal(
         collect_all_symbols(node.formula, &mut known_symbols);
     }
 
-    KernelVerdict::Certified
+    if limits
+        .deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        KernelVerdict::Inconclusive("strict verification deadline expired".into())
+    } else {
+        KernelVerdict::Certified
+    }
 }
 
 fn merge_branch_contexts(left: &BranchContext, right: &BranchContext) -> BranchContext {
