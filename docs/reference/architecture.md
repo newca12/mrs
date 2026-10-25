@@ -76,6 +76,14 @@ See [Trust and verification](trust-and-verification.md) and the
 
 ## Resource and concurrency notes
 
+Strict candidate self-checks execute in a private same-binary subprocess. The
+coordinator enforces the original run deadline and kills/reaps a checker that
+does not return, so one long replay or parser operation cannot indefinitely
+block its join. Crashes, malformed/oversized responses and late verdicts cannot
+certify. The internal worker protocol is not a public result shortcut: it runs
+the same strict kernel against actual problem/proof files. Child RSS is separate
+from the parent watchdog; combined process-memory budgeting remains open.
+
 The default worker count is physical-core and memory aware. A named division
 schedules create one configuration per requested worker. The generic `casc`
 schedule retains the full base strategy registry and may run configurations in

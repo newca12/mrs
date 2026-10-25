@@ -48,6 +48,9 @@ fn main() {
 }
 
 fn run() {
+    if coordinator::run_internal_verification() {
+        return;
+    }
     let start = Instant::now();
     let mut time_secs: u64 = 30;
     let mut schedule_name: Option<String> = None;

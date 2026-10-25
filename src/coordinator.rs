@@ -6,7 +6,7 @@
 //! is discarded while sibling search workers continue exploring without interruption.
 
 use std::path::PathBuf;
-use std::process;
+use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::time::{Duration, Instant};
@@ -304,6 +304,165 @@ fn verify_candidate_proof(
     config: &AsyncCoordinatorConfig,
     temp_proof_text: &str,
 ) -> (KernelVerdict, Option<String>) {
+    let verdict =
+        isolated_verification(config, temp_proof_text).unwrap_or_else(KernelVerdict::Inconclusive);
+    let reason = (!matches!(verdict, KernelVerdict::Certified))
+        .then(|| format!("strict self-check returned {verdict}"));
+    (verdict, reason)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct VerificationRequest {
+    problem_path: String,
+    include_root: Option<PathBuf>,
+    has_includes: bool,
+    budget_ms: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+enum VerificationResponse {
+    Certified,
+    Rejected(String),
+    Inconclusive(String),
+}
+
+fn isolated_verification(
+    config: &AsyncCoordinatorConfig,
+    proof: &str,
+) -> Result<KernelVerdict, String> {
+    let deadline = config
+        .start_time
+        .checked_add(config.time_limit)
+        .ok_or("certification deadline overflow")?;
+    if Instant::now() >= deadline {
+        return Err("strict self-check deadline expired before launch".into());
+    }
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    std::fs::write(directory.path().join("problem.p"), &config.input_text)
+        .map_err(|error| error.to_string())?;
+    std::fs::write(directory.path().join("proof.p"), proof).map_err(|error| error.to_string())?;
+    let request = VerificationRequest {
+        problem_path: config.problem_path.clone(),
+        include_root: config.include_root.clone(),
+        has_includes: config.has_includes,
+        budget_ms: deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .min(u64::MAX as u128) as u64,
+    };
+    std::fs::write(
+        directory.path().join("request.json"),
+        serde_json::to_vec(&request).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    if Instant::now() >= deadline {
+        return Err("strict self-check deadline expired during request preparation".into());
+    }
+    let output_path = directory.path().join("response.json");
+    let output = std::fs::File::create(&output_path).map_err(|error| error.to_string())?;
+    let mut child = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+        .arg("--internal-certify")
+        .arg(directory.path())
+        .stdin(Stdio::null())
+        .stdout(output)
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("spawn isolated checker: {error}"))?;
+    let status = wait_for_checker(&mut child, deadline)?;
+    if !status.success() || Instant::now() >= deadline {
+        return Err(format!(
+            "isolated checker failed or finished late: {status}"
+        ));
+    }
+    if std::fs::metadata(&output_path)
+        .map_err(|error| error.to_string())?
+        .len()
+        > 65536
+    {
+        return Err("isolated checker response exceeds byte limit".into());
+    }
+    let response: VerificationResponse =
+        serde_json::from_slice(&std::fs::read(output_path).map_err(|error| error.to_string())?)
+            .map_err(|error| format!("malformed isolated checker response: {error}"))?;
+    Ok(match response {
+        VerificationResponse::Certified => KernelVerdict::Certified,
+        VerificationResponse::Rejected(reason) => KernelVerdict::Rejected(reason),
+        VerificationResponse::Inconclusive(reason) => KernelVerdict::Inconclusive(reason),
+    })
+}
+
+fn wait_for_checker(
+    child: &mut process::Child,
+    deadline: Instant,
+) -> Result<process::ExitStatus, String> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(
+                Duration::from_millis(2).min(deadline.saturating_duration_since(Instant::now())),
+            ),
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(match result {
+                    Err(error) => format!("wait for isolated checker: {error}"),
+                    _ => "isolated strict self-check exceeded the time limit".into(),
+                });
+            }
+        }
+    }
+}
+
+/// Private same-binary worker entry. No verdict is accepted from an external
+/// configured executable. The parent owns the private request directory and
+/// kills/reaps this process at the original run deadline.
+pub fn run_internal_verification() -> bool {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() != Some(std::ffi::OsStr::new("--internal-certify")) {
+        return false;
+    }
+    let outcome = (|| -> Result<KernelVerdict, String> {
+        let directory = PathBuf::from(args.next().ok_or("missing checker request directory")?);
+        if args.next().is_some() {
+            return Err("unexpected checker arguments".into());
+        }
+        let request: VerificationRequest = serde_json::from_slice(
+            &std::fs::read(directory.join("request.json")).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let config = AsyncCoordinatorConfig {
+            time_limit: Duration::from_millis(request.budget_ms),
+            self_check_reserve: Duration::ZERO,
+            problem_path: request.problem_path,
+            include_root: request.include_root,
+            has_includes: request.has_includes,
+            input_text: std::fs::read_to_string(directory.join("problem.p"))
+                .map_err(|error| error.to_string())?,
+            cert_oversubscribed: false,
+            search_workers: 0,
+            cert_workers: 1,
+            start_time: Instant::now(),
+        };
+        let proof = std::fs::read_to_string(directory.join("proof.p"))
+            .map_err(|error| error.to_string())?;
+        Ok(verify_candidate_in_process(&config, &proof).0)
+    })()
+    .unwrap_or_else(KernelVerdict::Inconclusive);
+    let response = match outcome {
+        KernelVerdict::Certified => VerificationResponse::Certified,
+        KernelVerdict::Rejected(reason) => VerificationResponse::Rejected(reason),
+        KernelVerdict::Inconclusive(reason) => VerificationResponse::Inconclusive(reason),
+    };
+    if serde_json::to_writer(std::io::stdout().lock(), &response).is_err() {
+        process::exit(1);
+    }
+    true
+}
+
+fn verify_candidate_in_process(
+    config: &AsyncCoordinatorConfig,
+    temp_proof_text: &str,
+) -> (KernelVerdict, Option<String>) {
     let tptp_root = std::env::var("TPTP").ok().map(PathBuf::from);
     let limits = mrs_proof_kernel::VerificationLimits {
         deadline: config.start_time.checked_add(config.time_limit),
@@ -392,6 +551,22 @@ fn count_proof_nodes(tstp_proof: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn stalled_checker_is_killed_and_reaped_at_deadline() {
+        let mut child = Command::new("sh")
+            .args(["-c", "while :; do :; done"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        assert!(wait_for_checker(&mut child, start + Duration::from_millis(20)).is_err());
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(child.try_wait().unwrap().is_some());
+    }
 
     #[test]
     fn candidate_backpressure_is_nonblocking_and_releases_failed_reservations() {

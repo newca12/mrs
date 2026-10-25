@@ -87,7 +87,10 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
   stages/formulas and return no partial clause set on expiry; normal CLI runs
   propagate their existing process deadline. Extended casc-sim preparation is
   not yet bounded by its later resolved allowance.
-- [ ] Isolate non-interruptible verification when a hard process deadline is required.
+- [x] Isolate strict candidate verification in a private same-binary subprocess;
+  parent enforces the original deadline, kills/reaps stalled checkers, bounds
+  response bytes and refuses crash/malformed/late responses. Request-file I/O,
+  global memory partitioning and OS process-launch latency remain separate limits.
 - [x] Bound candidate queues by bytes as well as count: eight queued candidates,
   64 MiB queued proof text, nonblocking rejection with telemetry. One in-flight
   proof and producer-owned payloads are additional memory; verification itself

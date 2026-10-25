@@ -2,6 +2,45 @@ use std::path::PathBuf;
 use std::process::Command;
 
 #[test]
+fn isolated_checker_replays_actual_parents_and_refuses_forged_conclusion() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("problem.p"),
+        "cnf(a,axiom,p). cnf(b,axiom,~p).",
+    )
+    .unwrap();
+    std::fs::write(directory.path().join("request.json"), serde_json::to_vec(&serde_json::json!({
+        "problem_path": "problem.p", "include_root": null, "has_includes": false, "budget_ms": 5000,
+    })).unwrap()).unwrap();
+    let proof = "cnf(a,axiom,p,file('problem.p',a)). cnf(b,axiom,~p,file('problem.p',b)). cnf(c,plain,$false,inference(resolution,[status(thm)],[a,b])).";
+    std::fs::write(directory.path().join("proof.p"), proof).unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_mrs"))
+            .arg("--internal-certify")
+            .arg(directory.path())
+            .output()
+            .unwrap()
+    };
+    let good = run();
+    assert!(good.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&good.stdout).unwrap(),
+        "Certified"
+    );
+    std::fs::write(
+        directory.path().join("proof.p"),
+        proof.replace("[a,b]", "[a,a]"),
+    )
+    .unwrap();
+    let bad = run();
+    assert!(bad.status.success());
+    assert_ne!(
+        serde_json::from_slice::<serde_json::Value>(&bad.stdout).unwrap(),
+        "Certified"
+    );
+}
+
+#[test]
 fn async_certified_flag_with_adequate_budget_certifies() {
     let problem = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("problems/socrates.p");
     let output = Command::new(env!("CARGO_BIN_EXE_mrs"))
