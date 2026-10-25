@@ -217,12 +217,54 @@ impl ProofWitness {
 
     /// Referenced IDs, including duplicate uses of an equality in a trace.
     pub fn parent_ids(&self) -> Vec<ProofNodeId> {
-        let mut parents = Vec::new();
-        self.clone().map_parent_ids(|id| {
-            parents.push(id);
-            id
-        });
-        parents
+        match self {
+            Self::Input { .. } | Self::Definition { .. } => Vec::new(),
+            Self::Resolution {
+                parent_left,
+                parent_right,
+                ..
+            } => vec![*parent_left, *parent_right],
+            Self::Factoring { parent, .. }
+            | Self::EqualityResolution { parent, .. }
+            | Self::EqualityFactoring { parent, .. }
+            | Self::Condensation { parent, .. } => vec![*parent],
+            Self::SubsumptionResolution {
+                target, subsumer, ..
+            } => vec![*target, *subsumer],
+            Self::Superposition {
+                lhs_parent,
+                rhs_parent,
+                ..
+            } => vec![*lhs_parent, *rhs_parent],
+            Self::Demodulation {
+                target,
+                rule_parents,
+                steps,
+            } => std::iter::once(*target)
+                .chain(rule_parents.iter().copied())
+                .chain(steps.iter().map(|step| step.rule_parent))
+                .collect(),
+            Self::AcNormalization {
+                parent,
+                source_axioms,
+                ..
+            } => std::iter::once(*parent)
+                .chain(source_axioms.iter().copied())
+                .collect(),
+            Self::Cnf { source_parents, .. } => source_parents.clone(),
+            Self::Legacy { parents, .. } => parents.to_vec(),
+            Self::Skolemization { parent, .. } => parent.iter().copied().collect(),
+            Self::Avatar {
+                split_parent,
+                branch_roots,
+                ..
+            } => split_parent
+                .iter()
+                .copied()
+                .chain(branch_roots.iter().copied())
+                .collect(),
+            Self::SharedLemma { original_node, .. } => vec![*original_node],
+        }
     }
 }
 

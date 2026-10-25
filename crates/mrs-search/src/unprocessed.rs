@@ -112,7 +112,7 @@ impl UnprocessedSet {
             matches!(selection, SelectionStrategy::MultiQueue(queues)
             if queues.iter().any(|(kind, frequency)| *kind == queue && *frequency > 0))
         };
-        self.enabled = OptionalQueues {
+        let requested = OptionalQueues {
             goal: matches!(selection, SelectionStrategy::GoalDirected(_)) || uses(QueueType::Goal),
             unit: uses(QueueType::Unit),
             horn: uses(QueueType::Horn),
@@ -120,6 +120,19 @@ impl UnprocessedSet {
             #[cfg(feature = "ml-guidance")]
             ml: matches!(selection, SelectionStrategy::MlGuided { .. }),
         };
+        assert!(
+            (!requested.goal || self.enabled.goal)
+                && (!requested.unit || self.enabled.unit)
+                && (!requested.horn || self.enabled.horn)
+                && (!requested.sos || self.enabled.sos),
+            "cannot restore a dropped passive heap by switching selectors"
+        );
+        #[cfg(feature = "ml-guidance")]
+        assert!(
+            !requested.ml || self.enabled.ml,
+            "cannot restore a dropped ML heap"
+        );
+        self.enabled = requested;
         if !self.enabled.goal {
             self.goal_queue = BinaryHeap::new();
         }
@@ -571,6 +584,14 @@ mod tests {
     use super::*;
     use mrs_core::clause::{Clause, ClauseId, ClauseSource};
     use mrs_core::term_bank::TermBank;
+
+    #[test]
+    #[should_panic(expected = "cannot restore a dropped passive heap")]
+    fn changing_selector_cannot_silently_reenable_an_empty_heap() {
+        let mut set = UnprocessedSet::new(Arc::new(SymbolConfig::default()));
+        set.specialize(&crate::SelectionStrategy::Fifo, u32::MAX);
+        set.specialize(&crate::SelectionStrategy::GoalDirected(3), u32::MAX);
+    }
 
     #[test]
     fn specialized_queues_preserve_selection_through_inserts_and_pruning() {
