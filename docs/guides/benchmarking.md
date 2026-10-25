@@ -38,6 +38,21 @@ method, the comparability rules, and how to add another host.
 
 ## Prepare the corpus
 
+Freeze a materialized corpus and predeclare family-disjoint development/holdout
+membership before tuning:
+
+```bash
+python3 crates/mrs-bench/freeze_corpus.py --root /path/to/casc-30 \
+  --output /path/outside-corpus/corpus-manifest.json --seed 42
+```
+
+The manifest hashes all files, including include axioms. The conservative default
+groups all problems with the same three-letter TPTP domain prefix. For finer,
+reviewed groups pass `--family-map` with a complete JSON relative-path-to-family
+map. Never choose split seeds after inspecting holdout outcomes. Empty arms,
+symlinks and overwriting a manifest are refused. This digest schema differs from
+the auditor's streaming corpus digest; compare manifests within their schema.
+
 ```bash
 nix develop -c cargo build --release
 crates/mrs-bench/setup.sh

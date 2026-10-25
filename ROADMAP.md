@@ -43,6 +43,9 @@ Owners: benchmark/runtime maintainers. Paths: `crates/mrs-bench/`, `docs/results
 - [x] Add paired, order-randomized strictly audited baseline/candidate campaigns
   and paired descriptive outcome analysis (`paired_campaign.py`).
 - [ ] Freeze stratified profiling fixtures and family-disjoint development/holdout sets.
+  `freeze_corpus.py` records all file/include hashes and stable family-disjoint
+  assignments (conservative domain-prefix or explicit reviewed map). Selecting
+  representative profiling fixtures and freezing the competition corpus remain open.
 
 Gate: a third party can reconstruct every headline number from immutable
 artifacts. Use >=5 paired replicates as a starting screen; increase replication
