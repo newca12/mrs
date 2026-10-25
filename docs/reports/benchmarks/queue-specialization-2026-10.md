@@ -43,3 +43,27 @@ state construction still populates compatibility queues before specialization,
 so this does not measure peak initialization memory. Representative release,
 fixed-work, paired memory/throughput experiments and eight-worker certified
 campaigns remain required before changing the default.
+
+## Fixed-work driver smoke check
+
+The new `fixed_work_compare.py` driver was exercised at source `bff0749` with
+the then-current debug executable SHA-256
+`76feb0fd28c9a4b61e2cbd086bf49ea305c071b6eda3d3bdb2d6745f458bde6a`
+in both arms. Input `pel43.p` SHA-256:
+`3643b2caddf61f3c77784e3e1ca3d8d2560cbc0cfff69dcbc785a92697a0bff0`.
+Three randomized-order pairs used strategy 4 / `casc_fne`, one worker, a
+20-processed ceiling and a 10-second guard. Candidate enabled both queue options.
+
+All six runs stopped for `max_processed` at 20 processed / 19 generated,
+6 live passive clauses, 73 retained terms and 66 retained proof clauses.
+All selected-clause digests were
+`b25ae7717ec3721693273b06f6804bffd17e4ea984f0456603549bc2d99bffa0`.
+Retained queue entries were 102 baseline versus 34 specialized. The compaction
+threshold was never reached, so this checks specialization, not compaction benefit.
+
+Candidate/baseline whole-process elapsed ratios were 0.961, 1.134 and 1.080.
+These ~30–40 ms debug runs include startup/hashing and **do not establish a
+speedup**. Artifacts were retained locally under
+`/tmp/opencode/fixed-work-roadmap-20261025` (temporary, not a durable campaign
+archive). The test establishes driver wiring and exact-ceiling refusal semantics;
+longer release workloads and durable archived streams remain necessary.
