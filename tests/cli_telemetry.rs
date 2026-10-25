@@ -14,7 +14,9 @@ fn preparation_stages_are_visible_before_search() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let parse = stderr.find("% Stage complete: parse").unwrap();
     let prepare = stderr.find("% Stage complete: prepare").unwrap();
+    let search = stderr.find("% Stage complete: search").unwrap();
     assert!(parse < prepare);
+    assert!(prepare < search);
     assert!(stderr.contains("lowering_us="));
     assert!(stderr.contains("clausification_us="));
 }

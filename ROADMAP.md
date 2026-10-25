@@ -122,9 +122,10 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
   proof and producer-owned payloads are additional memory; verification itself
   still needs an interruptible budget boundary.
 - [ ] Add stage completion telemetry, phase costs and memory-by-subsystem accounting.
-  CLI emits parse/preparation start/completion markers and shared-pipeline
-  lowering/include/clausification costs; harness retains `last_completed_stage`.
-  Search phase cost and per-subsystem memory accounting remain open.
+  CLI emits parse/preparation start/completion markers, shared-pipeline
+  lowering/include/clausification costs, and search/verify stage completion
+  telemetry with durations and candidate counts; harness retains `last_completed_stage`.
+  Per-subsystem memory accounting remains open.
 - [ ] Add fixed-work diagnostic configuration, stable tie-breaking/seeds and trajectory digests.
   Opt-in `MRS_TRAJECTORY_DIGEST=1` hashes selected logical clauses/metadata in
   order, independent of term-interning IDs, and is retained by `repeat_search`.

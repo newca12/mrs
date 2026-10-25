@@ -1174,6 +1174,11 @@ fn run() {
         let search_budget = total_budget.saturating_sub(start.elapsed());
         schedule.rescale_to_budget(search_budget);
 
+        info!(
+            "% Stage start: search elapsed_ms={}",
+            start.elapsed().as_millis()
+        );
+
         let (result, schedule_report, cert_telemetry) = if self_check {
             let coordinator =
                 coordinator::AsyncCoordinator::new(coordinator::AsyncCoordinatorConfig {
@@ -1247,6 +1252,20 @@ fn run() {
             );
             (res, rep, None)
         };
+
+        info!(
+            "% Stage complete: search duration_ms={} elapsed_ms={}",
+            schedule_report.elapsed_ms,
+            start.elapsed().as_millis()
+        );
+        if let Some(tele) = &cert_telemetry {
+            info!(
+                "% Stage complete: verify duration_ms={} candidates_evaluated={} elapsed_ms={}",
+                tele.total_strict_kernel_time.as_millis(),
+                tele.candidate_count,
+                start.elapsed().as_millis()
+            );
+        }
 
         let status = match &result {
             SearchResult::Refutation(..) => {
