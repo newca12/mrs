@@ -89,8 +89,8 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
   the same worker deadline through CaDiCaL's terminator. Inner setup traversals and front-end
   traversals remain open. Shared `prepare_until`/`clausify_until` check between
   stages/formulas and return no partial clause set on expiry; normal CLI runs
-  propagate their existing process deadline. Extended casc-sim preparation is
-  not yet bounded by its later resolved allowance.
+  propagate their existing process deadline. Preparation, search and candidate
+  certification now share one allowance, including extended casc-sim budgets.
 - [x] Isolate strict candidate verification in a private same-binary subprocess;
   parent enforces the original deadline, kills/reaps stalled checkers, bounds
   response bytes and refuses crash/malformed/late responses. Request-file I/O,

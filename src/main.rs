@@ -26,6 +26,41 @@ use mrs_search::strategy::{StrategySchedule, run_schedule};
 use mrs_search::{ScheduleReport, SearchResult};
 use mrs_szs::{SzsStatus, szs_output_end, szs_output_start, szs_status_line};
 
+fn run_time_budget(mode: mrs_search::HardwareMode, seconds: u64, factor: f64) -> Duration {
+    if mode != mrs_search::HardwareMode::CascSim {
+        return Duration::from_secs(seconds);
+    }
+    if factor == 0.0 {
+        return Duration::from_secs(31_536_000);
+    }
+    Duration::from_secs((seconds as f64 * factor).ceil() as u64)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    #[test]
+    fn preparation_search_and_certification_share_simulation_allowance() {
+        use mrs_search::HardwareMode;
+        assert_eq!(
+            run_time_budget(HardwareMode::Casc, 30, 2.0),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            run_time_budget(HardwareMode::CascSim, 30, 2.0),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            run_time_budget(HardwareMode::CascSim, 30, 1.0),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            run_time_budget(HardwareMode::CascSim, 30, 0.0),
+            Duration::from_secs(31_536_000)
+        );
+    }
+}
+
 fn main() {
     // Parsing and clausification recurse too. Size their stack explicitly like
     // search/checker threads instead of relying on a wrapper's ulimit setting.
@@ -85,12 +120,6 @@ fn run() {
     let mut pre_phase = false;
     let mut pre_phase_only = false;
     let mut pre_phase_probe = false;
-    /// What casc-sim does with the wall clock. `Inherit` is every other mode.
-    enum SimBudget {
-        Inherit,
-        Scaled(Duration),
-        UntilResourceCap,
-    }
     // Default 32 MiB: accommodates large and useful certificates such as the
     // measured 13.38 MB HWV078-1 EPR proof while keeping output explicitly
     // bounded. Deployments with a lower output allowance can override it.
@@ -538,20 +567,17 @@ fn run() {
         "% Stage start: prepare elapsed_ms={}",
         start.elapsed().as_millis()
     );
-    // casc-sim computes its extended allowance after host profiling. Avoid
-    // truncating that diagnostic mode to the reference competition clock here.
-    let preparation_hardware = hardware.or_else(|| {
-        env::var("MRS_HARDWARE")
-            .ok()
-            .and_then(|raw| mrs_search::HardwareMode::parse(&raw))
-    });
-    let preparation_deadline = if preparation_hardware == Some(mrs_search::HardwareMode::CascSim)
-        && sim_time_factor != 1.0
-    {
-        None
-    } else {
-        start.checked_add(Duration::from_secs(time_secs))
-    };
+    // Resolve one run allowance before preparation; search and certification
+    // use the same budget, including casc-sim's explicitly extended clock.
+    let hardware_mode = hardware
+        .or_else(|| {
+            env::var("MRS_HARDWARE")
+                .ok()
+                .and_then(|raw| mrs_search::HardwareMode::parse(&raw))
+        })
+        .unwrap_or(mrs_search::HardwareMode::Adaptive);
+    let total_budget = run_time_budget(hardware_mode, time_secs, sim_time_factor);
+    let preparation_deadline = start.checked_add(total_budget);
     let prepared =
         match pipeline::prepare_until(&problem, Some(&path), input_bytes, preparation_deadline) {
             Ok(prepared) => prepared,
@@ -618,13 +644,6 @@ fn run() {
     // casc-sim) the CPU set. `MRS_HARDWARE` lets the benchmark harness select a
     // mode for a whole run without rewriting each invocation, and an explicit
     // `--workers` / `MRS_MAX_MEMORY_MB` still wins for that dimension.
-    let hardware_mode = hardware
-        .or_else(|| {
-            std::env::var("MRS_HARDWARE")
-                .ok()
-                .and_then(|raw| mrs_search::HardwareMode::parse(&raw))
-        })
-        .unwrap_or(mrs_search::HardwareMode::Adaptive);
     let explicit_memory_mb = std::env::var("MRS_MAX_MEMORY_MB")
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok());
@@ -639,27 +658,6 @@ fn run() {
     // schedule exists.
     let sim_budget_is_extended =
         matches!(hardware_mode, mrs_search::HardwareMode::CascSim) && sim_time_factor != 1.0;
-    let sim_budget = if hardware_mode == mrs_search::HardwareMode::CascSim {
-        if sim_time_factor == 0.0 {
-            SimBudget::UntilResourceCap
-        } else {
-            SimBudget::Scaled(Duration::from_secs(
-                (time_secs as f64 * sim_time_factor).ceil() as u64,
-            ))
-        }
-    } else {
-        SimBudget::Inherit
-    };
-    // `SearchConfig::time_limit` is a plain `Duration`, so "no wall-clock limit"
-    // is expressed as a sentinel far beyond any real run. One year cannot be
-    // reached: the memory, term-bank and clause ceilings still apply, which is
-    // the whole point of this mode.
-    const YEAR: Duration = Duration::from_secs(31_536_000);
-    let total_budget = match sim_budget {
-        SimBudget::Inherit => casc_limit,
-        SimBudget::Scaled(limit) => limit,
-        SimBudget::UntilResourceCap => YEAR,
-    };
 
     for warning in &hardware_profile.warnings {
         eprintln!("% Hardware warning: {warning}");
@@ -722,21 +720,19 @@ fn run() {
     } else {
         None
     };
-    let mut sim_budget_note = match sim_budget {
-        SimBudget::Inherit => String::new(),
-        SimBudget::Scaled(limit) => {
-            format!(
-                " casc_limit_s={} sim_limit_s={}",
-                casc_limit.as_secs(),
-                limit.as_secs()
-            )
-        }
-        SimBudget::UntilResourceCap => {
-            format!(
-                " casc_limit_s={} sim_limit_s=unbounded",
-                casc_limit.as_secs()
-            )
-        }
+    let mut sim_budget_note = if hardware_mode != mrs_search::HardwareMode::CascSim {
+        String::new()
+    } else if sim_time_factor != 0.0 {
+        format!(
+            " casc_limit_s={} sim_limit_s={}",
+            casc_limit.as_secs(),
+            total_budget.as_secs()
+        )
+    } else {
+        format!(
+            " casc_limit_s={} sim_limit_s=unbounded",
+            casc_limit.as_secs()
+        )
     };
     if let Some(pin) = _cpu_pinning.as_ref() {
         sim_budget_note.push_str(&format!(" pinned_cpus={}", pin.cpus().len()));
@@ -1181,7 +1177,7 @@ fn run() {
         let (result, schedule_report, cert_telemetry) = if self_check {
             let coordinator =
                 coordinator::AsyncCoordinator::new(coordinator::AsyncCoordinatorConfig {
-                    time_limit: Duration::from_secs(time_secs),
+                    time_limit: total_budget,
                     self_check_reserve: Duration::from_secs(2),
                     problem_path: path.clone(),
                     input_text: input.clone(),
