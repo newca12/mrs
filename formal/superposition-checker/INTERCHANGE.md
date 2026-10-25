@@ -101,6 +101,13 @@ subsequent nodes. These trusted transformations are not advertised as
 Verus-refined lowering. AC reasoning, ordered-calculus conditions and broader
 transformations remain unsupported.
 
+Multi-step demodulation and ground equality normalization are expanded into
+binary demodulation nodes, each replayed by the verified checker. Discovery uses
+a shared 50,000-comparison ceiling and at most six rewrites and 128 states,
+further bounded by the caller's limits. Target variables remain rigid, every
+cited equality must occur in the discovered chain, and the expanded DAG must
+still fit the 512-node ceiling. Unsupported or exhausted searches return Unknown.
+
 The archived artifact contains only c27/c39/c502, not the complete archived
 refutation. Its local step is translated and replayed; **full SWV406+1 proof
 certification remains outside this result**. CI also checks actual CNF complete
