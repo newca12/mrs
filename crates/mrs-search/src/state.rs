@@ -83,6 +83,8 @@ pub struct SearchState {
     pub term_bank: TermBank,
     /// Maps a clause ID to the IDs of all clauses generated from it (its children).
     pub children: HashMap<ClauseId, Vec<ClauseId>>,
+    /// Clauses whose orphan-elimination edges have already been registered.
+    dependency_registered: HashSet<ClauseId>,
     /// Optional stop-flag shared across parallel strategy threads.
     ///
     /// When set to `true` by another thread (e.g. because it found a
@@ -292,6 +294,7 @@ impl SearchState {
             symbols,
             term_bank,
             children: HashMap::default(),
+            dependency_registered: HashSet::default(),
             stop_flag: None,
             shared_pool: None,
             shared_pool_seen: HashSet::default(),
@@ -547,6 +550,12 @@ impl SearchState {
         // both input provenance and derived inference formulas aligned with
         // the actual pre-normalization result that was generated.
         self.store_clause(clause);
+        if !self.dependency_registered.insert(clause.id) {
+            return;
+        }
+        // Dependency edges must describe the authoritative first form too,
+        // not a later operational copy supplied under the same clause ID.
+        let clause = &self.clause_store[&clause.id];
         match &clause.source {
             mrs_core::clause::ClauseSource::Inference { rule, parents } => {
                 let is_destructive = *rule == "demodulation" || *rule == "subsumption_resolution";
@@ -732,6 +741,44 @@ mod tests {
 
         assert_eq!(normalized.literals, original.literals);
         assert!(matches!(normalized.source, ClauseSource::Input { .. }));
+    }
+
+    #[test]
+    fn repeated_registration_retains_one_authoritative_dependency_set() {
+        use mrs_core::clause::ClauseSource;
+        let mut state = SearchState::new(
+            vec![],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            Arc::new(SymbolTable::new()),
+            false,
+        );
+        let clause = IdClause::new(
+            ClauseId(9),
+            vec![],
+            ClauseSource::Inference {
+                rule: "resolution",
+                parents: vec![ClauseId(100), ClauseId(200)].into(),
+            },
+        );
+        state.register_clause(&clause);
+        state.register_clause(&clause);
+        let mut changed = clause.clone();
+        changed.source = ClauseSource::Inference {
+            rule: "copy",
+            parents: vec![ClauseId(300)].into(),
+        };
+        state.store_clause(&changed);
+        state.register_clause(&changed);
+        assert_eq!(state.children[&ClauseId(100)], vec![ClauseId(9)]);
+        assert_eq!(state.children[&ClauseId(200)], vec![ClauseId(9)]);
+        assert!(!state.children.contains_key(&ClauseId(300)));
+        let node = state.proof_arena.get(ProofNodeId(9)).unwrap();
+        assert_eq!(
+            node.parents.as_slice(),
+            &[ProofNodeId(100), ProofNodeId(200)]
+        );
+        assert_eq!(state.proof_arena.len(), 1);
     }
 
     #[test]
