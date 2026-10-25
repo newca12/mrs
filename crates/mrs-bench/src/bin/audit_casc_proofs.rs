@@ -653,6 +653,11 @@ fn audit_one(run: &RunRow, mut row: AuditRow, args: &Args) -> AuditRow {
     let raw_stderr = fs::read(stderr_path).unwrap_or_default();
     let stdout_hash = sha256_bytes(&raw_stdout);
     let stderr_hash = sha256_bytes(&raw_stderr);
+    // Compare the saved identities before replacing them with today's hashes.
+    // Legacy run CSVs may have no expected hashes of their own.
+    let artifacts_changed = (!row.raw_stdout_sha256.is_empty()
+        && row.raw_stdout_sha256 != stdout_hash)
+        || (!row.raw_stderr_sha256.is_empty() && row.raw_stderr_sha256 != stderr_hash);
     row.raw_stdout_path = absolute_path(stdout_path).to_string_lossy().into_owned();
     row.raw_stderr_path = absolute_path(stderr_path).to_string_lossy().into_owned();
     row.raw_stdout_sha256 = stdout_hash.clone();
@@ -671,9 +676,7 @@ fn audit_one(run: &RunRow, mut row: AuditRow, args: &Args) -> AuditRow {
         return row;
     }
 
-    if (!row.raw_stdout_sha256.is_empty() && row.raw_stdout_sha256 != stdout_hash)
-        || (!row.raw_stderr_sha256.is_empty() && row.raw_stderr_sha256 != stderr_hash)
-    {
+    if artifacts_changed {
         row.strict = CheckResult::not_run();
         row.mrs = CheckResult::not_run();
         row.ladder = CheckResult::not_run();
