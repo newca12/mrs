@@ -762,6 +762,9 @@ fn detect_ac_symbols(
     let mut to_remove = Vec::new();
     let mut ac_axioms = Vec::new();
     for clause in state.clause_store.values() {
+        if state.budget_expired() {
+            break;
+        }
         if clause.len() == 1
             && clause.literals[0].positive
             && let IdAtom::Eq(l, r) = &clause.literals[0].atom
@@ -1166,8 +1169,12 @@ fn sos_blocks_every_input_inference(
     // configuration's own literal selection so the answer matches the loop.
     let selections: Vec<Vec<usize>> = clauses
         .iter()
+        .take_while(|_| !state.budget_expired())
         .map(|c| selected_literals_id(c, literal_selection, &state.term_bank))
         .collect();
+    if state.budget_expired() {
+        return false;
+    }
 
     // Index selected positive and negative predicate literals by symbol. The
     // old pre-flight paid O(n^2) even when every clause had a distinct
@@ -1175,6 +1182,9 @@ fn sos_blocks_every_input_inference(
     type ByPolarity = (Vec<(usize, usize)>, Vec<(usize, usize)>);
     let mut by_predicate: HashMap<SymbolId, ByPolarity> = HashMap::default();
     for (ci, clause) in clauses.iter().enumerate() {
+        if state.budget_expired() {
+            return false;
+        }
         for (li, lit) in clause.literals.iter().enumerate() {
             if !selections[ci].contains(&li) {
                 continue;
@@ -1194,6 +1204,9 @@ fn sos_blocks_every_input_inference(
     for (positives, negatives) in by_predicate.values() {
         for (i, li) in positives {
             for (j, lj) in negatives {
+                if state.budget_expired() {
+                    return false;
+                }
                 if i == j {
                     continue;
                 }
@@ -1334,7 +1347,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     };
 
     let (comm_syms, assoc_syms, to_remove, ac_axiom_symbols) = detect_ac_symbols(state);
-    if start.elapsed() >= config.time_limit {
+    if state.budget_expired() {
         return SearchResult::Timeout;
     }
     state.comm_symbols = comm_syms.clone();
@@ -1350,7 +1363,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     state.ac_axiom_ids.dedup();
     if !ac_syms.is_empty() {
         state.ac_normalize_all(&ac_syms);
-        if start.elapsed() >= config.time_limit {
+        if state.budget_expired() {
             return SearchResult::Timeout;
         }
         if matches!(
@@ -1458,6 +1471,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     }
 
     for id in initial_ids {
+        if state.budget_expired() {
+            return SearchResult::Timeout;
+        }
         let clause = state.clause_store.get(&id).unwrap().clone();
         if clause.is_empty() {
             if clause.avatar.is_empty() || !config.use_avatar {

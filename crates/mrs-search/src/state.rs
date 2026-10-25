@@ -139,6 +139,15 @@ pub struct SearchState {
 }
 
 impl SearchState {
+    /// Cooperative run budget shared by setup and inference helpers.
+    pub fn budget_expired(&self) -> bool {
+        self.search_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+            || self
+                .stop_flag
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+    }
     /// Creates a new search state from legacy `Clause` inputs.
     ///
     /// All input clauses are interned into a fresh `TermBank` and converted
@@ -501,6 +510,9 @@ impl SearchState {
         let mut visited = HashSet::default();
 
         while let Some(current) = stack.pop() {
+            if self.budget_expired() {
+                return;
+            }
             if !visited.insert(current) {
                 continue;
             }
@@ -666,6 +678,9 @@ impl SearchState {
         let unprocessed_ids: Vec<_> = self.unprocessed.iter().collect();
         let mut unprocessed_clauses = Vec::new();
         for id in unprocessed_ids {
+            if self.budget_expired() {
+                return;
+            }
             if let Some(clause) = self.clause_store.get(&id) {
                 unprocessed_clauses.push(clause.clone());
             }
@@ -678,6 +693,9 @@ impl SearchState {
         self.unprocessed = crate::unprocessed::UnprocessedSet::new(self.config.clone());
         self.unprocessed.set_optional_queues(optional_queues);
         for clause in unprocessed_clauses {
+            if self.budget_expired() {
+                return;
+            }
             let w = self.compute_weight(&clause);
             #[cfg(feature = "ml-guidance")]
             let score = self.get_ml_score(&clause);
