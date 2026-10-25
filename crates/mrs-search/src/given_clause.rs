@@ -127,6 +127,60 @@ fn remap_shared_clause_symbols(clause: &mut LegacyClause, mapping: &[SymbolId]) 
     if let Some(formula) = &mut clause.formula {
         valid &= remap_formula(formula, mapping);
     }
+    if let Some(witness) = &mut clause.witness {
+        use mrs_core::ProofWitness;
+        let mut substitution = |subst: &mut Option<mrs_core::Substitution>| {
+            if let Some(subst) = subst {
+                let bindings = subst
+                    .iter()
+                    .map(|(&var, term)| (var, term.clone()))
+                    .collect::<Vec<_>>();
+                for (var, mut term) in bindings {
+                    valid &= remap_term(&mut term, mapping);
+                    subst.bind(var, term);
+                }
+            }
+        };
+        match witness {
+            ProofWitness::Resolution { unifier, .. }
+            | ProofWitness::Factoring { unifier, .. }
+            | ProofWitness::EqualityResolution { unifier, .. }
+            | ProofWitness::EqualityFactoring { unifier, .. }
+            | ProofWitness::Superposition { unifier, .. } => substitution(unifier),
+            ProofWitness::Demodulation { steps, .. } => {
+                for step in steps {
+                    substitution(&mut step.substitution);
+                }
+            }
+            ProofWitness::AcNormalization { ac_symbols, .. } => {
+                for symbol in ac_symbols {
+                    valid &= remap_symbol(symbol, mapping);
+                }
+            }
+            ProofWitness::Cnf {
+                source_formula: Some(formula),
+                ..
+            } => {
+                valid &= remap_formula(formula, mapping);
+            }
+            ProofWitness::Definition {
+                symbol,
+                defining_formula,
+            } => {
+                valid &= remap_symbol(symbol, mapping);
+                if let Some(formula) = defining_formula {
+                    valid &= remap_formula(formula, mapping);
+                }
+            }
+            ProofWitness::Skolemization { symbol, .. } => valid &= remap_symbol(symbol, mapping),
+            ProofWitness::SharedLemma { symbol_mapping, .. } => {
+                for symbol in symbol_mapping {
+                    valid &= remap_symbol(symbol, mapping);
+                }
+            }
+            _ => {}
+        }
+    }
     valid
 }
 
@@ -3544,6 +3598,37 @@ mod tests {
     use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
     use std::sync::Arc;
+
+    #[test]
+    fn imported_witness_substitution_uses_receiver_symbols() {
+        let mut publisher = SymbolTable::new();
+        let a = publisher.intern("a");
+        let mut receiver = SymbolTable::new();
+        receiver.intern("different");
+        let mapped_a = receiver.intern("a");
+        let mut clause = Clause::new(
+            ClauseId(7),
+            vec![],
+            ClauseSource::Inference {
+                rule: "equality_resolution",
+                parents: vec![ClauseId(3)].into(),
+            },
+        );
+        clause.witness = Some(mrs_core::ProofWitness::EqualityResolution {
+            parent: mrs_core::ProofNodeId(3),
+            lit_idx: 0,
+            unifier: Some(mrs_core::Substitution::singleton(0, Term::constant(a))),
+        });
+        assert!(remap_shared_clause_symbols(&mut clause, &[mapped_a]));
+        let Some(mrs_core::ProofWitness::EqualityResolution {
+            unifier: Some(substitution),
+            ..
+        }) = clause.witness
+        else {
+            panic!("missing witness")
+        };
+        assert_eq!(substitution.lookup(0), Some(&Term::constant(mapped_a)));
+    }
 
     #[test]
     fn trajectory_digest_ignores_term_interning_but_detects_selection_changes() {
