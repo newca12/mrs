@@ -50,6 +50,7 @@ def render(directories):
         lines += [f"## Snapshot `{digest}`", "",
                   f"- Artifact directory: `{directory}`",
                   f"- Run CSV: `{identity['run_csv_sha256']}`",
+                  f"- Producer metadata: `{identity.get('producer_metadata_sha256') or 'unavailable (legacy evidence)'}`",
                   f"- Auditor: `{identity['audit_binary_sha256']}`",
                   f"- Checker: `{identity['proover_binary_sha256']}`",
                   f"- Corpus/includes: `{identity['corpus_sha256']}`",

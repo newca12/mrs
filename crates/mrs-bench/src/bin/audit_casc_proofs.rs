@@ -382,6 +382,16 @@ fn audit_identity(args: &Args) -> Result<String, String> {
             .map_err(|error| format!("hash {}: {error}", path.display()))
     };
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let producer_metadata = args
+        .run_csv
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("run_meta.json");
+    let producer_metadata_sha256 = if producer_metadata.is_file() {
+        Some(hash_file(&producer_metadata)?)
+    } else {
+        None
+    };
     let identity = serde_json::json!({
         "schema": 1,
         "audit_binary_sha256": hash_file(&executable)?,
@@ -389,6 +399,7 @@ fn audit_identity(args: &Args) -> Result<String, String> {
         "eprover_binary_sha256": args.eprover.as_deref().map(hash_file).transpose()?,
         "vampire_binary_sha256": args.vampire.as_deref().map(hash_file).transpose()?,
         "run_csv_sha256": hash_file(&args.run_csv)?,
+        "producer_metadata_sha256": producer_metadata_sha256,
         "corpus_sha256": corpus_digest(&args.problems_dir)?,
         "checks": args.checks.names(),
         "strict_time": args.strict_time, "mrs_time": args.mrs_time,

@@ -33,7 +33,7 @@ Owners: benchmark/runtime maintainers. Paths: `crates/mrs-bench/`, `docs/results
 - [ ] Freeze clean producer binaries, checker binaries, toolchains and corpus/include hashes.
 - [ ] Append audit records keyed by producer, checker, corpus, configuration and budgets.
   Completed audits now publish immutable content-addressed CSV/identity/summary
-  snapshots. Producer source metadata remains linked through the hashed run CSV;
+  snapshots. Producer `run_meta.json` is now hashed when present as well as the run CSV;
   consolidating a full producer/checker ledger is still open.
 - [ ] Generate the current certification dashboard from records; retain old audits unchanged.
   `certification_dashboard.py` renders selected immutable snapshots and preserves
