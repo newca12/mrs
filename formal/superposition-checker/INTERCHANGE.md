@@ -88,7 +88,7 @@ Rules include ordinary superposition; exact complementary-atom resolution;
 standardized-apart first-order resolution; equality resolution; clause and
 equality factoring; subsumption resolution; weakening; unit-equality
 demodulation; clause instantiation; clause condensation; equality reflexivity;
-equality transitivity; equality symmetry; clause excluded middle; and equality congruence. The executable checker validates each
+equality transitivity; equality symmetry; clause excluded middle; equality congruence; and clause tautology. The executable checker validates each
 certificate and its exact cited parents and conclusion. Superposition and
 first-order resolution discovery independently freshen the parents and find a
 bounded syntactic unifier. Superposition preserves both complete contexts and
@@ -100,6 +100,13 @@ Alpha-normalized superposition conclusions become the representation used by
 subsequent nodes. These trusted transformations are not advertised as
 Verus-refined lowering. AC reasoning, ordered-calculus conditions and broader
 transformations remain unsupported.
+
+Multi-step demodulation and ground equality normalization are expanded into
+binary demodulation nodes, each replayed by the verified checker. Discovery uses
+a shared 50,000-comparison ceiling and at most six rewrites and 128 states,
+further bounded by the caller's limits. Target variables remain rigid, every
+cited equality must occur in the discovered chain, and the expanded DAG must
+still fit the 512-node ceiling. Unsupported or exhausted searches return Unknown.
 
 The archived artifact contains only c27/c39/c502, not the complete archived
 refutation. Its local step is translated and replayed; **full SWV406+1 proof
@@ -122,6 +129,8 @@ command       := 0 (identity) | 1 (superposition step) | 2 (DAG)
                | 7 (subsumption resolution step) | 8 (clause weakening step)
                | 9 (demodulation step) | 10 (instantiation step) | 11 (condensation step)
                | 12 (reflexivity step) | 13 (transitivity step)
+               | 14 (symmetry step) | 15 (excluded middle step) | 16 (congruence step)
+               | 17 (tautology step)
 step payload  := certificate | resolution_certificate | eq_resolution_certificate
                | factoring_certificate | eq_factoring_certificate
                | subsumption_resolution_certificate | weakening_certificate
@@ -136,6 +145,7 @@ kind          := 0 (input) | 1 (superposition) | 2 (nullary resolution)
                | 9 (clause weakening) | 10 (demodulation) | 11 (instantiation)
                | 12 (condensation) | 13 (reflexivity) | 14 (transitivity)
                | 15 (symmetry) | 16 (excluded middle) | 17 (congruence)
+               | 18 (tautology)
 rule_payload  := empty | certificate | resolution_certificate | eq_resolution_certificate
                | factoring_certificate | eq_factoring_certificate
                | subsumption_resolution_certificate | weakening_certificate

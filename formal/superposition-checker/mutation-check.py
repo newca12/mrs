@@ -295,6 +295,16 @@ def main() -> int:
             "if !check_congruence_and_replay(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
             "if false {\n        return false;\n    }",
         ),
+        (
+            "tautology skips clause validation",
+            "if !check_clause_tautology_exec(conclusion) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
+        (
+            "DAG tautology skips rule replay",
+            "if !check_tautology_and_replay(\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
+            "if false {\n        return false;\n    }",
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:

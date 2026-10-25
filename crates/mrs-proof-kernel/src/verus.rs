@@ -108,6 +108,7 @@ fn snapshot_artifact(source: &std::path::Path) -> Result<(ArtifactSnapshot, Stri
         let _ = std::fs::remove_file(&snapshot);
         return Err(format!("checker snapshot write: {error}"));
     }
+    drop(file);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1318,6 +1319,243 @@ fn demodulation_certificate(
     Err("no supported demodulation certificate".into())
 }
 
+fn find_demod_rewrites(
+    current: &[Literal],
+    equality: &[Literal],
+    limits: VerificationLimits,
+    fuel: &mut usize,
+) -> Result<Vec<Vec<Literal>>, String> {
+    let mut results = Vec::new();
+    if equality.len() != 1 || !equality[0].positive || !matches!(equality[0].atom, Atom::Eq(_, _)) {
+        return Ok(results);
+    }
+    let mut next = max_var_clause(current)
+        .max(max_var_clause(equality))
+        .checked_add(1)
+        .ok_or("variable-id overflow")?;
+    let Ok((fresh_eq, _)) = freshen(equality, &mut next) else {
+        return Ok(results);
+    };
+    let Atom::Eq(fresh_lhs, fresh_rhs) = &fresh_eq[0].atom else {
+        return Ok(results);
+    };
+    for (ti, literal) in current.iter().enumerate() {
+        for (slot, path) in atom_term_positions(&literal.atom) {
+            let base = match &literal.atom {
+                Atom::Pred(_, args) => {
+                    if slot < args.len() {
+                        &args[slot]
+                    } else {
+                        continue;
+                    }
+                }
+                Atom::Eq(a, b) => {
+                    if slot == 0 {
+                        a
+                    } else {
+                        b
+                    }
+                }
+            };
+            let Some(selected) = term_at_position(base, &path) else {
+                continue;
+            };
+            for reversed in [false, true] {
+                consume_search_fuel(fuel)?;
+                let (from, to) = if !reversed {
+                    (fresh_lhs, fresh_rhs)
+                } else {
+                    (fresh_rhs, fresh_lhs)
+                };
+                let Some(subst) = bounded_unify(from, selected, fuel)? else {
+                    continue;
+                };
+                // Demodulation matches the equality against a rigid target;
+                // specializing just the rewritten occurrence is not sound.
+                if subst.keys().any(|v| {
+                    !fresh_lhs.free_vars().contains(v) && !fresh_rhs.free_vars().contains(v)
+                }) {
+                    continue;
+                }
+                let replacement = instance(to, &subst, fuel, 0)?;
+                let new_atom = replace_atom_side(
+                    &literal.atom,
+                    slot,
+                    replace_term_at(base, &path, replacement),
+                );
+                let new_lit = Literal {
+                    positive: literal.positive,
+                    atom: new_atom,
+                };
+                let mut next_clause = current.to_vec();
+                next_clause[ti] = new_lit;
+                if clause_term_depth(&next_clause) > limits.max_term_depth {
+                    continue;
+                }
+                if next_clause != current && !results.contains(&next_clause) {
+                    results.push(next_clause);
+                }
+            }
+        }
+    }
+    Ok(results)
+}
+
+#[derive(Clone)]
+struct DemodStepInfo {
+    eq_parent_idx: usize,
+    intermediate_clause: Vec<Literal>,
+}
+
+fn find_demod_chain(
+    target: &[Literal],
+    equalities: &[(usize, &[Literal])],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Option<Vec<DemodStepInfo>> {
+    if target.len() != goal.len() {
+        return None;
+    }
+    if target == goal {
+        return Some(Vec::new());
+    }
+    let max_depth = limits.max_rewrite_steps.min(6);
+    let max_states = limits.max_rewrite_states.min(128);
+    if max_states == 0 {
+        return None;
+    }
+    let mut fuel = limits.max_comparison_steps.min(50_000);
+    let mut queue = std::collections::VecDeque::new();
+    let mut visited: Vec<Vec<Literal>> = Vec::new();
+
+    queue.push_back((target.to_vec(), Vec::<DemodStepInfo>::new()));
+    visited.push(target.to_vec());
+
+    while let Some((curr, chain)) = queue.pop_front() {
+        if chain.len() >= max_depth {
+            continue;
+        }
+        for (eq_idx, eq_clause) in equalities {
+            for next_clause in find_demod_rewrites(&curr, eq_clause, limits, &mut fuel).ok()? {
+                if next_clause == goal {
+                    let mut full_chain = chain;
+                    full_chain.push(DemodStepInfo {
+                        eq_parent_idx: *eq_idx,
+                        intermediate_clause: next_clause,
+                    });
+                    return Some(full_chain);
+                }
+                if visited.len() < max_states && !visited.contains(&next_clause) {
+                    visited.push(next_clause.clone());
+                    let mut next_chain = chain.clone();
+                    next_chain.push(DemodStepInfo {
+                        eq_parent_idx: *eq_idx,
+                        intermediate_clause: next_clause.clone(),
+                    });
+                    queue.push_back((next_clause, next_chain));
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod demod_chain_tests {
+    use super::*;
+
+    #[test]
+    fn chain_search_respects_shared_work_and_rewrite_limits() {
+        let mut symbols = SymbolTable::new();
+        let a = Term::App(symbols.intern("a"), vec![]);
+        let b = Term::App(symbols.intern("b"), vec![]);
+        let p = symbols.intern("p");
+        let equality = vec![Literal {
+            positive: true,
+            atom: Atom::Eq(a.clone(), b.clone()),
+        }];
+        let target = vec![Literal {
+            positive: true,
+            atom: Atom::Pred(p, vec![a.clone(), a]),
+        }];
+        let goal = vec![Literal {
+            positive: true,
+            atom: Atom::Pred(p, vec![b.clone(), b]),
+        }];
+        let limits = VerificationLimits::default();
+        assert_eq!(
+            find_demod_chain(&target, &[(1, &equality)], &goal, limits)
+                .unwrap()
+                .len(),
+            2
+        );
+        for bounded in [
+            VerificationLimits {
+                max_comparison_steps: 0,
+                ..limits
+            },
+            VerificationLimits {
+                max_rewrite_steps: 1,
+                ..limits
+            },
+            VerificationLimits {
+                max_rewrite_states: 0,
+                ..limits
+            },
+        ] {
+            assert!(find_demod_chain(&target, &[(1, &equality)], &goal, bounded).is_none());
+        }
+        let mut fuel = 0;
+        assert!(find_demod_rewrites(&target, &equality, limits, &mut fuel).is_err());
+    }
+
+    #[test]
+    fn rewrite_discovery_does_not_specialize_target_variables() {
+        let mut symbols = SymbolTable::new();
+        let a = Term::App(symbols.intern("a"), vec![]);
+        let b = Term::App(symbols.intern("b"), vec![]);
+        let equality = vec![Literal {
+            positive: true,
+            atom: Atom::Eq(a, b),
+        }];
+        let target = vec![Literal {
+            positive: true,
+            atom: Atom::Pred(symbols.intern("p"), vec![Term::Var(0), Term::Var(0)]),
+        }];
+        let mut fuel = 1000;
+        assert!(
+            find_demod_rewrites(&target, &equality, VerificationLimits::default(), &mut fuel)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn expanded_demodulation_cannot_drop_a_cited_parent() {
+        let problem = mrs_tptp::parse_tptp(
+            "cnf(t,axiom,p(a)). cnf(e,axiom,a=b). cnf(x,axiom,c=d). cnf(n,axiom,~p(b)).",
+        )
+        .unwrap();
+        let proof = mrs_tptp::parse_tptp(
+            "cnf(t,axiom,p(a),file('input',t)).
+            cnf(e,axiom,a=b,file('input',e)). cnf(x,axiom,c=d,file('input',x)).
+            cnf(n,axiom,~p(b),file('input',n)).
+            cnf(d,plain,p(b),inference(demodulation,[status(thm)],[t,e,x])).
+            cnf(bot,plain,$false,inference(resolution,[status(thm)],[d,n])).",
+        )
+        .unwrap();
+        assert!(
+            dag_request(
+                &problem,
+                &proof,
+                Some("input"),
+                VerificationLimits::default()
+            )
+            .is_err()
+        );
+    }
+}
+
 fn instantiation_certificate(
     parent: &[Literal],
     goal: &[Literal],
@@ -1638,11 +1876,26 @@ enum Kind {
     Symmetry,
     ExcludedMiddle,
     Congruence,
+    Tautology,
 }
 struct WireNode {
     clause: Vec<Literal>,
     parents: Vec<usize>,
     kind: Kind,
+}
+
+fn is_tautology_clause(clause: &[Literal]) -> bool {
+    for (i, lit) in clause.iter().enumerate() {
+        if lit.positive && matches!(&lit.atom, Atom::Eq(s, t) if s == t) {
+            return true;
+        }
+        for other in &clause[(i + 1)..] {
+            if lit.positive != other.positive && lit.atom == other.atom {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn dag_request(
@@ -1724,34 +1977,108 @@ fn dag_request(
                 return Err("leaf differs from exact problem clause".into());
             }
             (Kind::Input, raw, parents)
+        } else if (matches!(
+            node.rule,
+            Some("demodulation") | Some("equality_normalization")
+        ) && parents.len() >= 2)
+        {
+            let parent_clauses: Vec<(usize, &[Literal])> = parents
+                .iter()
+                .map(|idx| (*idx, &nodes[*idx].clause[..]))
+                .collect();
+            let mut resolved = None;
+            for target_cand_idx in 0..parents.len() {
+                if parent_clauses[target_cand_idx].1.len() != raw.len() {
+                    continue;
+                }
+                let target_idx = parent_clauses[target_cand_idx].0;
+                let target_clause = parent_clauses[target_cand_idx].1;
+                let equalities: Vec<_> = parent_clauses
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != target_cand_idx)
+                    .map(|(_, (idx, c))| (*idx, *c))
+                    .collect();
+                if let Some(chain) = find_demod_chain(target_clause, &equalities, &raw, limits)
+                    && !chain.is_empty()
+                    && equalities
+                        .iter()
+                        .all(|(idx, _)| chain.iter().any(|s| s.eq_parent_idx == *idx))
+                {
+                    resolved = Some((target_idx, target_clause.to_vec(), chain));
+                    break;
+                }
+            }
+            if let Some((target_idx, target_clause, chain)) = resolved {
+                if chain.len() == 1 {
+                    let step = &chain[0];
+                    let c = demodulation_certificate(
+                        &target_clause,
+                        &nodes[step.eq_parent_idx].clause,
+                        &raw,
+                        limits,
+                    )?;
+                    (
+                        Kind::Demodulation(c),
+                        raw,
+                        vec![target_idx, step.eq_parent_idx],
+                    )
+                } else {
+                    let mut prev_target_idx = target_idx;
+                    let mut prev_target_clause = target_clause;
+                    for step in &chain[..chain.len() - 1] {
+                        let c = demodulation_certificate(
+                            &prev_target_clause,
+                            &nodes[step.eq_parent_idx].clause,
+                            &step.intermediate_clause,
+                            limits,
+                        )?;
+                        let intermediate_idx = nodes.len();
+                        if intermediate_idx >= MAX_NODES {
+                            return Err("expanded DAG node ceiling".into());
+                        }
+                        nodes.push(WireNode {
+                            clause: step.intermediate_clause.clone(),
+                            parents: vec![prev_target_idx, step.eq_parent_idx],
+                            kind: Kind::Demodulation(c),
+                        });
+                        prev_target_idx = intermediate_idx;
+                        prev_target_clause = step.intermediate_clause.clone();
+                    }
+                    let last_step = &chain[chain.len() - 1];
+                    let c = demodulation_certificate(
+                        &prev_target_clause,
+                        &nodes[last_step.eq_parent_idx].clause,
+                        &raw,
+                        limits,
+                    )?;
+                    (
+                        Kind::Demodulation(c),
+                        raw,
+                        vec![prev_target_idx, last_step.eq_parent_idx],
+                    )
+                }
+            } else if parents.len() == 2 {
+                let (left, right) = (&nodes[parents[0]].clause, &nodes[parents[1]].clause);
+                if let Ok(c) = certificate(left, right, &raw, false, limits) {
+                    let conclusion = c.conclusion.clone();
+                    (Kind::Superposition(c), conclusion, parents)
+                } else if let Ok(c) = certificate(right, left, &raw, false, limits) {
+                    let conclusion = c.conclusion.clone();
+                    (
+                        Kind::Superposition(c),
+                        conclusion,
+                        vec![parents[1], parents[0]],
+                    )
+                } else {
+                    return Err("no supported demodulation certificate".into());
+                }
+            } else {
+                return Err("no supported demodulation chain".into());
+            }
         } else if parents.len() == 2 {
             let (left, right) = (&nodes[parents[0]].clause, &nodes[parents[1]].clause);
             match node.rule {
-                Some("demodulation") | Some("equality_normalization") => {
-                    if let Ok(c) = demodulation_certificate(left, right, &raw, limits) {
-                        let conclusion = c.conclusion.clone();
-                        (Kind::Demodulation(c), conclusion, parents)
-                    } else if let Ok(c) = demodulation_certificate(right, left, &raw, limits) {
-                        let conclusion = c.conclusion.clone();
-                        (
-                            Kind::Demodulation(c),
-                            conclusion,
-                            vec![parents[1], parents[0]],
-                        )
-                    } else if let Ok(c) = certificate(left, right, &raw, false, limits) {
-                        let conclusion = c.conclusion.clone();
-                        (Kind::Superposition(c), conclusion, parents)
-                    } else if let Ok(c) = certificate(right, left, &raw, false, limits) {
-                        let conclusion = c.conclusion.clone();
-                        (
-                            Kind::Superposition(c),
-                            conclusion,
-                            vec![parents[1], parents[0]],
-                        )
-                    } else {
-                        return Err("no supported demodulation certificate".into());
-                    }
-                }
                 Some("superposition") | Some("paramodulation") | Some("paramodulate") => {
                     let (c, flipped) = if let Ok(c) = certificate(left, right, &raw, false, limits)
                     {
@@ -1914,7 +2241,10 @@ fn dag_request(
                 | Some("rename")
                 | Some("variable_rename")
                 | Some("rename_variable")
-                | Some("rectify") => {
+                | Some("rectify")
+                | Some("assume")
+                | Some("duplicate")
+                | Some("alpha") => {
                     let c = instantiation_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::Instantiation(c), conclusion, parents)
@@ -1948,16 +2278,19 @@ fn dag_request(
                     }
                 }
                 Some("excluded_middle") => {
-                    if raw.len() != 2 {
-                        return Err("excluded_middle requires binary clause".into());
+                    if raw.len() == 2 {
+                        if raw[0].positive == raw[1].positive {
+                            return Err("excluded_middle requires opposite polarities".into());
+                        }
+                        if raw[0].atom != raw[1].atom {
+                            return Err("excluded_middle requires identical atoms".into());
+                        }
+                        (Kind::ExcludedMiddle, raw.clone(), parents)
+                    } else if is_tautology_clause(&raw) {
+                        (Kind::Tautology, raw.clone(), parents)
+                    } else {
+                        return Err("excluded_middle requires binary clause or tautology".into());
                     }
-                    if raw[0].positive == raw[1].positive {
-                        return Err("excluded_middle requires opposite polarities".into());
-                    }
-                    if raw[0].atom != raw[1].atom {
-                        return Err("excluded_middle requires identical atoms".into());
-                    }
-                    (Kind::ExcludedMiddle, raw.clone(), parents)
                 }
                 Some("congruence") | Some("equality_congruence") => {
                     if parent.len() != 1 || raw.len() != 1 {
@@ -1975,17 +2308,9 @@ fn dag_request(
                         return Err("congruence conclusion terms do not match parent".into());
                     }
                 }
-                Some("tautology") => {
-                    if raw.len() == 2
-                        && raw[0].positive != raw[1].positive
-                        && raw[0].atom == raw[1].atom
-                    {
-                        (Kind::ExcludedMiddle, raw.clone(), parents)
-                    } else if raw.len() == 1
-                        && raw[0].positive
-                        && matches!(&raw[0].atom, Atom::Eq(s, t) if s == t)
-                    {
-                        (Kind::Reflexivity, raw.clone(), parents)
+                Some("tautology") | Some("clause_tautology") => {
+                    if is_tautology_clause(&raw) {
+                        (Kind::Tautology, raw.clone(), parents)
                     } else {
                         return Err("unsupported tautology clause shape".into());
                     }
@@ -1995,6 +2320,9 @@ fn dag_request(
         } else {
             return Err("unsupported parent count".into());
         };
+        if nodes.len() >= MAX_NODES {
+            return Err("expanded DAG node ceiling".into());
+        }
         indices.insert(node.name, nodes.len());
         nodes.push(WireNode {
             clause,
@@ -2039,6 +2367,7 @@ fn dag_request(
             Kind::Symmetry => 15,
             Kind::ExcludedMiddle => 16,
             Kind::Congruence => 17,
+            Kind::Tautology => 18,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -2065,6 +2394,7 @@ fn dag_request(
             Kind::Symmetry => {}
             Kind::ExcludedMiddle => {}
             Kind::Congruence => {}
+            Kind::Tautology => {}
         }
     }
     Ok((wire.finish()?, nodes.len()))
@@ -2166,7 +2496,20 @@ fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowR
         let mut command = Command::new(&artifact.0);
         command.arg("--wire-v1");
         configure_child(&mut command);
-        let mut child = command.spawn().map_err(|e| format!("checker spawn: {e}"))?;
+        let deadline = Instant::now() + config.timeout;
+        let mut child = loop {
+            match command.spawn() {
+                Ok(child) => break child,
+                // A concurrent fork can transiently inherit a writable snapshot
+                // descriptor before CLOEXEC closes it. Wait within the caller's
+                // deadline rather than spuriously declining a valid artifact.
+                #[cfg(unix)]
+                Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => return Err(format!("checker spawn: {e}")),
+            }
+        };
         let child_id = child.id();
         let mut stdin = child.stdin.take().ok_or("checker stdin missing")?;
         let stdout = child.stdout.take().ok_or("checker stdout missing")?;
@@ -2177,7 +2520,6 @@ fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowR
             let mut output = Vec::new();
             stdout.take(1025).read_to_end(&mut output).map(|_| output)
         });
-        let deadline = Instant::now() + config.timeout;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),

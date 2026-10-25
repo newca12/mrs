@@ -99,7 +99,7 @@ TPTP/MRS lowering remains trusted adapter code. The bridge and runtime fixtures
 exercise the interchange boundary. The DAG dispatch includes first-order
 resolution, equality resolution, clause and equality factoring, subsumption
 resolution, weakening, demodulation, clause instantiation, clause condensation,
-equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, and equality congruence in addition to
+equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology in addition to
 superposition and exact-atom resolution. Each accepted replay is bound to its
 cited parents and conclusion and proves local universal-validity preservation.
 Compiled refutations certify from nonempty inputs; exact cumulative replay-work

@@ -859,3 +859,142 @@ fn unsupported_tptp_constructs_are_not_erased_by_lowering() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires the pinned compiled Verus artifact; run by formal CI"]
+fn clause_tautology_refutations_and_mutations() {
+    let cfg = config();
+    for rule in ["tautology", "clause_tautology"] {
+        // Complementary pair tautology:
+        let tau_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p). cnf(b,axiom,~p).").unwrap();
+        let tau_text = format!(
+            "cnf(a,axiom,p,file('input',a)).
+             cnf(b,axiom,~p,file('input',b)).
+             cnf(tau,plain,p|~p,inference({rule},[status(thm)],[a])).
+             cnf(m1,plain,~p,inference(resolution,[status(thm)],[tau,b])).
+             cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,m1]))."
+        );
+        let tau_proof = mrs_tptp::parse_tptp(&tau_text).unwrap();
+        let (kernel, report) = verify_with_verus_gate(
+            &tau_problem,
+            &tau_proof,
+            Some("input"),
+            VerificationLimits::default(),
+            &cfg,
+        );
+        assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+        assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+        // Multi-literal tautology with reflexive equality:
+        let eq_problem =
+            mrs_tptp::parse_tptp("cnf(a,axiom,p). cnf(b,axiom,~p). cnf(c,axiom,a!=a).").unwrap();
+        let eq_text = format!(
+            "cnf(a,axiom,p,file('input',a)).
+             cnf(b,axiom,~p,file('input',b)).
+             cnf(c,axiom,a!=a,file('input',c)).
+             cnf(tau,plain,a=a|p,inference({rule},[status(thm)],[a])).
+             cnf(res1,plain,p,inference(resolution,[status(thm)],[tau,c])).
+             cnf(bot,plain,$false,inference(resolution,[status(thm)],[res1,b]))."
+        );
+        let eq_proof = mrs_tptp::parse_tptp(&eq_text).unwrap();
+        let (kernel, report) = verify_with_verus_gate(
+            &eq_problem,
+            &eq_proof,
+            Some("input"),
+            VerificationLimits::default(),
+            &cfg,
+        );
+        assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+        assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    }
+
+    // Fail-closed mutations: non-tautology clauses
+    for non_tau in ["p|q", "a=b", "p|p"] {
+        let problem = mrs_tptp::parse_tptp("cnf(a,axiom,p). cnf(b,axiom,~p).").unwrap();
+        let text = format!(
+            "cnf(a,axiom,p,file('input',a)).
+             cnf(b,axiom,~p,file('input',b)).
+             cnf(tau,plain,{non_tau},inference(tautology,[status(thm)],[a])).
+             cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,b]))."
+        );
+        let proof = mrs_tptp::parse_tptp(&text).unwrap();
+        let (kernel, report) = verify_with_verus_gate(
+            &problem,
+            &proof,
+            Some("input"),
+            VerificationLimits::default(),
+            &cfg,
+        );
+        assert_ne!(kernel, KernelVerdict::Certified);
+        assert_ne!(report.verdict, ShadowVerdict::CertifiedDagIr);
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned compiled Verus artifact; run by formal CI"]
+fn multi_step_and_multi_parent_demodulation_refutations() {
+    let cfg = config();
+
+    // 1. Multi-step demodulation with single equality parent rewriting 2 positions:
+    let multi_step_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,f(a)=b). cnf(t,axiom,p(f(a),f(a))). cnf(n,axiom,~p(b,b)).",
+    )
+    .unwrap();
+    let multi_step_text = "cnf(a,axiom,f(a)=b,file('input',a)).
+        cnf(t,axiom,p(f(a),f(a)),file('input',t)).
+        cnf(n,axiom,~p(b,b),file('input',n)).
+        cnf(d,plain,p(b,b),inference(demodulation,[status(thm)],[t,a])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[d,n])).";
+    let multi_step_proof = mrs_tptp::parse_tptp(multi_step_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &multi_step_problem,
+        &multi_step_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 2. Multi-parent demodulation with 2 equality parents (3 parents total):
+    let multi_parent_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,f(a)=b). cnf(c,axiom,g(c)=d). cnf(t,axiom,p(f(a),g(c))). cnf(n,axiom,~p(b,d)).").unwrap();
+    let multi_parent_text = "cnf(a,axiom,f(a)=b,file('input',a)).
+        cnf(c,axiom,g(c)=d,file('input',c)).
+        cnf(t,axiom,p(f(a),g(c)),file('input',t)).
+        cnf(n,axiom,~p(b,d),file('input',n)).
+        cnf(d,plain,p(b,d),inference(demodulation,[status(thm)],[t,a,c])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[d,n])).";
+    let multi_parent_proof = mrs_tptp::parse_tptp(multi_parent_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &multi_parent_problem,
+        &multi_parent_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 3. Equality normalization with multiple equality parents:
+    let eq_norm_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,a=b). cnf(c,axiom,c=d). cnf(t,axiom,p(a,c)). cnf(n,axiom,~p(b,d)).",
+    )
+    .unwrap();
+    let eq_norm_text = "cnf(a,axiom,a=b,file('input',a)).
+        cnf(c,axiom,c=d,file('input',c)).
+        cnf(t,axiom,p(a,c),file('input',t)).
+        cnf(n,axiom,~p(b,d),file('input',n)).
+        cnf(d,plain,p(b,d),inference(equality_normalization,[status(thm)],[t,a,c])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[d,n])).";
+    let eq_norm_proof = mrs_tptp::parse_tptp(eq_norm_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &eq_norm_problem,
+        &eq_norm_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+}
