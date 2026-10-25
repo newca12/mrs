@@ -330,8 +330,12 @@ impl SearchState {
     }
 
     /// Registers a clause in `clause_store` and the append-only `proof_arena`.
+    /// The first registered logical representation is retained in both stores.
     pub fn store_clause(&mut self, clause: &IdClause) {
-        self.clause_store.insert(clause.id, clause.clone());
+        let clause = self
+            .clause_store
+            .entry(clause.id)
+            .or_insert_with(|| clause.clone());
         if self.proof_arena.node_for_clause(clause.id).is_none() {
             let witness = if let Some(w) = &clause.witness {
                 w.clone()
@@ -542,9 +546,7 @@ impl SearchState {
         // store must retain the first form registered for its ID. This keeps
         // both input provenance and derived inference formulas aligned with
         // the actual pre-normalization result that was generated.
-        self.clause_store
-            .entry(clause.id)
-            .or_insert_with(|| clause.clone());
+        self.store_clause(clause);
         match &clause.source {
             mrs_core::clause::ClauseSource::Inference { rule, parents } => {
                 let is_destructive = *rule == "demodulation" || *rule == "subsumption_resolution";

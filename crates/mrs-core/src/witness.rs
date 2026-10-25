@@ -12,11 +12,11 @@ use crate::subst::Substitution;
 use crate::symbol::SymbolId;
 use crate::term::VarId;
 
-/// A globally unique, stable identifier for a proof node in the proof arena.
+/// A stable identifier for a proof node within one search's proof arena.
 ///
-/// Unlike operational `ClauseId`s which may be recycled or discarded by search
-/// indexing (e.g. LRS pruning or backwards subsumption), a `ProofNodeId` is
-/// permanently retained in the append-only `ProofArena`.
+/// The numeric value is the originating `ClauseId`, not a vector offset.
+/// Search removes clauses from indexes but must never reuse their IDs for a
+/// different derivation. The arena retains the first registered derivation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProofNodeId(pub u64);
 
@@ -151,7 +151,7 @@ pub struct ProofNode {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProofArena {
     nodes: Vec<ProofNode>,
-    clause_to_node: HashMap<ClauseId, ProofNodeId>,
+    clause_to_position: HashMap<ClauseId, usize>,
 }
 
 impl ProofArena {
@@ -165,24 +165,31 @@ impl ProofArena {
         witness: ProofWitness,
         parents: SmallVec<[ProofNodeId; 2]>,
     ) -> ProofNodeId {
-        let id = ProofNodeId(self.nodes.len() as u64);
+        let id = ProofNodeId(clause_id.0);
+        if self.clause_to_position.contains_key(&clause_id) {
+            return id;
+        }
         let node = ProofNode {
             id,
             clause_id,
             witness,
             parents,
         };
+        self.clause_to_position.insert(clause_id, self.nodes.len());
         self.nodes.push(node);
-        self.clause_to_node.insert(clause_id, id);
         id
     }
 
     pub fn get(&self, id: ProofNodeId) -> Option<&ProofNode> {
-        self.nodes.get(id.0 as usize)
+        self.clause_to_position
+            .get(&ClauseId(id.0))
+            .and_then(|&position| self.nodes.get(position))
     }
 
     pub fn node_for_clause(&self, clause_id: ClauseId) -> Option<ProofNodeId> {
-        self.clause_to_node.get(&clause_id).copied()
+        self.clause_to_position
+            .contains_key(&clause_id)
+            .then_some(ProofNodeId(clause_id.0))
     }
 
     pub fn len(&self) -> usize {
@@ -201,6 +208,45 @@ impl ProofArena {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_ids_and_forward_references_survive_registration_order() {
+        let mut arena = ProofArena::new();
+        let child = arena.alloc(
+            ClauseId(7),
+            ProofWitness::Legacy {
+                rule: "copy",
+                parents: smallvec::smallvec![ProofNodeId(900)],
+            },
+            smallvec::smallvec![ProofNodeId(900)],
+        );
+        let parent = arena.alloc(
+            ClauseId(900),
+            ProofWitness::Input {
+                name: "axiom".into(),
+                role: "axiom".into(),
+            },
+            SmallVec::new(),
+        );
+        assert_eq!(child, ProofNodeId(7));
+        assert_eq!(parent, ProofNodeId(900));
+        assert_eq!(arena.get(child).unwrap().parents[0], parent);
+        assert_eq!(arena.get(parent).unwrap().clause_id, ClauseId(900));
+        assert!(arena.get(ProofNodeId(0)).is_none());
+        arena.alloc(
+            ClauseId(900),
+            ProofWitness::Legacy {
+                rule: "forged",
+                parents: SmallVec::new(),
+            },
+            SmallVec::new(),
+        );
+        assert_eq!(arena.len(), 2);
+        assert!(matches!(
+            arena.get(parent).unwrap().witness,
+            ProofWitness::Input { .. }
+        ));
+    }
 
     #[test]
     fn test_proof_arena_allocation_and_lookup() {
