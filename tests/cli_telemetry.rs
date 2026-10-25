@@ -3,6 +3,23 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn preparation_stages_are_visible_before_search() {
+    let problem = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("problems/socrates.p");
+    let output = Command::new(env!("CARGO_BIN_EXE_mrs"))
+        .args(["--time", "5", "--workers", "1", "--schedule", "fast"])
+        .arg(problem)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let parse = stderr.find("% Stage complete: parse").unwrap();
+    let prepare = stderr.find("% Stage complete: prepare").unwrap();
+    assert!(parse < prepare);
+    assert!(stderr.contains("lowering_us="));
+    assert!(stderr.contains("clausification_us="));
+}
+
+#[test]
 fn self_check_rejection_preserves_search_result_in_telemetry() {
     let problem = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("problems/socrates.p");
     let output = Command::new(env!("CARGO_BIN_EXE_mrs"))

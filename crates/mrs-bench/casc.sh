@@ -394,7 +394,7 @@ if [[ ! -f "${ANSWERS}" ]]; then
 fi
 
 CSV="${OUTPUT}/run.csv"
-echo "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,processed_per_s,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256,actual_wall_time_s,peak_rss_mb,peak_virtual_mb,exit_code,termination_signal,szs_emitted" > "${CSV}"
+echo "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,processed_per_s,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256,actual_wall_time_s,peak_rss_mb,peak_virtual_mb,exit_code,termination_signal,szs_emitted,last_completed_stage" > "${CSV}"
 
 # Warn on a stale `mrs`. The run itself is unaffected, but a run.csv from an
 # out-of-date prover looks exactly like a measurement of the current one.
@@ -736,6 +736,8 @@ run_one() {
     # mrs:     "% SZS status Theorem for ..."
     szs=$(grep -m1 '% SZS status' "${tmp}" 2>/dev/null | awk '{print $4}' || true)
     local szs_emitted=0 termination_signal=""
+    local last_completed_stage=""
+    last_completed_stage=$(awk '$1 == "%" && $2 == "Stage" && $3 == "complete:" { stage=$4 } END { print stage }' "${tmp_err}")
     [[ -n "${szs}" ]] && szs_emitted=1
     if (( exit_code > 128 && exit_code <= 192 )); then
         termination_signal=$(( exit_code - 128 ))
@@ -851,12 +853,12 @@ run_one() {
         fi
     fi
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "${EDITION}" "${div}" "${problem}" "${sys}" "${tlimit}" \
         "${szs}" "${expected}" "${verdict}" "${wall_s}" "${peak_memory_mb}" "${failure_detail}" \
         "${processed_per_s}" \
         "${raw_stdout_rel}" "${raw_stderr_rel}" "${raw_stdout_sha256}" "${raw_stderr_sha256}" \
-        "${actual_wall_s}" "${peak_rss_mb}" "${peak_virtual_mb}" "${exit_code}" "${termination_signal}" "${szs_emitted}"
+        "${actual_wall_s}" "${peak_rss_mb}" "${peak_virtual_mb}" "${exit_code}" "${termination_signal}" "${szs_emitted}" "${last_completed_stage}"
 }
 
 # Map an SZS status to a coarse provability class so different

@@ -8,6 +8,7 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use mrs_core::Formula;
 use mrs_core::clause::{Clause, ClauseSource};
@@ -19,6 +20,8 @@ use mrs_tptp::TPTPProblem;
 /// A problem lowered and clausified, together with the metadata the pre-phase
 /// needs and the non-clausal proof steps that document the translation.
 pub struct Prepared {
+    /// Wall costs for the exact shared preparation path (not search time).
+    pub timings: PreparationTimings,
     pub lowered: LoweredProblem,
     /// Input clauses plus the clauses of every axiom, plus the negated
     /// conjecture. This is what the search is handed.
@@ -33,6 +36,13 @@ pub struct Prepared {
     pub has_conjecture: bool,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct PreparationTimings {
+    pub lowering: Duration,
+    pub includes: Duration,
+    pub clausification: Duration,
+}
+
 /// Lower and clausify an already-parsed problem.
 ///
 /// `problem_path` is used only to resolve `%include` directives; pass `None` for
@@ -42,7 +52,9 @@ pub fn prepare(
     problem_path: Option<&str>,
     input_bytes: Option<u64>,
 ) -> Prepared {
+    let stage = Instant::now();
     let mut lowered = lower_problem(problem);
+    let lowering = stage.elapsed();
 
     let mut meta = MetaInput {
         input_bytes,
@@ -65,6 +77,7 @@ pub fn prepare(
         }
     }
 
+    let stage = Instant::now();
     let include_error = if !problem.includes.is_empty()
         && let Some(path) = problem_path
     {
@@ -78,10 +91,18 @@ pub fn prepare(
     } else {
         None
     };
+    let includes = stage.elapsed();
 
+    let stage = Instant::now();
     let (clauses, provenance) = clausify(&mut lowered);
+    let clausification = stage.elapsed();
     let has_conjecture = !lowered.conjectures.is_empty();
     Prepared {
+        timings: PreparationTimings {
+            lowering,
+            includes,
+            clausification,
+        },
         lowered,
         clauses,
         provenance,

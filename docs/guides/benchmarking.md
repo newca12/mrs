@@ -175,6 +175,10 @@ charted as one physical-memory series. Blank RSS means GNU time was unavailable.
 A signal-derived exit status is evidence of termination, not a confirmed OOM;
 `termination_signal` reflects the wrapper's exit status and cannot distinguish
 an explicit exit with the same numeric code from a signal.
+`last_completed_stage` records the last `% Stage complete:` marker on stderr;
+parse and preparation markers precede search, and preparation reports lowering,
+include and clausification costs. Missing markers are missing observations,
+not proof that the process failed in a particular stage.
 
 Every report must record:
 

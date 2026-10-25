@@ -504,6 +504,11 @@ fn run() {
     };
 
     // Parse with the TPTP parser
+    info!(
+        "% Stage start: parse elapsed_ms={}",
+        start.elapsed().as_millis()
+    );
+    let parse_start = Instant::now();
     let problem = match mrs_tptp::parse_tptp(&input) {
         Ok(p) => p,
         Err(e) => {
@@ -512,6 +517,11 @@ fn run() {
             process::exit(1);
         }
     };
+    info!(
+        "% Stage complete: parse duration_ms={} elapsed_ms={}",
+        parse_start.elapsed().as_millis(),
+        start.elapsed().as_millis()
+    );
 
     // Lower to core types, resolve includes, and clausify. Shared with the
     // offline pre-phase dumper so both see exactly the same clause set.
@@ -521,7 +531,20 @@ fn run() {
         fs::metadata(&path).ok().map(|m| m.len())
     };
     let resolved_includes = problem.includes.len();
+    info!(
+        "% Stage start: prepare elapsed_ms={}",
+        start.elapsed().as_millis()
+    );
     let prepared = pipeline::prepare(&problem, Some(&path), input_bytes);
+    info!(
+        "% Stage complete: prepare lowering_us={} includes_us={} clausification_us={} clauses={} provenance={} elapsed_ms={}",
+        prepared.timings.lowering.as_micros(),
+        prepared.timings.includes.as_micros(),
+        prepared.timings.clausification.as_micros(),
+        prepared.clauses.len(),
+        prepared.provenance.len(),
+        start.elapsed().as_millis()
+    );
     if let Some(error) = &prepared.include_error {
         info!("Warning: include resolution failed: {error}");
     } else if resolved_includes > 0 {
