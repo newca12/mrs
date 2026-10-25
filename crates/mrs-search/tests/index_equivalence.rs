@@ -374,6 +374,10 @@ fn check_resolution_recall(clauses: &[IdClause], bank: &TermBank, index: &Litera
         }
         for (li, lit) in clause.literals.iter().enumerate() {
             let hits = index.get_unifiable_resolution_partners(&lit.atom, lit.positive, bank);
+            assert_eq!(
+                index.resolution_partner_ids(&lit.atom, lit.positive, bank),
+                hits.iter().map(|c| c.id).collect::<Vec<_>>()
+            );
             let got: HashSet<ClauseId> = hits.iter().map(|c| c.id).collect();
             if matches!(lit.atom, IdAtom::Eq(..)) {
                 // Engine usage: equality queries get no resolution partners
@@ -433,6 +437,22 @@ fn check_superposition_recall(
     let mut exact_targets = 0;
     let mut exact_sources = 0;
     for &q in queries {
+        assert_eq!(
+            index.superposition_target_ids(q, bank),
+            index
+                .get_superposition_targets(q, bank)
+                .iter()
+                .map(|c| c.id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            index.superposition_source_ids(q, bank),
+            index
+                .get_superposition_sources(q, bank)
+                .iter()
+                .map(|c| c.id)
+                .collect::<Vec<_>>()
+        );
         let got_targets: HashSet<ClauseId> = index
             .get_superposition_targets(q, bank)
             .into_iter()

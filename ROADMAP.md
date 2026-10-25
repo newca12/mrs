@@ -92,6 +92,9 @@ choosing optimization work. Shared CI timings are not performance evidence.
 Prerequisites: P0/P2 measurements and P1 identity contract.
 
 - [ ] Measure ID-only retrieval and reduced clause cloning.
+  Landed ID-only resolution/superposition query APIs and migrated the main loop
+  and backward-demodulation discovery. Compatibility APIs remain; differential
+  recall/removal tests cover both. Fixed-work timing and memory measurements open.
 - [ ] Improve subsumption filter selectivity and repeated-variable matching costs.
 - [ ] Measure corrected demodulation memo hit rates and invalidation cost.
 - [ ] Allocate only selected passive queues; compact tombstones by measured thresholds.

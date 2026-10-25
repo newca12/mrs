@@ -212,6 +212,20 @@ impl LiteralIndex {
         positive: bool,
         bank: &TermBank,
     ) -> Vec<IdClause> {
+        self.resolution_partner_ids(atom, positive, bank)
+            .into_iter()
+            .filter_map(|id| self.clauses.get(&id).cloned())
+            .collect()
+    }
+
+    /// Sorted, unique candidate IDs. Callers can apply cheap gates before
+    /// borrowing/cloning a partner; terms remain in the worker-local bank.
+    pub fn resolution_partner_ids(
+        &self,
+        atom: &IdAtom,
+        positive: bool,
+        bank: &TermBank,
+    ) -> Vec<ClauseId> {
         if let IdAtom::Pred(sym, _args) = atom {
             let key = LitKey {
                 pred: *sym,
@@ -221,10 +235,7 @@ impl LiteralIndex {
                 let mut ids = tree.get_unifications_atom(atom, bank);
                 ids.sort_unstable();
                 ids.dedup();
-                return ids
-                    .into_iter()
-                    .filter_map(|id| self.clauses.get(&id).cloned())
-                    .collect();
+                return ids;
             }
         }
         Vec::new()
@@ -448,12 +459,17 @@ impl LiteralIndex {
     /// Returns candidate target clauses that contain at least one non-variable subterm
     /// unifiable with `term` (e.g. for superposition from an equality side `term` into active clauses).
     pub fn get_superposition_targets(&self, term: TermId, bank: &TermBank) -> Vec<IdClause> {
+        self.superposition_target_ids(term, bank)
+            .into_iter()
+            .filter_map(|id| self.clauses.get(&id).cloned())
+            .collect()
+    }
+
+    pub fn superposition_target_ids(&self, term: TermId, bank: &TermBank) -> Vec<ClauseId> {
         let mut ids = self.subterm_index.get_unifications(term, bank);
         ids.sort_unstable();
         ids.dedup();
-        ids.into_iter()
-            .filter_map(|id| self.clauses.get(&id).cloned())
-            .collect()
+        ids
     }
 
     /// Returns candidate equation clauses that contain a positive equality whose LHS or RHS
@@ -463,12 +479,21 @@ impl LiteralIndex {
         query_subterm: TermId,
         bank: &TermBank,
     ) -> Vec<IdClause> {
+        self.superposition_source_ids(query_subterm, bank)
+            .into_iter()
+            .filter_map(|id| self.clauses.get(&id).cloned())
+            .collect()
+    }
+
+    pub fn superposition_source_ids(
+        &self,
+        query_subterm: TermId,
+        bank: &TermBank,
+    ) -> Vec<ClauseId> {
         let mut ids = self.pos_eq_lhs_index.get_unifications(query_subterm, bank);
         ids.sort_unstable();
         ids.dedup();
-        ids.into_iter()
-            .filter_map(|id| self.clauses.get(&id).cloned())
-            .collect()
+        ids
     }
 
     /// Drains all clauses from the index, returning them as a Vec.

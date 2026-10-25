@@ -1984,7 +1984,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             let mut resolution_partner_ids = HashSet::default();
             'resolution: for &lit_idx in &given_sel {
                 let lit = &given.literals[lit_idx];
-                let partners = state.processed.get_unifiable_resolution_partners(
+                let partners = state.processed.resolution_partner_ids(
                     &lit.atom,
                     lit.positive,
                     &state.term_bank,
@@ -1998,7 +1998,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         partners.len()
                     );
                 }
-                for partner in partners {
+                for partner_id in partners {
+                    let Some(partner) = state.processed.get(partner_id) else {
+                        continue;
+                    };
                     // SOS restriction: skip if both parents are outside the support set.
                     if std::env::var("TRACE_RES").is_ok() {
                         eprintln!(
@@ -2027,6 +2030,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         continue;
                     }
                     if resolution_partner_ids.insert(partner.id) {
+                        // Guidance mutates the whole state; clone only the
+                        // partner that survived deduplication and cheap gates.
+                        let partner = partner.clone();
                         #[cfg(feature = "parent-guidance")]
                         let inference_kind =
                             mrs_core::ml::parent_guidance::InferenceKind::Resolution;
@@ -2118,9 +2124,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             ) {
                                 for tgt in state
                                     .processed
-                                    .get_superposition_targets(side, &state.term_bank)
+                                    .superposition_target_ids(side, &state.term_bank)
                                 {
-                                    if seen_ids.insert(tgt.id) {
+                                    if seen_ids.insert(tgt) {
                                         candidate_targets.push(tgt);
                                     }
                                 }
@@ -2128,9 +2134,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         }
                     }
                 }
-                candidate_targets.sort_unstable_by_key(|c| c.id);
+                candidate_targets.sort_unstable();
 
-                for active in &candidate_targets {
+                for id in candidate_targets {
+                    let Some(active) = state.processed.get(id).cloned() else {
+                        continue;
+                    };
+                    let active = &active;
                     assert_indexed_clause_matches_store(state, active, "given-as-equation-source");
                     if sos_depth < u32::MAX
                         && given.distance >= sos_depth
@@ -2258,7 +2268,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                         let __st = std::time::Instant::now();
                                         let __srcs = state
                                             .processed
-                                            .get_superposition_sources(u, &state.term_bank);
+                                            .superposition_source_ids(u, &state.term_bank);
                                         if trace_progress
                                             && __st.elapsed()
                                                 > std::time::Duration::from_millis(200)
@@ -2272,7 +2282,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                             );
                                         }
                                         for src in __srcs {
-                                            if seen_ids.insert(src.id) {
+                                            if seen_ids.insert(src) {
                                                 candidate_sources.push(src);
                                             }
                                         }
@@ -2285,7 +2295,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                         let __st = std::time::Instant::now();
                                         let __srcs = state
                                             .processed
-                                            .get_superposition_sources(u, &state.term_bank);
+                                            .superposition_source_ids(u, &state.term_bank);
                                         if trace_progress
                                             && __st.elapsed()
                                                 > std::time::Duration::from_millis(200)
@@ -2299,7 +2309,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                             );
                                         }
                                         for src in __srcs {
-                                            if seen_ids.insert(src.id) {
+                                            if seen_ids.insert(src) {
                                                 candidate_sources.push(src);
                                             }
                                         }
@@ -2309,9 +2319,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         }
                     }
                 }
-                candidate_sources.sort_unstable_by_key(|c| c.id);
+                candidate_sources.sort_unstable();
 
-                for active in &candidate_sources {
+                for id in candidate_sources {
+                    let Some(active) = state.processed.get(id).cloned() else {
+                        continue;
+                    };
+                    let active = &active;
                     assert_indexed_clause_matches_store(state, active, "given-as-target-source");
                     if sos_depth < u32::MAX
                         && given.distance >= sos_depth
@@ -2609,13 +2623,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         };
                         for target in state
                             .processed
-                            .get_superposition_targets(from, &state.term_bank)
+                            .superposition_target_ids(from, &state.term_bank)
                         {
                             if start.elapsed() >= config.time_limit {
                                 return SearchResult::Timeout;
                             }
-                            if target.id != u.id {
-                                candidate_ids.insert(target.id);
+                            if target != u.id {
+                                candidate_ids.insert(target);
                             }
                         }
                     }
