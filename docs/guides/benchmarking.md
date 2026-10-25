@@ -72,6 +72,16 @@ nix develop -c cargo run --release -p mrs-bench --bin bench_report -- \
 
 ## Solo strategy diagnostics
 
+Set `MRS_TRAJECTORY_DIGEST=1` for opt-in per-strategy SHA-256 selection digests
+in `% SZS detail` (`trajectory_sha256=slot:digest;...`). `repeat_search` preserves
+this field. The digest covers selected clause IDs, logical literals, distance
+and AVATAR context before simplification, using symbol names rather than local
+term handles. It detects differing selection histories; it is not a proof or
+an exhaustive inference-event trace. Hashing/rendering has diagnostic overhead:
+do not silently enable it in headline throughput campaigns. Fixed-work comparisons
+must also fix pruning policy and work caps, disable sharing, leave ample time,
+and check the final counters/resource reason as well as the digest.
+
 ```bash
 crates/mrs-bench/run_strategy_sweep.sh \
   --edition casc-j13 --divisions fne,feq,ueq \

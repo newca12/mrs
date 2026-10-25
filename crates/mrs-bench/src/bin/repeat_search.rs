@@ -29,6 +29,7 @@ const FIELDS: &[&str] = &[
     "strategy_ids",
     "shared_published",
     "shared_imported",
+    "trajectory_sha256",
 ];
 
 struct Args {

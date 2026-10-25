@@ -87,6 +87,10 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
   still needs an interruptible budget boundary.
 - [ ] Add stage completion telemetry, phase costs and memory-by-subsystem accounting.
 - [ ] Add fixed-work diagnostic configuration, stable tie-breaking/seeds and trajectory digests.
+  Opt-in `MRS_TRAJECTORY_DIGEST=1` hashes selected logical clauses/metadata in
+  order, independent of term-interning IDs, and is retained by `repeat_search`.
+  It is a selection digest, not a complete inference/pruning trace. Unified
+  fixed-work configuration and remaining unstable traversal audits are open.
 - [ ] Extract selection, simplification, inference, AVATAR and sharing modules
   behind concrete contracts; avoid dynamic dispatch/allocation in hot loops.
 

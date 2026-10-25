@@ -109,6 +109,10 @@ pub use symbol_config::{PrecedenceScheme, SymbolWeightScheme, compute_symbol_con
 /// aggregates them across the whole portfolio run.
 #[derive(Clone, Debug, Default)]
 pub struct SearchStats {
+    /// Opt-in SHA-256 of selected clauses before simplification, in order.
+    /// Diagnostic evidence of selection trajectory, not a proof certificate or
+    /// a guarantee that every inference/pruning decision was identical.
+    pub trajectory_sha256: Option<String>,
     /// Total given-clause loop iterations (includes skips).
     pub iterations: u64,
     /// Clauses added to the processed set.
@@ -305,6 +309,28 @@ impl ScheduleReport {
             demod_memo_hits,
             demod_memo_evictions,
         );
+
+        let trajectories = self
+            .strategies
+            .iter()
+            .filter_map(|strategy| {
+                strategy
+                    .stats
+                    .trajectory_sha256
+                    .as_ref()
+                    .map(|digest| (strategy.strategy_idx, digest))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if !trajectories.is_empty() {
+            detail.push_str(" trajectory_sha256=");
+            detail.push_str(
+                &trajectories
+                    .into_iter()
+                    .map(|(slot, digest)| format!("{slot}:{digest}"))
+                    .collect::<Vec<_>>()
+                    .join(";"),
+            );
+        }
 
         if let Some(ig) = &self.instgen {
             detail.push_str(&format!(

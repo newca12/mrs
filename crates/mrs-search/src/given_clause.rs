@@ -11,6 +11,7 @@
 //! - A time or clause limit is exceeded
 
 use crate::{HashMap, HashSet, LrsPolicy, SharedClauseChain};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -1218,6 +1219,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     // Setup consumes the same allowance as inference. Previously AC setup ran
     // before the clock origin and could silently extend the schedule budget.
     let start = Instant::now();
+    let mut trajectory = std::env::var("MRS_TRAJECTORY_DIGEST")
+        .is_ok_and(|value| value == "1")
+        .then(Sha256::new);
     state.search_deadline = start.checked_add(config.time_limit);
     if config.time_limit.is_zero()
         || state
@@ -1675,6 +1679,17 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         };
 
         let given = state.clause_store.get(&given_id).unwrap().clone();
+        if let Some(digest) = &mut trajectory {
+            record_trajectory(digest, &given, &state.term_bank, &state.symbols);
+            state.stats.trajectory_sha256 = Some(
+                digest
+                    .clone()
+                    .finalize()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+            );
+        }
         let mut given = state.ac_normalize_for_search(given, &ac_syms);
 
         let trace_progress = std::env::var("TRACE_PROGRESS").is_ok();
@@ -3437,6 +3452,30 @@ fn trace_stage(
 }
 
 /// Returns true if a clause is a unit positive equality (used for demodulation).
+/// Hash rendered logical content, not worker-local TermIds or hash-map order.
+/// Length framing and fixed-width metadata make clause boundaries unambiguous.
+fn record_trajectory(
+    digest: &mut Sha256,
+    clause: &IdClause,
+    bank: &mrs_core::term_bank::TermBank,
+    symbols: &mrs_core::SymbolTable,
+) {
+    digest.update(b"mrs-selection-v1");
+    digest.update(clause.id.0.to_le_bytes());
+    digest.update(clause.distance.to_le_bytes());
+    digest.update((clause.avatar.len() as u64).to_le_bytes());
+    for context in &clause.avatar {
+        digest.update(context.to_le_bytes());
+    }
+    let legacy = bank.clause_to_legacy(clause);
+    digest.update((legacy.literals.len() as u64).to_le_bytes());
+    for literal in legacy.literals {
+        let text = format!("{}", literal.display(symbols));
+        digest.update((text.len() as u64).to_le_bytes());
+        digest.update(text.as_bytes());
+    }
+}
+
 fn is_unit_positive_equality_id(clause: &IdClause) -> bool {
     clause.len() == 1
         && clause.literals[0].positive
@@ -3459,6 +3498,36 @@ mod tests {
     use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
     use std::sync::Arc;
+
+    #[test]
+    fn trajectory_digest_ignores_term_interning_but_detects_selection_changes() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let first = Clause::new(
+            ClauseId(17),
+            vec![Literal::pos(Atom::pred(p, vec![Term::constant(a)]))],
+            ClauseSource::Input {
+                name: "a".into(),
+                role: "axiom".into(),
+            },
+        );
+        let mut left = mrs_core::term_bank::TermBank::new();
+        let mut right = mrs_core::term_bank::TermBank::new();
+        right.intern_var(100);
+        let l = left.clause_from_legacy(&first);
+        let r = right.clause_from_legacy(&first);
+        let mut one = Sha256::new();
+        let mut two = Sha256::new();
+        record_trajectory(&mut one, &l, &left, &symbols);
+        record_trajectory(&mut two, &r, &right, &symbols);
+        assert_eq!(one.clone().finalize(), two.clone().finalize());
+        let mut changed = r.clone();
+        changed.literals[0].positive = false;
+        record_trajectory(&mut one, &l, &left, &symbols);
+        record_trajectory(&mut two, &changed, &right, &symbols);
+        assert_ne!(one.finalize(), two.finalize());
+    }
 
     #[test]
     fn cancelled_search_does_not_enter_setup_or_claim_initial_contradiction() {

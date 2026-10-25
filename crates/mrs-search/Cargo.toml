@@ -22,6 +22,7 @@ mrs-proof = { workspace = true }
 mrs-cadical = { workspace = true }
 mrs-prephase = { workspace = true }
 rustc-hash = { workspace = true }
+sha2 = { workspace = true }
 smallvec = { workspace = true }
 num_cpus = { workspace = true }
 libc = { workspace = true }
