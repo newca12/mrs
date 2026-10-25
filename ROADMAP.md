@@ -88,7 +88,11 @@ Owners: core/search/proof maintainers. Paths: `mrs-core`, `mrs-search`, `mrs-pro
   vector; `format_tstp_bounded` enforces an exact byte ceiling and returns no
   partial proof. Elaboration/per-node allocations and CLI cap integration remain
   open, as do production latency/memory measurements.
-- [ ] Make incomplete-search reasons explicit without discarding valid refutations.
+- [x] Make incomplete-search reasons explicit without discarding valid refutations.
+  `SearchStats::incompleteness_reason` records the explicit completeness audit
+  failure or pruning condition (LRS, weight, selection, guidance) on GaveUp
+  or non-certified saturation without altering refutation handling, and surfaces
+  in schedule failure diagnostics.
 
 Gate: mutation/certificate-closure canaries and archived replay comparisons pass;
 every changed verdict is explained. Preserve independent kernel semantics.

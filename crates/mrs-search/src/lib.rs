@@ -119,6 +119,8 @@ pub struct SearchStats {
     /// Diagnostic evidence of selection trajectory, not a proof certificate or
     /// a guarantee that every inference/pruning decision was identical.
     pub trajectory_sha256: Option<String>,
+    /// Explicit audit reason when completeness could not be established.
+    pub incompleteness_reason: Option<IncompletenessReason>,
     /// Total given-clause loop iterations (includes skips).
     pub iterations: u64,
     /// Clauses added to the processed set.
@@ -504,10 +506,17 @@ impl ScheduleReport {
             .collect::<Vec<_>>()
             .join(",");
 
+        let inc_reason = self
+            .strategies
+            .iter()
+            .find_map(|s| s.stats.incompleteness_reason.as_ref())
+            .map(|r| format!(" incompleteness_reason={r:?}"))
+            .unwrap_or_default();
+
         Some(format!(
             "strategies={} timeout={} resource_out={} saturated={} \
              processed={} generated={} passive={} weight_discarded={} lrs_discarded={} fwd_subsumed={} \
-             resource_reasons={reason_detail}",
+             resource_reasons={reason_detail}{inc_reason}",
             self.strategies.len(),
             n_timeout,
             n_resource_out,
@@ -1231,6 +1240,23 @@ mod tests {
         assert!(detail.contains("epr_solves=3"));
         assert!(detail.contains("epr_solver_entries=2"));
         assert!(detail.contains("epr_solve_ms=17"));
+    }
+
+    #[test]
+    fn failure_reason_includes_incompleteness_reason() {
+        let mut report = ScheduleReport::default();
+        report.strategies.push(StrategyReport {
+            strategy_idx: 0,
+            strategy_id: 1,
+            result: SearchResult::GaveUp,
+            stats: SearchStats {
+                incompleteness_reason: Some(IncompletenessReason::LrsDiscarded(12)),
+                ..SearchStats::default()
+            },
+            elapsed_ms: 10,
+        });
+        let reason = report.failure_reason().unwrap();
+        assert!(reason.contains("incompleteness_reason=LrsDiscarded(12)"));
     }
 
     #[cfg(feature = "parent-guidance")]

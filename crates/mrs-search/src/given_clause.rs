@@ -3543,6 +3543,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         return SearchResult::Timeout;
     }
     if state.stats.lrs_discarded > 0 {
+        state.stats.incompleteness_reason = Some(crate::IncompletenessReason::LrsDiscarded(
+            state.stats.lrs_discarded,
+        ));
         return SearchResult::GaveUp;
     }
 
@@ -3551,6 +3554,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     #[cfg(not(feature = "parent-guidance"))]
     let parent_guidance_pruned = 0;
     if parent_guidance_pruned > 0 {
+        state.stats.incompleteness_reason = Some(crate::IncompletenessReason::ParentGuidancePruned);
         return SearchResult::GaveUp;
     }
     // A spent LPO budget means some comparisons were abandoned rather than
@@ -3569,6 +3573,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         false,
         parent_guidance_pruned,
     );
+    if let Err(reason) = &audit {
+        state.stats.incompleteness_reason = Some(reason.clone());
+    }
     if std::env::var("TRACE_SEARCH").is_ok() {
         eprintln!(
             "[TRACE] ordinary given-clause saturation is not independently certified: audit={audit:?}"
