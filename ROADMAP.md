@@ -112,6 +112,9 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
   fixed-work configuration and remaining unstable traversal audits are open.
   `fixed_work_compare.py` now archives paired arms and refuses elapsed-time
   ratios unless ceiling, selection digest and work counters match.
+  Portfolio strategy counters are now forked into worker-local ID namespaces,
+  avoiding sibling allocation timing in clause-ID tie-breaking. Imported chains
+  still remap IDs; shared-generator clone semantics remain for single-pipeline users.
 - [ ] Extract selection, simplification, inference, AVATAR and sharing modules
   behind concrete contracts; avoid dynamic dispatch/allocation in hot loops.
 

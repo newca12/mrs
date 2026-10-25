@@ -1615,7 +1615,10 @@ pub fn run_schedule_with_candidate_receiver(
 
                     let mut thread_provenance = provenance_for_thread.clone();
                     let mut thread_symbols = (*symbols_thread).clone();
-                    let mut thread_id_gen = id_gen_thread.clone();
+                    // IDs are local to a strategy. Sharing the atomic counter
+                    // makes age/weight tie-breaking depend on sibling timing.
+                    // Shared proof chains already remap into this local space.
+                    let mut thread_id_gen = id_gen_thread.fork();
 
                     if let Some(mode) = sc.goal_transformation {
                         let res = mrs_cnf::goal_transform::transform_goal_clauses(

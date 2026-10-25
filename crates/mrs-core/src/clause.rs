@@ -467,6 +467,14 @@ impl Default for ClauseIdGen {
 }
 
 impl ClauseIdGen {
+    /// Independent worker-local counter beginning at the current high-water
+    /// mark. Unlike `clone`, this does not share allocation timing with sibling
+    /// strategies. Proofs crossing workers must remap IDs explicitly.
+    pub fn fork(&self) -> Self {
+        Self {
+            next: Arc::new(AtomicU64::new(self.next.load(Ordering::Relaxed))),
+        }
+    }
     /// Creates a new generator starting at 0.
     pub fn new() -> Self {
         Self {
@@ -502,6 +510,18 @@ mod tests {
     use super::*;
     use crate::symbol::SymbolTable;
     use crate::term::Term;
+
+    #[test]
+    fn forked_generators_do_not_depend_on_sibling_allocation() {
+        let mut shared = ClauseIdGen::new();
+        assert_eq!(shared.next(), ClauseId(0));
+        let mut left = shared.fork();
+        let mut right = shared.fork();
+        assert_eq!(left.next(), ClauseId(1));
+        assert_eq!(left.next(), ClauseId(2));
+        assert_eq!(right.next(), ClauseId(1));
+        assert_eq!(shared.next(), ClauseId(1));
+    }
 
     #[test]
     fn empty_clause() {
