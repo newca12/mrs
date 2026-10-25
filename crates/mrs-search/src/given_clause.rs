@@ -913,12 +913,8 @@ fn extract_and_format_proof(
             );
         }
     }
-    let legacy_store: std::collections::HashMap<_, _> = state
-        .clause_store
-        .iter()
-        .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
-        .collect();
-    let proof = mrs_proof::extract::extract_proof(empty_id, &legacy_store);
+    let proof =
+        mrs_proof::extract::extract_interned_proof(empty_id, &state.clause_store, &state.term_bank);
     mrs_proof::tstp::format_tstp(&proof, &state.symbols)
 }
 
@@ -948,12 +944,6 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 if is_pure_fol {
                     (empty_id, extract_and_format_proof(empty_id, state))
                 } else {
-                    let mut legacy_store: std::collections::HashMap<_, _> = state
-                        .clause_store
-                        .iter()
-                        .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
-                        .collect();
-
                     let parents = avatar_certificate_parents(state);
                     if parents.is_empty() {
                         return SearchResult::Refutation(
@@ -964,7 +954,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                     let final_id = state.id_gen.next();
                     let split_nodes = avatar_certificate_split_ids(state);
                     let branch_roots = avatar_certificate_branch_ids(state);
-                    let mut final_false_clause = mrs_core::clause::Clause::new(
+                    let mut final_false_clause = IdClause::new(
                         final_id,
                         vec![],
                         mrs_core::clause::ClauseSource::Inference {
@@ -982,11 +972,12 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                         split_nodes,
                         branch_roots,
                     });
-                    legacy_store.insert(final_id, final_false_clause);
-
-                    let mut final_proof =
-                        mrs_proof::extract::extract_proof(final_id, &legacy_store);
-                    final_proof.sort_unstable_by_key(|c| c.id.0);
+                    state.register_clause(&final_false_clause);
+                    let final_proof = mrs_proof::extract::extract_interned_proof(
+                        final_id,
+                        &state.clause_store,
+                        &state.term_bank,
+                    );
 
                     let tstp = if state.symbols.is_empty() {
                         String::new()
@@ -1016,7 +1007,7 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
             let final_id = state.id_gen.next();
             let split_nodes = avatar_certificate_split_ids(state);
             let branch_roots = avatar_certificate_branch_ids(state);
-            let mut final_false_clause = mrs_core::clause::Clause::new(
+            let mut final_false_clause = IdClause::new(
                 final_id,
                 vec![],
                 mrs_core::clause::ClauseSource::Inference {
@@ -1036,18 +1027,16 @@ pub fn search(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
                 branch_roots,
             });
 
-            let mut legacy_store: std::collections::HashMap<_, _> = state
-                .clause_store
-                .iter()
-                .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
-                .collect();
-            legacy_store.insert(final_id, final_false_clause);
+            state.register_clause(&final_false_clause);
 
             // Prune to the root derivation: emitting the whole store would
             // include unused input axioms and dead clauses, which the strict
             // kernel (and TSTP hygiene) rejects as outside the derivation.
-            let mut final_proof = mrs_proof::extract::extract_proof(final_id, &legacy_store);
-            final_proof.sort_unstable_by_key(|c| c.id.0);
+            let final_proof = mrs_proof::extract::extract_interned_proof(
+                final_id,
+                &state.clause_store,
+                &state.term_bank,
+            );
 
             let tstp_proof = if state.symbols.is_empty() {
                 String::new()

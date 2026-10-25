@@ -5,11 +5,65 @@
 //! in the refutation.
 //! The result is topologically sorted: input clauses first, empty clause last.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 
 use mrs_core::clause::{Clause, ClauseCertificate, ClauseId, ClauseSource};
-use mrs_core::term_bank::IdClause;
+use mrs_core::term_bank::{IdClause, TermBank};
+
+/// Iterative postorder traversal. Missing dependencies and cycles fail closed.
+/// Reversing breadth-first discovery is not topological for DAGs with shortcuts.
+fn ancestor_order<I: Copy + Eq + std::hash::Hash>(
+    root: I,
+    mut parents: impl FnMut(I) -> Option<Vec<I>>,
+) -> Vec<I> {
+    let mut active = HashSet::new();
+    let mut finished = HashSet::new();
+    let mut stack = vec![(root, false)];
+    let mut order = Vec::new();
+    while let Some((id, exiting)) = stack.pop() {
+        if exiting {
+            active.remove(&id);
+            finished.insert(id);
+            order.push(id);
+        } else if !finished.contains(&id) {
+            if !active.insert(id) {
+                return Vec::new();
+            }
+            let Some(dependencies) = parents(id) else {
+                return Vec::new();
+            };
+            stack.push((id, true));
+            stack.extend(dependencies.into_iter().rev().map(|parent| (parent, false)));
+        }
+    }
+    order
+}
+
+fn dependencies(source: &ClauseSource, certificate: Option<&ClauseCertificate>) -> Vec<ClauseId> {
+    let mut parents = match source {
+        ClauseSource::Inference { parents, .. } | ClauseSource::Introduced { parents, .. } => {
+            parents.to_vec()
+        }
+        ClauseSource::Input { .. } => Vec::new(),
+    };
+    match certificate {
+        Some(ClauseCertificate::AvatarComponent { split_parent, .. }) => {
+            parents.push(*split_parent)
+        }
+        Some(ClauseCertificate::AvatarSatRefutation {
+            split_nodes,
+            branch_roots,
+            ..
+        }) => {
+            parents.extend(split_nodes);
+            parents.extend(branch_roots);
+        }
+        Some(ClauseCertificate::SatBackedRefutation { inputs, .. }) => parents.extend(inputs),
+        _ => {}
+    }
+    parents
+}
 
 /// Extracts the proof DAG from the clause store.
 ///
@@ -25,135 +79,38 @@ pub fn extract_proof<S: BuildHasher>(
     empty_clause_id: ClauseId,
     clause_store: &HashMap<ClauseId, Clause, S>,
 ) -> Vec<Clause> {
-    // Collect all relevant clause IDs via BFS
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
-    let mut order = Vec::new();
-
-    queue.push_back(empty_clause_id);
-    visited.insert(empty_clause_id);
-
-    while let Some(id) = queue.pop_front() {
-        order.push(id);
-
-        if let Some(clause) = clause_store.get(&id) {
-            if let ClauseSource::Inference { parents, .. }
-            | ClauseSource::Introduced { parents, .. } = &clause.source
-            {
-                for &parent_id in parents {
-                    if visited.insert(parent_id) {
-                        queue.push_back(parent_id);
-                    }
-                }
-            }
-            if let Some(cert) = &clause.certificate {
-                match cert {
-                    ClauseCertificate::AvatarComponent { split_parent, .. } => {
-                        if visited.insert(*split_parent) {
-                            queue.push_back(*split_parent);
-                        }
-                    }
-                    ClauseCertificate::AvatarSatRefutation {
-                        split_nodes,
-                        branch_roots,
-                        ..
-                    } => {
-                        for &split_id in split_nodes {
-                            if visited.insert(split_id) {
-                                queue.push_back(split_id);
-                            }
-                        }
-                        for &branch_id in branch_roots {
-                            if visited.insert(branch_id) {
-                                queue.push_back(branch_id);
-                            }
-                        }
-                    }
-                    ClauseCertificate::SatBackedRefutation { inputs, .. } => {
-                        for &input_id in inputs {
-                            if visited.insert(input_id) {
-                                queue.push_back(input_id);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // Reverse: inputs first, empty clause last
-    order.reverse();
-
-    // Collect the actual clauses
-    order
-        .into_iter()
-        .filter_map(|id| clause_store.get(&id).cloned())
-        .collect()
+    ancestor_order(empty_clause_id, |id| {
+        clause_store
+            .get(&id)
+            .map(|clause| dependencies(&clause.source, clause.certificate.as_ref()))
+    })
+    .into_iter()
+    .filter_map(|id| clause_store.get(&id).cloned())
+    .collect()
 }
 
 pub fn extract_proof_ids<S: BuildHasher>(
     empty_clause_id: ClauseId,
     clause_store: &HashMap<ClauseId, IdClause, S>,
 ) -> Vec<ClauseId> {
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
-    let mut order = Vec::new();
+    ancestor_order(empty_clause_id, |id| {
+        clause_store
+            .get(&id)
+            .map(|clause| dependencies(&clause.source, clause.certificate.as_ref()))
+    })
+}
 
-    queue.push_back(empty_clause_id);
-    visited.insert(empty_clause_id);
-
-    while let Some(id) = queue.pop_front() {
-        order.push(id);
-
-        if let Some(clause) = clause_store.get(&id) {
-            if let ClauseSource::Inference { parents, .. }
-            | ClauseSource::Introduced { parents, .. } = &clause.source
-            {
-                for &parent_id in parents {
-                    if visited.insert(parent_id) {
-                        queue.push_back(parent_id);
-                    }
-                }
-            }
-            if let Some(cert) = &clause.certificate {
-                match cert {
-                    ClauseCertificate::AvatarComponent { split_parent, .. } => {
-                        if visited.insert(*split_parent) {
-                            queue.push_back(*split_parent);
-                        }
-                    }
-                    ClauseCertificate::AvatarSatRefutation {
-                        split_nodes,
-                        branch_roots,
-                        ..
-                    } => {
-                        for &split_id in split_nodes {
-                            if visited.insert(split_id) {
-                                queue.push_back(split_id);
-                            }
-                        }
-                        for &branch_id in branch_roots {
-                            if visited.insert(branch_id) {
-                                queue.push_back(branch_id);
-                            }
-                        }
-                    }
-                    ClauseCertificate::SatBackedRefutation { inputs, .. } => {
-                        for &input_id in inputs {
-                            if visited.insert(input_id) {
-                                queue.push_back(input_id);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    order.reverse();
-    order
+/// Convert only the reachable derivation, rather than the entire search history.
+/// Invalid dependency graphs return an empty proof.
+pub fn extract_interned_proof<S: BuildHasher>(
+    root: ClauseId,
+    store: &HashMap<ClauseId, IdClause, S>,
+    bank: &TermBank,
+) -> Vec<Clause> {
+    extract_proof_ids(root, store)
+        .into_iter()
+        .map(|id| bank.clause_to_legacy(&store[&id]))
+        .collect()
 }
 
 /// Extracts the topologically sorted sequence of proof nodes from `ProofArena`
@@ -162,26 +119,7 @@ pub fn extract_proof_nodes(
     root: mrs_core::witness::ProofNodeId,
     arena: &mrs_core::witness::ProofArena,
 ) -> Vec<mrs_core::witness::ProofNode> {
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
-    let mut order = Vec::new();
-
-    queue.push_back(root);
-    visited.insert(root);
-
-    while let Some(id) = queue.pop_front() {
-        order.push(id);
-        if let Some(node) = arena.get(id) {
-            for &p in &node.parents {
-                if visited.insert(p) {
-                    queue.push_back(p);
-                }
-            }
-        }
-    }
-
-    order.reverse();
-    order
+    ancestor_order(root, |id| arena.get(id).map(|node| node.parents.to_vec()))
         .into_iter()
         .filter_map(|id| arena.get(id).cloned())
         .collect()
@@ -263,6 +201,56 @@ mod tests {
         store.insert(ClauseId(3), inferred(3, vec![1, 2]));
         let proof = extract_proof(ClauseId(3), &store);
         assert_eq!(proof.len(), 4); // c0 appears once, not twice
+    }
+
+    #[test]
+    fn shortcut_dependencies_are_topological_in_both_representations() {
+        // The root cites both a node and its descendant. Reverse BFS puts the
+        // descendant before its parent for this shape.
+        let clauses = [input(90), inferred(7, vec![90]), inferred(2, vec![90, 7])];
+        let store: HashMap<_, _> = clauses.into_iter().map(|c| (c.id, c)).collect();
+        let expected = vec![ClauseId(90), ClauseId(7), ClauseId(2)];
+        assert_eq!(
+            extract_proof(ClauseId(2), &store)
+                .iter()
+                .map(|c| c.id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let mut bank = TermBank::new();
+        let mut interned: HashMap<_, _> = store
+            .values()
+            .map(|c| (c.id, bank.clause_from_legacy(c)))
+            .collect();
+        // Unreachable malformed data must never be converted or traversed.
+        interned.insert(
+            ClauseId(100),
+            IdClause::new(
+                ClauseId(100),
+                vec![],
+                ClauseSource::Inference {
+                    rule: "resolution",
+                    parents: vec![ClauseId(999)].into(),
+                },
+            ),
+        );
+        assert_eq!(extract_proof_ids(ClauseId(2), &interned), expected);
+        assert_eq!(
+            extract_interned_proof(ClauseId(2), &interned, &bank)
+                .iter()
+                .map(|c| c.id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn missing_and_cyclic_dependencies_fail_closed() {
+        let mut store = HashMap::new();
+        store.insert(ClauseId(1), inferred(1, vec![2]));
+        assert!(extract_proof(ClauseId(1), &store).is_empty());
+        store.insert(ClauseId(2), inferred(2, vec![1]));
+        assert!(extract_proof(ClauseId(1), &store).is_empty());
     }
 
     #[test]

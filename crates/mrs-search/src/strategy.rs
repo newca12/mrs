@@ -70,14 +70,12 @@ fn condensed_detachment_env_bound(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-use crate::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use mrs_core::SymbolTable;
 use mrs_core::clause::{Clause, ClauseIdGen};
-use mrs_proof::extract::extract_proof;
 use mrs_proof::tstp::format_tstp;
 
 use crate::condensed_detachment::try_refutation as try_condensed_detachment_refutation;
@@ -1703,7 +1701,9 @@ pub fn run_schedule_with_candidate_receiver(
                     let raw = {
                         #[cfg(feature = "parent-guidance")]
                         {
-                            if state.stats.parent_guidance_pruned > 0 {
+                            if state.stats.parent_guidance_pruned > 0
+                                && matches!(raw, SearchResult::Saturated(_))
+                            {
                                 SearchResult::GaveUp
                             } else {
                                 raw
@@ -1822,12 +1822,9 @@ pub fn run_schedule_with_candidate_receiver(
                             }
 
                             let tstp = if tstp_proof.is_empty() {
-                                let legacy_store: HashMap<_, _> = state
-                                    .clause_store
-                                    .iter()
-                                    .map(|(&cid, ic)| (cid, state.term_bank.clause_to_legacy(ic)))
-                                    .collect();
-                                let proof = extract_proof(id, &legacy_store);
+                                let proof = mrs_proof::extract::extract_interned_proof(
+                                    id, &state.clause_store, &state.term_bank,
+                                );
                                 format_tstp(&proof, state.symbols.as_ref())
                             } else {
                                 tstp_proof

@@ -14,8 +14,10 @@ not contain clause IDs or problem-local symbol indices.
   slot receives parent-guidance settings. Single-strategy runs remain unaltered.
 - Logging alone does not prune. Pruning requires both a valid compatible model
   and an explicit finite logit threshold.
-- A strategy that prunes any pair is downgraded to `GaveUp`, regardless of its
-  raw result, and completeness telemetry records the pruning count.
+- A strategy that prunes any pair cannot claim saturation: that result is
+  downgraded to `GaveUp`, and completeness telemetry records the pruning count.
+  A refutation remains eligible for independent certification; omitting other
+  inferences does not invalidate a derivation from the original premises.
 - This mechanism does not change clause-selection scoring or schedule choice.
 
 ## Collection and training
