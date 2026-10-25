@@ -859,3 +859,73 @@ fn unsupported_tptp_constructs_are_not_erased_by_lowering() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires the pinned compiled Verus artifact; run by formal CI"]
+fn clause_tautology_refutations_and_mutations() {
+    let cfg = config();
+    for rule in ["tautology", "clause_tautology"] {
+        // Complementary pair tautology:
+        let tau_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p). cnf(b,axiom,~p).").unwrap();
+        let tau_text = format!(
+            "cnf(a,axiom,p,file('input',a)).
+             cnf(b,axiom,~p,file('input',b)).
+             cnf(tau,plain,p|~p,inference({rule},[status(thm)],[a])).
+             cnf(m1,plain,~p,inference(resolution,[status(thm)],[tau,b])).
+             cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,m1]))."
+        );
+        let tau_proof = mrs_tptp::parse_tptp(&tau_text).unwrap();
+        let (kernel, report) = verify_with_verus_gate(
+            &tau_problem,
+            &tau_proof,
+            Some("input"),
+            VerificationLimits::default(),
+            &cfg,
+        );
+        assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+        assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+        // Multi-literal tautology with reflexive equality:
+        let eq_problem =
+            mrs_tptp::parse_tptp("cnf(a,axiom,p). cnf(b,axiom,~p). cnf(c,axiom,a!=a).").unwrap();
+        let eq_text = format!(
+            "cnf(a,axiom,p,file('input',a)).
+             cnf(b,axiom,~p,file('input',b)).
+             cnf(c,axiom,a!=a,file('input',c)).
+             cnf(tau,plain,a=a|p,inference({rule},[status(thm)],[a])).
+             cnf(res1,plain,p,inference(resolution,[status(thm)],[tau,c])).
+             cnf(bot,plain,$false,inference(resolution,[status(thm)],[res1,b]))."
+        );
+        let eq_proof = mrs_tptp::parse_tptp(&eq_text).unwrap();
+        let (kernel, report) = verify_with_verus_gate(
+            &eq_problem,
+            &eq_proof,
+            Some("input"),
+            VerificationLimits::default(),
+            &cfg,
+        );
+        assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+        assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    }
+
+    // Fail-closed mutations: non-tautology clauses
+    for non_tau in ["p|q", "a=b", "p|p"] {
+        let problem = mrs_tptp::parse_tptp("cnf(a,axiom,p). cnf(b,axiom,~p).").unwrap();
+        let text = format!(
+            "cnf(a,axiom,p,file('input',a)).
+             cnf(b,axiom,~p,file('input',b)).
+             cnf(tau,plain,{non_tau},inference(tautology,[status(thm)],[a])).
+             cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,b]))."
+        );
+        let proof = mrs_tptp::parse_tptp(&text).unwrap();
+        let (kernel, report) = verify_with_verus_gate(
+            &problem,
+            &proof,
+            Some("input"),
+            VerificationLimits::default(),
+            &cfg,
+        );
+        assert_ne!(kernel, KernelVerdict::Certified);
+        assert_ne!(report.verdict, ShadowVerdict::CertifiedDagIr);
+    }
+}

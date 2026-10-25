@@ -24,6 +24,28 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-25 clause tautology checkpoint
+
+- **DONE:** clause tautology is proved sound in `clause_tautology_sound`:
+  any first-order clause containing a reflexive equality literal $s = s$ or a complementary
+  pair of literals $A$ and $\neg A$ is universally valid in every interpretation.
+- **DONE:** implemented `check_clause_tautology_exec` and `check_tautology_and_replay`
+  with bounded syntax charging, reflexive equality detection, and complementary polarity / atom agreement.
+- **DONE:** integrated clause tautology into the proof DAG via `ProofNodeKind::Tautology`
+  and `check_dag_tautology_step`.
+- **DONE:** wire v1 tag 18 and command 17 decoded and dispatched.
+- **DONE:** added tautology and clause_tautology in `mrs-proof-kernel::lib` and `mrs-proof-kernel::verus`
+  and integration tests in `verus_bridge.rs` certifying refutation DAGs through the formal dual-check gate.
+- **DONE:** executable examples and refutation DAG regressions in
+  `executable_tautology_examples` and `executable_tautology_dag_examples`
+  verify positive refutations (including unit reflexive equality, multi-literal reflexive equality,
+  binary complementary literals, multi-literal complementary literals) and fail-closed behavior for
+  non-tautology clauses, same-polarity literals, and zero budget.
+- **DONE:** 2 verifier-negative mutations in `mutation-check.py` covering clause validation
+  and DAG replay dispatch.
+- **DONE:** expanded instantiation rule aliases in `mrs-proof-kernel::verus` covering
+  `assume`, `duplicate`, and `alpha`.
+
 ### 2026-10-24 nested equality congruence checkpoint
 
 - **DONE:** extended equality congruence to arbitrary-depth nonempty single-hole
@@ -483,13 +505,13 @@ the item itself is explicitly marked `ABANDONED`.
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule, whole-parent simultaneous one-step substitution and selected position. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. The replay conclusion builder has a verified pointwise sequence contract; term replacement is proved to commute with substitution at valid positions and is lifted through atom/literal slots. Adversarial unifier conflict/match, var-to-var, subterm variable and parent avoid-set cases are verified, and remaining work is propagated through replay. Remaining: larger-arity generalization. |
 | M3 — Superposition checker | **PARTIAL: general replay soundness proved** | `check_superposition_and_replay` postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Bounded executable certificates accept archived `SWV406+1:c502` and a source-variable binding case, rejecting forged conclusions. The supported CNF adapter and proof-DAG bridge are exercised by integration fixtures; full archived SWV406+1 TSTP translation/proof-DAG replay, broader equivalence modulo literal order/renaming, exact cumulative resource refinement, and independent calculus review remain. |
-| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition, positive-left/negative-right nullary/exact-atom resolution, first-order binary resolution, unary equality resolution, unary clause factoring, unary equality factoring, subsumption resolution, clause weakening, demodulation, instantiation, condensation, reflexivity, transitivity, symmetry, excluded middle, and equality congruence nodes. Accepted replay postconditions universal validity preservation; the generic induction consumes local entailment. The certified root is required empty by the semantic specification; supported inference contracts require their valid parent edges. Compiled refutations certify without empty inputs. Root-ancestor closure rejects disconnected nodes and returns `Unknown` on bounded traversal exhaustion. The certifier partitions work across structural preflight, closure and per-node validation; input-leaf membership charges both clauses for every repeated candidate comparison. Inference wrappers charge node parents and conclusions before local replay. Remaining: exact cumulative local replay accounting, verified TPTP input bridge refinement and broader rules/fixtures. |
+| M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition, positive-left/negative-right nullary/exact-atom resolution, first-order binary resolution, unary equality resolution, unary clause factoring, unary equality factoring, subsumption resolution, clause weakening, demodulation, instantiation, condensation, reflexivity, transitivity, symmetry, excluded middle, equality congruence, and clause tautology nodes. Accepted replay postconditions universal validity preservation; the generic induction consumes local entailment. The certified root is required empty by the semantic specification; supported inference contracts require their valid parent edges. Compiled refutations certify without empty inputs. Root-ancestor closure rejects disconnected nodes and returns `Unknown` on bounded traversal exhaustion. The certifier partitions work across structural preflight, closure and per-node validation; input-leaf membership charges both clauses for every repeated candidate comparison. Inference wrappers charge node parents and conclusions before local replay. Remaining: exact cumulative local replay accounting, verified TPTP input bridge refinement and broader rules/fixtures. |
 | M5 — MRS integration | **PARTIAL: verified wire decoder, trusted TPTP bridge** | Wire v1 structural decoding and decimal byte tokenization with verified span correspondence are verified in Verus; bounded byte acquisition shim, CNF TPTP adapter, certificate discovery, kernel/ProoVer shadow and opt-in dual-check APIs, archived local c502 translation, complete supported DAG integration, artifact provenance and CI boundary tests exist. TPTP bridge refinement, independent review and default-enable gate remain. See `INTERCHANGE.md`. |
-| M6 — Broader rules | **PARTIAL** | Nullary-predicate, exact-atom, first-order resolution with unifier, equality resolution, clause factoring, equality factoring, subsumption resolution, clause weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, and equality congruence are verified and DAG-dispatched; AC, transformations, and AVATAR/LRAT remain unimplemented. |
+| M6 — Broader rules | **PARTIAL** | Nullary-predicate, exact-atom, first-order resolution with unifier, equality resolution, clause factoring, equality factoring, subsumption resolution, clause weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology are verified and DAG-dispatched; AC, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `404`, `5`, and `5` verified functions
+passes all four Verus files (currently `5`, `416`, `5`, and `5` verified functions
 respectively), the compiled runtime fixtures pass, and all mutation gates pass.
 The general replay accepts the manually encoded local c502 step with its semantic
 validity-preservation theorem. These results establish the implemented bounded
@@ -1255,7 +1277,7 @@ front-end or a separately justified premise transformation.
   unary equality resolution (reflexivity resolution), first-order clause factoring,
   positive equality factoring, subsumption resolution (contextual literal elimination),
   clause weakening, demodulation (unit equality rewriting), clause instantiation,
-  clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, and equality congruence are specified, proved sound for universal validity preservation,
+  clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology are specified, proved sound for universal validity preservation,
   have bounded exact executable checkers, and are dispatched in the verified proof DAG with wire v1 protocol decoding.
 - **TODO:** equality simplification (ground equality normalization, rewrite traces),
   associative/commutative reasoning, formula/proof transformations, AVATAR/LRAT, and

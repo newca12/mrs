@@ -104,6 +104,12 @@ prove universal validity preservation via `oriented_congruence_preserves_value`.
 The existing clause-structure preflight bounds syntax before recursive replay;
 this extension does not claim exact cumulative comparison-work accounting.
 
+DAG support also includes **clause tautology**:
+any clause containing a reflexive equality literal `s = s` or a complementary pair
+of literals `A` and `~A` is derived.
+Its theorem `clause_tautology_sound` and checker `check_tautology_and_replay`
+prove universal validity.
+
 This document fixes the mathematical rule represented by
 `SuperpositionCertificate` in `first_order_core.rs`. It is an **unordered
 first-order superposition rule**: no KBO/LPO maximality or literal-selection

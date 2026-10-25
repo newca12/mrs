@@ -3089,6 +3089,80 @@ proof fn equality_congruence_sound(
     }
 }
 
+spec fn valid_clause_tautology(clause: Clause) -> bool {
+    (exists|idx: int| 0 <= idx < clause.literals.len()
+        && clause.literals[idx].positive
+        && match clause.literals[idx].atom {
+            Atom::Eq(s, t) => s == t,
+            _ => false,
+        })
+    || (exists|i: int, j: int| 0 <= i < j < clause.literals.len()
+        && clause.literals[i].positive != clause.literals[j].positive
+        && clause.literals[i].atom == clause.literals[j].atom)
+}
+
+/// Soundness theorem for clause tautology:
+/// any clause containing a reflexive equality literal s = s or a complementary pair of literals A and ~A
+/// is universally valid in every interpretation.
+proof fn clause_tautology_sound(
+    clause: Clause,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        valid_clause_tautology(clause),
+    ensures
+        clause_valid(clause, interp),
+{
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(clause, interp, valuation) by {
+        if exists|idx: int| 0 <= idx < clause.literals.len()
+            && clause.literals[idx].positive
+            && match clause.literals[idx].atom {
+                Atom::Eq(s, t) => s == t,
+                _ => false,
+            } {
+            let idx = choose|idx: int| 0 <= idx < clause.literals.len()
+                && clause.literals[idx].positive
+                && match clause.literals[idx].atom {
+                    Atom::Eq(s, t) => s == t,
+                    _ => false,
+                };
+            let lit = clause.literals[idx];
+            assert(lit.positive);
+            let s = match lit.atom {
+                Atom::Eq(s, _) => s,
+                _ => Term::Var(0),
+            };
+            assert(lit.atom == Atom::Eq(s, s));
+            assert(eval(s, interp, valuation) == eval(s, interp, valuation));
+            assert(atom_holds(lit.atom, interp, valuation));
+            assert(literal_holds(lit, interp, valuation));
+            assert(clause_holds(clause, interp, valuation));
+        } else {
+            let (i, j) = choose|i: int, j: int| 0 <= i < j < clause.literals.len()
+                && clause.literals[i].positive != clause.literals[j].positive
+                && clause.literals[i].atom == clause.literals[j].atom;
+            let atom = clause.literals[i].atom;
+            if atom_holds(atom, interp, valuation) {
+                let pos_idx: int = if clause.literals[i].positive { i } else { j };
+                assert(0 <= pos_idx < clause.literals.len());
+                assert(clause.literals[pos_idx].positive);
+                assert(clause.literals[pos_idx].atom == atom);
+                assert(literal_holds(clause.literals[pos_idx], interp, valuation));
+                assert(clause_holds(clause, interp, valuation));
+            } else {
+                let neg_idx: int = if !clause.literals[i].positive { i } else { j };
+                assert(0 <= neg_idx < clause.literals.len());
+                assert(!clause.literals[neg_idx].positive);
+                assert(clause.literals[neg_idx].atom == atom);
+                assert(literal_holds(clause.literals[neg_idx], interp, valuation));
+                assert(clause_holds(clause, interp, valuation));
+            }
+        }
+    }
+}
+
 /// Soundness theorem for demodulation (unit equality rewriting):
 /// from universally valid target clause C and universally valid unit equality clause s = t (or t = s),
 /// replacing an occurrence of s\sigma (or t\sigma) at position p in literal k of C by t\sigma (or s\sigma)
@@ -3543,6 +3617,8 @@ pub enum ProofNodeKind {
     ExcludedMiddle,
     /// Equality congruence (f(s) = f(t) conclusion from s = t).
     Congruence,
+    /// Clause tautology (clause containing reflexive equality s = s or complementary literals A and ~A).
+    Tautology,
     Unsupported,
 }
 
@@ -3555,7 +3631,7 @@ spec fn supported_inference(kind: ProofNodeKind) -> bool {
         || kind == ProofNodeKind::Instantiation || kind == ProofNodeKind::Condensation
         || kind == ProofNodeKind::Reflexivity || kind == ProofNodeKind::Transitivity
         || kind == ProofNodeKind::Symmetry || kind == ProofNodeKind::ExcludedMiddle
-        || kind == ProofNodeKind::Congruence
+        || kind == ProofNodeKind::Congruence || kind == ProofNodeKind::Tautology
 }
 
 pub struct ProofNode {
@@ -7752,6 +7828,79 @@ fn check_congruence_and_replay(
     true
 }
 
+fn check_clause_tautology_exec(clause: &ExecClause) -> (valid: bool)
+    ensures valid ==> valid_clause_tautology(view_clause(*clause)),
+{
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant i <= clause.literals.len(),
+        decreases clause.literals.len() - i,
+    {
+        if clause.literals[i].positive {
+            if let ExecAtom::Eq(s, t) = &clause.literals[i].atom {
+                if same_term(s, t) {
+                    proof {
+                        let idx = i as int;
+                        assert(0 <= idx < view_clause(*clause).literals.len());
+                        assert(view_clause(*clause).literals[idx].positive);
+                        assert(match view_clause(*clause).literals[idx].atom {
+                            Atom::Eq(s_view, t_view) => s_view == t_view,
+                            _ => false,
+                        });
+                    }
+                    return true;
+                }
+            }
+        }
+        let mut j: usize = i + 1;
+        while j < clause.literals.len()
+            invariant
+                i < clause.literals.len(),
+                i < j <= clause.literals.len(),
+            decreases clause.literals.len() - j,
+        {
+            if clause.literals[i].positive != clause.literals[j].positive
+                && same_atom(&clause.literals[i].atom, &clause.literals[j].atom)
+            {
+                proof {
+                    let idx_i = i as int;
+                    let idx_j = j as int;
+                    assert(0 <= idx_i < idx_j < view_clause(*clause).literals.len());
+                    assert(view_clause(*clause).literals[idx_i].positive != view_clause(*clause).literals[idx_j].positive);
+                    assert(view_clause(*clause).literals[idx_i].atom == view_clause(*clause).literals[idx_j].atom);
+                }
+                return true;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn check_tautology_and_replay(
+    conclusion: &ExecClause,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> clause_valid(view_clause(*conclusion), interp),
+{
+    let mut work: usize = 0;
+    if !charge_clause_structure(conclusion, &mut work, work_limit) {
+        return false;
+    }
+    if !check_clause_tautology_exec(conclusion) {
+        return false;
+    }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies clause_valid(view_clause(*conclusion), interp) by {
+            clause_tautology_sound(view_clause(*conclusion), interp);
+        };
+    }
+    true
+}
+
 fn replace_literal_position_exec_refines_substitution(
     literal: &ExecLiteral,
     bindings: &Vec<ExecBinding>,
@@ -9313,6 +9462,43 @@ fn check_dag_congruence_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     true
 }
 
+fn check_dag_tautology_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::Tautology || node.parents.len() != 1 {
+        return false;
+    }
+    if node.parents[0] >= nodes.len() {
+        return false;
+    }
+    let mut work: usize = 0;
+    if !charge_clause_structure(&node.clause, &mut work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    {
+        return false;
+    }
+    let remaining_work = work_limit - work;
+    if !check_tautology_and_replay(
+        &node.clause,
+        remaining_work,
+    ) {
+        return false;
+    }
+    proof {
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
+                assert(clause_valid(view_clause(node.clause), interp));
+            }
+        };
+    }
+    true
+}
+
 proof fn replayed_conclusion_has_source_target_context_split(
     certificate: SuperpositionCertificate,
     work_limit: nat,
@@ -9401,6 +9587,8 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 || dag.nodes[i].kind == ProofNodeKind::ExcludedMiddle
                     && dag.nodes[i].parents@.len() == 1
                 || dag.nodes[i].kind == ProofNodeKind::Congruence
+                    && dag.nodes[i].parents@.len() == 1
+                || dag.nodes[i].kind == ProofNodeKind::Tautology
                     && dag.nodes[i].parents@.len() == 1
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < j < dag.nodes.len() ==> dag.nodes[i].id != dag.nodes[j].id
@@ -9807,6 +9995,13 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 return DagVerdict::Rejected;
             }
         }
+        if node.kind == ProofNodeKind::Tautology {
+            if node.parents.len() != 1 { return DagVerdict::Rejected; }
+            assert(node.parents[0] < dag.nodes.len());
+            if !check_clause_tautology_exec(&node.clause) {
+                return DagVerdict::Rejected;
+            }
+        }
         i += 1;
     }
     let mut input_index: usize = 0;
@@ -10011,6 +10206,11 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         if node.parents.len() != 1 { return false; }
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         check_dag_congruence_step(node, &dag.nodes, work_limit - work)
+        },
+        ProofNodeKind::Tautology => {
+        if node.parents.len() != 1 { return false; }
+        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
+        check_dag_tautology_step(node, &dag.nodes, work_limit - work)
         },
         ProofNodeKind::Unsupported => false,
     }
@@ -12184,6 +12384,109 @@ fn executable_congruence_dag_examples() -> bool {
     certify_dag(&dag, 10, 10000) == DagVerdict::Certified
 }
 
+fn executable_tautology_examples() -> bool {
+    // 1. Reflexive equality unit: a = a
+    let c_refl_unit = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(1)) },
+    ] };
+    if !check_tautology_and_replay(&c_refl_unit, 1000) {
+        return false;
+    }
+
+    // 2. Reflexive equality in multi-literal clause: p(b) | a = a | q(c)
+    let c_refl_multi = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(2))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(1)) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(3))) },
+    ] };
+    if !check_tautology_and_replay(&c_refl_multi, 1000) {
+        return false;
+    }
+
+    // 3. Complementary pair binary: p(a) | ~p(a)
+    let c_comp_bin = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] };
+    if !check_tautology_and_replay(&c_comp_bin, 1000) {
+        return false;
+    }
+
+    // 4. Complementary pair multi-literal: q(b) | ~p(a) | r(c) | p(a)
+    let c_comp_multi = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(2))) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(3, Box::new(ExecTerm::Const(3))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] };
+    if !check_tautology_and_replay(&c_comp_multi, 1000) {
+        return false;
+    }
+
+    // Negative tests:
+    // Non-tautology: p(a) | q(b)
+    let c_bad = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(2))) },
+    ] };
+    if check_tautology_and_replay(&c_bad, 1000) {
+        return false;
+    }
+
+    // Same polarity: p(a) | p(a)
+    let c_same_pol = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] };
+    if check_tautology_and_replay(&c_same_pol, 1000) {
+        return false;
+    }
+
+    // Non-reflexive equality: a = b
+    let c_non_refl = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] };
+    if check_tautology_and_replay(&c_non_refl, 1000) {
+        return false;
+    }
+
+    // Zero budget
+    if check_tautology_and_replay(&c_refl_unit, 0) {
+        return false;
+    }
+
+    true
+}
+
+fn executable_tautology_dag_examples() -> bool {
+    let empty = ExecClause { literals: Vec::new() };
+    let tau_concl = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] };
+    let mid_concl = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+    ] };
+
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: em_in1(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 2, clause: em_in2(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 3, clause: tau_concl, kind: ProofNodeKind::Tautology,
+                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 4, clause: mid_concl, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![2usize, 0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 5, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![1usize, 3usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+        ],
+        input_clauses: vec![em_in1(), em_in2()],
+        root: 4,
+    };
+    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
 fn check_dag_with_local_soundness(
     dag: &ProofDag,
     node_limit: usize,
@@ -12735,6 +13038,7 @@ fn wire_dag(tokens: &Vec<u64>, cursor: &mut usize) -> (dag: Option<ProofDag>)
             15 => (ProofNodeKind::Symmetry, None, None, None, None, None, None, None, None, None, None),
             16 => (ProofNodeKind::ExcludedMiddle, None, None, None, None, None, None, None, None, None, None),
             17 => (ProofNodeKind::Congruence, None, None, None, None, None, None, None, None, None, None),
+            18 => (ProofNodeKind::Tautology, None, None, None, None, None, None, None, None, None, None),
             _ => return None,
         };
         nodes.push(ProofNode { id, clause, kind, parents, step, res_step, eq_step, fact_step, eq_fact_step, sub_step, weaken_step, demod_step, inst_step, cond_step }); n += 1;
@@ -12823,6 +13127,10 @@ fn check_wire_tokens(tokens: &Vec<u64>) -> (response: u64)
             let Some(parent) = wire_clause(tokens, &mut cursor) else { return 4; };
             let Some(concl) = wire_clause(tokens, &mut cursor) else { return 4; };
             if check_congruence_and_replay(&parent, &concl, work) { 1 } else { 4 }
+        },
+        17 => {
+            let Some(concl) = wire_clause(tokens, &mut cursor) else { return 4; };
+            if check_tautology_and_replay(&concl, work) { 1 } else { 4 }
         },
         _ => return 4,
     };
@@ -13201,6 +13509,8 @@ fn run_examples() -> bool {
     if !executable_excluded_middle_dag_examples() { return false; }
     if !executable_congruence_examples() { return false; }
     if !executable_congruence_dag_examples() { return false; }
+    if !executable_tautology_examples() { return false; }
+    if !executable_tautology_dag_examples() { return false; }
     if !executable_resolution_chain_examples() { return false; }
     if !wire_dispatch_regressions() { return false; }
     if !wire_tokenizer_boundary_regression() { return false; }
@@ -13278,6 +13588,10 @@ fn regression_main() {
         "congruence regression failed");
     assert!(executable_congruence_dag_examples(),
         "congruence DAG regression failed");
+    assert!(executable_tautology_examples(),
+        "tautology regression failed");
+    assert!(executable_tautology_dag_examples(),
+        "tautology DAG regression failed");
     assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
     assert!(wire_dispatch_regressions(), "verified wire-dispatch regression failed");
     assert!(wire_tokenizer_boundary_regression(), "verified wire-tokenizer boundary failed");

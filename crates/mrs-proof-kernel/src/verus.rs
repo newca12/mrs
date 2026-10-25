@@ -1638,11 +1638,26 @@ enum Kind {
     Symmetry,
     ExcludedMiddle,
     Congruence,
+    Tautology,
 }
 struct WireNode {
     clause: Vec<Literal>,
     parents: Vec<usize>,
     kind: Kind,
+}
+
+fn is_tautology_clause(clause: &[Literal]) -> bool {
+    for (i, lit) in clause.iter().enumerate() {
+        if lit.positive && matches!(&lit.atom, Atom::Eq(s, t) if s == t) {
+            return true;
+        }
+        for other in &clause[(i + 1)..] {
+            if lit.positive != other.positive && lit.atom == other.atom {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn dag_request(
@@ -1914,7 +1929,10 @@ fn dag_request(
                 | Some("rename")
                 | Some("variable_rename")
                 | Some("rename_variable")
-                | Some("rectify") => {
+                | Some("rectify")
+                | Some("assume")
+                | Some("duplicate")
+                | Some("alpha") => {
                     let c = instantiation_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::Instantiation(c), conclusion, parents)
@@ -1948,16 +1966,19 @@ fn dag_request(
                     }
                 }
                 Some("excluded_middle") => {
-                    if raw.len() != 2 {
-                        return Err("excluded_middle requires binary clause".into());
+                    if raw.len() == 2 {
+                        if raw[0].positive == raw[1].positive {
+                            return Err("excluded_middle requires opposite polarities".into());
+                        }
+                        if raw[0].atom != raw[1].atom {
+                            return Err("excluded_middle requires identical atoms".into());
+                        }
+                        (Kind::ExcludedMiddle, raw.clone(), parents)
+                    } else if is_tautology_clause(&raw) {
+                        (Kind::Tautology, raw.clone(), parents)
+                    } else {
+                        return Err("excluded_middle requires binary clause or tautology".into());
                     }
-                    if raw[0].positive == raw[1].positive {
-                        return Err("excluded_middle requires opposite polarities".into());
-                    }
-                    if raw[0].atom != raw[1].atom {
-                        return Err("excluded_middle requires identical atoms".into());
-                    }
-                    (Kind::ExcludedMiddle, raw.clone(), parents)
                 }
                 Some("congruence") | Some("equality_congruence") => {
                     if parent.len() != 1 || raw.len() != 1 {
@@ -1975,8 +1996,10 @@ fn dag_request(
                         return Err("congruence conclusion terms do not match parent".into());
                     }
                 }
-                Some("tautology") => {
-                    if raw.len() == 2
+                Some("tautology") | Some("clause_tautology") => {
+                    if is_tautology_clause(&raw) {
+                        (Kind::Tautology, raw.clone(), parents)
+                    } else if raw.len() == 2
                         && raw[0].positive != raw[1].positive
                         && raw[0].atom == raw[1].atom
                     {
@@ -2039,6 +2062,7 @@ fn dag_request(
             Kind::Symmetry => 15,
             Kind::ExcludedMiddle => 16,
             Kind::Congruence => 17,
+            Kind::Tautology => 18,
         })?;
         wire.n(node.parents.len())?;
         for p in &node.parents {
@@ -2065,6 +2089,7 @@ fn dag_request(
             Kind::Symmetry => {}
             Kind::ExcludedMiddle => {}
             Kind::Congruence => {}
+            Kind::Tautology => {}
         }
     }
     Ok((wire.finish()?, nodes.len()))

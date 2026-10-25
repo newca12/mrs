@@ -556,6 +556,7 @@ fn verify_strict_with_source_internal(
             | "reassociate"
             | "commute" => verify_formula_equivalence(&parents, conclusion, limits),
             "excluded_middle" => verify_excluded_middle(&parents, conclusion, limits),
+            "tautology" | "clause_tautology" => verify_tautology(&parents, conclusion, limits),
             "modus_ponens" => verify_modus_ponens(&parents, conclusion, limits),
             "instantiate_mp" => verify_modus_ponens(&parents, conclusion, limits),
             "contrapositive" => verify_contrapositive(&parents, conclusion, limits),
@@ -910,6 +911,8 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "remove_double_negation"
         | "commute"
         | "excluded_middle"
+        | "tautology"
+        | "clause_tautology"
         | "modus_ponens"
         | "instantiate_mp"
         | "contrapositive"
@@ -5284,6 +5287,39 @@ fn verify_excluded_middle(
     } else {
         KernelVerdict::Rejected("excluded_middle conclusion is not A | ~A".into())
     }
+}
+
+fn verify_tautology(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    if parents.len() != 1 {
+        return KernelVerdict::Rejected("tautology must have one parent".into());
+    }
+    if formula_size(&parents[0]) > limits.max_formula_nodes
+        || formula_size(conclusion) > limits.max_formula_nodes
+    {
+        return KernelVerdict::Inconclusive("tautology exceeded strict formula-size limit".into());
+    }
+    let Some(clause) = clause_from_formula(conclusion, limits) else {
+        return KernelVerdict::Inconclusive(
+            "tautology conclusion is not a supported clause".into(),
+        );
+    };
+    for (i, lit) in clause.iter().enumerate() {
+        if lit.positive && matches!(&lit.atom, Atom::Eq(s, t) if s == t) {
+            return KernelVerdict::Certified;
+        }
+        for other in &clause[(i + 1)..] {
+            if lit.positive != other.positive && lit.atom == other.atom {
+                return KernelVerdict::Certified;
+            }
+        }
+    }
+    KernelVerdict::Rejected(
+        "tautology conclusion has neither reflexive equality nor complementary literals".into(),
+    )
 }
 
 fn verify_modus_ponens(
