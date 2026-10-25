@@ -66,6 +66,9 @@ Owners: core/search/proof maintainers. Paths: `mrs-core`, `mrs-search`, `mrs-pro
   shared derivation imports remap typed witness references (including nested
   rewrite steps). Demodulation annotations resolve actual citation identities,
   not deduplicated-list offsets. Full rule/metadata validation remains open.
+  Goal-term definitions now depend on the original goal clause for proof order,
+  preserving Skolem freshness before introduced definitions in shared proofs.
+  The two-worker sharing-on `group.p` regression certifies through isolated replay.
 - [ ] Migrate rule families to authoritative typed witnesses with exact replay.
 - [ ] Add bounded streaming output and measure proof-finalization latency/peak memory.
   `write_tstp` now serializes to a caller-owned sink without a proof-sized line

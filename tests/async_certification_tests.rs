@@ -2,6 +2,33 @@ use std::path::PathBuf;
 use std::process::Command;
 
 #[test]
+fn shared_goal_definitions_preserve_skolem_introduction_order() {
+    let problem = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("problems/group.p");
+    let output = Command::new(env!("CARGO_BIN_EXE_mrs"))
+        .args([
+            "--self-check",
+            "--time",
+            "10",
+            "--workers",
+            "2",
+            "--schedule",
+            "casc_ueq",
+        ])
+        .env("MRS_SHARED_POOL_INTERVAL", "1")
+        .arg(problem)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("% SZS status Theorem for group"),
+        "{stdout}\n{stderr}"
+    );
+    assert!(stderr.contains("self_check=Certified"), "{stderr}");
+}
+
+#[test]
 fn isolated_checker_replays_actual_parents_and_refuses_forged_conclusion() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(

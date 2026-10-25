@@ -126,6 +126,16 @@ pub fn transform_goal_clauses(
             clause_used_defs.sort_unstable();
             clause_used_defs.dedup();
             for def_id in clause_used_defs {
+                // A definition mentioning the goal's Skolem symbols must be
+                // emitted after that goal's clausification ancestry. Otherwise
+                // the checker sees the symbol in a definition before its fresh
+                // Skolem introduction and correctly refuses freshness replay.
+                if let Some(definition) = def_clauses.iter_mut().find(|def| def.id == def_id)
+                    && let ClauseSource::Introduced { parents, .. } = &mut definition.source
+                    && !parents.contains(&clause.id)
+                {
+                    parents.push(clause.id);
+                }
                 parents.push(def_id);
             }
 
