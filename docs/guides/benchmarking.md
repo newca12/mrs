@@ -117,6 +117,15 @@ nix develop -c cargo run --release -p mrs-bench --bin audit_casc_proofs -- \
 
 ## Required provenance
 
+New harness rows append `actual_wall_time_s`, `peak_rss_mb`, `peak_virtual_mb`,
+`exit_code`, `termination_signal`, and `szs_emitted`. `wall_time_s` retains the
+competition-credited timeout convention; use actual time for runtime diagnostics.
+The legacy `peak_memory_mb` column mixes virtual memory and RSS and must not be
+charted as one physical-memory series. Blank RSS means GNU time was unavailable.
+A signal-derived exit status is evidence of termination, not a confirmed OOM;
+`termination_signal` reflects the wrapper's exit status and cannot distinguish
+an explicit exit with the same numeric code from a signal.
+
 Every report must record:
 
 - commit and dirty-worktree state;

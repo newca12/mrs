@@ -60,6 +60,12 @@ codegen-units = 1
 debug = 0
 strip = true
 
+# Production optimizations with symbols retained for perf/callgrind attribution.
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = false
+
 [package]
 name = "mrs"
 version.workspace = true

@@ -26,6 +26,12 @@ jobs:
         run: cargo fmt --all --check
       - name: Test
         run: cargo test --workspace
+      - name: Parent-guidance feature regression gate
+        run: cargo test -p mrs-search --features parent-guidance
+      - name: Optional root feature checks
+        run: cargo check --features proover,ml-guidance,parent-guidance
+      - name: Benchmark shell syntax
+        run: bash -n crates/mrs-bench/casc.sh crates/mrs-bench/run_variance.sh
 
   formal-superposition-checker:
     runs-on: ubuntu-24.04

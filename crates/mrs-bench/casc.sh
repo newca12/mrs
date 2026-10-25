@@ -394,7 +394,7 @@ if [[ ! -f "${ANSWERS}" ]]; then
 fi
 
 CSV="${OUTPUT}/run.csv"
-echo "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,processed_per_s,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256" > "${CSV}"
+echo "edition,division,problem,system,timeout,szs_status,expected,verdict,wall_time_s,peak_memory_mb,failure_detail,processed_per_s,raw_stdout_path,raw_stderr_path,raw_stdout_sha256,raw_stderr_sha256,actual_wall_time_s,peak_rss_mb,peak_virtual_mb,exit_code,termination_signal,szs_emitted" > "${CSV}"
 
 # Warn on a stale `mrs`. The run itself is unaffected, but a run.csv from an
 # out-of-date prover looks exactly like a measurement of the current one.
@@ -723,6 +723,7 @@ run_one() {
     end_ms=$(date +%s%3N)
 
     wall_s=$(echo "scale=3; (${end_ms} - ${start_ms}) / 1000" | bc)
+    local actual_wall_s="${wall_s}"
 
     # If the OS timeout fired, cap wall time to the stated limit (the +10s
     # grace period would otherwise make it appear as tlimit+10).
@@ -734,6 +735,11 @@ run_one() {
     # Vampire: "% SZS status Theorem for ..."
     # mrs:     "% SZS status Theorem for ..."
     szs=$(grep -m1 '% SZS status' "${tmp}" 2>/dev/null | awk '{print $4}' || true)
+    local szs_emitted=0 termination_signal=""
+    [[ -n "${szs}" ]] && szs_emitted=1
+    if (( exit_code > 128 && exit_code <= 192 )); then
+        termination_signal=$(( exit_code - 128 ))
+    fi
 
     # Extract structured failure detail from stderr ("% SZS detail ...").
     # Stores the key=value portion; empty string if not present.
@@ -760,11 +766,10 @@ run_one() {
         if [[ ${exit_code} -eq 124 ]]; then
             szs="Timeout"
         elif [[ ${exit_code} -eq 137 ]]; then
-            # Distinguish SIGKILL from timeout vs. early OS OOM Killer.
-            # If killed early before the timeout limit was reached, it's an OS OOM
+            # SIGKILL alone cannot establish OOM; preserve the evidence.
             if (( $(echo "${wall_s} < ${tlimit}" | bc -l) )); then
                 szs="Error"
-                failure_detail="OOM: Process killed by OS OOM Killer (SIGKILL)"
+                failure_detail="SIGKILL: cause unconfirmed"
             else
                 szs="Timeout"
             fi
@@ -785,14 +790,19 @@ run_one() {
         }
     ' "${tmp}" 2>/dev/null || true)
 
-    # Fall back to GNU time Max RSS if self-reported memory is missing
-    if [[ -z "${peak_memory_mb}" && -f "${tmp_mem}" ]]; then
+    local peak_virtual_mb="${peak_memory_mb}" peak_rss_mb=""
+    # Always retain RSS independently. The legacy peak_memory_mb column remains
+    # mixed for old consumers; new analyses must use the explicit columns.
+    if [[ -f "${tmp_mem}" ]]; then
         local raw_kb
         raw_kb=$(tail -n 1 "${tmp_mem}" 2>/dev/null | awk '{print $1}' || echo "0")
         # Ensure raw_kb is a valid integer before doing arithmetic
         if [[ "${raw_kb}" =~ ^[0-9]+$ && "${raw_kb}" -gt 0 ]]; then
-            peak_memory_mb=$(( raw_kb / 1024 ))
+            peak_rss_mb=$(( raw_kb / 1024 ))
         fi
+    fi
+    if [[ -z "${peak_memory_mb}" ]]; then
+        peak_memory_mb="${peak_rss_mb}"
     fi
 
     if [[ -z "${failure_detail}" && ${exit_code} -ne 0 && ${exit_code} -ne 124 ]]; then
@@ -804,7 +814,7 @@ run_one() {
             panic_msg=$(grep "panicked at" "${tmp_err}" 2>/dev/null | head -n 1)
             failure_detail="panic: $(echo "${panic_msg}" | tr -d ',\r\n' | xargs)"
         elif [[ ${exit_code} -eq 137 && "${szs}" == "Error" ]]; then
-            failure_detail="OOM: Process killed by OS OOM Killer (SIGKILL)"
+            failure_detail="SIGKILL: cause unconfirmed"
         else
             failure_detail="exit_code=${exit_code}"
         fi
@@ -841,11 +851,12 @@ run_one() {
         fi
     fi
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "${EDITION}" "${div}" "${problem}" "${sys}" "${tlimit}" \
         "${szs}" "${expected}" "${verdict}" "${wall_s}" "${peak_memory_mb}" "${failure_detail}" \
         "${processed_per_s}" \
-        "${raw_stdout_rel}" "${raw_stderr_rel}" "${raw_stdout_sha256}" "${raw_stderr_sha256}"
+        "${raw_stdout_rel}" "${raw_stderr_rel}" "${raw_stdout_sha256}" "${raw_stderr_sha256}" \
+        "${actual_wall_s}" "${peak_rss_mb}" "${peak_virtual_mb}" "${exit_code}" "${termination_signal}" "${szs_emitted}"
 }
 
 # Map an SZS status to a coarse provability class so different
