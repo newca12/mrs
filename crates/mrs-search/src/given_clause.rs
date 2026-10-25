@@ -134,6 +134,17 @@ fn remap_shared_clause_symbols(clause: &mut LegacyClause, mapping: &[SymbolId]) 
 /// receiving worker. All IDs are assigned before this runs, so forward parent
 /// references are remapped just like ordinary backward references.
 fn remap_shared_clause_ids(clause: &mut LegacyClause, mapping: &HashMap<ClauseId, ClauseId>) {
+    let remap_proof_id = |id: mrs_core::ProofNodeId| {
+        mapping
+            .get(&ClauseId(id.0))
+            .map_or(id, |mapped| mrs_core::ProofNodeId(mapped.0))
+    };
+    if let Some(id) = &mut clause.proof_id {
+        *id = remap_proof_id(*id);
+    }
+    if let Some(witness) = &mut clause.witness {
+        witness.map_parent_ids(remap_proof_id);
+    }
     match &mut clause.source {
         ClauseSource::Inference { parents, .. } | ClauseSource::Introduced { parents, .. } => {
             for parent in parents {

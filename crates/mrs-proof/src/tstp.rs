@@ -337,17 +337,16 @@ fn format_demodulation_steps(clause: &Clause) -> Option<String> {
     // Parent index 0 is the clause being rewritten; the unit equalities
     // follow in citation order.
     let position = |node: mrs_core::witness::ProofNodeId| -> Option<usize> {
-        if node
-            == clause
-                .proof_id
-                .unwrap_or(mrs_core::witness::ProofNodeId(clause.id.0))
-        {
-            return Some(0);
+        // Witness lists may contain repeated applications; exported parent
+        // lists are deduplicated. Resolve the actual cited identity rather
+        // than interpreting a witness-list offset as a citation offset.
+        if !rule_parents.contains(&node) {
+            return None;
         }
-        rule_parents
+        parents
             .iter()
-            .position(|p| *p == node)
-            .map(|index| index + 1)
+            .position(|parent| parent.0 == node.0)
+            .filter(|index| *index > 0)
     };
     let mut entries = Vec::with_capacity(steps.len());
     for step in steps {

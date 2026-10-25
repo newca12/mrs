@@ -62,6 +62,10 @@ Owners: core/search/proof maintainers. Paths: `mrs-core`, `mrs-search`, `mrs-pro
   storage types and migration of remaining legacy APIs are still open.
 - [ ] Replace mutable duplicate clause content with immutable per-worker storage and ID postings.
 - [ ] Validate witness parent identities against source/certificate closure at registration/export.
+  Export now refuses mismatched proof IDs and uncited witness references;
+  shared derivation imports remap typed witness references (including nested
+  rewrite steps). Demodulation annotations resolve actual citation identities,
+  not deduplicated-list offsets. Full rule/metadata validation remains open.
 - [ ] Migrate rule families to authoritative typed witnesses with exact replay.
 - [ ] Add bounded streaming output and measure proof-finalization latency/peak memory.
   `write_tstp` now serializes to a caller-owned sink without a proof-sized line

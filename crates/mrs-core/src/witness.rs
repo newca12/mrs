@@ -128,6 +128,104 @@ pub enum ProofWitness {
     },
 }
 
+impl ProofWitness {
+    /// Visit every proof-node reference, including references inside rewrite
+    /// traces. Used when importing a derivation into another worker's ID space.
+    pub fn map_parent_ids(&mut self, mut map: impl FnMut(ProofNodeId) -> ProofNodeId) {
+        let mut apply = |id: &mut ProofNodeId| *id = map(*id);
+        match self {
+            Self::Input { .. } | Self::Definition { .. } => {}
+            Self::Resolution {
+                parent_left,
+                parent_right,
+                ..
+            } => {
+                apply(parent_left);
+                apply(parent_right);
+            }
+            Self::Factoring { parent, .. }
+            | Self::EqualityResolution { parent, .. }
+            | Self::EqualityFactoring { parent, .. }
+            | Self::Condensation { parent, .. } => apply(parent),
+            Self::SubsumptionResolution {
+                target, subsumer, ..
+            } => {
+                apply(target);
+                apply(subsumer);
+            }
+            Self::Superposition {
+                lhs_parent,
+                rhs_parent,
+                ..
+            } => {
+                apply(lhs_parent);
+                apply(rhs_parent);
+            }
+            Self::Demodulation {
+                target,
+                rule_parents,
+                steps,
+            } => {
+                apply(target);
+                for parent in rule_parents {
+                    apply(parent);
+                }
+                for step in steps {
+                    apply(&mut step.rule_parent);
+                }
+            }
+            Self::AcNormalization {
+                parent,
+                source_axioms,
+                ..
+            } => {
+                apply(parent);
+                for axiom in source_axioms {
+                    apply(axiom);
+                }
+            }
+            Self::Cnf { source_parents, .. } => {
+                for parent in source_parents {
+                    apply(parent);
+                }
+            }
+            Self::Legacy { parents, .. } => {
+                for parent in parents {
+                    apply(parent);
+                }
+            }
+            Self::Skolemization { parent, .. } => {
+                if let Some(parent) = parent {
+                    apply(parent);
+                }
+            }
+            Self::Avatar {
+                split_parent,
+                branch_roots,
+                ..
+            } => {
+                if let Some(parent) = split_parent {
+                    apply(parent);
+                }
+                for root in branch_roots {
+                    apply(root);
+                }
+            }
+            Self::SharedLemma { original_node, .. } => apply(original_node),
+        }
+    }
+
+    /// Referenced IDs, including duplicate uses of an equality in a trace.
+    pub fn parent_ids(&self) -> Vec<ProofNodeId> {
+        let mut parents = Vec::new();
+        self.clone().map_parent_ids(|id| {
+            parents.push(id);
+            id
+        });
+        parents
+    }
+}
+
 /// Witness for a single demodulation rewrite step.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DemodStepWitness {
@@ -208,6 +306,25 @@ impl ProofArena {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remapping_covers_nested_rewrite_references() {
+        let mut witness = ProofWitness::Demodulation {
+            target: ProofNodeId(10),
+            rule_parents: vec![ProofNodeId(20)],
+            steps: vec![DemodStepWitness {
+                rule_parent: ProofNodeId(20),
+                lit_idx: 0,
+                term_path: vec![1],
+                substitution: None,
+            }],
+        };
+        witness.map_parent_ids(|id| ProofNodeId(id.0 + 100));
+        assert_eq!(
+            witness.parent_ids(),
+            vec![ProofNodeId(110), ProofNodeId(120), ProofNodeId(120)]
+        );
+    }
 
     #[test]
     fn sparse_ids_and_forward_references_survive_registration_order() {

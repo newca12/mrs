@@ -666,6 +666,23 @@ pub fn topological_sort(clauses: &[Clause]) -> Result<Vec<Clause>, ElaborationEr
             }
         }
 
+        if c.proof_id.is_some_and(|id| id.0 != c.id.0) {
+            return Err(ElaborationError::Inconclusive(format!(
+                "clause c{} has a mismatched proof identity",
+                c.id.0
+            )));
+        }
+        if let Some(witness) = &c.witness {
+            for reference in witness.parent_ids() {
+                if !parents.contains(&ClauseId(reference.0)) {
+                    return Err(ElaborationError::Inconclusive(format!(
+                        "clause c{} witness references uncited parent c{}",
+                        c.id.0, reference.0
+                    )));
+                }
+            }
+        }
+
         // Every cited parent must be present. Silently dropping a missing
         // parent would make the exported proof appear well-formed while
         // changing the derivation being checked.
@@ -809,6 +826,30 @@ pub fn elaborate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_refuses_uncited_witness_parents_and_mismatched_identity() {
+        let input = dummy_input_clause(10, vec![]);
+        let mut derived = Clause::new(
+            ClauseId(20),
+            vec![],
+            ClauseSource::Inference {
+                rule: "copy",
+                parents: vec![ClauseId(10)].into(),
+            },
+        );
+        derived.witness = Some(ProofWitness::EqualityResolution {
+            parent: ProofNodeId(99),
+            lit_idx: 0,
+            unifier: None,
+        });
+        assert!(topological_sort(&[input.clone(), derived.clone()]).is_err());
+        derived.witness = None;
+        derived.proof_id = Some(ProofNodeId(99));
+        assert!(topological_sort(&[input.clone(), derived.clone()]).is_err());
+        derived.proof_id = Some(ProofNodeId(20));
+        assert!(topological_sort(&[input, derived]).is_ok());
+    }
 
     fn dummy_input_clause(id: u64, lits: Vec<Literal>) -> Clause {
         Clause::new(
