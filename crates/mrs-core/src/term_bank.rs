@@ -91,6 +91,36 @@ pub struct IdClause {
 #[derive(Clone, Copy, Debug)]
 pub struct SearchClauseRef<'a>(&'a IdClause);
 
+/// Owned live-search content. Formula provenance cannot be constructed or
+/// mutated through this type. Operational consumers may extract the legacy
+/// representation explicitly, then must revalidate before reinsertion.
+#[derive(Clone, Debug)]
+pub struct SearchClause(IdClause);
+
+impl TryFrom<IdClause> for SearchClause {
+    type Error = FormulaProvenanceError;
+    fn try_from(clause: IdClause) -> Result<Self, Self::Error> {
+        SearchClauseRef::try_from(&clause)?;
+        Ok(Self(clause))
+    }
+}
+
+impl SearchClause {
+    pub fn as_search_ref(&self) -> SearchClauseRef<'_> {
+        SearchClauseRef(&self.0)
+    }
+    pub fn into_inner(self) -> IdClause {
+        self.0
+    }
+}
+
+impl std::ops::Deref for SearchClause {
+    type Target = IdClause;
+    fn deref(&self) -> &IdClause {
+        &self.0
+    }
+}
+
 impl<'a> TryFrom<&'a IdClause> for SearchClauseRef<'a> {
     type Error = FormulaProvenanceError;
 
@@ -871,6 +901,10 @@ mod tests {
             SearchClauseRef::try_from(&interned).unwrap_err(),
             FormulaProvenanceError(ClauseId(73))
         );
+        assert_eq!(
+            SearchClause::try_from(interned).unwrap_err(),
+            FormulaProvenanceError(ClauseId(73))
+        );
         let empty = IdClause::new(
             ClauseId(74),
             vec![],
@@ -880,6 +914,12 @@ mod tests {
             },
         );
         assert!(SearchClauseRef::try_from(&empty).unwrap().is_empty());
+        assert!(
+            SearchClause::try_from(empty)
+                .unwrap()
+                .as_search_ref()
+                .is_empty()
+        );
     }
     use super::*;
     use crate::symbol::SymbolTable;

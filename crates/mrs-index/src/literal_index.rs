@@ -14,7 +14,7 @@ use crate::{HashMap, HashSet};
 
 use mrs_core::clause::ClauseId;
 use mrs_core::symbol::SymbolId;
-use mrs_core::term_bank::{IdAtom, IdClause, SearchClauseRef, TermBank, TermId};
+use mrs_core::term_bank::{IdAtom, IdClause, SearchClause, TermBank, TermId};
 
 use crate::fvi::{FeatureVector, FeatureVectorTree};
 
@@ -33,7 +33,7 @@ struct LitKey {
 /// `&TermBank` (immutable).
 pub struct LiteralIndex {
     /// `IdClause`s stored in the index.
-    clauses: HashMap<ClauseId, IdClause>,
+    clauses: HashMap<ClauseId, SearchClause>,
     /// Feature vector tree for stored clauses (hierarchical Schulz 2002 subsumption trie).
     fvt: FeatureVectorTree,
     /// Maps clause ID to its feature vector for fast O(1) removal.
@@ -80,8 +80,13 @@ impl LiteralIndex {
 
     /// Inserts an `IdClause` into the index.
     pub fn insert(&mut self, clause: IdClause, bank: &TermBank) {
-        SearchClauseRef::try_from(&clause)
+        let clause = SearchClause::try_from(clause)
             .expect("formula provenance cannot enter the active index");
+        self.insert_search_clause(clause, bank);
+    }
+
+    /// Owned typed insertion; active storage can never contain formula nodes.
+    pub fn insert_search_clause(&mut self, clause: SearchClause, bank: &TermBank) {
         let id = clause.id;
         // Replacing an existing ID must remove all old postings first; simply
         // overwriting `clauses` would leave stale predicate/equality entries.
@@ -195,7 +200,7 @@ impl LiteralIndex {
                     }
                 }
             }
-            Some(clause)
+            Some(clause.into_inner())
         } else {
             None
         }
@@ -214,7 +219,7 @@ impl LiteralIndex {
     ) -> Vec<IdClause> {
         self.resolution_partner_ids(atom, positive, bank)
             .into_iter()
-            .filter_map(|id| self.clauses.get(&id).cloned())
+            .filter_map(|id| self.clauses.get(&id).cloned().map(SearchClause::into_inner))
             .collect()
     }
 
@@ -246,7 +251,7 @@ impl LiteralIndex {
         let mut res: Vec<IdClause> = self
             .pos_eq_clauses
             .iter()
-            .filter_map(|id| self.clauses.get(id).cloned())
+            .filter_map(|id| self.clauses.get(id).cloned().map(SearchClause::into_inner))
             .collect();
         res.sort_unstable_by_key(|c| c.id);
         res
@@ -393,7 +398,7 @@ impl LiteralIndex {
     pub fn get_subsumption_candidates(&self, target_fv: &FeatureVector) -> Vec<IdClause> {
         self.subsumption_candidate_ids(target_fv)
             .into_iter()
-            .filter_map(|id| self.clauses.get(&id).cloned())
+            .filter_map(|id| self.clauses.get(&id).cloned().map(SearchClause::into_inner))
             .collect()
     }
 
@@ -401,7 +406,7 @@ impl LiteralIndex {
     pub fn get_subsumed_candidates(&self, subsumer_fv: &FeatureVector) -> Vec<IdClause> {
         self.subsumed_candidate_ids(subsumer_fv)
             .into_iter()
-            .filter_map(|id| self.clauses.get(&id).cloned())
+            .filter_map(|id| self.clauses.get(&id).cloned().map(SearchClause::into_inner))
             .collect()
     }
 
@@ -412,7 +417,7 @@ impl LiteralIndex {
     ) -> Vec<IdClause> {
         self.subsumption_resolution_candidate_ids(target_fv)
             .into_iter()
-            .filter_map(|id| self.clauses.get(&id).cloned())
+            .filter_map(|id| self.clauses.get(&id).cloned().map(SearchClause::into_inner))
             .collect()
     }
 
@@ -423,13 +428,13 @@ impl LiteralIndex {
     ) -> Vec<IdClause> {
         self.backward_subsumption_resolution_candidate_ids(simplifier_fv)
             .into_iter()
-            .filter_map(|id| self.clauses.get(&id).cloned())
+            .filter_map(|id| self.clauses.get(&id).cloned().map(SearchClause::into_inner))
             .collect()
     }
 
     /// Returns a reference to a specific clause by ID.
     pub fn get(&self, id: ClauseId) -> Option<&IdClause> {
-        self.clauses.get(&id)
+        self.clauses.get(&id).map(|clause| &**clause)
     }
 
     /// Returns the feature vector recorded for `id`, if it is indexed.
@@ -443,7 +448,7 @@ impl LiteralIndex {
 
     /// Returns an iterator over all stored clauses.
     pub fn iter(&self) -> impl Iterator<Item = &IdClause> {
-        self.clauses.values()
+        self.clauses.values().map(|clause| &**clause)
     }
 
     /// Returns the number of stored clauses.
@@ -461,7 +466,7 @@ impl LiteralIndex {
     pub fn get_superposition_targets(&self, term: TermId, bank: &TermBank) -> Vec<IdClause> {
         self.superposition_target_ids(term, bank)
             .into_iter()
-            .filter_map(|id| self.clauses.get(&id).cloned())
+            .filter_map(|id| self.clauses.get(&id).cloned().map(SearchClause::into_inner))
             .collect()
     }
 
@@ -481,7 +486,7 @@ impl LiteralIndex {
     ) -> Vec<IdClause> {
         self.superposition_source_ids(query_subterm, bank)
             .into_iter()
-            .filter_map(|id| self.clauses.get(&id).cloned())
+            .filter_map(|id| self.clauses.get(&id).cloned().map(SearchClause::into_inner))
             .collect()
     }
 
@@ -506,7 +511,7 @@ impl LiteralIndex {
         self.subterm_index = crate::stree::STreeId::new();
         self.fvt.clear();
         self.fv_map.clear();
-        self.clauses.drain().map(|(_, c)| c).collect()
+        self.clauses.drain().map(|(_, c)| c.into_inner()).collect()
     }
 
     /// Retains only clauses satisfying the predicate. Rebuilds the index.

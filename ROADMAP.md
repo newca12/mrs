@@ -58,8 +58,10 @@ Owners: core/search/proof maintainers. Paths: `mrs-core`, `mrs-search`, `mrs-pro
 - [ ] Separate formula provenance from live search clauses at the type boundary.
   Landed first slice: immutable validated `SearchClauseRef`, typed passive
   insertion, unconditional active/passive compatibility-boundary validation,
-  and formula steps no longer report `is_empty()`. Owning clause/provenance
-  storage types and migration of remaining legacy APIs are still open.
+  and formula steps no longer report `is_empty()`. Active-index storage now owns
+  immutable validated `SearchClause` values, with a typed insertion API and
+  checked legacy adapters. Separate owning formula storage and remaining
+  legacy search API migration are still open.
 - [ ] Replace mutable duplicate clause content with immutable per-worker storage and ID postings.
 - [ ] Validate witness parent identities against source/certificate closure at registration/export.
   Export now refuses mismatched proof IDs and uncited witness references;
