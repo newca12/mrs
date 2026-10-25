@@ -85,6 +85,23 @@ cooperative strategy execution or equality sharing.
 
 ## Cooperative portfolio experiments
 
+For a paired certified comparison of frozen baseline/candidate binaries:
+
+```bash
+python3 crates/mrs-bench/paired_campaign.py \
+  --baseline /path/to/mrs-baseline --candidate /path/to/mrs-candidate \
+  --problems-dir /path/to/casc-30 --edition casc-30 \
+  --divisions fne,feq,ueq --reps 5 --output /path/to/new-experiment
+```
+
+The driver randomizes arm order within each pair, runs sequentially with eight
+workers and `jobs=1` in CASC mode, strictly audits every arm, checks matching
+evaluation sets, and reports paired certified gains/losses. It checks frozen
+binary hashes before each arm. It does not build tools or automatically promote
+a candidate. Remaining inherited `MRS_*` overrides are recorded: review the
+manifest and hardware lines before interpreting the result. The reported range
+is descriptive, not a confidence interval or a division-wide noise estimate.
+
 ```bash
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \
   crates/mrs-bench/cooperative_portfolio_sweep.sh \

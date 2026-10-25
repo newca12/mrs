@@ -32,6 +32,9 @@ jobs:
         run: cargo check --features proover,ml-guidance,parent-guidance
       - name: Benchmark shell syntax
         run: bash -n crates/mrs-bench/casc.sh crates/mrs-bench/run_variance.sh
+      - name: Paired campaign analysis regression
+        working-directory: crates/mrs-bench
+        run: python3 -B -m unittest test_paired_campaign
 
   formal-superposition-checker:
     runs-on: ubuntu-24.04

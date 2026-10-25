@@ -26,8 +26,10 @@ Owners: benchmark/runtime maintainers. Paths: `crates/mrs-bench/`, `docs/results
 - [ ] Freeze clean producer binaries, checker binaries, toolchains and corpus/include hashes.
 - [ ] Append audit records keyed by producer, checker, corpus, configuration and budgets.
 - [ ] Generate the current certification dashboard from records; retain old audits unchanged.
-- [ ] Separate actual/credited time, RSS/address-space, exit signal and confirmed OOM.
-- [ ] Add paired, interleaved baseline/candidate campaigns and paired outcome analysis.
+- [x] Separate actual/credited time and RSS/address-space in new harness rows;
+  retain signal/status evidence without inferring OOM from SIGKILL alone.
+- [x] Add paired, order-randomized strictly audited baseline/candidate campaigns
+  and paired descriptive outcome analysis (`paired_campaign.py`).
 - [ ] Freeze stratified profiling fixtures and family-disjoint development/holdout sets.
 
 Gate: a third party can reconstruct every headline number from immutable
