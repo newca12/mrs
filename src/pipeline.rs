@@ -101,9 +101,17 @@ pub fn prepare_until(
         let tptp_root: Option<PathBuf> = std::env::var("TPTP").ok().map(PathBuf::from);
         // Keep the established behavior of searching the resolvable top-level
         // formulas after an include failure, but surface that the view is partial.
-        crate::include::resolve_and_lower(problem, &mut lowered, base_dir, tptp_root.as_deref())
-            .err()
-            .map(|error| error.to_string())
+        match crate::include::resolve_and_lower_until(
+            problem,
+            &mut lowered,
+            base_dir,
+            tptp_root.as_deref(),
+            deadline,
+        ) {
+            Err(crate::include::IncludeError::DeadlineExceeded) => return Err(PreparationTimeout),
+            Err(error) => Some(error.to_string()),
+            Ok(()) => None,
+        }
     } else {
         None
     };

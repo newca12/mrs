@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use mrs_tptp::TPTPProblem;
 
@@ -24,6 +25,7 @@ use crate::lowering::{self, LoweredProblem};
 /// Error during include resolution.
 #[derive(Debug)]
 pub enum IncludeError {
+    DeadlineExceeded,
     /// The included file could not be found.
     FileNotFound {
         /// The requested include path (as written in the problem file).
@@ -37,14 +39,20 @@ pub enum IncludeError {
         error: std::io::Error,
     },
     /// A parse error in the included file.
-    ParseError { path: PathBuf, message: String },
+    ParseError {
+        path: PathBuf,
+        message: String,
+    },
     /// Circular include detected.
-    CircularInclude { path: PathBuf },
+    CircularInclude {
+        path: PathBuf,
+    },
 }
 
 impl fmt::Display for IncludeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            IncludeError::DeadlineExceeded => f.write_str("include resolution deadline expired"),
             IncludeError::FileNotFound { requested, tried } => {
                 write!(f, "Include file not found: '{}'", requested)?;
                 if !tried.is_empty() {
@@ -87,8 +95,33 @@ pub fn resolve_and_lower(
     base_dir: &Path,
     tptp_root: Option<&Path>,
 ) -> Result<(), IncludeError> {
+    resolve_and_lower_until(problem, lowered, base_dir, tptp_root, None)
+}
+
+pub fn resolve_and_lower_until(
+    problem: &TPTPProblem<'_>,
+    lowered: &mut LoweredProblem,
+    base_dir: &Path,
+    tptp_root: Option<&Path>,
+    deadline: Option<Instant>,
+) -> Result<(), IncludeError> {
     let mut visited = HashSet::new();
-    resolve_includes_recursive(problem, lowered, base_dir, tptp_root, &mut visited)
+    resolve_includes_recursive(
+        problem,
+        lowered,
+        base_dir,
+        tptp_root,
+        &mut visited,
+        deadline,
+    )
+}
+
+fn check_include_deadline(deadline: Option<Instant>) -> Result<(), IncludeError> {
+    if deadline.is_some_and(|limit| Instant::now() >= limit) {
+        Err(IncludeError::DeadlineExceeded)
+    } else {
+        Ok(())
+    }
 }
 
 /// Recursive helper for include resolution.
@@ -98,13 +131,16 @@ fn resolve_includes_recursive(
     base_dir: &Path,
     tptp_root: Option<&Path>,
     visited: &mut HashSet<PathBuf>,
+    deadline: Option<Instant>,
 ) -> Result<(), IncludeError> {
+    check_include_deadline(deadline)?;
     for include in &problem.includes {
+        check_include_deadline(deadline)?;
         let (path, tried) = resolve_path(include.file_name, base_dir, tptp_root);
 
         // Circular include detection
         let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if !visited.insert(canonical) {
+        if !visited.insert(canonical.clone()) {
             return Err(IncludeError::CircularInclude { path });
         }
 
@@ -120,12 +156,14 @@ fn resolve_includes_recursive(
             path: path.clone(),
             error: e,
         })?;
+        check_include_deadline(deadline)?;
 
         // Parse
         let inc_problem = mrs_tptp::parse_tptp(&content).map_err(|e| IncludeError::ParseError {
             path: path.clone(),
             message: format!("{}", e),
         })?;
+        check_include_deadline(deadline)?;
 
         // Build selection filter: convert Option<Vec<Name>> to Option<Vec<&str>>
         let sel_strs: Option<Vec<&str>> = include
@@ -139,10 +177,56 @@ fn resolve_includes_recursive(
 
         // Recursively resolve any includes in the included file
         let inc_dir = path.parent().unwrap_or(Path::new("."));
-        resolve_includes_recursive(&inc_problem, lowered, inc_dir, tptp_root, visited)?;
+        resolve_includes_recursive(&inc_problem, lowered, inc_dir, tptp_root, visited, deadline)?;
+        // Only the current recursion stack denotes cycles. The same include
+        // can legitimately be selected differently by sibling directives.
+        visited.remove(&canonical);
     }
 
+    check_include_deadline(deadline)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expired_include_budget_is_distinct_from_missing_input() {
+        let problem = mrs_tptp::parse_tptp("include('missing.ax').").unwrap();
+        let mut lowered = lowering::lower_problem(&problem);
+        assert!(matches!(
+            resolve_and_lower_until(
+                &problem,
+                &mut lowered,
+                Path::new("."),
+                None,
+                Some(Instant::now())
+            ),
+            Err(IncludeError::DeadlineExceeded)
+        ));
+    }
+
+    #[test]
+    fn sibling_selections_are_not_circular_includes() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("axioms.ax"),
+            "cnf(a,axiom,p). cnf(b,axiom,q).",
+        )
+        .unwrap();
+        let problem =
+            mrs_tptp::parse_tptp("include('axioms.ax',[a]). include('axioms.ax',[b]).").unwrap();
+        let mut lowered = lowering::lower_problem(&problem);
+        resolve_and_lower(&problem, &mut lowered, directory.path(), None).unwrap();
+        assert_eq!(lowered.cnf_clauses.len(), 2);
+        fs::write(directory.path().join("cycle.ax"), "include('cycle.ax').").unwrap();
+        let cycle = mrs_tptp::parse_tptp("include('cycle.ax').").unwrap();
+        assert!(matches!(
+            resolve_and_lower(&cycle, &mut lowered, directory.path(), None),
+            Err(IncludeError::CircularInclude { .. })
+        ));
+    }
 }
 
 /// Resolves a TPTP include path, trying multiple candidate roots.
