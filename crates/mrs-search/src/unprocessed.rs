@@ -43,6 +43,9 @@ impl Ord for WeightWrapper {
 /// Supports fast removal by age (FIFO) and weight (SmallestFirst),
 /// using lazy deletion (tombstones).
 pub struct UnprocessedSet {
+    /// Optional queues retained for the chosen selector. Age and weight are
+    /// always retained for fallback and LRS. Defaults preserve compatibility.
+    enabled: OptionalQueues,
     /// The IDs of clauses currently in the unprocessed set.
     active_ids: HashSet<ClauseId>,
     /// Queue ordered by arrival (age).
@@ -66,10 +69,28 @@ pub struct UnprocessedSet {
     config: Arc<SymbolConfig>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct OptionalQueues {
+    goal: bool,
+    unit: bool,
+    horn: bool,
+    sos: bool,
+    #[cfg(feature = "ml-guidance")]
+    ml: bool,
+}
+
 impl UnprocessedSet {
     /// Creates a new, empty unprocessed set.
     pub fn new(config: Arc<SymbolConfig>) -> Self {
         Self {
+            enabled: OptionalQueues {
+                goal: true,
+                unit: true,
+                horn: true,
+                sos: true,
+                #[cfg(feature = "ml-guidance")]
+                ml: true,
+            },
             active_ids: HashSet::default(),
             age_queue: VecDeque::new(),
             weight_queue: BinaryHeap::new(),
@@ -81,6 +102,61 @@ impl UnprocessedSet {
             ml_queue: BinaryHeap::new(),
             config,
         }
+    }
+
+    /// Drop selector-unused heaps before search. Must not switch selectors
+    /// afterwards: discarded queue entries are intentionally not reconstructed.
+    pub fn specialize(&mut self, selection: &crate::SelectionStrategy, sos_depth: u32) {
+        use crate::{QueueType, SelectionStrategy};
+        let uses = |queue| {
+            matches!(selection, SelectionStrategy::MultiQueue(queues)
+            if queues.iter().any(|(kind, frequency)| *kind == queue && *frequency > 0))
+        };
+        self.enabled = OptionalQueues {
+            goal: matches!(selection, SelectionStrategy::GoalDirected(_)) || uses(QueueType::Goal),
+            unit: uses(QueueType::Unit),
+            horn: uses(QueueType::Horn),
+            sos: sos_depth < u32::MAX || uses(QueueType::Sos),
+            #[cfg(feature = "ml-guidance")]
+            ml: matches!(selection, SelectionStrategy::MlGuided { .. }),
+        };
+        if !self.enabled.goal {
+            self.goal_queue = BinaryHeap::new();
+        }
+        if !self.enabled.unit {
+            self.unit_queue = BinaryHeap::new();
+        }
+        if !self.enabled.horn {
+            self.horn_queue = BinaryHeap::new();
+        }
+        if !self.enabled.sos {
+            self.sos_queue = BinaryHeap::new();
+        }
+        #[cfg(feature = "ml-guidance")]
+        if !self.enabled.ml {
+            self.ml_queue = BinaryHeap::new();
+        }
+    }
+
+    pub(crate) fn optional_queues(&self) -> OptionalQueues {
+        self.enabled
+    }
+    pub(crate) fn set_optional_queues(&mut self, enabled: OptionalQueues) {
+        self.enabled = enabled;
+    }
+
+    /// Number of retained heap/FIFO entries, including lazy-deletion tombstones.
+    /// This measures queue storage pressure rather than the live clause count.
+    pub fn stored_entries(&self) -> usize {
+        let entries = self.age_queue.len()
+            + self.weight_queue.len()
+            + self.goal_queue.len()
+            + self.unit_queue.len()
+            + self.horn_queue.len()
+            + self.sos_queue.len();
+        #[cfg(feature = "ml-guidance")]
+        let entries = entries + self.ml_queue.len();
+        entries
     }
 
     /// Adds an `IdClause` to the unprocessed set.
@@ -139,13 +215,15 @@ impl UnprocessedSet {
             distance: clause.distance,
             goal_distance: eff_goal_dist,
         });
-        self.goal_queue.push(WeightWrapper {
-            id,
-            weight: goal_weight,
-            distance: clause.distance,
-            goal_distance: eff_goal_dist,
-        });
-        if clause.literals.len() == 1 {
+        if self.enabled.goal {
+            self.goal_queue.push(WeightWrapper {
+                id,
+                weight: goal_weight,
+                distance: clause.distance,
+                goal_distance: eff_goal_dist,
+            });
+        }
+        if self.enabled.unit && clause.literals.len() == 1 {
             self.unit_queue.push(WeightWrapper {
                 id,
                 weight,
@@ -153,7 +231,7 @@ impl UnprocessedSet {
                 goal_distance: eff_goal_dist,
             });
         }
-        if clause.literals.iter().filter(|lit| lit.positive).count() <= 1 {
+        if self.enabled.horn && clause.literals.iter().filter(|lit| lit.positive).count() <= 1 {
             self.horn_queue.push(WeightWrapper {
                 id,
                 weight,
@@ -161,7 +239,7 @@ impl UnprocessedSet {
                 goal_distance: eff_goal_dist,
             });
         }
-        if clause.distance < 100 {
+        if self.enabled.sos && clause.distance < 100 {
             self.sos_queue.push(WeightWrapper {
                 id,
                 weight,
@@ -170,7 +248,7 @@ impl UnprocessedSet {
             });
         }
         #[cfg(feature = "ml-guidance")]
-        {
+        if self.enabled.ml {
             // ML priority = α * norm(weight) + (1 - α) * (1 - σ(score))
             // We use α = 0.3, K = 20 for normalization.
             let ml_priority = if let Some(score) = ml_score {
@@ -427,6 +505,7 @@ impl UnprocessedSet {
         // 6. Rebuild goal_queue
         let goal_wrappers: Vec<WeightWrapper> = protected
             .iter()
+            .filter(|_| self.enabled.goal)
             .map(|w| {
                 let goal_weight = if w.goal_distance < 100 {
                     w.weight
@@ -471,6 +550,57 @@ mod tests {
     use super::*;
     use mrs_core::clause::{Clause, ClauseId, ClauseSource};
     use mrs_core::term_bank::TermBank;
+
+    #[test]
+    fn specialized_queues_preserve_selection_through_inserts_and_pruning() {
+        use crate::{QueueType, SelectionStrategy};
+        let selectors = [
+            SelectionStrategy::Fifo,
+            SelectionStrategy::SmallestFirst,
+            SelectionStrategy::AgeWeight(3),
+            SelectionStrategy::GoalDirected(4),
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Horn, 2),
+                (QueueType::Unit, 1),
+                (QueueType::Goal, 1),
+            ]),
+            SelectionStrategy::MultiQueue(vec![(QueueType::Sos, 1), (QueueType::Weight, 2)]),
+        ];
+        for selection in selectors {
+            for depth in [100, u32::MAX] {
+                let mut bank = TermBank::new();
+                let mut base = UnprocessedSet::new(Arc::new(SymbolConfig::default()));
+                let mut specialized = UnprocessedSet::new(Arc::new(SymbolConfig::default()));
+                specialized.specialize(&selection, depth);
+                for id in 1..=80 {
+                    push_weighted(
+                        &mut bank,
+                        &mut base,
+                        id,
+                        (id * 17 % 31) as u32,
+                        Some((id % 120) as u8),
+                    );
+                    push_weighted(
+                        &mut bank,
+                        &mut specialized,
+                        id,
+                        (id * 17 % 31) as u32,
+                        Some((id % 120) as u8),
+                    );
+                }
+                assert!(specialized.stored_entries() <= base.stored_entries());
+                assert_eq!(base.prune(40, 25), specialized.prune(40, 25));
+                for iteration in 0..40 {
+                    assert_eq!(
+                        crate::select::select(&mut base, &selection, iteration, depth),
+                        crate::select::select(&mut specialized, &selection, iteration, depth),
+                        "selector {selection:?}"
+                    );
+                }
+                assert!(specialized.is_empty());
+            }
+        }
+    }
 
     /// Pushes a clause with an explicit weight and goal distance and returns
     /// its id. Goal distances differ so the goal queue orders differently from

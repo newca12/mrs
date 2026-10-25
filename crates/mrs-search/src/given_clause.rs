@@ -1222,6 +1222,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     let mut trajectory = std::env::var("MRS_TRAJECTORY_DIGEST")
         .is_ok_and(|value| value == "1")
         .then(Sha256::new);
+    if std::env::var("MRS_SPECIALIZE_QUEUES").is_ok_and(|value| value == "1") {
+        state
+            .unprocessed
+            .specialize(&config.selection, config.sos_depth);
+    }
     state.search_deadline = start.checked_add(config.time_limit);
     if config.time_limit.is_zero()
         || state

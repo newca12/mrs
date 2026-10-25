@@ -122,6 +122,11 @@ Prerequisites: P0/P2 measurements and P1 identity contract.
 - [ ] Improve subsumption filter selectivity and repeated-variable matching costs.
 - [ ] Measure corrected demodulation memo hit rates and invalidation cost.
 - [ ] Allocate only selected passive queues; compact tombstones by measured thresholds.
+  Opt-in `MRS_SPECIALIZE_QUEUES=1` retains only selector-needed optional heaps,
+  preserving age/weight fallbacks and LRS behavior; queue rebuilds retain the
+  policy. Differential selector/pruning tests pass. `passive_queue_entries`
+  records actual retained entries including tombstones. Promotion/compaction
+  thresholds require fixed-work memory/trajectory measurements.
 - [ ] Compare indexed backward rewriting policies, including requeue-to-passive.
 - [ ] Prototype shared immutable prepared input with worker-local derived arenas.
 - [ ] Bound inference batches and avoid avoidable intermediate collections.

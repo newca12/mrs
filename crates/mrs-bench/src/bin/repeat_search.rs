@@ -30,6 +30,7 @@ const FIELDS: &[&str] = &[
     "shared_published",
     "shared_imported",
     "trajectory_sha256",
+    "passive_queue_entries",
 ];
 
 struct Args {

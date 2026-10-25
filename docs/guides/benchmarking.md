@@ -97,6 +97,12 @@ do not silently enable it in headline throughput campaigns. Fixed-work compariso
 must also fix pruning policy and work caps, disable sharing, leave ample time,
 and check the final counters/resource reason as well as the digest.
 
+`MRS_SPECIALIZE_QUEUES=1` experimentally drops optional passive heaps unused by
+the chosen selector (age and weight remain for fallback/LRS). Compare fixed-work
+digests/counters and `passive_queue_entries` with the option absent. The latter
+counts retained queue entries including tombstones, not live clauses or bytes.
+The optimization is opt-in pending representative memory and coverage measurements.
+
 ```bash
 crates/mrs-bench/run_strategy_sweep.sh \
   --edition casc-j13 --divisions fne,feq,ueq \

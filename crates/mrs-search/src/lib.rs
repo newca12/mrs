@@ -109,6 +109,8 @@ pub use symbol_config::{PrecedenceScheme, SymbolWeightScheme, compute_symbol_con
 /// aggregates them across the whole portfolio run.
 #[derive(Clone, Debug, Default)]
 pub struct SearchStats {
+    /// Retained passive queue entries at shutdown (including tombstones).
+    pub passive_queue_entries: u64,
     /// Opt-in SHA-256 of selected clauses before simplification, in order.
     /// Diagnostic evidence of selection trajectory, not a proof certificate or
     /// a guarantee that every inference/pruning decision was identical.
@@ -321,6 +323,13 @@ impl ScheduleReport {
                     .map(|digest| (strategy.strategy_idx, digest))
             })
             .collect::<std::collections::BTreeMap<_, _>>();
+        detail.push_str(&format!(
+            " passive_queue_entries={}",
+            self.strategies
+                .iter()
+                .map(|strategy| strategy.stats.passive_queue_entries)
+                .sum::<u64>()
+        ));
         if !trajectories.is_empty() {
             detail.push_str(" trajectory_sha256=");
             detail.push_str(

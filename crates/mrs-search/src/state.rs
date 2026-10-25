@@ -674,7 +674,9 @@ impl SearchState {
         // Fix: Restore strict chronological generation order for age_queue (FIFO)
         unprocessed_clauses.sort_unstable_by_key(|c| c.id.0);
 
+        let optional_queues = self.unprocessed.optional_queues();
         self.unprocessed = crate::unprocessed::UnprocessedSet::new(self.config.clone());
+        self.unprocessed.set_optional_queues(optional_queues);
         for clause in unprocessed_clauses {
             let w = self.compute_weight(&clause);
             #[cfg(feature = "ml-guidance")]

@@ -1678,6 +1678,7 @@ pub fn run_schedule_with_candidate_receiver(
                     let elapsed_ms = strategy_start.elapsed().as_millis() as u64;
                     // Capture passive size after search (unprocessed set is still live).
                     state.stats.passive_size = state.unprocessed.active_count() as u64;
+                    state.stats.passive_queue_entries = state.unprocessed.stored_entries() as u64;
                     #[cfg(feature = "parent-guidance")]
                     if state.parent_guidance_enabled
                         && state.stats.parent_guidance_sampled > 0
