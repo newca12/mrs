@@ -535,7 +535,32 @@ fn run() {
         "% Stage start: prepare elapsed_ms={}",
         start.elapsed().as_millis()
     );
-    let prepared = pipeline::prepare(&problem, Some(&path), input_bytes);
+    // casc-sim computes its extended allowance after host profiling. Avoid
+    // truncating that diagnostic mode to the reference competition clock here.
+    let preparation_hardware = hardware.or_else(|| {
+        env::var("MRS_HARDWARE")
+            .ok()
+            .and_then(|raw| mrs_search::HardwareMode::parse(&raw))
+    });
+    let preparation_deadline = if preparation_hardware == Some(mrs_search::HardwareMode::CascSim)
+        && sim_time_factor != 1.0
+    {
+        None
+    } else {
+        start.checked_add(Duration::from_secs(time_secs))
+    };
+    let prepared =
+        match pipeline::prepare_until(&problem, Some(&path), input_bytes, preparation_deadline) {
+            Ok(prepared) => prepared,
+            Err(_) => {
+                info!(
+                    "% Stage timeout: prepare elapsed_ms={}",
+                    start.elapsed().as_millis()
+                );
+                println!("{}", szs_status_line(SzsStatus::Timeout, problem_name));
+                return;
+            }
+        };
     info!(
         "% Stage complete: prepare lowering_us={} includes_us={} clausification_us={} clauses={} provenance={} elapsed_ms={}",
         prepared.timings.lowering.as_micros(),

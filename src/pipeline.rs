@@ -47,14 +47,30 @@ pub struct PreparationTimings {
 ///
 /// `problem_path` is used only to resolve `%include` directives; pass `None` for
 /// stdin input, which cannot include anything.
+#[allow(dead_code)] // public library compatibility API; CLI uses prepare_until
 pub fn prepare(
     problem: &TPTPProblem<'_>,
     problem_path: Option<&str>,
     input_bytes: Option<u64>,
 ) -> Prepared {
+    prepare_until(problem, problem_path, input_bytes, None)
+        .expect("unbounded preparation cannot exhaust a deadline")
+}
+
+/// Cooperative preparation: never return a partial clause set on expiry.
+/// Checks occur between stages and source formulas; individual parser/lowering/
+/// clausification traversals still have their own resource-containment needs.
+pub fn prepare_until(
+    problem: &TPTPProblem<'_>,
+    problem_path: Option<&str>,
+    input_bytes: Option<u64>,
+    deadline: Option<Instant>,
+) -> Result<Prepared, PreparationTimeout> {
+    check_deadline(deadline)?;
     let stage = Instant::now();
     let mut lowered = lower_problem(problem);
     let lowering = stage.elapsed();
+    check_deadline(deadline)?;
 
     let mut meta = MetaInput {
         input_bytes,
@@ -92,12 +108,13 @@ pub fn prepare(
         None
     };
     let includes = stage.elapsed();
+    check_deadline(deadline)?;
 
     let stage = Instant::now();
-    let (clauses, provenance) = clausify(&mut lowered);
+    let (clauses, provenance) = clausify_until(&mut lowered, deadline)?;
     let clausification = stage.elapsed();
     let has_conjecture = !lowered.conjectures.is_empty();
-    Prepared {
+    Ok(Prepared {
         timings: PreparationTimings {
             lowering,
             includes,
@@ -109,6 +126,17 @@ pub fn prepare(
         meta,
         include_error,
         has_conjecture,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparationTimeout;
+
+fn check_deadline(deadline: Option<Instant>) -> Result<(), PreparationTimeout> {
+    if deadline.is_some_and(|limit| Instant::now() >= limit) {
+        Err(PreparationTimeout)
+    } else {
+        Ok(())
     }
 }
 
@@ -119,7 +147,16 @@ pub fn prepare(
 /// goal-directed heuristics treat them as goal-connected, and the
 /// FOF-level translation steps are returned separately as proof provenance rather
 /// than entering the search.
+#[allow(dead_code)] // public library compatibility API
 pub fn clausify(lowered: &mut LoweredProblem) -> (Vec<Clause>, Vec<Clause>) {
+    clausify_until(lowered, None).expect("unbounded clausification cannot exhaust a deadline")
+}
+
+pub fn clausify_until(
+    lowered: &mut LoweredProblem,
+    deadline: Option<Instant>,
+) -> Result<(Vec<Clause>, Vec<Clause>), PreparationTimeout> {
+    check_deadline(deadline)?;
     let mut id_gen = lowered.id_gen.clone();
     let mut all_clauses: Vec<Clause> = lowered
         .cnf_clauses
@@ -136,6 +173,7 @@ pub fn clausify(lowered: &mut LoweredProblem) -> (Vec<Clause>, Vec<Clause>) {
     let mut provenance: Vec<Clause> = Vec::new();
 
     for formula in &lowered.axioms {
+        check_deadline(deadline)?;
         let leaf_source = ClauseSource::Input {
             name: formula.name.clone(),
             role: formula.role.clone(),
@@ -153,6 +191,7 @@ pub fn clausify(lowered: &mut LoweredProblem) -> (Vec<Clause>, Vec<Clause>) {
     }
 
     for formula in &lowered.conjectures {
+        check_deadline(deadline)?;
         let conjecture_leaf = id_gen.next();
         provenance.push(Clause::new_formula_step(
             conjecture_leaf,
@@ -178,7 +217,26 @@ pub fn clausify(lowered: &mut LoweredProblem) -> (Vec<Clause>, Vec<Clause>) {
         all_clauses.extend(clauses.into_iter().map(|c| c.with_distance(0)));
     }
 
-    (all_clauses, provenance)
+    check_deadline(deadline)?;
+    Ok((all_clauses, provenance))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expired_preparation_returns_no_partial_problem() {
+        let problem = mrs_tptp::parse_tptp("fof(a,axiom,p). fof(g,conjecture,p).").unwrap();
+        assert!(matches!(
+            prepare_until(&problem, None, None, Some(Instant::now())),
+            Err(PreparationTimeout)
+        ));
+        let prepared = prepare_until(&problem, None, None, None).unwrap();
+        assert!(!prepared.clauses.is_empty());
+        let mut lowered = lower_problem(&problem);
+        assert!(clausify_until(&mut lowered, Some(Instant::now())).is_err());
+    }
 }
 
 fn predominant_dialect(problem: &TPTPProblem<'_>) -> String {

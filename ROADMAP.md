@@ -80,7 +80,10 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
   Search-local time now starts before AC detection/normalization and cancelled
   searches refuse setup immediately. All given-clause AVATAR SAT calls use
   the same worker deadline through CaDiCaL's terminator. Inner setup traversals and front-end
-  cancellation propagation remain open.
+  traversals remain open. Shared `prepare_until`/`clausify_until` check between
+  stages/formulas and return no partial clause set on expiry; normal CLI runs
+  propagate their existing process deadline. Extended casc-sim preparation is
+  not yet bounded by its later resolved allowance.
 - [ ] Isolate non-interruptible verification when a hard process deadline is required.
 - [x] Bound candidate queues by bytes as well as count: eight queued candidates,
   64 MiB queued proof text, nonblocking rejection with telemetry. One in-flight
