@@ -292,7 +292,39 @@ fn main() {
     let summary = render_summary(&rows, &args.checks, &report_path, &summary_path);
     fs::write(&summary_path, &summary)
         .unwrap_or_else(|error| fail(&format!("write {}: {error}", summary_path.display())));
+    archive_audit_snapshot(&args.output, &identity).unwrap_or_else(|error| fail(&error));
     print!("{summary}");
+}
+
+/// Content-addressed immutable snapshots retain every completed audit, including
+/// forced reruns. The mutable top-level CSV remains the resume view.
+fn archive_audit_snapshot(output: &Path, identity: &str) -> Result<(), String> {
+    let csv = fs::read(output.join("audit.csv")).map_err(|error| error.to_string())?;
+    let key = sha256_bytes(&csv);
+    let snapshots = output.join("snapshots");
+    fs::create_dir_all(&snapshots).map_err(|error| error.to_string())?;
+    let destination = snapshots.join(&key);
+    if destination.exists() {
+        let saved = fs::read(destination.join("audit.csv")).map_err(|error| error.to_string())?;
+        let saved_identity = fs::read_to_string(destination.join("audit-identity.json"))
+            .map_err(|error| error.to_string())?;
+        if saved != csv || saved_identity != identity {
+            return Err("audit snapshot identity/content mismatch".into());
+        }
+        return Ok(());
+    }
+    // Publish only complete directories. A failed write cannot become evidence.
+    let temporary = tempfile::tempdir_in(&snapshots).map_err(|error| error.to_string())?;
+    fs::write(temporary.path().join("audit.csv"), csv).map_err(|error| error.to_string())?;
+    fs::write(temporary.path().join("audit-identity.json"), identity)
+        .map_err(|error| error.to_string())?;
+    fs::copy(
+        output.join("audit-summary.txt"),
+        temporary.path().join("audit-summary.txt"),
+    )
+    .map_err(|error| error.to_string())?;
+    fs::rename(temporary.path(), destination).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// Hash the complete include tree in stable relative-path order. Streaming
@@ -1581,6 +1613,31 @@ fn fail(message: &str) -> ! {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snapshots_preserve_old_audits_and_refuse_identity_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("audit.csv"), "first verdict").unwrap();
+        fs::write(root.path().join("audit-summary.txt"), "summary").unwrap();
+        archive_audit_snapshot(root.path(), "checker-one").unwrap();
+        archive_audit_snapshot(root.path(), "checker-one").unwrap();
+        assert!(archive_audit_snapshot(root.path(), "checker-two").is_err());
+        fs::write(root.path().join("audit.csv"), "second verdict").unwrap();
+        archive_audit_snapshot(root.path(), "checker-one").unwrap();
+        assert_eq!(
+            fs::read_dir(root.path().join("snapshots")).unwrap().count(),
+            2
+        );
+        assert_eq!(
+            fs::read_to_string(
+                root.path()
+                    .join("snapshots")
+                    .join(sha256_bytes(b"first verdict"))
+                    .join("audit.csv")
+            )
+            .unwrap(),
+            "first verdict"
+        );
+    }
     #[test]
     fn corpus_identity_tracks_include_contents_and_names() {
         let root = tempfile::tempdir().unwrap();

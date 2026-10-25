@@ -129,6 +129,20 @@ it does not authorize replacing another checker's historical results. Explicitly
 pin external backends when using ladder checks; PATH alone does not hash binaries
 discovered implicitly. Keep the corpus immutable throughout the audit.
 
+Completed audits also publish immutable content-addressed directories under
+`strict-audit/snapshots/<audit-csv-sha256>/` (or the chosen audit output path).
+These retain earlier outcomes when the top-level resume CSV is updated. Generate
+a dashboard from selected snapshots without pooling different campaigns/checkers:
+
+```bash
+python3 crates/mrs-bench/certification_dashboard.py \
+  /path/to/audit/snapshots/<audit-csv-sha256>
+```
+
+The dashboard checks the CSV digest, refuses duplicate evidence, and includes
+unknown/omitted/error outcomes in the denominator. It records the run CSV hash
+as the link to producer metadata; retain that CSV and its `run_meta.json` too.
+
 The harness preserves generated proofs for deferred audit:
 
 ```bash
