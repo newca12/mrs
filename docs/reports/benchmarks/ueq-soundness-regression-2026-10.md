@@ -266,7 +266,7 @@ On October 21, 2026, a fresh full-scale 400-problem CASC-J13 UEQ campaign
 (`campaign-casc-j13-04-ueq-CASCHJ1-20261021`) was evaluated on `mtsdev04` using the
 binary built with the `b1033d3` fix. The live production campaign confirmed:
 - **119 refutations emitted** with **117 `VerifiedGood` (98.32%)**.
-- **0 `VerifiedBad` (0.0% unsoundness)**: All six previously rejected problems
+- **0 `VerifiedBad` observed**: All six previously rejected problems
   (`GRP178-1`, `GRP183-3`, `GRP186-1`, `REL026-3`, `REL041-2`, `REL045-2`) certified
   cleanly as `VerifiedGood` in the production run itself.
 - **2 `Unknown`**: Only the expected incomplete AC superposition replay cases (`RNG009-5`

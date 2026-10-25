@@ -19,6 +19,13 @@ objective. Historical plans remain evidence, not current implementation status.
 These fixes pass the Nix-wrapped workspace gates. They establish regression
 quality, not a measured throughput or certified-coverage gain.
 
+Additional landed runtime/evidence work: explicit pipeline-thread stack;
+cooperative strict-kernel deadlines propagated from the certification coordinator;
+bounded candidate backpressure; identity-bound audit caches with fresh-directory
+re-audits; separate actual time/RSS/address-space fields; profiling build;
+optional-feature and paired-analysis CI gates. Deadline checks are between kernel
+stages/nodes, not hard preemption of a long rule or parser operation.
+
 ## P0 — Reproducible baseline and experiment ledger (weeks 1–3)
 
 Owners: benchmark/runtime maintainers. Paths: `crates/mrs-bench/`, `docs/results/`.

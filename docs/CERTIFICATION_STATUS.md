@@ -656,7 +656,7 @@ Two consecutive full 400-problem runs were evaluated on canonical 8-core hardwar
 - `~/crates/mrs-bench/results/campaign-casc30-feq-W8CASCHJ1-01-20261021` (Oct 21)
 
 Both runs produced identical certification outcomes: exactly **108 refutations (`Theorem`)**,
-**103 `VerifiedGood` (95.4%)**, **0 `VerifiedBad` (0.0% unsoundness)**, 2 `Unknown`,
+**103 `VerifiedGood` (95.4%)**, **0 `VerifiedBad` observed**, 2 `Unknown`,
 1 verifier `Timeout`, and 2 `Proof Omitted`. Oct 20 returned 249 `Timeout` and 43 `GaveUp`;
 Oct 21 returned 244 `Timeout` and 48 `GaveUp`. Zero process errors, crashes, or silent kills
 occurred in either campaign.
@@ -697,7 +697,7 @@ Two consecutive full 300-problem runs were evaluated on canonical 8-core hardwar
   Strict audit certified **119 `VerifiedGood` (96.8%)**, with **0 `VerifiedBad`**,
   4 `Unknown`, 0 checker timeouts, and 0 omitted proofs.
 
-Both runs confirm zero unsoundness (`VerifiedBad = 0`) across 247 total evaluated refutations,
+Both runs observed zero rejected proofs (`VerifiedBad = 0`) across 247 total evaluated refutations,
 reproducing the complete resolution of the 5 false rejections and 1 missing root from the
 2026-10-16 campaign:
 - `MVA008-1` and `MVA009-1` (leaf matching with residual axioms) certify strictly as `VerifiedGood` in both runs.
@@ -755,7 +755,7 @@ Two consecutive full 400-problem runs were evaluated on canonical 8-core hardwar
   118 of 120 (0 `VerifiedBad`).
 - `~/crates/mrs-bench/results/campaign-casc-j13-04-ueq-CASCHJ1-20261021` (Oct 21)
   returned 119 refutations (`Unsatisfiable`), 267 `Timeout`, and 14 `GaveUp`.
-  Strict audit certified **117 `VerifiedGood` (98.32%)**, **0 `VerifiedBad` (0.0% unsoundness)**,
+  Strict audit certified **117 `VerifiedGood` (98.32%)**, **0 `VerifiedBad` observed**,
   2 `Unknown`, 0 checker timeouts, and 0 omitted proofs.
 
 Crucially, the Oct 21 campaign was executed with the `b1033d3` kernel fix integrated into the binary,

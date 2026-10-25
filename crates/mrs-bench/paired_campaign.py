@@ -110,6 +110,7 @@ def main():
     }
     (output / "experiment.json").write_text(json.dumps(manifest, indent=2) + "\n")
     pairs = []
+    corpus_sha256 = None
     for index, order in enumerate(orders, start=1):
         audits = {}
         for arm in order:
@@ -131,6 +132,11 @@ def main():
                 "--checks", "strict", "--strict-time", str(args.strict_time),
                 "--jobs", "1", "--output", str(audit),
             ], env=env, check=True, cwd=root)
+            identity = json.loads((audit / "audit-identity.json").read_text())
+            if corpus_sha256 is None:
+                corpus_sha256 = identity["corpus_sha256"]
+            elif corpus_sha256 != identity["corpus_sha256"]:
+                raise ValueError("corpus/include contents changed between paired arms")
             audits[arm] = certified_outcomes(audit / "audit.csv")
         pairs.append(paired_delta(audits["baseline"], audits["candidate"]))
         deltas = [pair["delta"] for pair in pairs]
