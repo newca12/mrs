@@ -12,6 +12,9 @@ class FixedWorkEvidence(unittest.TestCase):
                            ("processed", "99"), ("generated", "201")):
             with self.assertRaises(ValueError):
                 equivalent_work(row, row | {key: value}, 100)
+        with self.assertRaises(ValueError):
+            equivalent_work({key: value for key, value in row.items() if key != "generated"},
+                            {key: value for key, value in row.items() if key != "generated"}, 100)
 
     def test_missing_or_duplicate_final_telemetry_is_refused(self):
         with self.assertRaises(ValueError):
@@ -19,6 +22,8 @@ class FixedWorkEvidence(unittest.TestCase):
         with self.assertRaises(ValueError):
             detail("% SZS detail processed=1\n% SZS detail processed=2")
         self.assertEqual(detail("% SZS detail processed=100")['processed'], "100")
+        self.assertEqual(detail('% SZS detail resource_detail="processed-clause limit reached"')['resource_detail'],
+                         "processed-clause limit reached")
 
 
 if __name__ == "__main__":

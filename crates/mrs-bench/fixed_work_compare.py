@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import random
+import shlex
 import subprocess
 import time
 
@@ -26,11 +27,15 @@ def detail(stderr):
     lines = [line for line in stderr.splitlines() if line.startswith("% SZS detail ")]
     if len(lines) != 1:
         raise ValueError("expected exactly one final search detail line")
-    return dict(token.split("=", 1) for token in lines[0].split() if "=" in token)
+    return dict(token.split("=", 1) for token in shlex.split(lines[0]) if "=" in token)
 
 
 def equivalent_work(baseline, candidate, processed):
+    required = ("processed", "generated", "passive", "lrs_discarded", "weight_discarded",
+                "trajectory_sha256", "resource_reason")
     for arm in (baseline, candidate):
+        if any(not arm.get(key) for key in required):
+            raise ValueError("incomplete work telemetry")
         if arm.get("processed") != str(processed):
             raise ValueError("run did not reach the declared fixed-work ceiling")
         if arm.get("resource_reason") != "max_processed":
@@ -79,6 +84,7 @@ def main():
                                                    if key.startswith("MRS_") or key == "TPTP"}}
     (output / "experiment.json").write_text(json.dumps(manifest, indent=2) + "\n")
     pairs = []
+    reference = None
     for index, order in enumerate(orders, 1):
         arms = {}
         for arm in order:
@@ -101,6 +107,9 @@ def main():
                 raise ValueError(f"{arm} exited {result.returncode}")
             arms[arm] = {"elapsed_s": elapsed, "detail": detail(result.stderr)}
         equivalent_work(arms["baseline"]["detail"], arms["candidate"]["detail"], args.processed)
+        if reference is not None:
+            equivalent_work(reference, arms["baseline"]["detail"], args.processed)
+        reference = arms["baseline"]["detail"]
         pairs.append({"arms": arms, "candidate_over_baseline_elapsed":
                       arms["candidate"]["elapsed_s"] / arms["baseline"]["elapsed_s"]})
         (output / "comparison.json").write_text(json.dumps({"pairs": pairs,

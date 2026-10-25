@@ -97,16 +97,17 @@ pub fn write_tstp(
     symbols: &SymbolTable,
     output: &mut impl Write,
 ) -> std::fmt::Result {
+    // Validate original witness/source closure before elaboration can replace
+    // compound nodes with fresh witnesses. Invalid metadata must not disappear
+    // merely because a reconstruction fallback found a valid derivation.
+    let validated = crate::elaborate::topological_sort(proof).map_err(|_| std::fmt::Error)?;
     // Elaboration is an optional refinement. If a composite step cannot be
     // replayed, retain a dependency-topological compact proof so the strict
     // kernel can classify it as inconclusive. Never fall back to numeric-ID
     // sorting, and never emit a graph with missing or cyclic dependencies.
-    let proof_sorted = match crate::elaborate::elaborate(proof, symbols) {
+    let proof_sorted = match crate::elaborate::elaborate(&validated, symbols) {
         Ok(elaborated) => elaborated.clauses,
-        Err(_) => match crate::elaborate::topological_sort(proof) {
-            Ok(sorted) => sorted,
-            Err(_) => return Err(std::fmt::Error),
-        },
+        Err(_) => validated,
     };
 
     let problem_path = problem_path();
