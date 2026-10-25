@@ -20504,6 +20504,71 @@ mod tests {
             "long proof was declined on the node ceiling: {verdict:?}"
         );
     }
+
+    #[test]
+    fn certifies_nested_equality_congruence_and_rejects_mutations() {
+        for (parent, left, right) in [
+            ("a=b", "f(a)", "f(b)"),
+            ("a=b", "f(f(f(a)))", "f(f(f(b)))"),
+            ("a=b", "f(f(f(b)))", "f(f(f(a)))"),
+            ("b=a", "f(f(f(a)))", "f(f(f(b)))"),
+            ("a=b", "h(g(c,f(a)),d)", "h(g(c,f(b)),d)"),
+            ("b=a", "h(g(c,f(a)),d)", "h(g(c,f(b)),d)"),
+            ("a=b", "h(g(c,f(b)),d)", "h(g(c,f(a)),d)"),
+            ("f(X)=g(X)", "h(k(f(X),c))", "h(k(g(X),c))"),
+        ] {
+            let problem = format!("cnf(a,axiom,{parent}). cnf(b,axiom,{left}!={right}).");
+            for rule in ["congruence", "equality_congruence"] {
+                let proof = format!(
+                    "cnf(a,axiom,{parent},file('input',a)).\n\
+                     cnf(b,axiom,{left}!={right},file('input',b)).\n\
+                     cnf(c,plain,{left}={right},inference({rule},[status(thm)],[a])).\n\
+                     cnf(bot,plain,$false,inference(resolution,[status(thm)],[c,b]))."
+                );
+                assert_eq!(check(&problem, &proof), KernelVerdict::Certified);
+            }
+        }
+
+        for right in [
+            "h(g(c,f(e)),d)", // Deep replacement not justified by a=b.
+            "h(g(c,k(b)),d)", // Deep function symbol mismatch.
+            "h(g(e,f(b)),d)", // Inner sibling changed.
+            "h(g(c,f(b)),e)", // Outer sibling changed.
+            "h(g(b,f(b)),d)", // Two holes require separate replay steps.
+        ] {
+            let problem = format!("cnf(a,axiom,a=b). cnf(b,axiom,h(g(c,f(a)),d)!={right}).");
+            let proof = format!(
+                "cnf(a,axiom,a=b,file('input',a)).\n\
+                 cnf(b,axiom,h(g(c,f(a)),d)!={right},file('input',b)).\n\
+                 cnf(c,plain,h(g(c,f(a)),d)={right},inference(congruence,[status(thm)],[a])).\n\
+                 cnf(bot,plain,$false,inference(resolution,[status(thm)],[c,b]))."
+            );
+            assert_ne!(check(&problem, &proof), KernelVerdict::Certified);
+        }
+
+        // Negative equality parent is rejected.
+        let neg_parent_prob = "cnf(a,axiom,a!=b). cnf(b,axiom,f(a)!=f(b)).";
+        let neg_parent_proof = "cnf(a,axiom,a!=b,file('input',a)).\n\
+             cnf(b,axiom,f(a)!=f(b),file('input',b)).\n\
+             cnf(c,plain,f(a)=f(b),inference(congruence,[status(thm)],[a])).\n\
+             cnf(bot,plain,$false,inference(resolution,[status(thm)],[c,b])).";
+        assert_ne!(
+            check(neg_parent_prob, neg_parent_proof),
+            KernelVerdict::Certified
+        );
+
+        // Multiple parents rejected.
+        let multi_parent_prob = "cnf(a,axiom,a=b). cnf(a2,axiom,c=d). cnf(b,axiom,f(a)!=f(b)).";
+        let multi_parent_proof = "cnf(a,axiom,a=b,file('input',a)).\n\
+             cnf(a2,axiom,c=d,file('input',a2)).\n\
+             cnf(b,axiom,f(a)!=f(b),file('input',b)).\n\
+             cnf(c,plain,f(a)=f(b),inference(congruence,[status(thm)],[a,a2])).\n\
+             cnf(bot,plain,$false,inference(resolution,[status(thm)],[c,b])).";
+        assert_ne!(
+            check(multi_parent_prob, multi_parent_proof),
+            KernelVerdict::Certified
+        );
+    }
 }
 
 #[cfg(test)]
