@@ -27,6 +27,27 @@ use mrs_search::{ScheduleReport, SearchResult};
 use mrs_szs::{SzsStatus, szs_output_end, szs_output_start, szs_status_line};
 
 fn main() {
+    // Parsing and clausification recurse too. Size their stack explicitly like
+    // search/checker threads instead of relying on a wrapper's ulimit setting.
+    let worker = std::thread::Builder::new()
+        .name("mrs-pipeline".into())
+        .stack_size(mrs_core::RECURSION_STACK_BYTES)
+        .spawn(run);
+    match worker {
+        Ok(worker) => {
+            if let Err(panic) = worker.join() {
+                std::panic::resume_unwind(panic);
+            }
+        }
+        Err(error) => {
+            eprintln!("Error starting problem pipeline: {error}");
+            println!("% SZS status Error for input");
+            process::exit(1);
+        }
+    }
+}
+
+fn run() {
     let start = Instant::now();
     let mut time_secs: u64 = 30;
     let mut schedule_name: Option<String> = None;

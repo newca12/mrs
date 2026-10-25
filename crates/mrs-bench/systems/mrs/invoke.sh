@@ -57,18 +57,11 @@ fi
 # with no output at all.
 SOFT_TIME=$(( TIME_LIMIT > 2 ? TIME_LIMIT - 2 : TIME_LIMIT ))
 
-# Raise the stack limit for the parsing/clausification phase (mrs_tptp's
-# recursive-descent parser and mrs_cnf's NNF/Skolemization/CNF pipeline both
-# run on the main thread, before run_schedule spawns worker threads -- see
-# docs/STATUS.md). crates/mrs-tptp/doc/technical.md documents deeply nested
-# formulas as a stack-overflow risk. Best-effort: some sandboxes cap the
-# hard limit and refuse to raise the soft limit further, which prints a
-# warning but does not abort under `set -e`.
+# Compatibility for older binaries: current mrs runs parsing/clausification on
+# an explicitly sized pipeline thread, so it does not rely on this limit.
 ulimit -s unlimited 2>/dev/null || true
 
-# `ulimit -s` above only covers the main thread, and parsing and clausification
-# run there; the strategy portfolio and the certifier run on threads of their
-# own. Those threads set their stack in code -- see
+# Pipeline, strategy portfolio and certifier threads set their stack in code -- see
 # mrs_core::RECURSION_STACK_BYTES and the spawn sites in mrs-search's
 # strategy.rs and certified.rs, src/coordinator.rs, and mrs-proover's
 # verify.rs and atp/ladder.rs -- so nothing here needs to, and nothing should:
