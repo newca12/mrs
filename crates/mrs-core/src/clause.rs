@@ -451,6 +451,78 @@ impl Clause {
     }
 }
 
+/// A formula-level proof step (e.g. NNF conversion, Skolemization, or input FOF)
+/// representing formula provenance rather than a live search disjunction.
+#[derive(Clone, Debug)]
+pub struct FormulaStep {
+    pub id: ClauseId,
+    pub formula: Box<Formula>,
+    pub source: ClauseSource,
+    pub certificate: Option<ClauseCertificate>,
+    pub proof_id: Option<ProofNodeId>,
+    pub witness: Option<ProofWitness>,
+}
+
+impl FormulaStep {
+    pub fn new(id: ClauseId, formula: Formula, source: ClauseSource) -> Self {
+        Self {
+            id,
+            formula: Box::new(formula),
+            source,
+            certificate: None,
+            proof_id: None,
+            witness: None,
+        }
+    }
+}
+
+/// Error returned when trying to extract a `FormulaStep` from a `Clause` that has no formula.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotAFormulaStepError(pub ClauseId);
+
+impl std::fmt::Display for NotAFormulaStepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "clause {} does not contain formula provenance", self.0.0)
+    }
+}
+
+impl std::error::Error for NotAFormulaStepError {}
+
+impl TryFrom<Clause> for FormulaStep {
+    type Error = NotAFormulaStepError;
+
+    fn try_from(clause: Clause) -> Result<Self, Self::Error> {
+        if let Some(formula) = clause.formula {
+            Ok(Self {
+                id: clause.id,
+                formula,
+                source: clause.source,
+                certificate: clause.certificate,
+                proof_id: clause.proof_id,
+                witness: clause.witness,
+            })
+        } else {
+            Err(NotAFormulaStepError(clause.id))
+        }
+    }
+}
+
+impl From<FormulaStep> for Clause {
+    fn from(step: FormulaStep) -> Self {
+        Clause {
+            id: step.id,
+            literals: SmallVec::new(),
+            source: step.source,
+            avatar: Vec::new(),
+            distance: 1000,
+            formula: Some(step.formula),
+            certificate: step.certificate,
+            proof_id: step.proof_id,
+            witness: step.witness,
+        }
+    }
+}
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 

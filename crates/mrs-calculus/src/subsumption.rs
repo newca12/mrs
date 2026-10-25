@@ -37,6 +37,16 @@ pub fn subsumes_id_until(
         return true;
     }
 
+    let (c1_has_pos, c1_has_neg) = c1.literals.iter().fold((false, false), |(p, n), l| {
+        (p || l.positive, n || !l.positive)
+    });
+    let (c2_has_pos, c2_has_neg) = c2.literals.iter().fold((false, false), |(p, n), l| {
+        (p || l.positive, n || !l.positive)
+    });
+    if (c1_has_pos && !c2_has_pos) || (c1_has_neg && !c2_has_neg) {
+        return false;
+    }
+
     let offset = max_var_id(c2, bank);
     // A ground `c1` is unchanged by the rename, so the renamed copy is a pure
     // clone of a clause the caller already holds. `rename_clause_id` interns
@@ -57,6 +67,7 @@ pub fn subsumes_id_until(
     match_literals_id(
         c1_literals,
         &c2.literals,
+        None,
         &subst,
         offset,
         bank,
@@ -74,9 +85,11 @@ pub fn subsumes_id_until(
 /// instead, allowing the given-clause loop to continue and respect the limit.
 const SUBSUMPTION_STEP_LIMIT: usize = 5_000;
 
+#[allow(clippy::too_many_arguments)]
 fn match_literals_id(
     remaining: &[IdLiteral],
     targets: &[IdLiteral],
+    target_flipped_idx: Option<usize>,
     current_subst: &IdSubstitution,
     min_bindable: u32,
     bank: &mut TermBank,
@@ -97,11 +110,16 @@ fn match_literals_id(
     let lit = &remaining[0];
     let rest = &remaining[1..];
 
-    for target_lit in targets {
+    for (target_idx, target_lit) in targets.iter().enumerate() {
         if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
             return false;
         }
-        if lit.positive != target_lit.positive {
+        let target_pos = if target_flipped_idx == Some(target_idx) {
+            !target_lit.positive
+        } else {
+            target_lit.positive
+        };
+        if lit.positive != target_pos {
             continue;
         }
 
@@ -115,6 +133,7 @@ fn match_literals_id(
         ) && match_literals_id(
             rest,
             targets,
+            target_flipped_idx,
             &extended,
             min_bindable,
             bank,
@@ -822,50 +841,26 @@ pub fn subsumption_resolution_id_until(
         &renamed.literals
     };
 
-    // One copy of the target, with the polarity flip applied in place.
-    //
-    // Building a fresh `modified_target` per position cost a vector allocation
-    // plus a clone of every literal, for each of the target's literals, on every
-    // candidate — and the target is the wide clause.
-    //
-    // The flip has to be *undone*. Each position flips one literal, and the
-    // positions are tried in order, so without a restore the literals of the
-    // earlier positions stay flipped and position `i` is matched against a
-    // target with several polarities reversed. That does not make the rule
-    // unsound — the emitted conclusion is still the target minus the literal at
-    // the reported index — but it is not the inference the step claims, and
-    // `mrs-proover --strict` rejects every such step with "conclusion is not
-    // the target with a justified literal removed". The regression is invisible
-    // in a self-check that replays only the prover's own reasoning, so the
-    // restore is the part that must not be optimised away.
-    let mut modified_target: Vec<IdLiteral> = target.literals.to_vec();
+    // Direct, allocation-free evaluation: literal `i` is virtually flipped in
+    // place via `target_flipped_idx`, eliminating a clone of the entire target
+    // literal vector per candidate and preventing any polarity leak between indices.
     for i in 0..target.literals.len() {
         if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
             return None;
         }
-        let original = target.literals[i].clone();
-        modified_target[i] = IdLiteral {
-            positive: !original.positive,
-            atom: original.atom.clone(),
-        };
 
         let subst = IdSubstitution::new();
         let mut steps = 0usize;
         let matched = match_literals_id(
             active_literals,
-            &modified_target,
+            &target.literals,
+            Some(i),
             &subst,
             offset,
             bank,
             &mut steps,
             deadline,
         );
-        // Undo the flip before the next position, and before returning: position
-        // `i` must be matched against the target with only literal `i` reversed,
-        // and each position rewrites only its own index, so without this the
-        // literals `0..i` stay reversed. `subsumption_resolution_id_reports_the_position_whose_flip_matched`
-        // fails without it.
-        modified_target[i] = original;
         if matched {
             return Some(i);
         }

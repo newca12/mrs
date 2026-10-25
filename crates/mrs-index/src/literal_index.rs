@@ -402,6 +402,17 @@ impl LiteralIndex {
             .collect()
     }
 
+    /// Returns validated search clauses that could potentially subsume the target.
+    pub fn get_subsumption_candidate_search_clauses(
+        &self,
+        target_fv: &FeatureVector,
+    ) -> Vec<SearchClause> {
+        self.subsumption_candidate_ids(target_fv)
+            .into_iter()
+            .filter_map(|id| self.clauses.get(&id).cloned())
+            .collect()
+    }
+
     /// Returns clauses that could potentially BE subsumed by the given clause (cloned).
     pub fn get_subsumed_candidates(&self, subsumer_fv: &FeatureVector) -> Vec<IdClause> {
         self.subsumed_candidate_ids(subsumer_fv)
@@ -435,6 +446,16 @@ impl LiteralIndex {
     /// Returns a reference to a specific clause by ID.
     pub fn get(&self, id: ClauseId) -> Option<&IdClause> {
         self.clauses.get(&id).map(|clause| &**clause)
+    }
+
+    /// Returns a reference to a validated `SearchClause` by ID.
+    pub fn get_search_clause(&self, id: ClauseId) -> Option<&SearchClause> {
+        self.clauses.get(&id)
+    }
+
+    /// Returns a borrowed `SearchClauseRef` for the indexed clause by ID.
+    pub fn get_search_ref(&self, id: ClauseId) -> Option<mrs_core::term_bank::SearchClauseRef<'_>> {
+        self.clauses.get(&id).map(SearchClause::as_search_ref)
     }
 
     /// Returns the feature vector recorded for `id`, if it is indexed.

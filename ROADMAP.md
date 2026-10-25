@@ -60,11 +60,17 @@ Owners: core/search/proof maintainers. Paths: `mrs-core`, `mrs-search`, `mrs-pro
   insertion, unconditional active/passive compatibility-boundary validation,
   and formula steps no longer report `is_empty()`. Active-index storage now owns
   immutable validated `SearchClause` values, with a typed insertion API and
-  checked legacy adapters. Separate owning formula storage and remaining
-  legacy search API migration are still open.
+  checked legacy adapters. Separate owning formula storage (`FormulaStep`,
+  `IdFormulaStep`, `SearchState::formula_store`) is established; remaining
+  legacy search API migration is open.
 - [ ] Replace mutable duplicate clause content with immutable per-worker storage and ID postings.
+  Superposition target/source candidate passes, backward subsumption, and
+  backward demodulation candidate evaluation now borrow clauses directly without
+  per-candidate cloning; `LiteralIndex` provides typed `SearchClause` and borrowed
+  `SearchClauseRef` accessors.
 - [ ] Validate witness parent identities against source/certificate closure at registration/export.
-  Export now refuses mismatched proof IDs and uncited witness references;
+  Export now refuses mismatched proof IDs, uncited witness references, and
+  citation-cardinality mismatches for unary and binary inference rules;
   shared derivation imports remap typed witness references (including nested
   rewrite steps). Demodulation annotations resolve actual citation identities,
   not deduplicated-list offsets. Full rule/metadata validation remains open.
@@ -143,6 +149,9 @@ Prerequisites: P0/P2 measurements and P1 identity contract.
   and backward-demodulation discovery. Compatibility APIs remain; differential
   recall/removal tests cover both. Fixed-work timing and memory measurements open.
 - [ ] Improve subsumption filter selectivity and repeated-variable matching costs.
+  Subsumption checks now feature polarity presence pre-filtering to fail fast
+  before subterm interning or renaming. Subsumption resolution matching now
+  uses in-place index flipping without cloning target literal vectors.
 - [ ] Measure corrected demodulation memo hit rates and invalidation cost.
 - [ ] Allocate only selected passive queues; compact tombstones by measured thresholds.
   Opt-in `MRS_SPECIALIZE_QUEUES=1` retains only selector-needed optional heaps,

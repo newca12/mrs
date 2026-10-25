@@ -55,6 +55,9 @@ pub struct SearchState {
     pub unprocessed: UnprocessedSet,
     /// Maps clause IDs to `IdClause` (for proof extraction).
     pub clause_store: HashMap<ClauseId, IdClause>,
+    /// Dedicated owning storage for formula-provenance steps (FOF/NNF/Skolemization).
+    /// Kept separate from live search clauses at the type boundary.
+    pub formula_store: HashMap<ClauseId, mrs_core::term_bank::IdFormulaStep>,
     /// Append-only proof arena preserving exact derivation steps.
     pub proof_arena: ProofArena,
     /// Generator for fresh clause IDs.
@@ -244,11 +247,16 @@ impl SearchState {
         // They must never touch `unprocessed`/`processed`: their `literals`
         // are empty (real content lives in `formula`), which the given-clause
         // loop would otherwise misread as the empty clause (a refutation).
+        let mut formula_store = HashMap::default();
         for clause in provenance {
             debug_assert!(
                 clause.formula.is_some() || !clause.literals.is_empty(),
                 "provenance clauses must have formula: Some(_) or non-empty literals"
             );
+            if let Ok(formula_step) = mrs_core::clause::FormulaStep::try_from(clause.clone()) {
+                let id_step = term_bank.formula_step_from_legacy(&formula_step);
+                formula_store.insert(id_step.id, id_step);
+            }
             let id_clause = term_bank.clause_from_legacy(&clause);
             clause_store.insert(id_clause.id, id_clause);
         }
@@ -293,6 +301,7 @@ impl SearchState {
             demod_memo: DemodMemo::new(),
             unprocessed,
             clause_store,
+            formula_store,
             proof_arena,
             id_gen,
             config,
@@ -384,6 +393,30 @@ impl SearchState {
             };
             self.proof_arena.alloc(clause.id, witness, parents);
         }
+    }
+
+    /// Registers a formula-provenance step in `formula_store`, `clause_store` and `proof_arena`.
+    pub fn store_formula_step(&mut self, step: mrs_core::term_bank::IdFormulaStep) {
+        let id = step.id;
+        self.formula_store.entry(id).or_insert_with(|| step.clone());
+        let id_clause: IdClause = step.into();
+        self.store_clause(&id_clause);
+    }
+
+    /// Registers a validated `SearchClause` in `clause_store` and `proof_arena`.
+    pub fn store_search_clause(&mut self, clause: &mrs_core::term_bank::SearchClause) {
+        self.store_clause(clause);
+    }
+
+    /// Enqueues a validated `SearchClause` into `unprocessed`.
+    pub fn push_unprocessed_search_clause(
+        &mut self,
+        clause: mrs_core::term_bank::SearchClause,
+        weight: u32,
+        score: Option<f32>,
+    ) {
+        let id_clause = clause.into_inner();
+        self.push_unprocessed(&id_clause, weight, score);
     }
 
     /// Enqueues a clause into `unprocessed` using its computed weight and relational goal distance.
@@ -841,6 +874,8 @@ mod tests {
         assert!(state.unprocessed.is_empty());
         assert!(state.processed.is_empty());
         assert!(!state.clause_store[&ClauseId(91)].is_empty());
+        assert!(state.formula_store.contains_key(&ClauseId(91)));
+        assert_eq!(state.formula_store[&ClauseId(91)].id, ClauseId(91));
         assert!(state.proof_arena.node_for_clause(ClauseId(91)).is_some());
     }
 

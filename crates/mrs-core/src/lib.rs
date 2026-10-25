@@ -33,11 +33,12 @@ pub mod alpha;
 #[cfg(feature = "ml")]
 pub mod ml;
 
-pub use clause::{Clause, ClauseId, ClauseSource, Literal};
+pub use clause::{Clause, ClauseId, ClauseSource, FormulaStep, Literal, NotAFormulaStepError};
 pub use formula::{Atom, Formula};
 pub use model::{EqualitySemantics, FunctionTable, ModelCertificate, PredicateTable};
 pub use profile::{InputMetadata, ProblemArchetype, ProblemProfile};
 pub use smallvec::SmallVec;
+pub use term_bank::{IdFormulaStep, SearchClause, SearchClauseRef};
 
 /// Stack size for any thread that runs unification, indexing, ordering,
 /// paramodulation, proof verification, or certification.

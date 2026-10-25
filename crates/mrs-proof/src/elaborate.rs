@@ -681,6 +681,43 @@ pub fn topological_sort(clauses: &[Clause]) -> Result<Vec<Clause>, ElaborationEr
                     )));
                 }
             }
+            match witness {
+                ProofWitness::Resolution {
+                    parent_left,
+                    parent_right,
+                    ..
+                }
+                | ProofWitness::Superposition {
+                    lhs_parent: parent_left,
+                    rhs_parent: parent_right,
+                    ..
+                }
+                | ProofWitness::SubsumptionResolution {
+                    target: parent_left,
+                    subsumer: parent_right,
+                    ..
+                } if parents.len() != 2
+                    || !parents.contains(&ClauseId(parent_left.0))
+                    || !parents.contains(&ClauseId(parent_right.0)) =>
+                {
+                    return Err(ElaborationError::Inconclusive(format!(
+                        "clause c{} binary witness does not match cited parents {:?}",
+                        c.id.0, parents
+                    )));
+                }
+                ProofWitness::Factoring { parent, .. }
+                | ProofWitness::EqualityResolution { parent, .. }
+                | ProofWitness::EqualityFactoring { parent, .. }
+                | ProofWitness::Condensation { parent, .. }
+                    if parents.len() != 1 || parents[0] != ClauseId(parent.0) =>
+                {
+                    return Err(ElaborationError::Inconclusive(format!(
+                        "clause c{} unary witness parent c{} does not match cited parents {:?}",
+                        c.id.0, parent.0, parents
+                    )));
+                }
+                _ => {}
+            }
         }
 
         // Every cited parent must be present. Silently dropping a missing
@@ -848,7 +885,24 @@ mod tests {
         derived.proof_id = Some(ProofNodeId(99));
         assert!(topological_sort(&[input.clone(), derived.clone()]).is_err());
         derived.proof_id = Some(ProofNodeId(20));
-        assert!(topological_sort(&[input, derived]).is_ok());
+        assert!(topological_sort(&[input.clone(), derived.clone()]).is_ok());
+
+        // Extra cited parents for a unary witness must be refused.
+        let mut unary_extra = Clause::new(
+            ClauseId(21),
+            vec![],
+            ClauseSource::Inference {
+                rule: "factoring",
+                parents: vec![ClauseId(10), ClauseId(20)].into(),
+            },
+        );
+        unary_extra.witness = Some(ProofWitness::Factoring {
+            parent: ProofNodeId(10),
+            retained_lit_idx: 0,
+            removed_lit_idx: 1,
+            unifier: None,
+        });
+        assert!(topological_sort(&[input.clone(), derived, unary_extra]).is_err());
     }
 
     fn dummy_input_clause(id: u64, lits: Vec<Literal>) -> Clause {

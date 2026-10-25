@@ -2286,10 +2286,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 candidate_targets.sort_unstable();
 
                 for id in candidate_targets {
-                    let Some(active) = state.processed.get(id).cloned() else {
+                    let Some(active) = state.processed.get(id) else {
                         continue;
                     };
-                    let active = &active;
                     assert_indexed_clause_matches_store(state, active, "given-as-equation-source");
                     if sos_depth < u32::MAX
                         && given.distance >= sos_depth
@@ -2471,10 +2470,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 candidate_sources.sort_unstable();
 
                 for id in candidate_sources {
-                    let Some(active) = state.processed.get(id).cloned() else {
+                    let Some(active) = state.processed.get(id) else {
                         continue;
                     };
-                    let active = &active;
                     assert_indexed_clause_matches_store(state, active, "given-as-target-source");
                     if sos_depth < u32::MAX
                         && given.distance >= sos_depth
@@ -2571,13 +2569,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
                     return SearchResult::Timeout;
                 }
-                let Some(p) = state.processed.get(candidate_id).cloned() else {
+                let Some(p) = state.processed.get(candidate_id) else {
                     continue;
                 };
-                let subsumes = given.avatar_is_subset_of(&p)
+                let subsumes = given.avatar_is_subset_of(p)
                     && subsumption::subsumes_id_until(
                         &given,
-                        &p,
+                        p,
                         &mut state.term_bank,
                         state.search_deadline,
                     );
@@ -2585,7 +2583,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     return SearchResult::Timeout;
                 }
                 if subsumes {
-                    to_remove_from_processed.push(p.id);
+                    to_remove_from_processed.push(candidate_id);
                 }
             }
         }
@@ -2612,7 +2610,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 if start.elapsed() >= config.time_limit {
                     return SearchResult::Timeout;
                 }
-                let Some(p) = state.processed.get(candidate_id).cloned() else {
+                let Some(p) = state.processed.get(candidate_id) else {
                     continue;
                 };
                 // Here `p` is the target being simplified. SR's quadratic
@@ -2621,10 +2619,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 if !sr_width_ok(p.literals.len()) {
                     continue;
                 }
-                if given.avatar_is_subset_of(&p)
+                if given.avatar_is_subset_of(p)
                     && let Some(removed_idx) = subsumption::subsumption_resolution_id_until(
                         &given,
-                        &p,
+                        p,
                         &mut state.term_bank,
                         state.search_deadline,
                     )
@@ -2803,29 +2801,32 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     if start.elapsed() >= config.time_limit {
                         return SearchResult::Timeout;
                     }
-                    let Some(proc) = state.processed.get(cid).cloned() else {
-                        continue;
-                    };
-                    if new_units.iter().any(|u| u.id == proc.id) {
-                        continue;
-                    }
+                    let simplified = {
+                        let Some(proc) = state.processed.get(cid) else {
+                            continue;
+                        };
+                        if new_units.iter().any(|u| u.id == cid) {
+                            continue;
+                        }
 
-                    // No memo: `temp_demod_index` is a different index from the
-                    // one `state.demod_memo` was populated against.
-                    let simplified = demodulation::demodulate_id_until(
-                        &proc,
-                        &mut state.term_bank,
-                        &temp_demod_index,
-                        &state.clause_store,
-                        &mut state.id_gen,
-                        &ac_syms,
-                        None,
-                        state.search_deadline,
-                    );
+                        // No memo: `temp_demod_index` is a different index from the
+                        // one `state.demod_memo` was populated against.
+                        demodulation::demodulate_id_until(
+                            proc,
+                            &mut state.term_bank,
+                            &temp_demod_index,
+                            &state.clause_store,
+                            &mut state.id_gen,
+                            &ac_syms,
+                            None,
+                            state.search_deadline,
+                        )
+                    };
                     if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
                         return SearchResult::Timeout;
                     }
                     if let Some(simplified) = simplified {
+                        let proc = state.processed.get(cid).cloned().unwrap();
                         state.register_clause(&proc);
 
                         // Chain further rewriting using existing active unit equalities in demod_index

@@ -157,6 +157,65 @@ impl std::fmt::Display for FormulaProvenanceError {
 
 impl std::error::Error for FormulaProvenanceError {}
 
+/// Interned representation of a formula provenance step.
+#[derive(Clone, Debug)]
+pub struct IdFormulaStep {
+    pub id: ClauseId,
+    pub formula: Box<crate::formula::Formula>,
+    pub source: ClauseSource,
+    pub certificate: Option<ClauseCertificate>,
+    pub proof_id: Option<ProofNodeId>,
+    pub witness: Option<ProofWitness>,
+}
+
+impl IdFormulaStep {
+    pub fn new(id: ClauseId, formula: crate::formula::Formula, source: ClauseSource) -> Self {
+        Self {
+            id,
+            formula: Box::new(formula),
+            source,
+            certificate: None,
+            proof_id: None,
+            witness: None,
+        }
+    }
+}
+
+impl TryFrom<IdClause> for IdFormulaStep {
+    type Error = crate::clause::NotAFormulaStepError;
+
+    fn try_from(clause: IdClause) -> Result<Self, Self::Error> {
+        if let Some(formula) = clause.formula {
+            Ok(Self {
+                id: clause.id,
+                formula,
+                source: clause.source,
+                certificate: clause.certificate,
+                proof_id: clause.proof_id,
+                witness: clause.witness,
+            })
+        } else {
+            Err(crate::clause::NotAFormulaStepError(clause.id))
+        }
+    }
+}
+
+impl From<IdFormulaStep> for IdClause {
+    fn from(step: IdFormulaStep) -> Self {
+        IdClause {
+            id: step.id,
+            literals: SmallVec::new(),
+            source: step.source,
+            avatar: Vec::new(),
+            distance: 1000,
+            formula: Some(step.formula),
+            certificate: step.certificate,
+            proof_id: step.proof_id,
+            witness: step.witness,
+        }
+    }
+}
+
 impl IdClause {
     pub fn new<L>(id: ClauseId, literals: L, source: ClauseSource) -> Self
     where
@@ -761,6 +820,28 @@ impl TermBank {
             witness: clause.witness.clone(),
         }
     }
+
+    pub fn formula_step_from_legacy(&mut self, step: &crate::clause::FormulaStep) -> IdFormulaStep {
+        IdFormulaStep {
+            id: step.id,
+            formula: step.formula.clone(),
+            source: step.source.clone(),
+            certificate: step.certificate.clone(),
+            proof_id: step.proof_id,
+            witness: step.witness.clone(),
+        }
+    }
+
+    pub fn formula_step_to_legacy(&self, step: &IdFormulaStep) -> crate::clause::FormulaStep {
+        crate::clause::FormulaStep {
+            id: step.id,
+            formula: step.formula.clone(),
+            source: step.source.clone(),
+            certificate: step.certificate.clone(),
+            proof_id: step.proof_id,
+            witness: step.witness.clone(),
+        }
+    }
 }
 
 /// A fast substitution mapping variables to `TermId`s.
@@ -920,6 +1001,25 @@ mod tests {
                 .as_search_ref()
                 .is_empty()
         );
+
+        let step = crate::clause::FormulaStep::new(
+            ClauseId(75),
+            Formula::False,
+            ClauseSource::Input {
+                name: "src".into(),
+                role: "conjecture".into(),
+            },
+        );
+        let id_step = bank.formula_step_from_legacy(&step);
+        assert_eq!(id_step.id, ClauseId(75));
+        let roundtrip = bank.formula_step_to_legacy(&id_step);
+        assert_eq!(roundtrip.id, ClauseId(75));
+        assert_eq!(roundtrip.formula, step.formula);
+
+        let id_clause: IdClause = id_step.clone().into();
+        assert!(id_clause.formula.is_some());
+        let converted = IdFormulaStep::try_from(id_clause).unwrap();
+        assert_eq!(converted.id, id_step.id);
     }
     use super::*;
     use crate::symbol::SymbolTable;
