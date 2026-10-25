@@ -14,7 +14,7 @@ use crate::{HashMap, HashSet};
 
 use mrs_core::clause::ClauseId;
 use mrs_core::symbol::SymbolId;
-use mrs_core::term_bank::{IdAtom, IdClause, TermBank, TermId};
+use mrs_core::term_bank::{IdAtom, IdClause, SearchClauseRef, TermBank, TermId};
 
 use crate::fvi::{FeatureVector, FeatureVectorTree};
 
@@ -80,6 +80,8 @@ impl LiteralIndex {
 
     /// Inserts an `IdClause` into the index.
     pub fn insert(&mut self, clause: IdClause, bank: &TermBank) {
+        SearchClauseRef::try_from(&clause)
+            .expect("formula provenance cannot enter the active index");
         let id = clause.id;
         // Replacing an existing ID must remove all old postings first; simply
         // overwriting `clauses` would leave stale predicate/equality entries.

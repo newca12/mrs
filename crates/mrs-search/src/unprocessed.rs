@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use mrs_calculus::ordering::SymbolConfig;
 use mrs_core::clause::ClauseId;
-use mrs_core::term_bank::{IdClause, TermBank};
+use mrs_core::term_bank::{IdClause, SearchClauseRef, TermBank};
 
 #[derive(Clone, Debug)]
 struct WeightWrapper {
@@ -98,6 +98,19 @@ impl UnprocessedSet {
         &mut self,
         clause: &IdClause,
         _bank: &TermBank,
+        weight: u32,
+        goal_distance: Option<u8>,
+        ml_score: Option<f32>,
+    ) {
+        let clause = SearchClauseRef::try_from(clause)
+            .expect("formula provenance cannot enter the passive queue");
+        self.push_search_clause(clause, weight, goal_distance, ml_score);
+    }
+
+    /// Typed insertion boundary; formula provenance cannot be supplied here.
+    pub fn push_search_clause(
+        &mut self,
+        clause: SearchClauseRef<'_>,
         weight: u32,
         goal_distance: Option<u8>,
         ml_score: Option<f32>,

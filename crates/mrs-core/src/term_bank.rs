@@ -83,6 +83,50 @@ pub struct IdClause {
     pub witness: Option<ProofWitness>,
 }
 
+/// Validated, immutable view of a clause eligible for live search.
+///
+/// Formula-level provenance can have no literals without being a contradiction.
+/// This view can only be constructed for genuinely clausal proof nodes. The
+/// borrow prevents callers from changing `formula` after validation.
+#[derive(Clone, Copy, Debug)]
+pub struct SearchClauseRef<'a>(&'a IdClause);
+
+impl<'a> TryFrom<&'a IdClause> for SearchClauseRef<'a> {
+    type Error = FormulaProvenanceError;
+
+    fn try_from(clause: &'a IdClause) -> Result<Self, Self::Error> {
+        if clause.formula.is_some() {
+            Err(FormulaProvenanceError(clause.id))
+        } else {
+            Ok(Self(clause))
+        }
+    }
+}
+
+impl std::ops::Deref for SearchClauseRef<'_> {
+    type Target = IdClause;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+/// A formula-provenance node was offered to a live-search container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FormulaProvenanceError(pub ClauseId);
+
+impl std::fmt::Display for FormulaProvenanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "formula provenance c{} cannot enter live search",
+            self.0.0
+        )
+    }
+}
+
+impl std::error::Error for FormulaProvenanceError {}
+
 impl IdClause {
     pub fn new<L>(id: ClauseId, literals: L, source: ClauseSource) -> Self
     where
@@ -138,7 +182,7 @@ impl IdClause {
 
     /// Returns `true` if this is the empty clause (contradiction).
     pub fn is_empty(&self) -> bool {
-        self.literals.is_empty()
+        self.formula.is_none() && self.literals.is_empty()
     }
 
     /// Returns the number of literals in this clause.
@@ -808,6 +852,35 @@ impl IdSubstitution {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn formula_provenance_is_not_an_empty_search_clause() {
+        use super::*;
+        let formula = Clause::new_formula_step(
+            ClauseId(73),
+            Formula::False,
+            ClauseSource::Input {
+                name: "source".into(),
+                role: "axiom".into(),
+            },
+        );
+        assert!(!formula.is_empty());
+        let mut bank = TermBank::new();
+        let interned = bank.clause_from_legacy(&formula);
+        assert!(!interned.is_empty());
+        assert_eq!(
+            SearchClauseRef::try_from(&interned).unwrap_err(),
+            FormulaProvenanceError(ClauseId(73))
+        );
+        let empty = IdClause::new(
+            ClauseId(74),
+            vec![],
+            ClauseSource::Inference {
+                rule: "resolution",
+                parents: vec![].into(),
+            },
+        );
+        assert!(SearchClauseRef::try_from(&empty).unwrap().is_empty());
+    }
     use super::*;
     use crate::symbol::SymbolTable;
 

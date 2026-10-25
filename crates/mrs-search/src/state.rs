@@ -194,6 +194,10 @@ impl SearchState {
         let goal_symbols = goal_map.conjecture_symbols().clone();
 
         for clause in initial_clauses {
+            assert!(
+                clause.formula.is_none(),
+                "formula provenance must be supplied separately from initial search clauses"
+            );
             let id_clause = term_bank.clause_from_legacy(&clause);
             let goal_dist = goal_map.clause_goal_distance(&id_clause, &term_bank);
             let w = crate::weight::clause_weight_fn(
@@ -375,10 +379,12 @@ impl SearchState {
 
     /// Enqueues a clause into `unprocessed` using its computed weight and relational goal distance.
     pub fn push_unprocessed(&mut self, clause: &IdClause, weight: u32, score: Option<f32>) {
+        let search_clause = mrs_core::term_bank::SearchClauseRef::try_from(clause)
+            .expect("formula provenance cannot be enqueued for search");
         self.store_clause(clause);
         let goal_dist = self.goal_map.clause_goal_distance(clause, &self.term_bank);
         self.unprocessed
-            .push(clause, &self.term_bank, weight, Some(goal_dist), score);
+            .push_search_clause(search_clause, weight, Some(goal_dist), score);
     }
 
     /// Computes and caches the ML score for a clause.
@@ -779,6 +785,34 @@ mod tests {
             &[ProofNodeId(100), ProofNodeId(200)]
         );
         assert_eq!(state.proof_arena.len(), 1);
+    }
+
+    #[test]
+    fn formula_provenance_stays_in_proof_storage_only() {
+        use mrs_core::clause::ClauseSource;
+        let provenance = Clause::new_formula_step(
+            ClauseId(91),
+            mrs_core::Formula::False,
+            ClauseSource::Input {
+                name: "formula".into(),
+                role: "axiom".into(),
+            },
+        );
+        let state = SearchState::new_with_ml(
+            vec![],
+            vec![provenance],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            Arc::new(SymbolTable::new()),
+            false,
+            None,
+            false,
+            crate::ClauseWeightFn::Standard,
+        );
+        assert!(state.unprocessed.is_empty());
+        assert!(state.processed.is_empty());
+        assert!(!state.clause_store[&ClauseId(91)].is_empty());
+        assert!(state.proof_arena.node_for_clause(ClauseId(91)).is_some());
     }
 
     #[test]

@@ -389,7 +389,7 @@ impl Clause {
 
     /// Returns `true` if this is the empty clause (contradiction).
     pub fn is_empty(&self) -> bool {
-        self.literals.is_empty()
+        self.formula.is_none() && self.literals.is_empty()
     }
 
     /// Returns the number of literals in this clause.

@@ -48,6 +48,10 @@ when uncertainty exceeds the proposed effect. Never extrapolate a subset range.
 Owners: core/search/proof maintainers. Paths: `mrs-core`, `mrs-search`, `mrs-proof`.
 
 - [ ] Separate formula provenance from live search clauses at the type boundary.
+  Landed first slice: immutable validated `SearchClauseRef`, typed passive
+  insertion, unconditional active/passive compatibility-boundary validation,
+  and formula steps no longer report `is_empty()`. Owning clause/provenance
+  storage types and migration of remaining legacy APIs are still open.
 - [ ] Replace mutable duplicate clause content with immutable per-worker storage and ID postings.
 - [ ] Validate witness parent identities against source/certificate closure at registration/export.
 - [ ] Migrate rule families to authoritative typed witnesses with exact replay.
