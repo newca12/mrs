@@ -78,7 +78,8 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
 - [ ] Propagate run-level cancellation/deadlines through preparation, setup,
   SAT, inference, simplification, elaboration, verification and shutdown.
   Search-local time now starts before AC detection/normalization and cancelled
-  searches refuse setup immediately. Inner setup traversals and front-end
+  searches refuse setup immediately. All given-clause AVATAR SAT calls use
+  the same worker deadline through CaDiCaL's terminator. Inner setup traversals and front-end
   cancellation propagation remain open.
 - [ ] Isolate non-interruptible verification when a hard process deadline is required.
 - [x] Bound candidate queues by bytes as well as count: eight queued candidates,

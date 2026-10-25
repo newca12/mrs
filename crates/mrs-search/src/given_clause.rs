@@ -495,7 +495,7 @@ fn avatar_refute_branch(
                 )
             })
     }) {
-        return match state.avatar.solver.solve() {
+        return match solve_avatar_with_budget(state) {
             mrs_cadical::SolveResult::Sat => {
                 update_model(state);
                 sync_active_dormant(state, ordering);
@@ -527,7 +527,7 @@ fn avatar_refute_branch(
     state.register_clause(&branch_root);
     state.branch_empty_ids.push(branch_root.id);
 
-    match state.avatar.solver.solve() {
+    match solve_avatar_with_budget(state) {
         mrs_cadical::SolveResult::Sat => {
             update_model(state);
             sync_active_dormant(state, ordering);
@@ -1325,7 +1325,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     // Initial SAT sync
     if config.use_avatar {
         state.avatar.current_model.clear();
-        match state.avatar.solver.solve() {
+        match solve_avatar_with_budget(state) {
             mrs_cadical::SolveResult::Sat => {
                 update_model(state);
                 sync_active_dormant(state, &ordering);
@@ -2929,7 +2929,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         given.id.0
                     );
                 }
-                match state.avatar.solver.solve() {
+                match solve_avatar_with_budget(state) {
                     mrs_cadical::SolveResult::Sat => {
                         update_model(state);
                         sync_active_dormant(state, &ordering);
@@ -3451,7 +3451,6 @@ fn trace_stage(
     }
 }
 
-/// Returns true if a clause is a unit positive equality (used for demodulation).
 /// Hash rendered logical content, not worker-local TermIds or hash-map order.
 /// Length framing and fixed-width metadata make clause boundaries unambiguous.
 fn record_trajectory(
@@ -3476,6 +3475,23 @@ fn record_trajectory(
     }
 }
 
+/// Every AVATAR solve uses the worker's existing run deadline. No new SAT-local
+/// clock may extend the search allowance.
+fn solve_avatar_with_budget(state: &mut SearchState) -> mrs_cadical::SolveResult {
+    if state
+        .stop_flag
+        .as_ref()
+        .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    {
+        return mrs_cadical::SolveResult::Unknown;
+    }
+    match state.search_deadline {
+        Some(deadline) => state.avatar.solver.solve_until(deadline),
+        None => state.avatar.solver.solve(),
+    }
+}
+
+/// Returns true if a clause is a unit positive equality (used for demodulation).
 fn is_unit_positive_equality_id(clause: &IdClause) -> bool {
     clause.len() == 1
         && clause.literals[0].positive
@@ -3555,6 +3571,23 @@ mod tests {
         state.stop_flag = Some(Arc::new(std::sync::atomic::AtomicBool::new(true)));
         assert!(matches!(search(&mut state, &config), SearchResult::Timeout));
         assert_eq!(state.stats.processed, 0);
+    }
+
+    #[test]
+    fn avatar_solver_refuses_expired_worker_deadline_even_for_unsat_input() {
+        let mut state = SearchState::new(
+            vec![],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            Arc::new(SymbolTable::new()),
+            true,
+        );
+        state.avatar.solver.add_clause(&[]);
+        state.search_deadline = Some(Instant::now() - Duration::from_secs(1));
+        assert_eq!(
+            solve_avatar_with_budget(&mut state),
+            mrs_cadical::SolveResult::Unknown
+        );
     }
 
     #[test]
