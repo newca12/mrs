@@ -102,6 +102,11 @@ the chosen selector (age and weight remain for fallback/LRS). Compare fixed-work
 digests/counters and `passive_queue_entries` with the option absent. The latter
 counts retained queue entries including tombstones, not live clauses or bytes.
 The optimization is opt-in pending representative memory and coverage measurements.
+`MRS_COMPACT_QUEUES=1` additionally removes passive tombstones at periodic
+maintenance points when retained entries exceed both 4,096 and 32 times live
+membership. This does not LRS-prune live clauses. `queue_tombstones_removed`,
+`retained_terms`, and `retained_proof_clauses` distinguish queue churn from
+term/proof-history retention; these are final counts, not byte or peak metrics.
 
 ```bash
 crates/mrs-bench/run_strategy_sweep.sh \

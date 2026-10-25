@@ -1222,6 +1222,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     let mut trajectory = std::env::var("MRS_TRAJECTORY_DIGEST")
         .is_ok_and(|value| value == "1")
         .then(Sha256::new);
+    let compact_queues = std::env::var("MRS_COMPACT_QUEUES").is_ok_and(|value| value == "1");
     if std::env::var("MRS_SPECIALIZE_QUEUES").is_ok_and(|value| value == "1") {
         state
             .unprocessed
@@ -1564,6 +1565,19 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         }
 
         if iteration.is_multiple_of(100) && iteration >= 100 {
+            // Experimental storage-only maintenance: never delete a live
+            // clause or alter queue priorities. The threshold is opt-in until
+            // representative cost/benefit measurements establish a default.
+            if compact_queues
+                && state.unprocessed.stored_entries()
+                    > state
+                        .unprocessed
+                        .active_count()
+                        .saturating_mul(32)
+                        .max(4096)
+            {
+                state.stats.queue_tombstones_removed += state.unprocessed.compact() as u64;
+            }
             let elapsed = start.elapsed();
             if let Some(target_size) =
                 lrs_target_size(config.lrs_policy, iteration, elapsed, config.time_limit)

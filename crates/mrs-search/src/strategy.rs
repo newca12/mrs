@@ -1679,6 +1679,8 @@ pub fn run_schedule_with_candidate_receiver(
                     // Capture passive size after search (unprocessed set is still live).
                     state.stats.passive_size = state.unprocessed.active_count() as u64;
                     state.stats.passive_queue_entries = state.unprocessed.stored_entries() as u64;
+                    state.stats.retained_terms = state.term_bank.len() as u64;
+                    state.stats.retained_proof_clauses = state.clause_store.len() as u64;
                     #[cfg(feature = "parent-guidance")]
                     if state.parent_guidance_enabled
                         && state.stats.parent_guidance_sampled > 0

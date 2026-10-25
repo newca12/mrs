@@ -126,7 +126,10 @@ Prerequisites: P0/P2 measurements and P1 identity contract.
   preserving age/weight fallbacks and LRS behavior; queue rebuilds retain the
   policy. Differential selector/pruning tests pass. `passive_queue_entries`
   records actual retained entries including tombstones. Promotion/compaction
-  thresholds require fixed-work memory/trajectory measurements.
+  thresholds require fixed-work memory/trajectory measurements. Experimental
+  `MRS_COMPACT_QUEUES=1` removes only tombstones above a declared storage ratio;
+  differential selector tests cover FIFO/priority preservation. Term/proof
+  retention counts and removed-tombstone totals are exposed alongside queue size.
 - [ ] Compare indexed backward rewriting policies, including requeue-to-passive.
 - [ ] Prototype shared immutable prepared input with worker-local derived arenas.
 - [ ] Bound inference batches and avoid avoidable intermediate collections.

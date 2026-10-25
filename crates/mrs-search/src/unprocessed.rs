@@ -159,6 +159,27 @@ impl UnprocessedSet {
         entries
     }
 
+    /// Remove only tombstones; weights, FIFO order and live membership remain
+    /// unchanged. Returns physical entries removed, not discarded clauses.
+    pub fn compact(&mut self) -> usize {
+        let before = self.stored_entries();
+        self.age_queue.retain(|id| self.active_ids.contains(id));
+        self.weight_queue
+            .retain(|entry| self.active_ids.contains(&entry.id));
+        self.goal_queue
+            .retain(|entry| self.active_ids.contains(&entry.id));
+        self.unit_queue
+            .retain(|entry| self.active_ids.contains(&entry.id));
+        self.horn_queue
+            .retain(|entry| self.active_ids.contains(&entry.id));
+        self.sos_queue
+            .retain(|entry| self.active_ids.contains(&entry.id));
+        #[cfg(feature = "ml-guidance")]
+        self.ml_queue
+            .retain(|entry| self.active_ids.contains(&entry.id));
+        before - self.stored_entries()
+    }
+
     /// Adds an `IdClause` to the unprocessed set.
     ///
     /// `weight` is the precomputed clause weight (using the strategy's chosen
@@ -599,6 +620,43 @@ mod tests {
                 }
                 assert!(specialized.is_empty());
             }
+        }
+    }
+
+    #[test]
+    fn tombstone_compaction_preserves_every_selector_trajectory() {
+        use crate::{QueueType, SelectionStrategy};
+        for selection in [
+            SelectionStrategy::Fifo,
+            SelectionStrategy::AgeWeight(3),
+            SelectionStrategy::GoalDirected(5),
+            SelectionStrategy::MultiQueue(vec![
+                (QueueType::Horn, 2),
+                (QueueType::Unit, 1),
+                (QueueType::Sos, 1),
+            ]),
+        ] {
+            let mut bank = TermBank::new();
+            let mut baseline = UnprocessedSet::new(Arc::new(SymbolConfig::default()));
+            let mut compacted = UnprocessedSet::new(Arc::new(SymbolConfig::default()));
+            for id in 1..=80 {
+                for set in [&mut baseline, &mut compacted] {
+                    push_weighted(&mut bank, set, id, (id % 7) as u32, Some((id % 10) as u8));
+                }
+            }
+            for id in 1..=60 {
+                baseline.remove(ClauseId(id));
+                compacted.remove(ClauseId(id));
+            }
+            assert!(compacted.compact() > 0);
+            assert_eq!(compacted.active_count(), baseline.active_count());
+            for iteration in 0..20 {
+                assert_eq!(
+                    crate::select::select(&mut baseline, &selection, iteration, 100),
+                    crate::select::select(&mut compacted, &selection, iteration, 100)
+                );
+            }
+            assert!(compacted.is_empty());
         }
     }
 
