@@ -1914,6 +1914,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 }
                 if let Some(removed_idx) = removed_idx {
                     let parent = p.id;
+                    let target_proof_id = given
+                        .proof_id
+                        .unwrap_or(mrs_core::witness::ProofNodeId(given.id.0));
+                    let subsumer_proof_id =
+                        p.proof_id.unwrap_or(mrs_core::witness::ProofNodeId(p.id.0));
                     let mut new_lits = given.literals.clone();
                     new_lits.remove(removed_idx);
                     given = IdClause::new_avatar(
@@ -1925,6 +1930,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         },
                         given.avatar.clone(),
                     );
+                    given.witness = Some(mrs_core::witness::ProofWitness::SubsumptionResolution {
+                        target: target_proof_id,
+                        subsumer: subsumer_proof_id,
+                        deleted_lit_idx: removed_idx,
+                    });
                     state.register_clause(&given);
                     given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
                     changed = true;
@@ -2619,9 +2629,14 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         state.search_deadline,
                     )
                 {
+                    let target_proof_id =
+                        p.proof_id.unwrap_or(mrs_core::witness::ProofNodeId(p.id.0));
+                    let subsumer_proof_id = given
+                        .proof_id
+                        .unwrap_or(mrs_core::witness::ProofNodeId(given.id.0));
                     let mut new_lits = p.literals.clone();
                     new_lits.remove(removed_idx);
-                    let simplified = IdClause::new_avatar(
+                    let mut simplified = IdClause::new_avatar(
                         state.id_gen.next(),
                         new_lits,
                         ClauseSource::Inference {
@@ -2630,6 +2645,12 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         },
                         p.avatar.clone(),
                     );
+                    simplified.witness =
+                        Some(mrs_core::witness::ProofWitness::SubsumptionResolution {
+                            target: target_proof_id,
+                            subsumer: subsumer_proof_id,
+                            deleted_lit_idx: removed_idx,
+                        });
                     backward_sr_simplified.push((p.id, simplified));
                 }
             }
@@ -2863,7 +2884,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                             continue;
                         }
                         if is_trivial_contradiction_id(&simplified) {
-                            let empty = IdClause::new_avatar(
+                            let mut empty = IdClause::new_avatar(
                                 state.id_gen.next(),
                                 vec![],
                                 ClauseSource::Inference {
@@ -2872,6 +2893,14 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                 },
                                 simplified.avatar.clone(),
                             );
+                            empty.witness =
+                                Some(mrs_core::witness::ProofWitness::EqualityResolution {
+                                    parent: simplified
+                                        .proof_id
+                                        .unwrap_or(mrs_core::witness::ProofNodeId(simplified.id.0)),
+                                    lit_idx: 0,
+                                    unifier: None,
+                                });
                             state.register_clause(&simplified);
                             state.register_clause(&empty.clone());
                             backward_demod_empty.push(empty);
@@ -3391,6 +3420,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         }
                         if let Some(removed_idx) = removed_idx {
                             let parent = p.id;
+                            let target_proof_id = clause
+                                .proof_id
+                                .unwrap_or(mrs_core::witness::ProofNodeId(clause.id.0));
+                            let subsumer_proof_id =
+                                p.proof_id.unwrap_or(mrs_core::witness::ProofNodeId(p.id.0));
                             let mut new_lits = clause.literals.clone();
                             new_lits.remove(removed_idx);
                             clause = IdClause::new_avatar(
@@ -3402,6 +3436,12 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                                 },
                                 clause.avatar.clone(),
                             );
+                            clause.witness =
+                                Some(mrs_core::witness::ProofWitness::SubsumptionResolution {
+                                    target: target_proof_id,
+                                    subsumer: subsumer_proof_id,
+                                    deleted_lit_idx: removed_idx,
+                                });
                             state.register_clause(&clause);
                             clause_fv = FeatureVector::from_id_clause(&clause, &state.term_bank);
                             changed = true;

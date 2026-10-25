@@ -10,6 +10,7 @@ use mrs_core::Atom;
 use mrs_core::Substitution;
 use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource, Literal};
 use mrs_core::term::Term;
+use mrs_core::witness::{ProofNodeId, ProofWitness};
 
 use crate::rename::{is_ground_id, max_var, max_var_id, rename_clause, rename_clause_id};
 use mrs_core::term_bank::{
@@ -638,6 +639,10 @@ pub fn condense(clause: &Clause, id_gen: &mut ClauseIdGen) -> Option<Clause> {
                     },
                     clause.avatar.clone(),
                 );
+                new_clause.witness = Some(ProofWitness::Condensation {
+                    parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                    retained_indices: (0..clause.literals.len()).filter(|&k| k != i).collect(),
+                });
                 new_clause.deduplicate();
 
                 // Verify that the condensed clause actually has fewer literals
@@ -754,7 +759,7 @@ pub fn condense_id_until(
                     }
                 }
 
-                let condensed = IdClause::new_avatar(
+                let mut condensed = IdClause::new_avatar(
                     id_gen.next(),
                     new_lits,
                     ClauseSource::Inference {
@@ -763,6 +768,10 @@ pub fn condense_id_until(
                     },
                     clause.avatar.clone(),
                 );
+                condensed.witness = Some(ProofWitness::Condensation {
+                    parent: clause.proof_id.unwrap_or(ProofNodeId(clause.id.0)),
+                    retained_indices: (0..clause.literals.len()).filter(|&k| k != i).collect(),
+                });
 
                 if subsumes_id_until(&condensed, clause, bank, deadline) {
                     return Some(condensed);

@@ -72,6 +72,11 @@ Owners: core/search/proof maintainers. Paths: `mrs-core`, `mrs-search`, `mrs-pro
   preserving Skolem freshness before introduced definitions in shared proofs.
   The two-worker sharing-on `group.p` regression certifies through isolated replay.
 - [ ] Migrate rule families to authoritative typed witnesses with exact replay.
+  Subsumption resolution (forward and backward), condensation, AC normalization
+  and trivial-contradiction DER now emit typed `ProofWitness` structures alongside
+  resolution, factoring, superposition, demodulation, avatar and equality resolution.
+  Export-time witness parent closure checks ensure exact citation correspondence.
+  Direct checker consumption of the typed witness arena is open.
 - [ ] Add bounded streaming output and measure proof-finalization latency/peak memory.
   `write_tstp` now serializes to a caller-owned sink without a proof-sized line
   vector; `format_tstp_bounded` enforces an exact byte ceiling and returns no

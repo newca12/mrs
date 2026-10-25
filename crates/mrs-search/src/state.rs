@@ -662,6 +662,15 @@ impl SearchState {
             rule: "ac_normalization",
             parents: parents.into(),
         };
+        normalized.witness = Some(ProofWitness::AcNormalization {
+            parent: ProofNodeId(clause.id.0),
+            ac_symbols: ac_syms.iter().copied().collect(),
+            source_axioms: self
+                .ac_axiom_ids
+                .iter()
+                .map(|id| ProofNodeId(id.0))
+                .collect(),
+        });
         self.register_clause(&normalized);
         normalized
     }
