@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 use std::process;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,8 @@ use mrs_search::SearchResult;
 use mrs_search::strategy::{CandidateReceiver, CandidateRefutation};
 
 static SELF_VERIFY_COUNTER: AtomicU64 = AtomicU64::new(0);
+const MAX_QUEUED_CANDIDATES: usize = 8;
+const MAX_QUEUED_PROOF_BYTES: usize = 64 * 1024 * 1024;
 
 /// Configuration for the asynchronous certification coordinator.
 #[derive(Debug, Clone)]
@@ -58,7 +60,8 @@ enum CoordinatorMessage {
 /// Thread-safe coordinator running asynchronous candidate proof verification.
 pub struct AsyncCoordinator {
     config: AsyncCoordinatorConfig,
-    tx: mpsc::Sender<CoordinatorMessage>,
+    tx: mpsc::SyncSender<CoordinatorMessage>,
+    queued_proof_bytes: AtomicUsize,
     stop_flag: RwLock<Option<Arc<AtomicBool>>>,
     certified_winner: Mutex<Option<SearchResult>>,
     telemetry: Mutex<CertificationTelemetry>,
@@ -69,10 +72,11 @@ pub struct AsyncCoordinator {
 impl AsyncCoordinator {
     /// Spawns the coordinator background thread and returns an `Arc<AsyncCoordinator>`.
     pub fn new(config: AsyncCoordinatorConfig) -> Arc<Self> {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(MAX_QUEUED_CANDIDATES);
         let coordinator = Arc::new(Self {
             config: config.clone(),
             tx,
+            queued_proof_bytes: AtomicUsize::new(0),
             stop_flag: RwLock::new(None),
             certified_winner: Mutex::new(None),
             telemetry: Mutex::new(CertificationTelemetry {
@@ -138,6 +142,8 @@ impl AsyncCoordinator {
             match msg {
                 CoordinatorMessage::Finish => break,
                 CoordinatorMessage::Candidate(candidate) => {
+                    self.queued_proof_bytes
+                        .fetch_sub(candidate.tstp_proof.len(), Ordering::Relaxed);
                     candidate_idx += 1;
                     {
                         let mut tele = self.telemetry.lock().unwrap();
@@ -238,7 +244,44 @@ impl CandidateReceiver for AsyncCoordinator {
         if self.coordinator_error.lock().unwrap().is_some() {
             return false;
         }
-        let _ = self.tx.send(CoordinatorMessage::Candidate(candidate));
+        let bytes = candidate.tstp_proof.len();
+        let reserved = self
+            .queued_proof_bytes
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+                queued
+                    .checked_add(bytes)
+                    .filter(|total| *total <= MAX_QUEUED_PROOF_BYTES)
+            })
+            .is_ok();
+        let rejected = if reserved {
+            if self
+                .tx
+                .try_send(CoordinatorMessage::Candidate(candidate))
+                .is_err()
+            {
+                self.queued_proof_bytes.fetch_sub(bytes, Ordering::Relaxed);
+                true
+            } else {
+                false
+            }
+        } else {
+            true
+        };
+        if rejected {
+            let mut telemetry = self.telemetry.lock().unwrap();
+            telemetry.candidate_count += 1;
+            telemetry.candidate_rejection_count += 1;
+            // Keep overload diagnostics bounded as well as proof payloads.
+            if !telemetry
+                .candidate_reasons
+                .iter()
+                .any(|r| r == "candidate queue capacity exceeded")
+            {
+                telemetry
+                    .candidate_reasons
+                    .push("candidate queue capacity exceeded".into());
+            }
+        }
         // Return true if certified already, signaling the caller to stop immediately.
         self.stop_flag
             .read()
@@ -340,4 +383,59 @@ fn count_proof_nodes(tstp_proof: &str) -> usize {
                 || trimmed.starts_with("thf(")
         })
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_backpressure_is_nonblocking_and_releases_failed_reservations() {
+        // A receiver held without a consumer makes count/byte pressure exact,
+        // independent of verifier timing.
+        let (tx, _rx) = mpsc::sync_channel(1);
+        let coordinator = AsyncCoordinator {
+            config: AsyncCoordinatorConfig {
+                time_limit: Duration::from_secs(10),
+                self_check_reserve: Duration::ZERO,
+                problem_path: "input".into(),
+                input_text: String::new(),
+                include_root: None,
+                has_includes: false,
+                cert_oversubscribed: false,
+                search_workers: 1,
+                cert_workers: 1,
+                start_time: Instant::now(),
+            },
+            tx,
+            queued_proof_bytes: AtomicUsize::new(0),
+            stop_flag: RwLock::new(None),
+            certified_winner: Mutex::new(None),
+            telemetry: Mutex::new(CertificationTelemetry::default()),
+            join_handle: Mutex::new(None),
+            coordinator_error: Mutex::new(None),
+        };
+        let candidate = || CandidateRefutation {
+            strategy_idx: 0,
+            strategy_id: 1,
+            clause_id: mrs_core::clause::ClauseId(1),
+            tstp_proof: "proof".into(),
+            elapsed_ms: 0,
+            time_remaining: Duration::from_secs(10),
+        };
+        assert!(!coordinator.submit_candidate(candidate()));
+        assert!(!coordinator.submit_candidate(candidate()));
+        assert_eq!(coordinator.queued_proof_bytes.load(Ordering::Relaxed), 5);
+        coordinator
+            .queued_proof_bytes
+            .store(MAX_QUEUED_PROOF_BYTES, Ordering::Relaxed);
+        assert!(!coordinator.submit_candidate(candidate()));
+        assert_eq!(
+            coordinator.queued_proof_bytes.load(Ordering::Relaxed),
+            MAX_QUEUED_PROOF_BYTES
+        );
+        let telemetry = coordinator.telemetry.lock().unwrap();
+        assert_eq!(telemetry.candidate_rejection_count, 2);
+        assert_eq!(telemetry.candidate_reasons.len(), 1);
+    }
 }

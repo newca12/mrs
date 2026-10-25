@@ -56,7 +56,10 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
 - [ ] Propagate run-level cancellation/deadlines through preparation, setup,
   SAT, inference, simplification, elaboration, verification and shutdown.
 - [ ] Isolate non-interruptible verification when a hard process deadline is required.
-- [ ] Bound candidate queues by bytes as well as count; document backpressure.
+- [x] Bound candidate queues by bytes as well as count: eight queued candidates,
+  64 MiB queued proof text, nonblocking rejection with telemetry. One in-flight
+  proof and producer-owned payloads are additional memory; verification itself
+  still needs an interruptible budget boundary.
 - [ ] Add stage completion telemetry, phase costs and memory-by-subsystem accounting.
 - [ ] Add fixed-work diagnostic configuration, stable tie-breaking/seeds and trajectory digests.
 - [ ] Extract selection, simplification, inference, AVATAR and sharing modules
