@@ -115,6 +115,8 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
   Portfolio strategy counters are now forked into worker-local ID namespaces,
   avoiding sibling allocation timing in clause-ID tie-breaking. Imported chains
   still remap IDs; shared-generator clone semantics remain for single-pipeline users.
+  AC removal, backward-demodulation candidates and AVATAR reactivation use stable
+  clause-ID order rather than hash traversal when order affects selection/IDs.
 - [ ] Extract selection, simplification, inference, AVATAR and sharing modules
   behind concrete contracts; avoid dynamic dispatch/allocation in hot loops.
 

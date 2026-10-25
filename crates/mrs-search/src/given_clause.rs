@@ -434,12 +434,13 @@ fn publish_shared_chain_counted(
 /// unit-equality clauses that cross the active/dormant boundary.
 fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) {
     // 1. Processed -> Dormant
-    let to_remove: Vec<_> = state
+    let mut to_remove: Vec<_> = state
         .processed
         .iter()
         .filter(|p| !state.is_active(p))
         .map(|p| p.id)
         .collect();
+    to_remove.sort_unstable();
     for id in to_remove {
         if let Some(p) = state.processed.remove(id, &state.term_bank) {
             if is_unit_positive_equality_id(&p)
@@ -477,12 +478,13 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
     }
 
     // 3. Dormant Processed -> Unprocessed
-    let to_restore_proc: Vec<_> = state
+    let mut to_restore_proc: Vec<_> = state
         .dormant_processed
         .keys()
         .copied()
         .filter(|id| state.is_active(state.dormant_processed.get(id).unwrap()))
         .collect();
+    to_restore_proc.sort_unstable();
     for id in to_restore_proc {
         let p = state.dormant_processed.remove(&id).unwrap();
         #[cfg(feature = "ml-guidance")]
@@ -494,12 +496,13 @@ fn sync_active_dormant(state: &mut SearchState, ordering: &crate::TermOrdering) 
     }
 
     // 4. Dormant Unprocessed -> Unprocessed
-    let to_restore_unproc: Vec<_> = state
+    let mut to_restore_unproc: Vec<_> = state
         .dormant_unprocessed
         .keys()
         .copied()
         .filter(|id| state.is_active(state.dormant_unprocessed.get(id).unwrap()))
         .collect();
+    to_restore_unproc.sort_unstable();
     for id in to_restore_unproc {
         let u = state.dormant_unprocessed.remove(&id).unwrap();
         #[cfg(feature = "ml-guidance")]
@@ -886,6 +889,8 @@ fn detect_ac_symbols(
             }
         }
     }
+    to_remove.sort_unstable();
+    ac_axioms.sort_unstable();
     (comm, assoc, to_remove, ac_axioms)
 }
 
@@ -1415,7 +1420,8 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     }
 
     // Check for initial empty clauses
-    let initial_ids: Vec<_> = state.unprocessed.iter().collect();
+    let mut initial_ids: Vec<_> = state.unprocessed.iter().collect();
+    initial_ids.sort_unstable();
     // Set-of-support depth actually enforced for this search.
     //
     // A set-of-support restriction is a promise that inferences touching the
@@ -2754,6 +2760,8 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
                 let mut created_units = Vec::new();
 
+                let mut candidate_ids = candidate_ids.into_iter().collect::<Vec<_>>();
+                candidate_ids.sort_unstable();
                 for cid in candidate_ids {
                     if start.elapsed() >= config.time_limit {
                         return SearchResult::Timeout;
