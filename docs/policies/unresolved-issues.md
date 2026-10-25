@@ -1966,6 +1966,14 @@ The retained proofs are under
 
 ## UI-8 — Measured: passive-queue retention is not the constraint on the hard tail
 
+> Evidence correction (2026-10-25): this experiment changed both hardware
+> placement and LRS policy, so it cannot establish an LRS effect or retire all
+> retention hypotheses. The 25-problem replicates establish variability only
+> on that subset; the historical ±12 division extrapolation below is invalid.
+> Use matched, paired campaigns on the actual evaluation set before making
+> a causal or division-wide uncertainty claim. The later LPO diagnosis also
+> supersedes queue-size explanations for the UEQ silent kills.
+
 | | |
 |---|---|
 | Status | Measured, **negative**. The hypothesis is retired; the underlying question stays open. |

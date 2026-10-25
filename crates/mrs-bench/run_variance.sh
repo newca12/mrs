@@ -15,8 +15,9 @@
 # A single run is not a measurement. On a fixed 25-problem casc-30 UEQ subset,
 # five replicates of an identical configuration solved 21 / 20 / 19 / 21 / 20 —
 # mean 20.2, range 19-21, with nothing changed between runs. That is +-1 per 25,
-# which scales to **+-12 per 300**: the same size as any portfolio difference the
-# A/B tooling is asked to detect.
+# This demonstrates variability on those 25 selected problems. It does not
+# establish a +-12 noise floor for 300 problems: that requires measuring the
+# full evaluation set and accounting for correlations and problem selection.
 #
 # Two consequences for everything else in this directory:
 #
@@ -26,7 +27,7 @@
 #     round (rounds x 8 slots x 15 candidates), which selects on noise.
 #   * `greedy_set_cover` builds each strategy's solved-set from one `run.csv`.
 #
-# Against that noise floor, prefer a mean over >=5 replicates to a
+# Prefer a mean over >=5 replicates to a
 # single number. See `docs/policies/unresolved-issues.md` UI-8.
 #
 # Method

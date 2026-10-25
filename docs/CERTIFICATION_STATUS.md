@@ -1,5 +1,14 @@
 # Certification status
 
+> Interpretation policy (2026-10-25): the dated tables below describe their
+> named producer/checker revisions and budgets; they are not a single HEAD
+> baseline. Later re-audits supersede earlier interpretations only for the same
+> retained artifacts. Zero `VerifiedBad` means no rejection observed in that set,
+> not zero possible unsoundness. Cross-host/build comparisons are observational.
+> Establish a fresh paired baseline before performance promotion; see
+> [`methodology`](policies/methodology.md#85-experimental-design-and-evidence-strength)
+> and the active [`roadmap`](../ROADMAP.md).
+
 The single place that records what `mrs-proover` scores and what fraction of
 `mrs`'s own proofs its strict kernel can certify, with the hardware each number
 was measured on. Older status notes are kept for history but are not
@@ -84,9 +93,10 @@ axiom. See `docs/VERIFIER_SPEC.md` §2 and the regression tests in
 ## 2. Self-certification
 
 Definition: of the refutations `mrs` produced in a benchmark run, how many does
-`mrs-proof-kernel` certify? Anything else is `Unknown` (or, historically,
-`VerifiedBad`, which is a kernel gap rather than a bad proof when the proof
-came from `mrs` itself).
+`mrs-proof-kernel` certify? Other outcomes include `Unknown`, timeout, omitted
+proofs and `VerifiedBad`. A rejection requires investigation: the producer,
+exporter or checker may be defective. Originating from `mrs` does not establish
+that a proof is valid.
 
 Campaign: `crates/mrs-bench/certification_campaign.sh` — runs the normal
 competition route and then replays the archived proofs through the kernel with

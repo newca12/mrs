@@ -137,16 +137,14 @@ engine rather than of the input, which is why it is kept separate.
 off — the same thing `systems/mrs-sNN` measures, so the numbers are comparable
 with anything `run_strategy_sweep.sh` already produced.
 
-The measurement rests on one equivalence, worth stating because it is what makes
-a solo sweep sufficient to evaluate a portfolio:
-
-> Portfolio workers run concurrently, so each slot receives the whole wall clock.
-> A solo run at the full budget *is* a portfolio slot. The union of the selected
-> configurations' solved sets is therefore the portfolio's coverage, with no
-> further measurement needed.
-
-That turns a portfolio question into a set-cover question over already-measured
-sets. The simulation in `analyze.py` is exact, not an approximation.
+The union of solo solved sets is a **candidate-generation simulation**, not an
+exact measurement of concurrent portfolio coverage. Concurrent workers contend
+for CPU caches and memory bandwidth, changing throughput and wall-clock-sensitive
+LRS decisions even when sharing is off. With sharing on, their inference inputs
+also change. Set cover describes the recorded solo matrix exactly, but does not
+establish the coverage of a real portfolio. Routing conclusions in this report
+apply to that matrix and the evaluated budgets; promotion requires paired,
+repeated concurrent experiments on the intended eight-core configuration.
 
 ## 5. Why routing loses, in detail
 

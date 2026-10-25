@@ -416,6 +416,32 @@ Do not claim a solve-rate gain from one run. Record:
 A faster run with one false definitive answer is a regression, not an
 improvement.
 
+### 8.5 Experimental design and evidence strength
+
+- Use solo solved-set unions only to propose portfolios. Concurrent execution
+  changes cache/bandwidth contention and wall-clock-sensitive pruning even with
+  sharing disabled. Measure the actual eight-worker portfolio for promotion.
+- Run baseline and candidate in paired, interleaved blocks on the same host,
+  with identical CPU placement, memory allowance, corpus and official budget.
+  At least five replicates are an initial screen, not a universal power guarantee.
+- Report paired certified solve-count deltas, per-problem outcomes and uncertainty.
+  Never linearly extrapolate a selected subset's observed range into a
+  division-wide noise floor. Resampling must preserve repeated observations of
+  each problem and account for related problem families.
+- Separate development/tuning families from held-out families. Repeatedly selecting
+  the best of many noisy candidates requires a fresh holdout comparison.
+- One worker removes sibling contention, not clock dependence. Deterministic
+  diagnostics require fixed work/pruning budgets, stable tie-breaking and seeds;
+  verify trajectory equivalence before interpreting timing differences.
+- Zero rejected proofs in an audited corpus is an observation, not a theorem of
+  global soundness. A rejection of an MRS proof can be a producer defect, export
+  defect or checker defect; investigate the actual first failing node.
+- Identify every audit by producer binary/source identity, checker binary/source
+  identity, corpus/include digest, configuration and resource limits. Re-audits
+  append new records; they do not overwrite historical verdicts.
+- Keep actual elapsed time separate from competition-credited time, and RSS
+  separate from address-space peaks. SIGKILL alone does not establish OOM.
+
 ## 9. Safe Rollout Policy
 
 New mechanisms should be introduced in stages:

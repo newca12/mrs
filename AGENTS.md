@@ -79,9 +79,14 @@ To maintain the highest repository standards, any AI agent working in this works
 
 The Verus project is a first-class component at
 `formal/superposition-checker/`, developed alongside the Rust workspace and
-checked by regular CI. It is not a Cargo crate. Its current verified scope is
-the ground unit-superposition fragment; it is **not yet integrated** into
-`mrs-proof-kernel` and makes no c502 verdict. The pinned Verus version/toolchain
+checked by regular CI. It is not a Cargo crate. Its verified scope includes
+first-order inference replay and supported CNF proof DAGs. The bounded adapter
+in `mrs-proof-kernel::verus` supports shadow and opt-in dual checking; it does
+not replace default certification. The theorem covers decoded IR, while TPTP
+lowering and the host bridge remain trusted. The c502 fixture is a local-step
+regression, not certification of the complete archived proof. Current scope is
+defined by `formal/superposition-checker/ASSURANCE.md` and `supported-rules.json`.
+The pinned Verus version/toolchain
 and checksums are recorded in `formal/superposition-checker/verus-toolchain.json`.
 
 Use the isolated Verus Nix shell (separate from the workspace Rust 1.99.1
@@ -435,9 +440,10 @@ search over candidate portfolios.
 
 > **Read this before trusting any single-run A/B.** A single run is not a
 > measurement. Five replicates of an identical configuration over a fixed
-> 25-problem casc-30 UEQ subset solved 21 / 20 / 19 / 21 / 20 — **±1 per 25,
-> i.e. ±12 per 300**. That noise floor is the same size as any portfolio
-> difference these steps are asked to detect, and `cooperative_portfolio_search.sh`
+> 25-problem casc-30 UEQ subset solved 21 / 20 / 19 / 21 / 20. This demonstrates
+> subset variability, not a division-wide ±12 noise floor; linear extrapolation
+> does not account for selection or cross-problem correlations.
+> `cooperative_portfolio_search.sh`
 > maximises over ~120 noisy evaluations per round (`rounds × 8 slots × 15
 > candidates`), which selects on noise. Wrap decisive comparisons in
 > `run_variance.sh` and compare **means over ≥5 replicates**:

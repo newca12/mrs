@@ -79,11 +79,11 @@ reproducible run-to-run** — how much material a strategy receives from its
 siblings, and how CPU contention affects timing-sensitive heuristics like LRS
 pruning, both depend on real-time thread scheduling.
 
-To get a fully deterministic, reproducible result for a *single* strategy
-(e.g. when checking "does the top-priority strategy for schedule X solve
-problem Y"), run with `--workers 1`. This executes the schedule strictly
-sequentially with no sibling threads, no clause-pool cross-talk, and no
-CPU contention, so the same command always produces the same result:
+To isolate a *single* strategy, run with `--workers 1`. This removes sibling
+search contention and clause-pool cross-talk, but does not make a wall-clock
+run deterministic: host load can still change LRS decisions and timeout points.
+For fixed-work diagnostics use explicit work ceilings and fixed-iteration LRS;
+compare trajectories before treating two runs as equivalent.
 
 ```bash
 nix develop -c cargo run -- --workers 1 --schedule casc_eps problem.p
@@ -186,6 +186,7 @@ mrs/
 ```
 
 For the organized documentation map, see [`docs/README.md`](docs/README.md).
+The active performance and architecture plan is [`ROADMAP.md`](ROADMAP.md).
 
 ## License
 
