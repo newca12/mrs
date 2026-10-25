@@ -24,6 +24,19 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-25 multi-step and multi-parent demodulation checkpoint
+
+- **DONE:** implemented multi-step and multi-parent demodulation and equality normalization
+  chain discovery in `mrs-proof-kernel::verus`: `find_demod_rewrites` and `find_demod_chain`
+  search shortest rewrite chains across multiple equality parents and multiple subterm positions,
+  elaborating them into topologically sound chains of verified `Kind::Demodulation` intermediate nodes.
+- **DONE:** resolved process descriptor release in `snapshot_artifact` ensuring immediate closure
+  of write handles before permission setup and process execution.
+- **DONE:** integration tests in `verus_bridge.rs` certify multi-step demodulation rewriting
+  multiple subterm positions, multi-parent demodulation with 3 parents, and multi-parent equality normalization
+  through the opt-in dual-check gate.
+- **Scope:** completes the multi-step and multi-parent demodulation chain slice of M6.
+
 ### 2026-10-25 clause tautology checkpoint
 
 - **DONE:** clause tautology is proved sound in `clause_tautology_sound`:

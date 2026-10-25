@@ -108,6 +108,7 @@ fn snapshot_artifact(source: &std::path::Path) -> Result<(ArtifactSnapshot, Stri
         let _ = std::fs::remove_file(&snapshot);
         return Err(format!("checker snapshot write: {error}"));
     }
+    drop(file);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1318,6 +1319,133 @@ fn demodulation_certificate(
     Err("no supported demodulation certificate".into())
 }
 
+fn find_demod_rewrites(
+    current: &[Literal],
+    equality: &[Literal],
+    limits: VerificationLimits,
+) -> Vec<Vec<Literal>> {
+    let mut results = Vec::new();
+    if equality.len() != 1 || !equality[0].positive || !matches!(equality[0].atom, Atom::Eq(_, _)) {
+        return results;
+    }
+    let mut next = max_var_clause(current)
+        .max(max_var_clause(equality))
+        .saturating_add(1);
+    let Ok((fresh_eq, _)) = freshen(equality, &mut next) else {
+        return results;
+    };
+    let Atom::Eq(fresh_lhs, fresh_rhs) = &fresh_eq[0].atom else {
+        return results;
+    };
+    let mut fuel = limits.max_comparison_steps.min(50_000);
+    for (ti, literal) in current.iter().enumerate() {
+        for (slot, path) in atom_term_positions(&literal.atom) {
+            let base = match &literal.atom {
+                Atom::Pred(_, args) => {
+                    if slot < args.len() {
+                        &args[slot]
+                    } else {
+                        continue;
+                    }
+                }
+                Atom::Eq(a, b) => {
+                    if slot == 0 {
+                        a
+                    } else {
+                        b
+                    }
+                }
+            };
+            let Some(selected) = term_at_position(base, &path) else {
+                continue;
+            };
+            for reversed in [false, true] {
+                let (from, to) = if !reversed {
+                    (fresh_lhs, fresh_rhs)
+                } else {
+                    (fresh_rhs, fresh_lhs)
+                };
+                let Ok(Some(subst)) = bounded_unify(from, selected, &mut fuel) else {
+                    continue;
+                };
+                let Ok(replacement) = instance(to, &subst, &mut fuel, 0) else {
+                    continue;
+                };
+                let new_atom = replace_atom_side(
+                    &literal.atom,
+                    slot,
+                    replace_term_at(base, &path, replacement),
+                );
+                let new_lit = Literal {
+                    positive: literal.positive,
+                    atom: new_atom,
+                };
+                let mut next_clause = current.to_vec();
+                next_clause[ti] = new_lit;
+                if next_clause != current && !results.contains(&next_clause) {
+                    results.push(next_clause);
+                }
+            }
+        }
+    }
+    results
+}
+
+#[derive(Clone)]
+struct DemodStepInfo {
+    eq_parent_idx: usize,
+    intermediate_clause: Vec<Literal>,
+}
+
+fn find_demod_chain(
+    target: &[Literal],
+    equalities: &[(usize, &[Literal])],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Option<Vec<DemodStepInfo>> {
+    if target.len() != goal.len() {
+        return None;
+    }
+    if target == goal {
+        return Some(Vec::new());
+    }
+    let max_depth = 6;
+    let max_states = 128;
+    let mut queue = std::collections::VecDeque::new();
+    let mut visited: Vec<Vec<Literal>> = Vec::new();
+
+    queue.push_back((target.to_vec(), Vec::<DemodStepInfo>::new()));
+    visited.push(target.to_vec());
+
+    while let Some((curr, chain)) = queue.pop_front() {
+        if chain.len() >= max_depth {
+            continue;
+        }
+        for (eq_idx, eq_clause) in equalities {
+            for next_clause in find_demod_rewrites(&curr, eq_clause, limits) {
+                if next_clause == goal {
+                    let mut full_chain = chain;
+                    full_chain.push(DemodStepInfo {
+                        eq_parent_idx: *eq_idx,
+                        intermediate_clause: next_clause,
+                    });
+                    return Some(full_chain);
+                }
+                if visited.len() < max_states && !visited.contains(&next_clause) {
+                    visited.push(next_clause.clone());
+                    let mut next_chain = chain.clone();
+                    next_chain.push(DemodStepInfo {
+                        eq_parent_idx: *eq_idx,
+                        intermediate_clause: next_clause.clone(),
+                    });
+                    queue.push_back((next_clause, next_chain));
+                }
+            }
+        }
+    }
+    None
+}
+
 fn instantiation_certificate(
     parent: &[Literal],
     goal: &[Literal],
@@ -1739,34 +1867,102 @@ fn dag_request(
                 return Err("leaf differs from exact problem clause".into());
             }
             (Kind::Input, raw, parents)
+        } else if (matches!(
+            node.rule,
+            Some("demodulation") | Some("equality_normalization")
+        ) && parents.len() >= 2)
+        {
+            let parent_clauses: Vec<(usize, &[Literal])> = parents
+                .iter()
+                .map(|idx| (*idx, &nodes[*idx].clause[..]))
+                .collect();
+            let mut resolved = None;
+            for target_cand_idx in 0..parents.len() {
+                if parent_clauses[target_cand_idx].1.len() != raw.len() {
+                    continue;
+                }
+                let target_idx = parent_clauses[target_cand_idx].0;
+                let target_clause = parent_clauses[target_cand_idx].1;
+                let equalities: Vec<_> = parent_clauses
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != target_cand_idx)
+                    .map(|(_, (idx, c))| (*idx, *c))
+                    .collect();
+                if let Some(chain) = find_demod_chain(target_clause, &equalities, &raw, limits)
+                    && !chain.is_empty()
+                {
+                    resolved = Some((target_idx, target_clause.to_vec(), chain));
+                    break;
+                }
+            }
+            if let Some((target_idx, target_clause, chain)) = resolved {
+                if chain.len() == 1 {
+                    let step = &chain[0];
+                    let c = demodulation_certificate(
+                        &target_clause,
+                        &nodes[step.eq_parent_idx].clause,
+                        &raw,
+                        limits,
+                    )?;
+                    (
+                        Kind::Demodulation(c),
+                        raw,
+                        vec![target_idx, step.eq_parent_idx],
+                    )
+                } else {
+                    let mut prev_target_idx = target_idx;
+                    let mut prev_target_clause = target_clause;
+                    for step in &chain[..chain.len() - 1] {
+                        let c = demodulation_certificate(
+                            &prev_target_clause,
+                            &nodes[step.eq_parent_idx].clause,
+                            &step.intermediate_clause,
+                            limits,
+                        )?;
+                        let intermediate_idx = nodes.len();
+                        nodes.push(WireNode {
+                            clause: step.intermediate_clause.clone(),
+                            parents: vec![prev_target_idx, step.eq_parent_idx],
+                            kind: Kind::Demodulation(c),
+                        });
+                        prev_target_idx = intermediate_idx;
+                        prev_target_clause = step.intermediate_clause.clone();
+                    }
+                    let last_step = &chain[chain.len() - 1];
+                    let c = demodulation_certificate(
+                        &prev_target_clause,
+                        &nodes[last_step.eq_parent_idx].clause,
+                        &raw,
+                        limits,
+                    )?;
+                    (
+                        Kind::Demodulation(c),
+                        raw,
+                        vec![prev_target_idx, last_step.eq_parent_idx],
+                    )
+                }
+            } else if parents.len() == 2 {
+                let (left, right) = (&nodes[parents[0]].clause, &nodes[parents[1]].clause);
+                if let Ok(c) = certificate(left, right, &raw, false, limits) {
+                    let conclusion = c.conclusion.clone();
+                    (Kind::Superposition(c), conclusion, parents)
+                } else if let Ok(c) = certificate(right, left, &raw, false, limits) {
+                    let conclusion = c.conclusion.clone();
+                    (
+                        Kind::Superposition(c),
+                        conclusion,
+                        vec![parents[1], parents[0]],
+                    )
+                } else {
+                    return Err("no supported demodulation certificate".into());
+                }
+            } else {
+                return Err("no supported demodulation chain".into());
+            }
         } else if parents.len() == 2 {
             let (left, right) = (&nodes[parents[0]].clause, &nodes[parents[1]].clause);
             match node.rule {
-                Some("demodulation") | Some("equality_normalization") => {
-                    if let Ok(c) = demodulation_certificate(left, right, &raw, limits) {
-                        let conclusion = c.conclusion.clone();
-                        (Kind::Demodulation(c), conclusion, parents)
-                    } else if let Ok(c) = demodulation_certificate(right, left, &raw, limits) {
-                        let conclusion = c.conclusion.clone();
-                        (
-                            Kind::Demodulation(c),
-                            conclusion,
-                            vec![parents[1], parents[0]],
-                        )
-                    } else if let Ok(c) = certificate(left, right, &raw, false, limits) {
-                        let conclusion = c.conclusion.clone();
-                        (Kind::Superposition(c), conclusion, parents)
-                    } else if let Ok(c) = certificate(right, left, &raw, false, limits) {
-                        let conclusion = c.conclusion.clone();
-                        (
-                            Kind::Superposition(c),
-                            conclusion,
-                            vec![parents[1], parents[0]],
-                        )
-                    } else {
-                        return Err("no supported demodulation certificate".into());
-                    }
-                }
                 Some("superposition") | Some("paramodulation") | Some("paramodulate") => {
                     let (c, flipped) = if let Ok(c) = certificate(left, right, &raw, false, limits)
                     {
