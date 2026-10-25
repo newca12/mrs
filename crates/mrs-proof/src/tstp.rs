@@ -10,6 +10,7 @@
 //! e.g. `fof(c1, plain, (nnf_formula), inference(fof_nnf_transformation, [status(thm)], [c0])).`
 //! — see [`Clause::formula`](mrs_core::clause::Clause::formula).
 
+use std::fmt::Write;
 use std::sync::OnceLock;
 
 use mrs_core::SymbolTable;
@@ -81,6 +82,21 @@ fn status_for_rule(rule: &str) -> &'static str {
 /// FOF-level proof steps (e.g. NNF conversion or Skolemization results) and
 /// are printed as `fof(...)` annotated formulas instead of `cnf(...)`.
 pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
+    let mut output = String::new();
+    if write_tstp(proof, symbols, &mut output).is_err() {
+        return String::new();
+    }
+    output
+}
+
+/// Serialize to a caller-owned sink, without retaining a second proof-sized
+/// collection of formatted lines. A failed sink can contain a partial proof;
+/// callers must discard it on error and never certify/output it as complete.
+pub fn write_tstp(
+    proof: &[Clause],
+    symbols: &SymbolTable,
+    output: &mut impl Write,
+) -> std::fmt::Result {
     // Elaboration is an optional refinement. If a composite step cannot be
     // replayed, retain a dependency-topological compact proof so the strict
     // kernel can classify it as inconclusive. Never fall back to numeric-ID
@@ -89,15 +105,14 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
         Ok(elaborated) => elaborated.clauses,
         Err(_) => match crate::elaborate::topological_sort(proof) {
             Ok(sorted) => sorted,
-            Err(_) => return String::new(),
+            Err(_) => return Err(std::fmt::Error),
         },
     };
 
-    let mut lines = Vec::new();
     let problem_path = problem_path();
 
     // Prepend the standard % Proof : <path> header at the very top
-    lines.push(format!("% Proof : {}", problem_path));
+    write!(output, "% Proof : {problem_path}")?;
 
     for clause in &proof_sorted {
         let id = clause.id.0;
@@ -182,13 +197,38 @@ pub fn format_tstp(proof: &[Clause], symbols: &SymbolTable) -> String {
         };
 
         let wrapper = if is_formula_step { "fof" } else { "cnf" };
-        lines.push(format!(
-            "{}(c{}, {}, {}, {}).",
-            wrapper, id, role, body, annotation
-        ));
+        write!(output, "\n{wrapper}(c{id}, {role}, {body}, {annotation}).")?;
     }
 
-    lines.join("\n")
+    Ok(())
+}
+
+/// Bound serialized bytes while writing. Exhaustion returns no partial proof.
+/// This bounds output storage, not elaboration or the largest per-node string.
+pub fn format_tstp_bounded(
+    proof: &[Clause],
+    symbols: &SymbolTable,
+    max_bytes: usize,
+) -> Result<String, std::fmt::Error> {
+    struct BoundedOutput {
+        text: String,
+        limit: usize,
+    }
+    impl Write for BoundedOutput {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            if text.len() > self.limit.saturating_sub(self.text.len()) {
+                return Err(std::fmt::Error);
+            }
+            self.text.push_str(text);
+            Ok(())
+        }
+    }
+    let mut output = BoundedOutput {
+        text: String::new(),
+        limit: max_bytes,
+    };
+    write_tstp(proof, symbols, &mut output)?;
+    Ok(output.text)
 }
 
 fn format_certificate(certificate: &ClauseCertificate) -> String {
@@ -384,6 +424,29 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bounded_output_preserves_exact_bytes_and_refuses_truncation() {
+        let symbols = mrs_core::SymbolTable::new();
+        let proof = [Clause::new(
+            mrs_core::clause::ClauseId(41),
+            vec![],
+            ClauseSource::Input {
+                name: "empty".into(),
+                role: "axiom".into(),
+            },
+        )];
+        let expected = super::format_tstp(&proof, &symbols);
+        assert!(!expected.is_empty());
+        assert_eq!(
+            super::format_tstp_bounded(&proof, &symbols, expected.len()).unwrap(),
+            expected
+        );
+        assert!(super::format_tstp_bounded(&proof, &symbols, expected.len() - 1).is_err());
+        assert!(super::format_tstp_bounded(&proof, &symbols, 0).is_err());
+        let mut streamed = String::new();
+        super::write_tstp(&proof, &symbols, &mut streamed).unwrap();
+        assert_eq!(streamed, expected);
+    }
     use super::*;
     use mrs_core::clause::{Clause, ClauseId, ClauseSource};
     use mrs_core::{Atom, Literal, Term};

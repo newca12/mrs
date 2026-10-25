@@ -61,6 +61,10 @@ Owners: core/search/proof maintainers. Paths: `mrs-core`, `mrs-search`, `mrs-pro
 - [ ] Validate witness parent identities against source/certificate closure at registration/export.
 - [ ] Migrate rule families to authoritative typed witnesses with exact replay.
 - [ ] Add bounded streaming output and measure proof-finalization latency/peak memory.
+  `write_tstp` now serializes to a caller-owned sink without a proof-sized line
+  vector; `format_tstp_bounded` enforces an exact byte ceiling and returns no
+  partial proof. Elaboration/per-node allocations and CLI cap integration remain
+  open, as do production latency/memory measurements.
 - [ ] Make incomplete-search reasons explicit without discarding valid refutations.
 
 Gate: mutation/certificate-closure canaries and archived replay comparisons pass;
