@@ -1215,6 +1215,18 @@ fn selected_atoms_unify(
 }
 
 fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResult {
+    // Setup consumes the same allowance as inference. Previously AC setup ran
+    // before the clock origin and could silently extend the schedule budget.
+    let start = Instant::now();
+    state.search_deadline = start.checked_add(config.time_limit);
+    if config.time_limit.is_zero()
+        || state
+            .stop_flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    {
+        return SearchResult::Timeout;
+    }
     // Arm before setup too: removing redundant clauses can update demodulation
     // indexes through LPO comparisons before the given-clause loop begins.
     let _lpo_budget = crate::LpoBudgetGuard::arm(crate::LPO_STEP_BUDGET);
@@ -1242,6 +1254,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     };
 
     let (comm_syms, assoc_syms, to_remove, ac_axiom_symbols) = detect_ac_symbols(state);
+    if start.elapsed() >= config.time_limit {
+        return SearchResult::Timeout;
+    }
     state.comm_symbols = comm_syms.clone();
     state.assoc_symbols = assoc_syms.clone();
 
@@ -1255,6 +1270,9 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     state.ac_axiom_ids.dedup();
     if !ac_syms.is_empty() {
         state.ac_normalize_all(&ac_syms);
+        if start.elapsed() >= config.time_limit {
+            return SearchResult::Timeout;
+        }
         if matches!(
             ordering,
             crate::TermOrdering::KBO | crate::TermOrdering::CustomKBO(_)
@@ -1275,14 +1293,14 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     }
 
     for id in to_remove {
+        if start.elapsed() >= config.time_limit {
+            return SearchResult::Timeout;
+        }
         state.remove_clause_and_orphans(id, &ordering);
         if crate::lpo_budget_expired() {
             return SearchResult::Timeout;
         }
     }
-    let start = Instant::now();
-    state.search_deadline = Some(start + config.time_limit);
-
     // Initial memory watchdog check
     if let Some(limit_mb) = config.resource_limits.max_memory_mb
         && let Some(current_mb) = crate::current_memory_mb()
@@ -3441,6 +3459,34 @@ mod tests {
     use mrs_core::clause::{Clause, ClauseIdGen, ClauseSource};
     use mrs_core::{Atom, Literal, SymbolTable, Term};
     use std::sync::Arc;
+
+    #[test]
+    fn cancelled_search_does_not_enter_setup_or_claim_initial_contradiction() {
+        let input = Clause::new(
+            ClauseId(19),
+            vec![],
+            ClauseSource::Input {
+                name: "empty".into(),
+                role: "axiom".into(),
+            },
+        );
+        let mut state = SearchState::new(
+            vec![input],
+            ClauseIdGen::new(),
+            Arc::new(SymbolConfig::default()),
+            Arc::new(SymbolTable::new()),
+            false,
+        );
+        let mut config = SearchConfig {
+            time_limit: Duration::ZERO,
+            ..SearchConfig::default()
+        };
+        assert!(matches!(search(&mut state, &config), SearchResult::Timeout));
+        config.time_limit = Duration::from_secs(10);
+        state.stop_flag = Some(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+        assert!(matches!(search(&mut state, &config), SearchResult::Timeout));
+        assert_eq!(state.stats.processed, 0);
+    }
 
     #[test]
     fn fixed_lrs_target_is_independent_of_elapsed_time() {
