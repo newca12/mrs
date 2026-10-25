@@ -235,6 +235,21 @@ fn main() {
     fs::create_dir_all(&args.output)
         .unwrap_or_else(|error| fail(&format!("create output directory: {error}")));
     let report_path = args.output.join("audit.csv");
+    let identity = audit_identity(&args).unwrap_or_else(|error| fail(&error));
+    let identity_path = args.output.join("audit-identity.json");
+    if report_path.exists() {
+        let previous_identity = fs::read_to_string(&identity_path).unwrap_or_else(|_| {
+            fail("existing audit has no identity manifest; use a fresh --output directory")
+        });
+        if previous_identity != identity {
+            fail(
+                "audit identity changed (binary, corpus, run or limits); use a fresh --output directory to retain historical verdicts",
+            );
+        }
+    } else {
+        fs::write(&identity_path, &identity)
+            .unwrap_or_else(|error| fail(&format!("write audit identity: {error}")));
+    }
     let previous = if report_path.is_file() {
         load_audit_csv(&report_path).unwrap_or_else(|error| fail(&error))
     } else {
@@ -278,6 +293,81 @@ fn main() {
     fs::write(&summary_path, &summary)
         .unwrap_or_else(|error| fail(&format!("write {}: {error}", summary_path.display())));
     print!("{summary}");
+}
+
+/// Hash the complete include tree in stable relative-path order. Streaming
+/// avoids holding large corpus files in memory. Symlinks are refused because
+/// hashing only the link name would miss changed include content.
+fn corpus_digest(root: &Path) -> Result<String, String> {
+    let mut entries = walkdir::WalkDir::new(root)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("enumerate corpus: {error}"))?;
+    entries.sort_by(|a, b| a.path().cmp(b.path()));
+    let mut digest = Sha256::new();
+    for entry in entries {
+        if entry.file_type().is_symlink() {
+            return Err(format!(
+                "corpus identity requires a materialized tree, not symlink {}",
+                entry.path().display()
+            ));
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(root)
+            .map_err(|error| error.to_string())?;
+        let name = relative.to_str().ok_or("non-UTF-8 corpus path")?;
+        digest.update((name.len() as u64).to_le_bytes());
+        digest.update(name.as_bytes());
+        let mut file = fs::File::open(entry.path()).map_err(|error| error.to_string())?;
+        let mut content = Sha256::new();
+        let mut buffer = [0u8; 65536];
+        loop {
+            use std::io::Read;
+            let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
+            if count == 0 {
+                break;
+            }
+            content.update(&buffer[..count]);
+        }
+        digest.update(content.finalize());
+    }
+    let mut hex = String::with_capacity(64);
+    for byte in digest.finalize() {
+        use std::fmt::Write as _;
+        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(hex)
+}
+
+fn audit_identity(args: &Args) -> Result<String, String> {
+    let hash_file = |path: &Path| {
+        fs::read(path)
+            .map(|bytes| sha256_bytes(&bytes))
+            .map_err(|error| format!("hash {}: {error}", path.display()))
+    };
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let identity = serde_json::json!({
+        "schema": 1,
+        "audit_binary_sha256": hash_file(&executable)?,
+        "proover_binary_sha256": hash_file(&args.proover)?,
+        "eprover_binary_sha256": args.eprover.as_deref().map(hash_file).transpose()?,
+        "vampire_binary_sha256": args.vampire.as_deref().map(hash_file).transpose()?,
+        "run_csv_sha256": hash_file(&args.run_csv)?,
+        "corpus_sha256": corpus_digest(&args.problems_dir)?,
+        "checks": args.checks.names(),
+        "strict_time": args.strict_time, "mrs_time": args.mrs_time,
+        "ladder_time": args.ladder_time, "mrs_workers": args.mrs_workers,
+        "ladder_workers": args.ladder_workers, "jobs": args.jobs,
+        "subset_sha256": args.subset.as_deref().map(hash_file).transpose()?,
+        "environment": std::env::vars().filter(|(name, _)|
+            name.starts_with("MRS_") || name.starts_with("OMP_") || name == "TPTP" || name == "PATH"
+        ).collect::<std::collections::BTreeMap<_, _>>(),
+    });
+    serde_json::to_string_pretty(&identity).map_err(|error| error.to_string())
 }
 
 fn parse_args(args: Vec<String>) -> Result<Args, String> {
@@ -1488,6 +1578,19 @@ fn fail(message: &str) -> ! {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn corpus_identity_tracks_include_contents_and_names() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.ax"), "premise").unwrap();
+        let first = super::corpus_digest(root.path()).unwrap();
+        assert_eq!(first, super::corpus_digest(root.path()).unwrap());
+        std::fs::write(root.path().join("a.ax"), "changed premise").unwrap();
+        let changed = super::corpus_digest(root.path()).unwrap();
+        assert_ne!(first, changed);
+        std::fs::rename(root.path().join("a.ax"), root.path().join("b.ax")).unwrap();
+        assert_ne!(changed, super::corpus_digest(root.path()).unwrap());
+    }
+
     use super::*;
 
     /// The stdout `mrs` writes when it drops an over-budget proof. Taken from a

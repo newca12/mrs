@@ -103,6 +103,15 @@ wall-clock-sensitive.
 
 ## Proof audits
 
+Each new audit directory contains `audit-identity.json`, binding cached verdicts
+to the auditor/checker binaries, run CSV, complete materialized corpus/include
+tree, check configuration and limits. Resuming an audit with a changed identity
+is refused; choose a fresh `--output` directory for re-audits, including audits
+made before manifests existed. `--force` reruns checks within the same identity;
+it does not authorize replacing another checker's historical results. Explicitly
+pin external backends when using ladder checks; PATH alone does not hash binaries
+discovered implicitly. Keep the corpus immutable throughout the audit.
+
 The harness preserves generated proofs for deferred audit:
 
 ```bash
