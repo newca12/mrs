@@ -108,6 +108,8 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
   order, independent of term-interning IDs, and is retained by `repeat_search`.
   It is a selection digest, not a complete inference/pruning trace. Unified
   fixed-work configuration and remaining unstable traversal audits are open.
+  `fixed_work_compare.py` now archives paired arms and refuses elapsed-time
+  ratios unless ceiling, selection digest and work counters match.
 - [ ] Extract selection, simplification, inference, AVATAR and sharing modules
   behind concrete contracts; avoid dynamic dispatch/allocation in hot loops.
 

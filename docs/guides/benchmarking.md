@@ -87,6 +87,23 @@ nix develop -c cargo run --release -p mrs-bench --bin bench_report -- \
 
 ## Solo strategy diagnostics
 
+For an archived, paired fixed-work comparison of two frozen builds (or the same
+build with the candidate queue options), use:
+
+```bash
+python3 crates/mrs-bench/fixed_work_compare.py \
+  --baseline /path/mrs-base --candidate /path/mrs-next --problem /path/problem.p \
+  --schedule casc_ueq --strategy 4 --processed 1000 --reps 5 \
+  --candidate-specialize --candidate-compact --output /path/new-comparison
+```
+
+The tool disables LRS/sharing, archives both streams and build/problem hashes,
+and refuses timing comparisons unless both arms hit the exact processed ceiling
+with matching selection digests and counters. Startup and diagnostic hashing
+overhead are included. Pre-pass solves and timeouts are not fixed-work samples.
+Review inherited overrides and keep includes immutable; top-level input hashing
+alone does not freeze the include closure. Use the corpus manifest for that.
+
 Set `MRS_TRAJECTORY_DIGEST=1` for opt-in per-strategy SHA-256 selection digests
 in `% SZS detail` (`trajectory_sha256=slot:digest;...`). `repeat_search` preserves
 this field. The digest covers selected clause IDs, logical literals, distance
