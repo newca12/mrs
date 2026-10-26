@@ -82,9 +82,10 @@ Its theorem `equality_transitivity_sound` and checker `check_transitivity_and_re
 prove universal validity preservation.
 
 DAG support also includes **equality symmetry**:
-from universally valid unit equality parent `s = t` (or `s != t`), the commuted
-conclusion `t = s` (or `t != s`) is derived.
-Its theorem `equality_symmetry_sound` and checker `check_symmetry_and_replay`
+from universally valid parent clause `C` containing an equality literal `s = t` (or `s != t`), the commuted
+conclusion with that literal flipped to `t = s` (or `t != s`) and all other literals preserved is derived.
+This covers both unit equality clauses and arbitrary multi-literal clauses.
+Its theorems `clause_symmetry_sound` and `equality_symmetry_sound` and checker `check_symmetry_and_replay`
 prove universal validity preservation.
 
 DAG support also includes **clause excluded middle** (law of excluded middle):

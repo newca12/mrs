@@ -278,6 +278,7 @@ struct ResolutionCertificate {
     rp: usize,
 }
 
+#[derive(Clone)]
 struct EqualityResolutionCertificate {
     clause: Vec<Literal>,
     pivot: usize,
@@ -1407,17 +1408,79 @@ struct DemodStepInfo {
     intermediate_clause: Vec<Literal>,
 }
 
+fn reduce_via_equality_resolution(
+    curr: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Option<Vec<EqualityResolutionCertificate>> {
+    if curr.len() < goal.len() {
+        return None;
+    }
+    if curr.len() == goal.len() {
+        if curr == goal {
+            return Some(Vec::new());
+        }
+        return None;
+    }
+    let mut current_clause = curr.to_vec();
+    let mut certs = Vec::new();
+    let needed_drops = curr.len() - goal.len();
+    for _ in 0..needed_drops {
+        let mut step_found = false;
+        for pivot in 0..current_clause.len() {
+            let lit = &current_clause[pivot];
+            if lit.positive {
+                continue;
+            }
+            let Atom::Eq(left, right) = &lit.atom else {
+                continue;
+            };
+            if left != right {
+                continue;
+            }
+            let goal_count = goal.iter().filter(|l| *l == lit).count();
+            let curr_count = current_clause.iter().filter(|l| *l == lit).count();
+            if curr_count <= goal_count {
+                continue;
+            }
+            let next_clause: Vec<Literal> = current_clause
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != pivot)
+                .map(|(_, l)| l.clone())
+                .collect();
+            if let Ok(cert) = equality_resolution_certificate(&current_clause, &next_clause, limits)
+            {
+                certs.push(cert);
+                current_clause = next_clause;
+                step_found = true;
+                break;
+            }
+        }
+        if !step_found {
+            return None;
+        }
+    }
+    if current_clause == goal {
+        Some(certs)
+    } else {
+        None
+    }
+}
+
 fn find_demod_chain(
     target: &[Literal],
     equalities: &[(usize, &[Literal])],
     goal: &[Literal],
     limits: VerificationLimits,
-) -> Option<Vec<DemodStepInfo>> {
-    if target.len() != goal.len() {
+) -> Option<(Vec<DemodStepInfo>, Vec<EqualityResolutionCertificate>)> {
+    if target.len() < goal.len() {
         return None;
     }
-    if target == goal {
-        return Some(Vec::new());
+    if equalities.is_empty()
+        && let Some(eq_res) = reduce_via_equality_resolution(target, goal, limits)
+    {
+        return Some((Vec::new(), eq_res));
     }
     let max_depth = limits.max_rewrite_steps.min(6);
     let max_states = limits.max_rewrite_states.min(128);
@@ -1437,22 +1500,21 @@ fn find_demod_chain(
         }
         for (eq_idx, eq_clause) in equalities {
             for next_clause in find_demod_rewrites(&curr, eq_clause, limits, &mut fuel).ok()? {
-                if next_clause == goal {
-                    let mut full_chain = chain;
-                    full_chain.push(DemodStepInfo {
-                        eq_parent_idx: *eq_idx,
-                        intermediate_clause: next_clause,
-                    });
-                    return Some(full_chain);
+                let mut full_chain = chain.clone();
+                full_chain.push(DemodStepInfo {
+                    eq_parent_idx: *eq_idx,
+                    intermediate_clause: next_clause.clone(),
+                });
+                if equalities
+                    .iter()
+                    .all(|(idx, _)| full_chain.iter().any(|s| s.eq_parent_idx == *idx))
+                    && let Some(eq_res) = reduce_via_equality_resolution(&next_clause, goal, limits)
+                {
+                    return Some((full_chain, eq_res));
                 }
                 if visited.len() < max_states && !visited.contains(&next_clause) {
                     visited.push(next_clause.clone());
-                    let mut next_chain = chain.clone();
-                    next_chain.push(DemodStepInfo {
-                        eq_parent_idx: *eq_idx,
-                        intermediate_clause: next_clause.clone(),
-                    });
-                    queue.push_back((next_clause, next_chain));
+                    queue.push_back((next_clause, full_chain));
                 }
             }
         }
@@ -1483,12 +1545,9 @@ mod demod_chain_tests {
             atom: Atom::Pred(p, vec![b.clone(), b]),
         }];
         let limits = VerificationLimits::default();
-        assert_eq!(
-            find_demod_chain(&target, &[(1, &equality)], &goal, limits)
-                .unwrap()
-                .len(),
-            2
-        );
+        let (chain, eq_res) = find_demod_chain(&target, &[(1, &equality)], &goal, limits).unwrap();
+        assert_eq!(chain.len(), 2);
+        assert!(eq_res.is_empty());
         for bounded in [
             VerificationLimits {
                 max_comparison_steps: 0,
@@ -1507,6 +1566,26 @@ mod demod_chain_tests {
         }
         let mut fuel = 0;
         assert!(find_demod_rewrites(&target, &equality, limits, &mut fuel).is_err());
+    }
+
+    #[test]
+    fn chain_search_handles_equality_normalization_to_empty_clause() {
+        let mut symbols = SymbolTable::new();
+        let a = Term::App(symbols.intern("a"), vec![]);
+        let b = Term::App(symbols.intern("b"), vec![]);
+        let equality = vec![Literal {
+            positive: true,
+            atom: Atom::Eq(a.clone(), b.clone()),
+        }];
+        let target = vec![Literal {
+            positive: false,
+            atom: Atom::Eq(a.clone(), b.clone()),
+        }];
+        let goal = vec![];
+        let limits = VerificationLimits::default();
+        let (chain, eq_res) = find_demod_chain(&target, &[(1, &equality)], &goal, limits).unwrap();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(eq_res.len(), 1);
     }
 
     #[test]
@@ -1988,7 +2067,7 @@ fn dag_request(
                 .collect();
             let mut resolved = None;
             for target_cand_idx in 0..parents.len() {
-                if parent_clauses[target_cand_idx].1.len() != raw.len() {
+                if parent_clauses[target_cand_idx].1.len() < raw.len() {
                     continue;
                 }
                 let target_idx = parent_clauses[target_cand_idx].0;
@@ -1999,34 +2078,71 @@ fn dag_request(
                     .filter(|(i, _)| *i != target_cand_idx)
                     .map(|(_, (idx, c))| (*idx, *c))
                     .collect();
-                if let Some(chain) = find_demod_chain(target_clause, &equalities, &raw, limits)
+                if let Some((chain, eq_res_certs)) =
+                    find_demod_chain(target_clause, &equalities, &raw, limits)
                     && !chain.is_empty()
                     && equalities
                         .iter()
                         .all(|(idx, _)| chain.iter().any(|s| s.eq_parent_idx == *idx))
                 {
-                    resolved = Some((target_idx, target_clause.to_vec(), chain));
+                    resolved = Some((target_idx, target_clause.to_vec(), chain, eq_res_certs));
                     break;
                 }
             }
-            if let Some((target_idx, target_clause, chain)) = resolved {
-                if chain.len() == 1 {
-                    let step = &chain[0];
-                    let c = demodulation_certificate(
-                        &target_clause,
-                        &nodes[step.eq_parent_idx].clause,
-                        &raw,
-                        limits,
-                    )?;
-                    (
-                        Kind::Demodulation(c),
-                        raw,
-                        vec![target_idx, step.eq_parent_idx],
-                    )
+            if let Some((target_idx, target_clause, chain, eq_res_certs)) = resolved {
+                if eq_res_certs.is_empty() {
+                    if chain.len() == 1 {
+                        let step = &chain[0];
+                        let c = demodulation_certificate(
+                            &target_clause,
+                            &nodes[step.eq_parent_idx].clause,
+                            &raw,
+                            limits,
+                        )?;
+                        (
+                            Kind::Demodulation(c),
+                            raw,
+                            vec![target_idx, step.eq_parent_idx],
+                        )
+                    } else {
+                        let mut prev_target_idx = target_idx;
+                        let mut prev_target_clause = target_clause;
+                        for step in &chain[..chain.len() - 1] {
+                            let c = demodulation_certificate(
+                                &prev_target_clause,
+                                &nodes[step.eq_parent_idx].clause,
+                                &step.intermediate_clause,
+                                limits,
+                            )?;
+                            let intermediate_idx = nodes.len();
+                            if intermediate_idx >= MAX_NODES {
+                                return Err("expanded DAG node ceiling".into());
+                            }
+                            nodes.push(WireNode {
+                                clause: step.intermediate_clause.clone(),
+                                parents: vec![prev_target_idx, step.eq_parent_idx],
+                                kind: Kind::Demodulation(c),
+                            });
+                            prev_target_idx = intermediate_idx;
+                            prev_target_clause = step.intermediate_clause.clone();
+                        }
+                        let last_step = &chain[chain.len() - 1];
+                        let c = demodulation_certificate(
+                            &prev_target_clause,
+                            &nodes[last_step.eq_parent_idx].clause,
+                            &raw,
+                            limits,
+                        )?;
+                        (
+                            Kind::Demodulation(c),
+                            raw,
+                            vec![prev_target_idx, last_step.eq_parent_idx],
+                        )
+                    }
                 } else {
                     let mut prev_target_idx = target_idx;
                     let mut prev_target_clause = target_clause;
-                    for step in &chain[..chain.len() - 1] {
+                    for step in &chain {
                         let c = demodulation_certificate(
                             &prev_target_clause,
                             &nodes[step.eq_parent_idx].clause,
@@ -2045,17 +2161,23 @@ fn dag_request(
                         prev_target_idx = intermediate_idx;
                         prev_target_clause = step.intermediate_clause.clone();
                     }
-                    let last_step = &chain[chain.len() - 1];
-                    let c = demodulation_certificate(
-                        &prev_target_clause,
-                        &nodes[last_step.eq_parent_idx].clause,
-                        &raw,
-                        limits,
-                    )?;
+                    for cert in &eq_res_certs[..eq_res_certs.len() - 1] {
+                        let intermediate_idx = nodes.len();
+                        if intermediate_idx >= MAX_NODES {
+                            return Err("expanded DAG node ceiling".into());
+                        }
+                        nodes.push(WireNode {
+                            clause: cert.conclusion.clone(),
+                            parents: vec![prev_target_idx],
+                            kind: Kind::EqualityResolution(cert.clone()),
+                        });
+                        prev_target_idx = intermediate_idx;
+                    }
+                    let last_cert = &eq_res_certs[eq_res_certs.len() - 1];
                     (
-                        Kind::Demodulation(c),
+                        Kind::EqualityResolution(last_cert.clone()),
                         raw,
-                        vec![prev_target_idx, last_step.eq_parent_idx],
+                        vec![prev_target_idx],
                     )
                 }
             } else if parents.len() == 2 {
@@ -2099,7 +2221,10 @@ fn dag_request(
                 Some("resolution")
                 | Some("disjunctive_syllogism")
                 | Some("resolve")
-                | Some("consequence") => {
+                | Some("consequence")
+                | Some("ex_falso")
+                | Some("modus_ponens")
+                | Some("instantiate_mp") => {
                     let mut exact_pivot = None;
                     for (lp, l) in left.iter().enumerate() {
                         for (rp, r) in right.iter().enumerate() {
@@ -2244,7 +2369,8 @@ fn dag_request(
                 | Some("rectify")
                 | Some("assume")
                 | Some("duplicate")
-                | Some("alpha") => {
+                | Some("alpha")
+                | Some("rewrite") => {
                     let c = instantiation_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::Instantiation(c), conclusion, parents)
@@ -2262,19 +2388,46 @@ fn dag_request(
                     (Kind::Reflexivity, raw.clone(), parents)
                 }
                 Some("symmetry") | Some("equality_symmetry") | Some("commute") => {
-                    if parent.len() != 1 || raw.len() != 1 {
-                        return Err("symmetry requires unit clauses".into());
+                    if parent.len() != raw.len() || parent.is_empty() {
+                        return Err("symmetry requires matching non-empty clauses".into());
                     }
-                    if parent[0].positive != raw[0].positive {
-                        return Err("symmetry requires matching polarity".into());
-                    }
-                    let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&parent[0].atom, &raw[0].atom) else {
-                        return Err("symmetry requires equality atoms".into());
-                    };
-                    if (u == t && v == s) || (u == s && v == t) {
-                        (Kind::Symmetry, raw.clone(), parents)
+                    if parent.len() == 1 {
+                        if parent[0].positive != raw[0].positive {
+                            return Err("symmetry requires matching polarity".into());
+                        }
+                        let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&parent[0].atom, &raw[0].atom)
+                        else {
+                            return Err("symmetry requires equality atoms".into());
+                        };
+                        if (u == t && v == s) || (u == s && v == t) {
+                            (Kind::Symmetry, raw.clone(), parents)
+                        } else {
+                            return Err("symmetry conclusion terms do not match parent".into());
+                        }
                     } else {
-                        return Err("symmetry conclusion terms do not match parent".into());
+                        let mut commuted = false;
+                        for k in 0..parent.len() {
+                            if parent[k].positive == raw[k].positive
+                                && let (Atom::Eq(s, t), Atom::Eq(u, v)) =
+                                    (&parent[k].atom, &raw[k].atom)
+                                && ((u == t && v == s) || (u == s && v == t))
+                                && parent
+                                    .iter()
+                                    .enumerate()
+                                    .all(|(j, l)| j == k || *l == raw[j])
+                            {
+                                commuted = true;
+                                break;
+                            }
+                        }
+                        if commuted {
+                            (Kind::Symmetry, raw.clone(), parents)
+                        } else {
+                            return Err(
+                                "symmetry conclusion does not match commuted parent equality"
+                                    .into(),
+                            );
+                        }
                     }
                 }
                 Some("excluded_middle") => {
