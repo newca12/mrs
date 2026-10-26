@@ -24,6 +24,21 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-26 equality normalization reduction and resolution alias checkpoint
+
+- **DONE:** implemented negative reflexive equality elimination chain reduction in `mrs-proof-kernel::verus`:
+  `reduce_via_equality_resolution` resolves negative reflexive equalities ($s \neq s$) appearing after
+  ground term demodulation chains into verified `Kind::EqualityResolution` DAG steps.
+- **DONE:** expanded equality normalization in `find_demod_chain` and proof DAG construction to support
+  normalization to the empty clause `$false` and clauses of reduced length, creating topologically sound
+  chains combining intermediate demodulations and equality resolutions.
+- **DONE:** expanded resolution and instantiation rule aliases in `mrs-proof-kernel::verus` to recognize
+  `ex_falso`, `modus_ponens`, `instantiate_mp`, and `rewrite`.
+- **DONE:** unit tests in `demod_chain_tests` and integration tests in `verus_bridge.rs` certify refutations
+  with equality normalization reducing to empty clause and ex_falso / disjunctive syllogism resolution
+  aliases through the formal dual-check gate.
+- **Scope:** completes the equality normalization reduction slice of M6.
+
 ### 2026-10-25 multi-step and multi-parent demodulation checkpoint
 
 - **DONE:** implemented multi-step and multi-parent demodulation and equality normalization

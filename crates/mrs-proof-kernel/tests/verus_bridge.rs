@@ -997,4 +997,40 @@ fn multi_step_and_multi_parent_demodulation_refutations() {
     );
     assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 4. Equality normalization to empty clause via demodulation + equality resolution:
+    let eq_norm_empty_problem =
+        mrs_tptp::parse_tptp("cnf(ab,axiom,a=b). cnf(neq,axiom,a!=b).").unwrap();
+    let eq_norm_empty_text = "cnf(ab,axiom,a=b,file('input',ab)).
+        cnf(neq,axiom,a!=b,file('input',neq)).
+        cnf(bot,plain,$false,inference(equality_normalization,[status(thm)],[neq,ab])).";
+    let eq_norm_empty_proof = mrs_tptp::parse_tptp(eq_norm_empty_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &eq_norm_empty_problem,
+        &eq_norm_empty_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 5. Ex falso and disjunctive syllogism rule aliases routed to resolution:
+    let mp_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,p|q). cnf(b,axiom,~p). cnf(c,axiom,~q).").unwrap();
+    let mp_text = "cnf(a,axiom,p|q,file('input',a)).
+        cnf(b,axiom,~p,file('input',b)).
+        cnf(c,axiom,~q,file('input',c)).
+        cnf(d,plain,q,inference(disjunctive_syllogism,[status(thm)],[a,b])).
+        cnf(bot,plain,$false,inference(ex_falso,[status(thm)],[d,c])).";
+    let mp_proof = mrs_tptp::parse_tptp(mp_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &mp_problem,
+        &mp_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
 }
