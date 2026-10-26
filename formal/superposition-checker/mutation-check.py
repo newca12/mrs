@@ -257,8 +257,8 @@ def main() -> int:
         ),
         (
             "symmetry ignores valid commuted orientation",
-            "if !check_symmetry_step_exec(s, t, u, v) {\n        return false;\n    }",
-            "if false {\n        return false;\n    }",
+            "if check_symmetry_step_exec(s, t, u, v) {",
+            "if true {",
         ),
         (
             "DAG symmetry skips rule replay",

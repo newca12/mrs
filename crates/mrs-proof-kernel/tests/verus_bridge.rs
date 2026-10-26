@@ -555,6 +555,27 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     assert_eq!(report.checked_nodes, 4);
 
+    // Multi-literal clause symmetry:
+    let multi_symm_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,p(c)|a=b). cnf(b,axiom,~p(c)). cnf(c,axiom,b!=a).")
+            .unwrap();
+    let multi_symm_text = "cnf(a,axiom,p(c)|a=b,file('input',a)).
+        cnf(b,axiom,~p(c),file('input',b)).
+        cnf(c,axiom,b!=a,file('input',c)).
+        cnf(s,plain,p(c)|b=a,inference(symmetry,[status(thm)],[a])).
+        cnf(r1,plain,b=a,inference(resolution,[status(thm)],[s,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,c])).";
+    let multi_symm_proof = mrs_tptp::parse_tptp(multi_symm_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &multi_symm_problem,
+        &multi_symm_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
     // Copy / rename via instantiation:
     let rename_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p(X)). cnf(b,axiom,~p(Y)).").unwrap();
     let rename_text = "cnf(a,axiom,p(X),file('input',a)).

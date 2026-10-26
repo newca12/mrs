@@ -2388,19 +2388,46 @@ fn dag_request(
                     (Kind::Reflexivity, raw.clone(), parents)
                 }
                 Some("symmetry") | Some("equality_symmetry") | Some("commute") => {
-                    if parent.len() != 1 || raw.len() != 1 {
-                        return Err("symmetry requires unit clauses".into());
+                    if parent.len() != raw.len() || parent.is_empty() {
+                        return Err("symmetry requires matching non-empty clauses".into());
                     }
-                    if parent[0].positive != raw[0].positive {
-                        return Err("symmetry requires matching polarity".into());
-                    }
-                    let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&parent[0].atom, &raw[0].atom) else {
-                        return Err("symmetry requires equality atoms".into());
-                    };
-                    if (u == t && v == s) || (u == s && v == t) {
-                        (Kind::Symmetry, raw.clone(), parents)
+                    if parent.len() == 1 {
+                        if parent[0].positive != raw[0].positive {
+                            return Err("symmetry requires matching polarity".into());
+                        }
+                        let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&parent[0].atom, &raw[0].atom)
+                        else {
+                            return Err("symmetry requires equality atoms".into());
+                        };
+                        if (u == t && v == s) || (u == s && v == t) {
+                            (Kind::Symmetry, raw.clone(), parents)
+                        } else {
+                            return Err("symmetry conclusion terms do not match parent".into());
+                        }
                     } else {
-                        return Err("symmetry conclusion terms do not match parent".into());
+                        let mut commuted = false;
+                        for k in 0..parent.len() {
+                            if parent[k].positive == raw[k].positive
+                                && let (Atom::Eq(s, t), Atom::Eq(u, v)) =
+                                    (&parent[k].atom, &raw[k].atom)
+                                && ((u == t && v == s) || (u == s && v == t))
+                                && parent
+                                    .iter()
+                                    .enumerate()
+                                    .all(|(j, l)| j == k || *l == raw[j])
+                            {
+                                commuted = true;
+                                break;
+                            }
+                        }
+                        if commuted {
+                            (Kind::Symmetry, raw.clone(), parents)
+                        } else {
+                            return Err(
+                                "symmetry conclusion does not match commuted parent equality"
+                                    .into(),
+                            );
+                        }
                     }
                 }
                 Some("excluded_middle") => {

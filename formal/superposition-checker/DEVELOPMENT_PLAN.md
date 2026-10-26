@@ -24,6 +24,19 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-26 multi-literal clause equality symmetry checkpoint
+
+- **DONE:** proved `clause_symmetry_sound` in `first_order_core.rs`: from any universally valid parent
+  clause $C$, commuting an equality literal $s = t$ (or $s \neq t$) at index $k$ to $t = s$ (or $t \neq s$)
+  while preserving all other literals derives a universally valid conclusion clause.
+- **DONE:** implemented `check_clause_symmetry_exec` and updated `check_symmetry_and_replay` and
+  `check_dag_structure` to support multi-literal clauses in addition to unit equality clauses.
+- **DONE:** added multi-literal clause symmetry examples and forged regression cases in `executable_symmetry_examples`.
+- **DONE:** verified mutations in `mutation-check.py` covering equality symmetry orientation and DAG replay dispatch.
+- **DONE:** updated `mrs-proof-kernel::verus` and `mrs-proof-kernel::lib` to recognize and certify
+  multi-literal clause symmetry, verified by integration tests in `verus_bridge.rs` through the formal dual-check gate.
+- **Scope:** generalizes equality symmetry to arbitrary multi-literal clauses under M6.
+
 ### 2026-10-26 equality normalization reduction and resolution alias checkpoint
 
 - **DONE:** implemented negative reflexive equality elimination chain reduction in `mrs-proof-kernel::verus`:

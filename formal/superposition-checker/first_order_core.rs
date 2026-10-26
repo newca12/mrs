@@ -2943,6 +2943,59 @@ proof fn equality_symmetry_sound(
     }
 }
 
+spec fn valid_clause_symmetry(parent: Clause, conclusion: Clause, k: int) -> bool {
+    0 <= k < parent.literals.len()
+        && parent.literals.len() == conclusion.literals.len()
+        && parent.literals[k].positive == conclusion.literals[k].positive
+        && match (parent.literals[k].atom, conclusion.literals[k].atom) {
+            (Atom::Eq(s, t), Atom::Eq(u, v)) => valid_symmetry_step(s, t, u, v),
+            _ => false,
+        }
+        && forall|j: int| 0 <= j < parent.literals.len() && j != k
+            ==> parent.literals[j] == conclusion.literals[j]
+}
+
+/// Soundness theorem for clause-level equality symmetry:
+/// from universally valid parent clause C, commuting an equality literal
+/// at index k (positive or negative) preserves universal validity of the clause.
+proof fn clause_symmetry_sound(
+    parent: Clause,
+    conclusion: Clause,
+    k: int,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(parent, interp),
+        valid_clause_symmetry(parent, conclusion, k),
+    ensures
+        clause_valid(conclusion, interp),
+{
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(conclusion, interp, valuation) by {
+        assert(clause_holds(parent, interp, valuation));
+        let pos = choose|j: int| 0 <= j < parent.literals.len()
+            && literal_holds(parent.literals[j], interp, valuation);
+        if pos == k {
+            let lit = parent.literals[k];
+            let concl_lit = conclusion.literals[k];
+            match (lit.atom, concl_lit.atom) {
+                (Atom::Eq(s, t), Atom::Eq(u, v)) => {
+                    assert(eval(s, interp, valuation) == eval(t, interp, valuation)
+                        <==> eval(u, interp, valuation) == eval(v, interp, valuation));
+                    assert(literal_holds(concl_lit, interp, valuation));
+                    assert(clause_holds(conclusion, interp, valuation));
+                },
+                _ => {},
+            }
+        } else {
+            assert(parent.literals[pos] == conclusion.literals[pos]);
+            assert(literal_holds(conclusion.literals[pos], interp, valuation));
+            assert(clause_holds(conclusion, interp, valuation));
+        }
+    }
+}
+
 spec fn valid_excluded_middle_step(
     l1: Literal,
     l2: Literal,
@@ -7645,6 +7698,67 @@ fn check_symmetry_step_exec(
     (same_term(u, t) && same_term(v, s)) || (same_term(u, s) && same_term(v, t))
 }
 
+fn check_clause_symmetry_exec(
+    parent: &ExecClause,
+    conclusion: &ExecClause,
+) -> (result: Option<usize>)
+    ensures
+        match result {
+            Some(k) => valid_clause_symmetry(view_clause(*parent), view_clause(*conclusion), k as int),
+            None => true,
+        },
+{
+    if parent.literals.len() != conclusion.literals.len() || parent.literals.len() == 0 {
+        return None;
+    }
+    let mut k: usize = 0;
+    while k < parent.literals.len()
+        invariant
+            parent.literals.len() == conclusion.literals.len(),
+            k <= parent.literals.len(),
+        decreases parent.literals.len() - k,
+    {
+        let p_lit = &parent.literals[k];
+        let c_lit = &conclusion.literals[k];
+        if p_lit.positive == c_lit.positive {
+            if let (ExecAtom::Eq(s, t), ExecAtom::Eq(u, v)) = (&p_lit.atom, &c_lit.atom) {
+                if check_symmetry_step_exec(s, t, u, v) {
+                    let mut all_others_match = true;
+                    let mut j: usize = 0;
+                    while j < parent.literals.len()
+                        invariant
+                            parent.literals.len() == conclusion.literals.len(),
+                            k < parent.literals.len(),
+                            j <= parent.literals.len(),
+                            all_others_match ==> forall|m: int| 0 <= m < j as int && m != k as int
+                                ==> view_literal(parent.literals@[m]) == view_literal(conclusion.literals@[m]),
+                        decreases parent.literals.len() - j,
+                    {
+                        if j != k && !same_literal(&parent.literals[j], &conclusion.literals[j]) {
+                            all_others_match = false;
+                        }
+                        j += 1;
+                    }
+                    if all_others_match {
+                        assert forall|m: int| 0 <= m < parent.literals@.len() && m != k as int implies {
+                            view_clause(*parent).literals[m] == view_clause(*conclusion).literals[m]
+                        } by {
+                            assert(view_literal(parent.literals@[m]) == view_literal(conclusion.literals@[m]));
+                            assert(view_clause(*parent).literals[m] == view_literal(parent.literals@[m]));
+                            assert(view_clause(*conclusion).literals[m] == view_literal(conclusion.literals@[m]));
+                        };
+                        assert(view_clause(*parent).literals[k as int] == view_literal(*p_lit));
+                        assert(view_clause(*conclusion).literals[k as int] == view_literal(*c_lit));
+                        return Some(k);
+                    }
+                }
+            }
+        }
+        k += 1;
+    }
+    None
+}
+
 fn check_symmetry_and_replay(
     parent: &ExecClause,
     conclusion: &ExecClause,
@@ -7660,31 +7774,18 @@ fn check_symmetry_and_replay(
     {
         return false;
     }
-    if parent.literals.len() != 1 || conclusion.literals.len() != 1 {
+    let Some(k) = check_clause_symmetry_exec(parent, conclusion) else {
         return false;
-    }
-    let parent_lit = &parent.literals[0];
-    let concl_lit = &conclusion.literals[0];
-    if parent_lit.positive != concl_lit.positive {
-        return false;
-    }
-    let ExecAtom::Eq(s, t) = &parent_lit.atom else { return false; };
-    let ExecAtom::Eq(u, v) = &concl_lit.atom else { return false; };
-
-    if !check_symmetry_step_exec(s, t, u, v) {
-        return false;
-    }
+    };
 
     proof {
         assert forall|interp: Interpretation| interpretation_well_formed(interp)
             && clause_valid(view_clause(*parent), interp)
             implies clause_valid(view_clause(*conclusion), interp) by {
-            equality_symmetry_sound(
+            clause_symmetry_sound(
                 view_clause(*parent),
                 view_clause(*conclusion),
-                view(*s), view(*t),
-                view(*u), view(*v),
-                parent_lit.positive,
+                k as int,
                 interp,
             );
         };
@@ -9949,18 +10050,7 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             if node.parents.len() != 1 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
             let p = &dag.nodes[node.parents[0]].clause;
-            if p.literals.len() != 1 || node.clause.literals.len() != 1 {
-                return DagVerdict::Rejected;
-            }
-            if p.literals[0].positive != node.clause.literals[0].positive {
-                return DagVerdict::Rejected;
-            }
-            let (ExecAtom::Eq(s, t), ExecAtom::Eq(u, v)) = (
-                &p.literals[0].atom, &node.clause.literals[0].atom,
-            ) else {
-                return DagVerdict::Rejected;
-            };
-            if !check_symmetry_step_exec(s, t, u, v) {
+            if check_clause_symmetry_exec(p, &node.clause).is_none() {
                 return DagVerdict::Rejected;
             }
         }
@@ -12084,6 +12174,41 @@ fn executable_symmetry_examples() -> bool {
         ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
     ] };
     if check_symmetry_and_replay(&pred_c, &pred_c, 1000) {
+        return false;
+    }
+
+    // Multi-literal clause: p(a) | a = b -> p(a) | b = a
+    let multi_c = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] };
+    let multi_concl = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)) },
+    ] };
+    if !check_symmetry_and_replay(&multi_c, &multi_concl, 1000) {
+        return false;
+    }
+
+    // Multi-literal negative equality: q(x) | a != b -> q(x) | b != a
+    let multi_neg = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(0))) },
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] };
+    let multi_neg_concl = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(0))) },
+        ExecLiteral { positive: false, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)) },
+    ] };
+    if !check_symmetry_and_replay(&multi_neg, &multi_neg_concl, 1000) {
+        return false;
+    }
+
+    // Multi-literal forged non-equality: p(a) | a = b -> p(b) | b = a fails closed
+    let multi_forged = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(2))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)) },
+    ] };
+    if check_symmetry_and_replay(&multi_c, &multi_forged, 1000) {
         return false;
     }
 

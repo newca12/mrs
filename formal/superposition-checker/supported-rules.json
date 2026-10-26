@@ -119,7 +119,7 @@
       "id": "equality-symmetry",
       "module": "first_order_core.rs",
       "status": "verified_executable_step_and_dag_dispatch",
-      "description": "Equality symmetry: from unit equality parent s = t (or s != t), the commuted conclusion t = s (or t != s) is universally valid. Dispatched in proof DAGs via ProofNodeKind::Symmetry; proven by equality_symmetry_sound to preserve universal validity.",
+      "description": "Equality symmetry: from parent clause C containing an equality literal s = t (or s != t), commuting the equality to t = s (or t != s) while preserving all other literals derives a universally valid clause. Dispatched in proof DAGs via ProofNodeKind::Symmetry; proven by clause_symmetry_sound and equality_symmetry_sound to preserve universal validity.",
       "production_certification": false
     },
     {
