@@ -7788,6 +7788,79 @@ fn check_clause_transitivity_exec(
     proof {
         assert(view_clause(*unit_eq).literals[0] == view_literal(*u_lit));
     }
+    // At most one occurrence may differ: the selected equality literal.
+    // Find that occurrence in one pass so adversarial clauses cannot make
+    // replay quadratic by presenting many candidate equalities.
+    let mut changed: usize = clause.literals.len();
+    let mut j: usize = 0;
+    while j < clause.literals.len()
+        invariant
+            clause.literals.len() == conclusion.literals.len(),
+            unit_eq.literals.len() == 1,
+            u_lit.positive,
+            u_lit.atom == ExecAtom::Eq(*t1, *t2),
+            view_clause(*unit_eq).literals[0] == view_literal(*u_lit),
+            j <= clause.literals.len(),
+            changed <= clause.literals.len(),
+            changed == clause.literals.len() ==> forall|m: int|
+                0 <= m < j as int
+                    ==> view_literal(clause.literals@[m]) == view_literal(conclusion.literals@[m]),
+            changed < clause.literals.len() ==> changed < j
+                && view_literal(clause.literals@[changed as int])
+                    != view_literal(conclusion.literals@[changed as int])
+                && forall|m: int| 0 <= m < j as int && m != changed as int
+                    ==> view_literal(clause.literals@[m]) == view_literal(conclusion.literals@[m]),
+        decreases clause.literals.len() - j,
+    {
+        if !same_literal(&clause.literals[j], &conclusion.literals[j]) {
+            if changed < clause.literals.len() {
+                return None;
+            }
+            changed = j;
+        }
+        j += 1;
+    }
+
+    if changed < clause.literals.len() {
+        let k = changed;
+        let p_lit = &clause.literals[k];
+        let c_lit = &conclusion.literals[k];
+        if !p_lit.positive || !c_lit.positive {
+            return None;
+        }
+        let (ExecAtom::Eq(s1, s2), ExecAtom::Eq(u1, u2)) = (&p_lit.atom, &c_lit.atom) else {
+            return None;
+        };
+        if !check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {
+            return None;
+        }
+        proof {
+            assert forall|m: int| 0 <= m < clause.literals@.len() && m != k as int implies {
+                view_clause(*clause).literals[m] == view_clause(*conclusion).literals[m]
+            } by {
+                assert(m < j as int);
+                assert(m != changed as int);
+                assert(view_literal(clause.literals@[m]) == view_literal(conclusion.literals@[m]));
+                assert(view_clause(*clause).literals[m] == view_literal(clause.literals@[m]));
+                assert(view_clause(*conclusion).literals[m] == view_literal(conclusion.literals@[m]));
+            };
+            assert(view_clause(*clause).literals[k as int] == view_literal(*p_lit));
+            assert(view_clause(*unit_eq).literals[0] == view_literal(*u_lit));
+            assert(view_clause(*conclusion).literals[k as int] == view_literal(*c_lit));
+        }
+        return Some(k);
+    }
+
+    // If the clauses are identical, a reflexive/degenerate chain can still
+    // justify the selected equality. In that case any matching position works.
+    assert forall|m: int| 0 <= m < clause.literals@.len() implies {
+        view_clause(*clause).literals[m] == view_clause(*conclusion).literals[m]
+    } by {
+        assert(m < j as int);
+        assert(view_literal(clause.literals@[m]) == view_literal(conclusion.literals@[m]));
+        assert(view_clause(*clause).literals[m] == view_literal(clause.literals@[m]));
+        assert(view_clause(*conclusion).literals[m] == view_literal(conclusion.literals@[m]));
+    };
     let mut k: usize = 0;
     while k < clause.literals.len()
         invariant
@@ -7796,7 +7869,10 @@ fn check_clause_transitivity_exec(
             u_lit.positive,
             u_lit.atom == ExecAtom::Eq(*t1, *t2),
             view_clause(*unit_eq).literals[0] == view_literal(*u_lit),
+            changed == clause.literals.len(),
             k <= clause.literals.len(),
+            forall|m: int| 0 <= m < clause.literals@.len()
+                ==> view_clause(*clause).literals[m] == view_clause(*conclusion).literals[m],
         decreases clause.literals.len() - k,
     {
         let p_lit = &clause.literals[k];
@@ -7804,35 +7880,10 @@ fn check_clause_transitivity_exec(
         if p_lit.positive && c_lit.positive {
             if let (ExecAtom::Eq(s1, s2), ExecAtom::Eq(u1, u2)) = (&p_lit.atom, &c_lit.atom) {
                 if check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {
-                    let mut all_others_match = true;
-                    let mut j: usize = 0;
-                    while j < clause.literals.len()
-                        invariant
-                            clause.literals.len() == conclusion.literals.len(),
-                            k < clause.literals.len(),
-                            j <= clause.literals.len(),
-                            all_others_match ==> forall|m: int| 0 <= m < j as int && m != k as int
-                                ==> view_literal(clause.literals@[m]) == view_literal(conclusion.literals@[m]),
-                        decreases clause.literals.len() - j,
-                    {
-                        if j != k && !same_literal(&clause.literals[j], &conclusion.literals[j]) {
-                            all_others_match = false;
-                        }
-                        j += 1;
-                    }
-                    if all_others_match {
-                        assert forall|m: int| 0 <= m < clause.literals@.len() && m != k as int implies {
-                            view_clause(*clause).literals[m] == view_clause(*conclusion).literals[m]
-                        } by {
-                            assert(view_literal(clause.literals@[m]) == view_literal(conclusion.literals@[m]));
-                            assert(view_clause(*clause).literals[m] == view_literal(clause.literals@[m]));
-                            assert(view_clause(*conclusion).literals[m] == view_literal(conclusion.literals@[m]));
-                        };
-                        assert(view_clause(*clause).literals[k as int] == view_literal(*p_lit));
-                        assert(view_clause(*unit_eq).literals[0] == view_literal(*u_lit));
-                        assert(view_clause(*conclusion).literals[k as int] == view_literal(*c_lit));
-                        return Some(k);
-                    }
+                    assert(view_clause(*clause).literals[k as int] == view_literal(*p_lit));
+                    assert(view_clause(*unit_eq).literals[0] == view_literal(*u_lit));
+                    assert(view_clause(*conclusion).literals[k as int] == view_literal(*c_lit));
+                    return Some(k);
                 }
             }
         }
@@ -9641,17 +9692,19 @@ fn check_dag_reflexivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
         ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
-    if node.kind != ProofNodeKind::Reflexivity || node.parents.len() != 1 {
-        return false;
-    }
-    if node.parents[0] >= nodes.len() {
+    if node.kind != ProofNodeKind::Reflexivity || node.parents.len() > 1 {
         return false;
     }
     let mut work: usize = 0;
-    if !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
-    {
+    if !charge_clause_structure(&node.clause, &mut work, work_limit) {
         return false;
+    }
+    if node.parents.len() == 1 {
+        if node.parents[0] >= nodes.len()
+            || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        {
+            return false;
+        }
     }
     let remaining_work = work_limit - work;
     if !check_reflexivity_and_replay(&node.clause, remaining_work) {
@@ -9740,7 +9793,6 @@ fn check_dag_symmetry_step(node: &ProofNode, nodes: &Vec<ProofNode>,
             implies local_node_entails_from_parents(*node, nodes@, interp) by {
             if forall|j: int| 0 <= j < node.parents@.len()
                 ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
-                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
                 assert(clause_valid(view_clause(node.clause), interp));
             }
         };
@@ -9753,17 +9805,19 @@ fn check_dag_excluded_middle_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
         ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
-    if node.kind != ProofNodeKind::ExcludedMiddle || node.parents.len() != 1 {
-        return false;
-    }
-    if node.parents[0] >= nodes.len() {
+    if node.kind != ProofNodeKind::ExcludedMiddle || node.parents.len() > 1 {
         return false;
     }
     let mut work: usize = 0;
-    if !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
-    {
+    if !charge_clause_structure(&node.clause, &mut work, work_limit) {
         return false;
+    }
+    if node.parents.len() == 1 {
+        if node.parents[0] >= nodes.len()
+            || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        {
+            return false;
+        }
     }
     let remaining_work = work_limit - work;
     if !check_excluded_middle_and_replay(
@@ -9777,7 +9831,6 @@ fn check_dag_excluded_middle_step(node: &ProofNode, nodes: &Vec<ProofNode>,
             implies local_node_entails_from_parents(*node, nodes@, interp) by {
             if forall|j: int| 0 <= j < node.parents@.len()
                 ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
-                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
                 assert(clause_valid(view_clause(node.clause), interp));
             }
         };
@@ -9815,7 +9868,6 @@ fn check_dag_congruence_step(node: &ProofNode, nodes: &Vec<ProofNode>,
             implies local_node_entails_from_parents(*node, nodes@, interp) by {
             if forall|j: int| 0 <= j < node.parents@.len()
                 ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
-                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
                 assert(clause_valid(view_clause(node.clause), interp));
             }
         };
@@ -9828,17 +9880,19 @@ fn check_dag_tautology_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
         ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
-    if node.kind != ProofNodeKind::Tautology || node.parents.len() != 1 {
-        return false;
-    }
-    if node.parents[0] >= nodes.len() {
+    if node.kind != ProofNodeKind::Tautology || node.parents.len() > 1 {
         return false;
     }
     let mut work: usize = 0;
-    if !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
-    {
+    if !charge_clause_structure(&node.clause, &mut work, work_limit) {
         return false;
+    }
+    if node.parents.len() == 1 {
+        if node.parents[0] >= nodes.len()
+            || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+        {
+            return false;
+        }
     }
     let remaining_work = work_limit - work;
     if !check_tautology_and_replay(
@@ -9852,7 +9906,6 @@ fn check_dag_tautology_step(node: &ProofNode, nodes: &Vec<ProofNode>,
             implies local_node_entails_from_parents(*node, nodes@, interp) by {
             if forall|j: int| 0 <= j < node.parents@.len()
                 ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
-                assert(clause_valid(view_clause(nodes@[node.parents@[0] as int].clause), interp));
                 assert(clause_valid(view_clause(node.clause), interp));
             }
         };
@@ -9940,17 +9993,17 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 || dag.nodes[i].kind == ProofNodeKind::Condensation
                     && dag.nodes[i].parents@.len() == 1 && dag.nodes[i].cond_step.is_some()
                 || dag.nodes[i].kind == ProofNodeKind::Reflexivity
-                    && dag.nodes[i].parents@.len() == 1
+                    && dag.nodes[i].parents@.len() <= 1
                 || dag.nodes[i].kind == ProofNodeKind::Transitivity
                     && dag.nodes[i].parents@.len() == 2
                 || dag.nodes[i].kind == ProofNodeKind::Symmetry
                     && dag.nodes[i].parents@.len() == 1
                 || dag.nodes[i].kind == ProofNodeKind::ExcludedMiddle
-                    && dag.nodes[i].parents@.len() == 1
+                    && dag.nodes[i].parents@.len() <= 1
                 || dag.nodes[i].kind == ProofNodeKind::Congruence
                     && dag.nodes[i].parents@.len() == 1
                 || dag.nodes[i].kind == ProofNodeKind::Tautology
-                    && dag.nodes[i].parents@.len() == 1
+                    && dag.nodes[i].parents@.len() <= 1
         && verdict == DagVerdict::Unknown ==> forall|i: int, j: int|
             0 <= i < j < dag.nodes.len() ==> dag.nodes[i].id != dag.nodes[j].id
         && verdict == DagVerdict::Unknown ==> forall|i: int|
@@ -10273,8 +10326,10 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             }
         }
         if node.kind == ProofNodeKind::Reflexivity {
-            if node.parents.len() != 1 { return DagVerdict::Rejected; }
-            assert(node.parents[0] < dag.nodes.len());
+            if node.parents.len() > 1 { return DagVerdict::Rejected; }
+            if node.parents.len() == 1 {
+                assert(node.parents[0] < dag.nodes.len());
+            }
             if node.clause.literals.len() != 1 || !node.clause.literals[0].positive {
                 return DagVerdict::Rejected;
             }
@@ -10306,8 +10361,10 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             }
         }
         if node.kind == ProofNodeKind::ExcludedMiddle {
-            if node.parents.len() != 1 { return DagVerdict::Rejected; }
-            assert(node.parents[0] < dag.nodes.len());
+            if node.parents.len() > 1 { return DagVerdict::Rejected; }
+            if node.parents.len() == 1 {
+                assert(node.parents[0] < dag.nodes.len());
+            }
             if node.clause.literals.len() != 2 {
                 return DagVerdict::Rejected;
             }
@@ -10326,8 +10383,10 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             }
         }
         if node.kind == ProofNodeKind::Tautology {
-            if node.parents.len() != 1 { return DagVerdict::Rejected; }
-            assert(node.parents[0] < dag.nodes.len());
+            if node.parents.len() > 1 { return DagVerdict::Rejected; }
+            if node.parents.len() == 1 {
+                assert(node.parents[0] < dag.nodes.len());
+            }
             if !check_clause_tautology_exec(&node.clause) {
                 return DagVerdict::Rejected;
             }
@@ -10513,7 +10572,7 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         check_dag_condensation_step(node, &dag.nodes, work_limit - work)
         },
         ProofNodeKind::Reflexivity => {
-        if node.parents.len() != 1 { return false; }
+        if node.parents.len() > 1 { return false; }
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         check_dag_reflexivity_step(node, &dag.nodes, work_limit - work)
         },
@@ -10528,7 +10587,7 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         check_dag_symmetry_step(node, &dag.nodes, work_limit - work)
         },
         ProofNodeKind::ExcludedMiddle => {
-        if node.parents.len() != 1 { return false; }
+        if node.parents.len() > 1 { return false; }
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         check_dag_excluded_middle_step(node, &dag.nodes, work_limit - work)
         },
@@ -10538,7 +10597,7 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         check_dag_congruence_step(node, &dag.nodes, work_limit - work)
         },
         ProofNodeKind::Tautology => {
-        if node.parents.len() != 1 { return false; }
+        if node.parents.len() > 1 { return false; }
         if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
         check_dag_tautology_step(node, &dag.nodes, work_limit - work)
         },
@@ -12305,6 +12364,28 @@ fn executable_transitivity_examples() -> bool {
         return false;
     }
 
+    // When multiple positions can be transitivity candidates, select the only
+    // changed occurrence rather than stopping at an earlier unchanged one.
+    let duplicate_equalities = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] };
+    let reflexive_unit = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(1)) },
+    ] };
+    let changed_second = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)) },
+    ] };
+    if !check_transitivity_and_replay(
+        &duplicate_equalities,
+        &reflexive_unit,
+        &changed_second,
+        1000,
+    ) {
+        return false;
+    }
+
     true
 }
 
@@ -12337,7 +12418,7 @@ fn executable_reflexivity_dag_examples() -> bool {
             ProofNode { id: 2, clause: refl_in2(), kind: ProofNodeKind::Input,
                 parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
             ProofNode { id: 3, clause: refl_concl, kind: ProofNodeKind::Reflexivity,
-                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
             ProofNode { id: 4, clause: mid_concl, kind: ProofNodeKind::ExactResolution(0, 0),
                 parents: vec![2usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
             ProofNode { id: 5, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
@@ -12624,7 +12705,7 @@ fn executable_excluded_middle_dag_examples() -> bool {
             ProofNode { id: 2, clause: em_in2(), kind: ProofNodeKind::Input,
                 parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
             ProofNode { id: 3, clause: em_concl, kind: ProofNodeKind::ExcludedMiddle,
-                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
             ProofNode { id: 4, clause: mid_concl, kind: ProofNodeKind::ExactResolution(0, 0),
                 parents: vec![2usize, 0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
             ProofNode { id: 5, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
@@ -12907,7 +12988,7 @@ fn executable_tautology_dag_examples() -> bool {
             ProofNode { id: 2, clause: em_in2(), kind: ProofNodeKind::Input,
                 parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
             ProofNode { id: 3, clause: tau_concl, kind: ProofNodeKind::Tautology,
-                parents: vec![0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
             ProofNode { id: 4, clause: mid_concl, kind: ProofNodeKind::ExactResolution(0, 0),
                 parents: vec![2usize, 0usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
             ProofNode { id: 5, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),

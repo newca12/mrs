@@ -57,7 +57,7 @@ It also runs `mutation-check.py`, which mutates replay and DAG-validation
 conditions across superposition, resolution, equality resolution, factoring,
 subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
-tokenization. The verification gate requires Verus to reject all 47 broken
+tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
 forward parents, and nonempty-root acceptance. Four compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
@@ -78,7 +78,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `378 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `428 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 

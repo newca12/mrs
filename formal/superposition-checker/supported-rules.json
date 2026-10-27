@@ -105,7 +105,7 @@
       "id": "equality-reflexivity",
       "module": "first_order_core.rs",
       "status": "verified_executable_step_and_dag_dispatch",
-      "description": "Equality reflexivity: the unit equality clause t = t is universally valid. Dispatched in proof DAGs via ProofNodeKind::Reflexivity; proven by equality_reflexivity_sound to be universally valid.",
+      "description": "Equality reflexivity: the zero-parent unit equality clause t = t is universally valid. The DAG bridge also accepts the legacy one-parent annotation without using that parent. Dispatched via ProofNodeKind::Reflexivity; proven by equality_reflexivity_sound.",
       "production_certification": false
     },
     {
@@ -126,7 +126,7 @@
       "id": "clause-excluded-middle",
       "module": "first_order_core.rs",
       "status": "verified_executable_step_and_dag_dispatch",
-      "description": "Clause excluded middle (law of excluded middle): for any atom A, the binary clause A | ~A (or ~A | A) is universally valid. Dispatched in proof DAGs via ProofNodeKind::ExcludedMiddle; proven by excluded_middle_sound to be universally valid.",
+      "description": "Clause excluded middle (law of excluded middle): for any atom A, the zero-parent binary clause A | ~A (or ~A | A) is universally valid. The DAG bridge also accepts the legacy one-parent annotation without using that parent. Dispatched via ProofNodeKind::ExcludedMiddle; proven by excluded_middle_sound.",
       "production_certification": false
     },
     {
@@ -140,7 +140,7 @@
       "id": "clause-tautology",
       "module": "first_order_core.rs",
       "status": "verified_executable_step_and_dag_dispatch",
-      "description": "Clause tautology: any clause containing a reflexive equality literal s = s or a complementary pair of literals A and ~A is universally valid. Dispatched in proof DAGs via ProofNodeKind::Tautology; proven by clause_tautology_sound to be universally valid.",
+      "description": "Clause tautology: any zero-parent clause containing a reflexive equality literal s = s or a complementary pair of literals A and ~A is universally valid. The DAG bridge also accepts the legacy one-parent annotation without using that parent. Dispatched via ProofNodeKind::Tautology; proven by clause_tautology_sound.",
       "production_certification": false
     },
     {

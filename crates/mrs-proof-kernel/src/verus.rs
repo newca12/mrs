@@ -2002,40 +2002,60 @@ fn find_transitivity_chain(
     goal_u: &Term,
     goal_v: &Term,
 ) -> Option<Vec<(usize, Term)>> {
-    let mut edges: Vec<(usize, &Term, &Term)> = Vec::new();
+    let start = goal_u.clone();
+    let goal = goal_v.clone();
+    if start == goal {
+        return None;
+    }
+    let mut adjacency: HashMap<Term, Vec<(usize, Term)>> = HashMap::new();
     for &p_idx in parents {
         let c = &nodes[p_idx].clause;
         if c.len() == 1
             && c[0].positive
             && let Atom::Eq(a, b) = &c[0].atom
         {
-            edges.push((p_idx, a, b));
+            adjacency
+                .entry(a.clone())
+                .or_default()
+                .push((p_idx, b.clone()));
+            adjacency
+                .entry(b.clone())
+                .or_default()
+                .push((p_idx, a.clone()));
         }
     }
     let mut queue = std::collections::VecDeque::new();
     let mut visited = HashSet::new();
-    queue.push_back((goal_u.clone(), Vec::new()));
-    visited.insert(goal_u.clone());
-    while let Some((curr, path)) = queue.pop_front() {
-        if curr == *goal_v && !path.is_empty() {
-            return Some(path);
+    let mut previous: HashMap<Term, (Term, usize)> = HashMap::new();
+    queue.push_back(start.clone());
+    visited.insert(start.clone());
+    let mut found = false;
+    while let Some(curr) = queue.pop_front() {
+        if curr == goal {
+            found = true;
+            break;
         }
-        for &(p_idx, a, b) in &edges {
-            if *a == curr && !visited.contains(b) {
-                visited.insert(b.clone());
-                let mut new_path = path.clone();
-                new_path.push((p_idx, b.clone()));
-                queue.push_back((b.clone(), new_path));
-            }
-            if *b == curr && !visited.contains(a) {
-                visited.insert(a.clone());
-                let mut new_path = path.clone();
-                new_path.push((p_idx, a.clone()));
-                queue.push_back((a.clone(), new_path));
+        if let Some(neighbors) = adjacency.get(&curr) {
+            for (p_idx, next) in neighbors {
+                if visited.insert(next.clone()) {
+                    previous.insert(next.clone(), (curr.clone(), *p_idx));
+                    queue.push_back(next.clone());
+                }
             }
         }
     }
-    None
+    if !found {
+        return None;
+    }
+    let mut path = Vec::new();
+    let mut curr = goal;
+    while curr != start {
+        let (parent, p_idx) = previous.get(&curr)?.clone();
+        path.push((p_idx, curr));
+        curr = parent;
+    }
+    path.reverse();
+    Some(path)
 }
 
 fn dag_request(
@@ -2115,12 +2135,7 @@ fn dag_request(
                 if let Atom::Eq(s, t) = &raw[0].atom
                     && s == t
                 {
-                    let parent_idx = if !nodes.is_empty() {
-                        0
-                    } else {
-                        return Err("reflexivity requires at least one prior node".into());
-                    };
-                    (Kind::Reflexivity, raw, vec![parent_idx])
+                    (Kind::Reflexivity, raw, parents)
                 } else {
                     return Err("reflexivity requires t = t".into());
                 }
@@ -2129,21 +2144,11 @@ fn dag_request(
                 && raw[0].positive != raw[1].positive
                 && raw[0].atom == raw[1].atom
             {
-                let parent_idx = if !nodes.is_empty() {
-                    0
-                } else {
-                    return Err("excluded_middle requires at least one prior node".into());
-                };
-                (Kind::ExcludedMiddle, raw, vec![parent_idx])
+                (Kind::ExcludedMiddle, raw, parents)
             } else if matches!(node.rule, Some("tautology") | Some("clause_tautology"))
                 && is_tautology_clause(&raw)
             {
-                let parent_idx = if !nodes.is_empty() {
-                    0
-                } else {
-                    return Err("tautology requires at least one prior node".into());
-                };
-                (Kind::Tautology, raw, vec![parent_idx])
+                (Kind::Tautology, raw, parents)
             } else {
                 verify_leaf(node, problem, source, &mut symbols, limits)
                     .map_err(|v| v.to_string())?;

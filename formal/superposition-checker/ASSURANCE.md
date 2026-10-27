@@ -19,8 +19,11 @@ bounded byte acquisition and response I/O are still host shims. Reports explicit
 `production_certification=false` for
 formal evidence; the dual gate relies on both this trusted bridge and the
 independent strict kernel. No default certification path has been replaced.
-The verified DAG contract requires an empty root and exactly two parent edges
-for each supported inference.
+The verified DAG contract requires an empty root and checks the declared parent
+arity for each supported rule. Reflexivity, excluded-middle, and tautology
+introductions may have zero parents; the adapter preserves that shape rather
+than inventing dependencies. Legacy one-parent annotations remain accepted for
+these rules, but their optional parent is not used by the inference.
 
 The actual archived c502 fixture is now parsed, translated and accepted as a
 local step through the subprocess boundary. Complete supported CNF DAGs,
@@ -45,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now forty-seven verifier-negative checks and four
+The mutation inventory is now fifty-eight verifier-negative checks and four
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -88,8 +91,9 @@ repeated exact-membership scan, with a runtime regression for the exact cutoff;
 this closes that specific repeated-comparison undercount, not all comparison
 accounting. The runtime suite also exercises standardized-parent collision
 rejection, malformed/deep target paths, mismatched pre/post-freshening paths,
-out-of-range atom slots and forged conclusions. A compiled mutation removing the
-target-parent freshening guard must fail the collision regression.
+out-of-range atom slots and forged conclusions. The source-mutation suite tests
+forbidden freshening images, but the compiled-runtime mutation set does not yet
+independently remove the target-parent freshening guard.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
@@ -99,9 +103,11 @@ TPTP/MRS lowering remains trusted adapter code. The bridge and runtime fixtures
 exercise the interchange boundary. The DAG dispatch includes first-order
 resolution, equality resolution, clause and equality factoring, subsumption
 resolution, weakening, demodulation, clause instantiation, clause condensation,
-equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology in addition to
-superposition and exact-atom resolution. Each accepted replay is bound to its
-cited parents and conclusion and proves local universal-validity preservation.
+equality reflexivity, equality transitivity, equality symmetry, clause excluded
+middle, equality congruence, and clause tautology in addition to superposition
+and exact-atom resolution. Each accepted replay is bound to its declared parent
+edges (or has no edges for a zero-parent tautology introduction) and its
+conclusion, and proves local universal-validity preservation.
 Compiled refutations certify from nonempty inputs; exact cumulative replay-work
 accounting and broader rules remain open.
 
@@ -159,7 +165,7 @@ retain a build artifact unless `VERUS_LOG` is set.
 values before running it; this currently checks byte reproducibility on one
 host and toolchain only.
 
-The verification gate runs 43 verifier-negative mutations across inference
+The verification gate runs 58 verifier-negative mutations across inference
 replay, DAG dispatch and wire tokenization. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
 contracts; it is not comprehensive threat-model coverage. Four compiled-runtime
@@ -181,8 +187,9 @@ and exercises both zero-budget and exact-threshold closure exhaustion/success.
 Input-leaf comparison regression exercises three candidates, accepts at the
 exact 15-unit node budget and rejects at 14. A compiled-runtime mutation that
 removes the repeated node-clause charge must fail this regression. A separate
-compiled mutation removes the target-parent freshening guard and must fail the
-standardized-variable-collision regression.
+runtime regression exercises standardized-variable-collision rejection, but no
+compiled mutation currently removes the target-parent freshening guard; this
+remains an explicit mutation-testing gap.
 
 ## Re-audit triggers
 

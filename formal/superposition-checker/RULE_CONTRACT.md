@@ -71,7 +71,9 @@ Its theorem `condensation_sound` and checker `check_condensation_and_replay`
 prove universal validity preservation.
 
 DAG support also includes **equality reflexivity**:
-the unit equality clause `t = t` is derived as a universal tautology.
+the zero-parent unit equality clause `t = t` is derived as a universal tautology.
+The legacy one-parent annotation is also accepted, but that parent is not used
+by the rule.
 Its theorem `equality_reflexivity_sound` and checker `check_reflexivity_and_replay`
 prove universal validity.
 
@@ -91,7 +93,9 @@ Its theorems `clause_symmetry_sound` and `equality_symmetry_sound` and checker `
 prove universal validity preservation.
 
 DAG support also includes **clause excluded middle** (law of excluded middle):
-for any first-order atom `A`, the binary clause `A | ~A` (or `~A | A`) is derived.
+for any first-order atom `A`, the zero-parent binary clause `A | ~A` (or
+`~A | A`) is derived. The legacy one-parent annotation is also accepted, but
+that parent is not used by the rule.
 Its theorem `excluded_middle_sound` and checker `check_excluded_middle_and_replay`
 prove universal validity.
 
@@ -109,8 +113,9 @@ The existing clause-structure preflight bounds syntax before recursive replay;
 this extension does not claim exact cumulative comparison-work accounting.
 
 DAG support also includes **clause tautology**:
-any clause containing a reflexive equality literal `s = s` or a complementary pair
-of literals `A` and `~A` is derived.
+any zero-parent clause containing a reflexive equality literal `s = s` or a
+complementary pair of literals `A` and `~A` is derived. The legacy one-parent
+annotation is also accepted, but that parent is not used by the rule.
 Its theorem `clause_tautology_sound` and checker `check_tautology_and_replay`
 prove universal validity.
 

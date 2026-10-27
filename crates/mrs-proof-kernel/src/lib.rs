@@ -510,10 +510,30 @@ fn verify_strict_with_source_internal(
                 }
                 continue;
             }
-            return KernelVerdict::Inconclusive(format!(
-                "node `{}` has no provenance and no parents",
-                node.name
-            ));
+            let outcome = match node.rule {
+                Some("reflexivity") => verify_reflexivity(&[], conclusion),
+                Some("excluded_middle") => verify_excluded_middle(&[], conclusion, limits),
+                Some("tautology" | "clause_tautology") => verify_tautology(&[], conclusion, limits),
+                _ => {
+                    return KernelVerdict::Inconclusive(format!(
+                        "node `{}` has no provenance and no parents",
+                        node.name
+                    ));
+                }
+            };
+            match outcome {
+                KernelVerdict::Certified => {}
+                KernelVerdict::Rejected(msg) => {
+                    return KernelVerdict::Rejected(format!("node {}: {msg}", node.name));
+                }
+                KernelVerdict::Inconclusive(msg) => {
+                    return KernelVerdict::Inconclusive(format!("node {}: {msg}", node.name));
+                }
+            }
+            collect_function_symbols(node.formula, &mut known_function_symbols);
+            collect_function_symbols(node.formula, &mut known_non_skolem_function_symbols);
+            collect_all_symbols(node.formula, &mut known_symbols);
+            continue;
         }
 
         let rule = match node.rule {
@@ -5296,15 +5316,31 @@ fn verify_excluded_middle(
     conclusion: &Formula,
     limits: VerificationLimits,
 ) -> KernelVerdict {
-    if parents.len() != 1 {
-        return KernelVerdict::Rejected("excluded_middle must have one parent".into());
+    if parents.len() > 1 {
+        return KernelVerdict::Rejected("excluded_middle accepts at most one parent".into());
     }
-    if formula_size(&parents[0]) > limits.max_formula_nodes
+    if parents
+        .iter()
+        .any(|parent| formula_size(parent) > limits.max_formula_nodes)
         || formula_size(conclusion) > limits.max_formula_nodes
     {
         return KernelVerdict::Inconclusive(
             "excluded_middle exceeded strict formula-size limit".into(),
         );
+    }
+    if parents.is_empty() {
+        let Some(parts) = clause_from_formula(conclusion, limits) else {
+            return KernelVerdict::Inconclusive(
+                "excluded_middle conclusion is not a supported clause".into(),
+            );
+        };
+        if parts.len() == 2
+            && parts[0].positive != parts[1].positive
+            && parts[0].atom == parts[1].atom
+        {
+            return KernelVerdict::Certified;
+        }
+        return KernelVerdict::Rejected("excluded_middle conclusion is not A | ~A".into());
     }
     let expected = Formula::or(vec![parents[0].clone(), Formula::neg(parents[0].clone())]);
     if formula_equivalent_with_limit(&expected, conclusion, limits) {
@@ -5330,10 +5366,12 @@ fn verify_tautology(
     conclusion: &Formula,
     limits: VerificationLimits,
 ) -> KernelVerdict {
-    if parents.len() != 1 {
-        return KernelVerdict::Rejected("tautology must have one parent".into());
+    if parents.len() > 1 {
+        return KernelVerdict::Rejected("tautology accepts at most one parent".into());
     }
-    if formula_size(&parents[0]) > limits.max_formula_nodes
+    if parents
+        .iter()
+        .any(|parent| formula_size(parent) > limits.max_formula_nodes)
         || formula_size(conclusion) > limits.max_formula_nodes
     {
         return KernelVerdict::Inconclusive("tautology exceeded strict formula-size limit".into());
@@ -5693,8 +5731,8 @@ fn verify_weakening(
 }
 
 fn verify_reflexivity(parents: &[Formula], conclusion: &Formula) -> KernelVerdict {
-    if parents.len() != 1 {
-        return KernelVerdict::Rejected("reflexivity must have one parent".into());
+    if parents.len() > 1 {
+        return KernelVerdict::Rejected("reflexivity accepts at most one parent".into());
     }
     if matches!(conclusion, Formula::Atom(Atom::Eq(left, right)) if left == right) {
         KernelVerdict::Certified
@@ -6054,9 +6092,9 @@ fn is_valid_transitivity_step(
     (s2_t1 && u_s1_t2) || (s2_t2 && u_s1_t1) || (s1_t1 && u_s2_t2) || (s1_t2 && u_s2_t1)
 }
 
-fn verify_transitivity(
-    parents: &[Formula],
-    conclusion: &Formula,
+fn verify_transitivity<'a>(
+    parents: &'a [Formula],
+    conclusion: &'a Formula,
     limits: VerificationLimits,
 ) -> KernelVerdict {
     if parents.len() < 2 {
@@ -6077,10 +6115,11 @@ fn verify_transitivity(
                 "multi-parent transitivity conclusion is not a positive equality".into(),
             );
         };
-        let mut edges: Vec<(&Term, &Term)> = Vec::new();
+        let mut adjacency: HashMap<&'a Term, Vec<&'a Term>> = HashMap::new();
         for p in parents {
             if let Some((a, b)) = positive_equality(p) {
-                edges.push((a, b));
+                adjacency.entry(a).or_default().push(b);
+                adjacency.entry(b).or_default().push(a);
             } else {
                 return KernelVerdict::Rejected(
                     "multi-parent transitivity requires unit equality parents".into(),
@@ -6095,12 +6134,11 @@ fn verify_transitivity(
             if curr == goal_right {
                 return KernelVerdict::Certified;
             }
-            for &(a, b) in &edges {
-                if a == curr && visited.insert(b) {
-                    queue.push_back(b);
-                }
-                if b == curr && visited.insert(a) {
-                    queue.push_back(a);
+            if let Some(neighbors) = adjacency.get(curr) {
+                for &next in neighbors {
+                    if visited.insert(next) {
+                        queue.push_back(next);
+                    }
                 }
             }
         }

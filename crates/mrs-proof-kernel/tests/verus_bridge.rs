@@ -1162,35 +1162,54 @@ fn multi_step_and_multi_parent_demodulation_refutations() {
     // 10. Zero-parent reflexivity inference:
     let zero_refl_problem =
         mrs_tptp::parse_tptp("cnf(a,axiom,p(a)). cnf(b,axiom,a!=a|~p(a)).").unwrap();
-    let zero_refl_text = "cnf(a,axiom,p(a),file('input',a)).
+    let zero_refl_text = "cnf(r,plain,a=a,inference(reflexivity,[status(thm)],[])).
+        cnf(a,axiom,p(a),file('input',a)).
         cnf(b,axiom,a!=a|~p(a),file('input',b)).
-        cnf(r,plain,a=a,inference(reflexivity,[status(thm)],[])).
         cnf(m1,plain,~p(a),inference(resolution,[status(thm)],[r,b])).
         cnf(bot,plain,$false,inference(resolution,[status(thm)],[m1,a])).";
     let zero_refl_proof = mrs_tptp::parse_tptp(zero_refl_text).unwrap();
-    let (_, report) = verify_with_shadow(
+    let (kernel, report) = verify_with_verus_gate(
         &zero_refl_problem,
         &zero_refl_proof,
         Some("input"),
         VerificationLimits::default(),
         &cfg,
     );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
 
     // 11. Zero-parent excluded middle inference:
     let zero_em_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p). cnf(b,axiom,~p).").unwrap();
-    let zero_em_text = "cnf(a,axiom,p,file('input',a)).
+    let zero_em_text = "cnf(em,plain,p|~p,inference(excluded_middle,[status(thm)],[])).
+        cnf(a,axiom,p,file('input',a)).
         cnf(b,axiom,~p,file('input',b)).
-        cnf(em,plain,p|~p,inference(excluded_middle,[status(thm)],[])).
         cnf(m1,plain,~p,inference(resolution,[status(thm)],[em,b])).
         cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,m1])).";
     let zero_em_proof = mrs_tptp::parse_tptp(zero_em_text).unwrap();
-    let (_, report) = verify_with_shadow(
+    let (kernel, report) = verify_with_verus_gate(
         &zero_em_problem,
         &zero_em_proof,
         Some("input"),
         VerificationLimits::default(),
         &cfg,
     );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 12. A zero-parent tautology is also certified by both independent paths.
+    let zero_taut_text = "cnf(tau,plain,p|~p,inference(tautology,[status(thm)],[])).
+        cnf(a,axiom,p,file('input',a)).
+        cnf(b,axiom,~p,file('input',b)).
+        cnf(m1,plain,~p,inference(resolution,[status(thm)],[tau,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,m1])).";
+    let zero_taut_proof = mrs_tptp::parse_tptp(zero_taut_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &zero_em_problem,
+        &zero_taut_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
 }
