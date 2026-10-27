@@ -16,7 +16,9 @@ The source reports are:
 - `/mnt/c/Users/fr22192/tmp/sweep/casc-j13-sweep-ueq-20260924.out`
 
 These are solo coverage diagnostics, not measurements of an 8-worker
-cooperative portfolio. No cooperative run results are included here.
+cooperative portfolio. No cooperative results were available when this note
+was written; the later October 26 UEQ cooperative experiment is summarized in
+the [UEQ candidate report](../reports/benchmarks/ueq-candidate-portfolio-2026-10.md).
 
 ## Recommended 8-worker orders
 
@@ -41,5 +43,9 @@ The compromise orders are in `CASC_FNE_ORDER` and `CASC_UEQ_ORDER` in
 - FNE: `11,8,4,15,10,3,12,1,6,2,5,7,9,13,14`
 - UEQ: `4,8,12,11,2,14,15,1,3,5,6,7,9,10,13`
 
-Validate the 8-worker schedules with cooperative portfolio sweeps before
-treating solo set-cover coverage as cooperative performance.
+The UEQ order was later tested once cooperatively on each edition. That
+experiment had empty proof blocks in 85 refutation-status rows, was not strictly
+audited, and showed raw deltas of +5 on CASC-30 and −2 on CASC-J13 versus the
+October 21 campaign artifacts. It does not validate the solo set-cover totals
+as cooperative performance or justify promotion; see the linked report for
+the full caveats and per-problem deltas.

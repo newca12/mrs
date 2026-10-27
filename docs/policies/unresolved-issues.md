@@ -2317,3 +2317,61 @@ All 1,400 problem evaluations completed cleanly with 0 silent kills, 0 unhandled
 and 100% `% SZS detail` telemetry completion.
 
 Full write-up: `docs/reports/benchmarks/feq-silent-kills-investigation.md`.
+
+---
+
+## UI-11 — UEQ candidate refutations have empty TSTP proof blocks
+
+| | |
+|---|---|
+| Status | **Open; cause unknown** |
+| Severity | 85 refutation-status rows across two October 26 UEQ candidate campaigns |
+| Soundness | **Undetermined.** An SZS `Unsatisfiable` status is not a strict proof audit. |
+
+### Observation
+
+The cooperative UEQ greedy candidate artifacts contain SZS
+`Unsatisfiable` statuses whose SZS proof envelope has no derivation lines:
+
+| Campaign | Raw `Unsatisfiable` statuses | Nonempty proof blocks | Empty proof blocks |
+|---|---:|---:|---:|
+| `cooperative-ueq-greedy-candidate-01-casc-30-20261026` | 128 | 79 | **49** |
+| `cooperative-ueq-greedy-candidate-02-casc-j13-20261026` | 117 | 81 | **36** |
+
+For example, CASC-30 `GRP167-1` and `GRP185-2`, and CASC-J13 `GRP178-1` and
+`LAT017-1`, have `% SZS output start Proof` / `% SZS output end Proof` markers
+with no `cnf(...)` or `fof(...)` steps between them. The 79 and 81 nonempty
+proof blocks are also **not yet certified**: no strict audit output is present
+in either candidate campaign directory.
+
+The evidence is archived under `~/crates/mrs-bench/results/`. Both candidate
+`run_meta.json` files record commit `ff316de52f297c5014722ef04efec594d3b1bb1a`
+with `git_dirty=true`, but they name different binary SHA-256 values. The
+campaigns used `MRS_PORTFOLIO=6,12,2,11,1,8,7,15`, eight workers, CASC hardware,
+and `MRS_SHARED_POOL_INTERVAL=0`. The [candidate report](../reports/benchmarks/ueq-candidate-portfolio-2026-10.md)
+records the run IDs, hashes, row counts, and comparisons.
+
+### What is ruled out, and what is not known
+
+- The empty proof blocks are present in the archived raw stdout; this is not
+  merely a missing `% SZS status` row.
+- On CASC-J13, 47 of the 117 raw `Unsatisfiable` rows have a blank `expected`
+  field and therefore `verdict=unknown`. This explains the harness verdict
+  label, **not** the empty proof text. The 168 blank `expected` fields across
+  all 400 rows are a separate reference-coverage issue.
+- The cause of the empty proof blocks is not established. Do not attribute it
+  to a particular commit or proof-storage change based on timing alone.
+- Whether any of the nonempty candidate proofs pass strict replay is also
+  unknown until the audit is run.
+
+### Next checks
+
+1. Run the existing strict proof audit over every nonempty candidate proof and
+   retain its per-problem results.
+2. Reproduce representative empty-proof cases from the archived candidate
+   binaries and inspect proof extraction/output without changing the search
+   portfolio. If the original dirty build is unavailable, record that limitation
+   and use a clean, hash-pinned build for the reproduction.
+3. Keep all October 26 counts labeled as raw observations; do not use them to
+   update the current verified UEQ score until proof auditing and the empty
+   output investigation are resolved.

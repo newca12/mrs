@@ -283,6 +283,32 @@ analysis and domain breakdowns are in [`reports/benchmarks/ueq-j13-2026-10.md`](
 
 ---
 
+## Cooperative UEQ greedy candidate portfolio (2026-10-26)
+
+The solo-derived candidate portfolio `6,12,2,11,1,8,7,15` was evaluated once
+on each edition with eight workers, `MRS_HARDWARE=casc`, and sharing disabled.
+These are raw SZS results, not a strict audit or a replacement for the verified
+baselines above:
+
+| Edition | Total | SZS `Unsatisfiable` | `Timeout` | `GaveUp` | Nonempty proof blocks | Empty proof blocks | Oct 21 raw refutations | Raw delta |
+|:---|---:|---:|---:|---:|---:|---:|---:|---:|
+| CASC-30 | 300 | 128 | 166 | 6 | 79 | **49** | 123 | +5 |
+| CASC-J13 | 400 | 117 | 269 | 14 | 81 | **36** | 119 | −2 |
+
+No strict proof audit is recorded for either candidate artifact. A nonempty
+proof block is not necessarily a valid proof, and the empty blocks are not
+counted as certified results. In CASC-J13, 47 of the 117 raw `Unsatisfiable`
+rows have no expected reference label and consequently have `verdict=unknown`;
+the SZS count, rather than the harness verdict, is shown here. The candidate
+runs are single observations on dirty builds with distinct binary hashes and
+are not controlled comparisons against the October 21 runs. Do not promote the
+candidate order from these results. Full solve-set deltas, provenance, and the
+proof-output investigation are in the
+[`UEQ candidate report`](../reports/benchmarks/ueq-candidate-portfolio-2026-10.md)
+and [UI-11](../policies/unresolved-issues.md#ui-11--ueq-candidate-refutations-have-empty-tstp-proof-blocks).
+
+---
+
 ## Cooperative FNE candidate portfolio campaigns (2026-10-21 and 2026-10-22)
 
 Following solo strategy sweeps and greedy set-cover analysis, the candidate 8-strategy
