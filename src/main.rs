@@ -1472,10 +1472,13 @@ fn run() {
     } else if emit_extras
         && proof_certified
         && let SearchResult::Refutation(_, tstp_proof) = &result
+        && !tstp_proof.trim().is_empty()
     {
         println!("{}", szs_output_start("Proof", problem_name));
         println!("{}", tstp_proof);
         println!("{}", szs_output_end("Proof", problem_name));
+    } else if emit_extras && proof_certified && matches!(result, SearchResult::Refutation(..)) {
+        eprintln!("% Proof omitted: empty proof text");
     }
 
     if emit_extras {

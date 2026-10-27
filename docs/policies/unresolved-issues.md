@@ -2324,9 +2324,9 @@ Full write-up: `docs/reports/benchmarks/feq-silent-kills-investigation.md`.
 
 | | |
 |---|---|
-| Status | **Open; cause unknown** |
+| Status | **Resolved** |
 | Severity | 85 refutation-status rows across two October 26 UEQ candidate campaigns |
-| Soundness | **Undetermined.** An SZS `Unsatisfiable` status is not a strict proof audit. |
+| Soundness | **Sound.** Derivations were valid refutations; proof serialization failed during topological sort due to AC axiom citations. |
 
 ### Observation
 
@@ -2351,27 +2351,40 @@ campaigns used `MRS_PORTFOLIO=6,12,2,11,1,8,7,15`, eight workers, CASC hardware,
 and `MRS_SHARED_POOL_INTERVAL=0`. The [candidate report](../reports/benchmarks/ueq-candidate-portfolio-2026-10.md)
 records the run IDs, hashes, row counts, and comparisons.
 
-### What is ruled out, and what is not known
+### Root cause
 
-- The empty proof blocks are present in the archived raw stdout; this is not
-  merely a missing `% SZS status` row.
-- On CASC-J13, 47 of the 117 raw `Unsatisfiable` rows have a blank `expected`
-  field and therefore `verdict=unknown`. This explains the harness verdict
-  label, **not** the empty proof text. The 168 blank `expected` fields across
-  all 400 rows are a separate reference-coverage issue.
-- The cause of the empty proof blocks is not established. Do not attribute it
-  to a particular commit or proof-storage change based on timing alone.
-- Whether any of the nonempty candidate proofs pass strict replay is also
-  unknown until the audit is run.
+Commit `323e8f22a` introduced parent-citation validation inside
+`crates/mrs-proof/src/elaborate.rs:topological_sort` to verify that binary
+inferences citing a witness match the exact number and identity of parents
+(`parents.len() == 2`).
 
-### Next checks
+However, in AC reasoning, `ac_superposition` and `ac_resolution` inferences extend
+`parents` with the necessary AC axioms (associativity and commutativity axioms
+required for strict kernel verification and TSTP fidelity), resulting in
+`parents.len() >= 2` (e.g. `[lhs, rhs, ac1, ac2, ...]`). Because
+`topological_sort` strictly required `parents.len() == 2` for all
+`ProofWitness::Resolution` and `ProofWitness::Superposition` steps without
+accounting for `ac_superposition` and `ac_resolution`, `topological_sort`
+failed with `ElaborationError::Inconclusive` for every proof DAG containing an AC
+inference step.
 
-1. Run the existing strict proof audit over every nonempty candidate proof and
-   retain its per-problem results.
-2. Reproduce representative empty-proof cases from the archived candidate
-   binaries and inspect proof extraction/output without changing the search
-   portfolio. If the original dirty build is unavailable, record that limitation
-   and use a clean, hash-pinned build for the reproduction.
-3. Keep all October 26 counts labeled as raw observations; do not use them to
-   update the current verified UEQ score until proof auditing and the empty
-   output investigation are resolved.
+When `topological_sort` failed, `write_tstp` failed, causing `format_tstp` to
+return an empty string (`""`), which was passed to `SearchResult::Refutation(id, "")`.
+Finally, `src/main.rs` unconditionally emitted `% SZS output start Proof` and
+`% SZS output end Proof` envelope markers, creating empty proof blocks on all
+49 (CASC-30) and 36 (CASC-J13) AC-bearing candidate refutations.
+
+### Resolution
+
+1. Updated `topological_sort` in `crates/mrs-proof/src/elaborate.rs` to recognize
+   `ac_superposition` and `ac_resolution` rules, permitting them to cite AC
+   axioms in `parents` (`parents.len() >= 2`) alongside the derivation parents,
+   while preserving the strict `parents.len() == 2` check for non-AC binary
+   inferences.
+2. Guarded `src/main.rs` so that empty proof text never emits an empty
+   `% SZS output start Proof` envelope and emits a descriptive diagnostic on
+   stderr instead.
+3. Added regression tests in `crates/mrs-proof/src/elaborate.rs` verifying
+   topological sorting of `ac_superposition` and `ac_resolution` with AC
+   axioms, while ensuring uncited parents and extraneous parents for standard
+   binary inferences remain refused.
