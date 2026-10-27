@@ -838,7 +838,7 @@ with cleaner kernel replay. Full details are in the
 
 ### Cooperative FEQ Candidate Portfolio Campaigns (2026-10-23 and 2026-10-24)
 
-The candidate FEQ portfolio $\mathbf{P}_{\text{FEQ}} = [12, 11, 10, 6, 8, 1, 4, 13]$ (promotes $s12$ Horn heuristic anchor to worker 0, retains $s11/s10/s06/s08/s01$, retains $s04$ to protect CASC-J13 coverage, and substitutes $s13$ for $s14$) was evaluated with 8 workers and no shared equality pool across four standalone full-division campaigns. These are single-run observations, not five-replicate means; under current `AGENTS.md` §11, the CASC-J13 runs at 180 s are supplemental and not canonical FEQ-limit comparisons (240 s). Treat coverage deltas as preliminary pending a paired, at-least-five-replicate comparison at the canonical limit.
+The FEQ candidate portfolio $\mathbf{P}_{\text{FEQ}} = [12, 11, 10, 6, 8, 1, 4, 13]$ (promotes $s12$ Horn heuristic anchor to worker 0, retains $s11/s10/s06/s08/s01$, retains $s04$ based on observed CASC-J13 coverage, and substitutes $s13$ for $s14$) was evaluated with 8 workers and no shared equality pool across four standalone full-division campaigns. The CASC-J13 runs used a historical 180 s limit, not the current canonical 240 s FEQ limit.
 
 1. **CASC-30 on Canonical 8-Core Hardware (`cooperative-feq-equal-candidate-casc30`)**:
    Evaluated on `mtsdev01` (8 physical cores, 96 GB RAM) at the canonical 240 s limit. This run generated **111 refutations (`Theorem`)**, strictly certifying **106 `VerifiedGood` (97.25% of emitted)**, **0 `VerifiedBad`**, 2 `Unknown`, 1 verifier timeout (`ALG049+1` > 120 s), and 2 `Proof Omitted` (`SET017+1`, `SET072+1` > 32 MB). It observed zero regressions vs. the shipped 108 baseline; this is a single-run result, not a replicated comparison.
@@ -853,6 +853,11 @@ The candidate FEQ portfolio $\mathbf{P}_{\text{FEQ}} = [12, 11, 10, 6, 8, 1, 4, 
    Evaluated on `tlpnf9701` at a historical 180 s limit (supplemental; current canonical FEQ limit is 240 s). Generated **72 refutations (`Theorem`)**, strictly certifying **71 `VerifiedGood` (100.0% of emitted)**, **0 `VerifiedBad`**, 0 `Unknown`, and 1 `Proof Omitted` (`SWV406+1` > 32 MB).
 
 Across all 365 refutations evaluated across the four campaigns, **0 `VerifiedBad`** were detected. Full details are in the [FEQ candidate portfolio report](reports/benchmarks/feq-candidate-portfolio-2026-10.md).
+
+These four single full-division campaign observations are not five-replicate
+paired comparisons; their totals are not estimates of means or statistically
+significant gains. Promotion as the canonical portfolio remains pending an
+at-least-five-replicate paired comparison at the canonical 240 s limit.
 
 ---
 

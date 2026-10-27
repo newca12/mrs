@@ -5,7 +5,7 @@
 #   cooperative_portfolio_sweep.sh <edition> <division> <portfolio|schedule:name> [time] [jobs] [output]
 #
 # Example:
-#   cooperative_portfolio_sweep.sh casc-30 feq 11,12,1,6,10,8,14,4 30 4 results/coop-feq
+#   cooperative_portfolio_sweep.sh casc-30 feq 12,11,10,6,8,1,4,13 30 4 results/coop-feq
 #   cooperative_portfolio_sweep.sh casc-30 fne schedule:casc_fne_mq_hybrid 240 1 results/fne-hybrid
 #
 # Unlike run_codex_sweep.sh/run_strategy_sweep.sh, this launches one mrs

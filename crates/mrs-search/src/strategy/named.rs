@@ -1025,7 +1025,7 @@ mod tests {
             "casc_feq",
             Duration::from_secs(8),
             8,
-            &[11, 12, 1, 6, 10, 8, 14, 4],
+            &[12, 11, 10, 6, 8, 1, 4, 13],
         )
         .expect("portfolio should be valid");
         assert_eq!(schedule.strategies.len(), 8);
@@ -1035,7 +1035,7 @@ mod tests {
                 .iter()
                 .map(|(config, _)| config.strategy_id)
                 .collect::<Vec<_>>(),
-            vec![11, 12, 1, 6, 10, 8, 14, 4]
+            vec![12, 11, 10, 6, 8, 1, 4, 13]
         );
         let total: Duration = schedule.strategies.iter().map(|(_, slice)| *slice).sum();
         assert_eq!(total, Duration::from_secs(8));
@@ -1088,7 +1088,7 @@ mod tests {
     #[test]
     fn canonical_orders_match_named_division_schedules() {
         for (name, expected) in [
-            ("casc_feq", &CASC_FEQ_ORDER[..8]),
+            ("casc_feq", &[12, 11, 10, 6, 8, 1, 4, 13][..]),
             ("casc_fne", &[11, 13, 4, 8, 15, 7, 3, 1][..]),
             ("casc_ueq", &[4, 8, 12, 11, 2, 14, 15, 1][..]),
         ] {
@@ -1100,6 +1100,20 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected);
         }
+    }
+
+    #[test]
+    fn feq_canonical_order_places_strategy_15_in_ninth_slot() {
+        let expected = [12, 11, 10, 6, 8, 1, 4, 13, 15, 14, 5, 2, 3, 7, 9];
+        assert_eq!(*canonical_strategy_order("casc_feq").unwrap(), expected);
+
+        let schedule = by_name("casc_feq", Duration::from_secs(9), 9).unwrap();
+        let actual = schedule
+            .strategies
+            .iter()
+            .map(|(config, _)| config.strategy_id)
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected[..9]);
     }
 
     #[test]
