@@ -618,6 +618,21 @@ not a paired off/on measurement with the same build and environment. Repeat
 matched grounding-off/on CASC-mode full-division runs before making that causal
 claim.
 
+### CASC-30 EPU follow-up (2026-10-26, adaptive mode)
+
+The full-division campaign `campaign-casc30-epu-W8C8J1-20261026` also returned
+11 refutations, all **strict `VerifiedGood`**, with zero `VerifiedBad` or audit
+timeouts; the remaining rows were 27 `GaveUp` and 62 `Timeout`. Its certified
+set is unchanged from October 19. `HWV064-1` and `SYO589-1` are the only
+status flips, both between unsolved outcomes.
+
+This is not a second canonical CASC-mode run: although it used eight requested
+workers and the official 120-second limit, the archived per-problem logs report
+`hardware=adaptive` on a host with 16 physical cores. The solve-set repeat is
+useful outcome evidence, but it does not establish a CASC-shaped replication or
+a causal timing improvement. See the [archived campaign results](results/README.md)
+and the [EPU telemetry follow-up in UI-5](policies/unresolved-issues.md).
+
 ### Fresh CASC-30 ICU campaign (2026-10-19)
 
 The full 101-problem run

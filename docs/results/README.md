@@ -452,6 +452,55 @@ at the same 8-core, `jobs=1` shape before attributing the gain causally to the
 EPR grounding change. Per-problem solve signatures are in
 [`intermittency.md`](intermittency.md).
 
+## `casc-30` EPU, 2026-10-26 adaptive-mode follow-up
+
+`campaign-casc30-epu-W8C8J1-20261026` completed all 100 problems with the
+official 120-second limit, eight requested workers, and `jobs=1`. It returned
+**11 `Unsatisfiable`**, all **11 strict `VerifiedGood`**, with zero
+`VerifiedBad`, checker timeouts, or inconclusive proofs; the other 89 were 27
+`GaveUp` and 62 `Timeout`. All 100 processes exited successfully and emitted an
+SZS status.
+
+The certified solve set is exactly the same 11 as in the October 19 campaign:
+there are no additions or losses. Two unsolved statuses flipped:
+`HWV064-1` (`Timeout` → `GaveUp`) and `SYO589-1` (`GaveUp` → `Timeout`).
+Per-problem wall times for the common solve set were:
+
+| Problem | 2026-10-19 (s) | 2026-10-26 (s) |
+|---|---:|---:|
+| `HWV078-1` | 53.425 | 24.884 |
+| `HWV107-1` | 85.554 | 72.075 |
+| `LAT260-2` | 0.142 | 0.129 |
+| `LAT261-2` | 0.136 | 0.103 |
+| `LAT264-2` | 0.140 | 0.120 |
+| `LAT265-2` | 0.136 | 0.111 |
+| `MSC024-1` | 4.463 | 3.123 |
+| `PUZ008-2` | 0.159 | 0.142 |
+| `PUZ036-1.005` | 41.180 | 39.066 |
+| `SET856-2` | 0.136 | 0.110 |
+| `SYN837-1` | 83.958 | 73.968 |
+
+These are raw observations, not a controlled speed comparison. Despite the
+campaign directory name, per-problem stderr records `hardware=adaptive` and
+`host_physical_cores=16`; `run_meta.json` records 32 CPUs and 63,763 MB of RAM.
+Only `MRS_WORKERS=8` was set, and `MRS_HARDWARE=casc` was not. This is therefore
+not a canonical 8-physical-core CASC-mode run or a matched replication of
+October 19. The different host, hardware mode, dirty build, and binary also
+prevent attributing the lower observed solve times to a code change.
+
+The two direct EPR-grounding refutations were `HWV078-1` (24.884 s, 52,857
+proof nodes, 13,385,966 bytes, `derivation_loop`; strict check 6.820 s) and
+`MSC024-1` (3.123 s, 26,189 nodes, 8,063,098 bytes, `lrat_lift`; strict check
+0.937 s). The other nine proofs came from the ordinary portfolio/search path.
+In particular, `HWV107-1`, `PUZ036-1.005`, and `SYN837-1` were solved after the
+EPR pre-pass fell back. The EPR/InstGen telemetry and the notable extraction and
+early-`GaveUp` cases are recorded in [UI-5](../policies/unresolved-issues.md).
+
+The campaign's recorded per-problem peak memory was 39,150 MB (`HWV081-1`); no
+row was reported as a resource-limit result. Provenance: commit `ff316de5`,
+dirty tree, Rust 1.99.1, binary SHA-256
+`bb13b614e303aece759880faa090f0d6ab2074d9fa8376edb6e174d41259b070`.
+
 ## `casc-30` FNE, 2026-10-19 CASC-mode campaign
 
 `campaign-casc30-fne-W8CASCHJ1-99-20261019` completed the full 100-problem

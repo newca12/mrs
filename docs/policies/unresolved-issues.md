@@ -1196,6 +1196,68 @@ resource limit. Provenance is recorded in the campaign's `run_meta.json`: dirty
 commit `40278337`, Rust 1.99.1, binary SHA-256
 `947aba9b604307f33e86d595b6112def78b42925f3a6ebeefac114aaf7cb9c96`.
 
+### 2026-10-26 full-division EPU follow-up (adaptive mode)
+
+`campaign-casc30-epu-W8C8J1-20261026` completed all 100 rows at the official
+120-second limit with eight requested workers and `jobs=1`. It returned 11
+`Unsatisfiable`, all 11 strict `VerifiedGood`, 27 `GaveUp`, and 62 `Timeout`;
+there were no `VerifiedBad` proofs or audit timeouts. Its certified set is the
+same 11 as the October 19 run, with no solve-set gains or losses. The only SZS
+status changes were `HWV064-1` (`Timeout` → `GaveUp`) and `SYO589-1` (`GaveUp` →
+`Timeout`).
+
+This is **not a canonical CASC-mode replication**. The campaign metadata sets
+`MRS_WORKERS=8` but not `MRS_HARDWARE=casc`; the per-problem logs report
+`hardware=adaptive` and `host_physical_cores=16` (the host metadata reports 32
+CPUs and 63,763 MB RAM). The October 19 campaign used `hardware=casc` on an
+8-physical-core host. All 11 solved rows have lower recorded wall times in the
+October 26 run, but these different hosts, hardware modes, and binaries make
+that an uncontrolled observation, not evidence that the prover or EPR path got
+faster. Full per-problem timings and provenance are in the
+[results summary](../results/README.md).
+
+#### Pre-pass telemetry
+
+EPR routing was reported for 94 rows: 43 `epr_equality` and 51
+`pure_relational_epr`. The other six rows have no EPR route/result telemetry;
+they are the six short refutations (`LAT260-2`, `LAT261-2`, `LAT264-2`,
+`LAT265-2`, `PUZ008-2`, `SET856-2`), each taking 0.103–0.142 s. Treat the
+missing telemetry as missing, rather than as an independently established
+profile classification. Of the 94 rows with EPR telemetry, two returned a
+direct refutation (`HWV078-1`, `MSC024-1`) and 92 fell back:
+
+| `epr_fallback` | rows |
+|---|---:|
+| `grounding_exhausted` | 52 |
+| `grounding_timeout` | 31 |
+| `sat_solver_unknown` | 4 |
+| `model_fixpoint` | 4 |
+| `proof_extraction_failed` | 1 |
+
+The four `sat_solver_unknown` rows were `HWV064-1`, `HWV083-1`, `HWV090-1`,
+and `PLA037-1`. This run records the fallback outcome, not a diagnosis of why
+CaDiCaL returned `unknown`; that cause remains open.
+
+InstGen reported 41 `unsupported_epr_profile`, 32 `timeout`, 16
+`max_instances_exceeded`, and 3 `max_rounds_reached` outcomes. Eight rows had
+no InstGen fallback field: the two direct EPR refutations and the six quick
+refutations without EPR telemetry. As in the earlier campaign, EPR and InstGen
+fields describe different stages and their fallback counts should not be
+conflated.
+
+`PLA039-1` is a notable extraction failure rather than a certified solve. Its
+EPR route generated 992,722 ground clauses (`epr_ms=35,331`), then spent
+72,881 ms in `derivation_loop` and returned `proof_extraction_failed`; the
+overall result was `GaveUp`, with no proof to audit. This is a concrete case for
+reviewing the bounded derivation-loop extraction path, not a twelfth solve.
+
+`HWV092-1` and `HWV094-1` also returned `GaveUp` before the 120-second limit,
+after 49.562 s and 44.812 s respectively. Both report `timeout=0`, `passive=0`,
+and `epr_fallback=grounding_timeout`. These are aggregate portfolio counters;
+they do not establish that an empty passive queue caused the final `GaveUp`.
+Per-strategy termination evidence is needed before attributing the outcome to a
+particular worker or pruning policy.
+
 ```bash
 # Reproduce the two paired arms with the full-division sweep wrapper.
 MRS_EPR_GROUND=0 MRS_HARDWARE=casc EPU_JOBS=1 \
