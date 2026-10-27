@@ -2446,19 +2446,47 @@ fn dag_request(
                     }
                 }
                 Some("congruence") | Some("equality_congruence") => {
-                    if parent.len() != 1 || raw.len() != 1 {
-                        return Err("congruence requires unit clauses".into());
+                    if parent.len() != raw.len() || parent.is_empty() {
+                        return Err("congruence requires matching non-empty clauses".into());
                     }
-                    if !parent[0].positive || !raw[0].positive {
-                        return Err("congruence requires positive equalities".into());
-                    }
-                    let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&parent[0].atom, &raw[0].atom) else {
-                        return Err("congruence requires equality atoms".into());
-                    };
-                    if congruent_term_context(s, t, u, v) {
-                        (Kind::Congruence, raw.clone(), parents)
+                    if parent.len() == 1 {
+                        if !parent[0].positive || !raw[0].positive {
+                            return Err("congruence requires positive equalities".into());
+                        }
+                        let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&parent[0].atom, &raw[0].atom)
+                        else {
+                            return Err("congruence requires equality atoms".into());
+                        };
+                        if congruent_term_context(s, t, u, v) {
+                            (Kind::Congruence, raw.clone(), parents)
+                        } else {
+                            return Err("congruence conclusion terms do not match parent".into());
+                        }
                     } else {
-                        return Err("congruence conclusion terms do not match parent".into());
+                        let mut congruent = false;
+                        for k in 0..parent.len() {
+                            if parent[k].positive
+                                && raw[k].positive
+                                && let (Atom::Eq(s, t), Atom::Eq(u, v)) =
+                                    (&parent[k].atom, &raw[k].atom)
+                                && congruent_term_context(s, t, u, v)
+                                && parent
+                                    .iter()
+                                    .enumerate()
+                                    .all(|(j, l)| j == k || *l == raw[j])
+                            {
+                                congruent = true;
+                                break;
+                            }
+                        }
+                        if congruent {
+                            (Kind::Congruence, raw.clone(), parents)
+                        } else {
+                            return Err(
+                                "congruence conclusion does not match congruent parent equality"
+                                    .into(),
+                            );
+                        }
                     }
                 }
                 Some("tautology") | Some("clause_tautology") => {
@@ -2469,6 +2497,84 @@ fn dag_request(
                     }
                 }
                 _ => return Err("unsupported inference rule".into()),
+            }
+        } else if node.rule == Some("consequence") && parents.len() > 2 {
+            let mut resolved = None;
+            for i in 0..parents.len() {
+                for j in (i + 1)..parents.len() {
+                    let left = &nodes[parents[i]].clause;
+                    let right = &nodes[parents[j]].clause;
+                    let mut exact_pivot = None;
+                    for (lp, l) in left.iter().enumerate() {
+                        for (rp, r) in right.iter().enumerate() {
+                            if l.positive && !r.positive && l.atom == r.atom {
+                                let expected: Vec<_> = left
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(idx, _)| *idx != lp)
+                                    .chain(right.iter().enumerate().filter(|(idx, _)| *idx != rp))
+                                    .map(|(_, l)| l.clone())
+                                    .collect();
+                                if expected == raw {
+                                    exact_pivot = Some(((lp, rp), false));
+                                }
+                            }
+                        }
+                    }
+                    if exact_pivot.is_none() {
+                        for (rp, r) in right.iter().enumerate() {
+                            for (lp, l) in left.iter().enumerate() {
+                                if r.positive && !l.positive && r.atom == l.atom {
+                                    let expected: Vec<_> = right
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(idx, _)| *idx != rp)
+                                        .chain(
+                                            left.iter().enumerate().filter(|(idx, _)| *idx != lp),
+                                        )
+                                        .map(|(_, l)| l.clone())
+                                        .collect();
+                                    if expected == raw {
+                                        exact_pivot = Some(((rp, lp), true));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(((lp, rp), flipped)) = exact_pivot {
+                        let step_parents = if flipped {
+                            vec![parents[j], parents[i]]
+                        } else {
+                            vec![parents[i], parents[j]]
+                        };
+                        resolved = Some((Kind::Resolution(lp, rp), raw.clone(), step_parents));
+                        break;
+                    } else if let Ok(c) = resolution_certificate(left, right, &raw, limits) {
+                        let conclusion = c.conclusion.clone();
+                        resolved = Some((
+                            Kind::FirstOrderResolution(c),
+                            conclusion,
+                            vec![parents[i], parents[j]],
+                        ));
+                        break;
+                    } else if let Ok(c) = resolution_certificate(right, left, &raw, limits) {
+                        let conclusion = c.conclusion.clone();
+                        resolved = Some((
+                            Kind::FirstOrderResolution(c),
+                            conclusion,
+                            vec![parents[j], parents[i]],
+                        ));
+                        break;
+                    }
+                }
+                if resolved.is_some() {
+                    break;
+                }
+            }
+            if let Some(res) = resolved {
+                res
+            } else {
+                return Err("no supported pairwise resolution in multi-parent consequence".into());
             }
         } else {
             return Err("unsupported parent count".into());

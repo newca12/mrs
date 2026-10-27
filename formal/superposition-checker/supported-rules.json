@@ -133,7 +133,7 @@
       "id": "equality-congruence",
       "module": "first_order_core.rs",
       "status": "verified_executable_step_and_dag_dispatch",
-      "description": "Equality congruence: from unit positive equality parent s = t, derive C[s] = C[t] in either orientation through any nonempty single-hole unary/binary function context, with exact symbols and unchanged siblings. Dispatched in proof DAGs via ProofNodeKind::Congruence; proven by equality_congruence_sound and oriented_congruence_preserves_value to preserve universal validity.",
+      "description": "Equality congruence: from parent clause C containing a positive equality literal s = t, derive C with that literal replaced by C[s] = C[t] (or C[t] = C[s]) in either orientation through any nonempty single-hole unary/binary function context, with exact symbols and unchanged siblings, while preserving all other literals. This covers both unit equality clauses and arbitrary multi-literal clauses. Dispatched in proof DAGs via ProofNodeKind::Congruence; proven by clause_congruence_sound, equality_congruence_sound, and oriented_congruence_preserves_value to preserve universal validity.",
       "production_certification": false
     },
     {

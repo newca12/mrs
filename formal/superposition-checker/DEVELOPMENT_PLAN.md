@@ -24,6 +24,22 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-27 multi-literal clause equality congruence and multi-parent consequence checkpoint
+
+- **DONE:** proved `clause_congruence_sound` in `first_order_core.rs`: from any universally valid parent
+  clause $C$, replacing a positive equality literal $s = t$ at index $k$ with a congruent equality
+  $C[s] = C[t]$ (or $C[t] = C[s]$) through any nonempty single-hole term context while preserving all other
+  literals derives a universally valid conclusion clause.
+- **DONE:** implemented `check_clause_congruence_exec` and updated `check_congruence_and_replay` and
+  `check_dag_structure` to support multi-literal clauses in addition to unit equality clauses.
+- **DONE:** added multi-literal clause congruence examples and forged regression cases in `executable_congruence_examples`.
+- **DONE:** updated `mutation-check.py` covering equality congruence orientation and DAG replay dispatch.
+- **DONE:** updated `mrs-proof-kernel::verus` and `mrs-proof-kernel::lib` to recognize and certify
+  multi-literal clause congruence, and added pairwise resolution discovery for multi-parent consequence steps.
+- **DONE:** verified by integration tests in `verus_bridge.rs` certifying refutations with multi-literal congruence
+  and multi-parent consequence through the formal dual-check gate.
+- **Scope:** generalizes equality congruence to arbitrary multi-literal clauses and supports multi-parent consequence resolution under M6.
+
 ### 2026-10-26 multi-literal clause equality symmetry checkpoint
 
 - **DONE:** proved `clause_symmetry_sound` in `first_order_core.rs`: from any universally valid parent
@@ -552,7 +568,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `416`, `5`, and `5` verified functions
+passes all four Verus files (currently `5`, `424`, `5`, and `5` verified functions
 respectively), the compiled runtime fixtures pass, and all mutation gates pass.
 The general replay accepts the manually encoded local c502 step with its semantic
 validity-preservation theorem. These results establish the implemented bounded
