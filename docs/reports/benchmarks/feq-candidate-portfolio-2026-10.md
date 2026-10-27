@@ -1,6 +1,10 @@
 # FEQ Candidate Cooperative Portfolio Validation Report (October 2026)
 
-> Status: Banked campaign analysis and cooperative portfolio validation.
+> Status: Banked single-run campaign observations; portfolio validation remains
+> provisional. These are not five-replicate means. Current policy requires at
+> least five replicates for decisive comparisons. The CASC-J13 runs used 180 s;
+> current canonical FEQ comparisons use 240 s, so those J13 results are
+> supplemental and must not be treated as canonical-limit comparisons.
 > Campaign directories:
 > - CASC-30 (8c host): `~/crates/mrs-bench/results/cooperative-feq-equal-candidate-casc30`
 > - CASC-30 (32c host): `~/crates/mrs-bench/results/cooperative-feq-equal-candidate-casc30-x`
@@ -18,7 +22,10 @@ Following full-time solo sweeps on CASC-30 FEQ (`solo-feq-casc30-99-fulltime`, 1
 
 $$\mathbf{P}_{\text{FEQ}} = [s12, s11, s10, s06, s08, s01, s04, s13]$$
 
-was evaluated across four standalone full-division campaigns in **CASC-30** (240 s) and **CASC-J13** (180 s) with `MRS_HARDWARE=casc`, 8 workers, and `jobs=1` (sequential problem evaluation):
+was evaluated across four standalone full-division campaigns in **CASC-30**
+(240 s) and **CASC-J13** (180 s in these historical runs) with
+`MRS_HARDWARE=casc`, 8 workers, and `jobs=1` (sequential problem evaluation).
+The J13 rows are supplemental because the current canonical FEQ limit is 240 s.
 
 1. **CASC-30 FEQ on Canonical 8-Core Hardware (`cooperative-feq-equal-candidate-casc30`)**:
    - Evaluated on `mtsdev01` (Intel Xeon E5-2407 @ 2.20 GHz, 8 cores, 96 GB RAM).
@@ -32,18 +39,25 @@ was evaluated across four standalone full-division campaigns in **CASC-30** (240
    - **113 Theorems solved out of 400 (28.25% raw solve rate)**.
    - **Strict Self-Certification**: **107 `VerifiedGood`**, **0 `VerifiedBad`**, 3 `Unknown`, 1 timeout (`ALG049+1`), and 2 `Proof Omitted` (`SET017+1`, `SET072+1`).
 
-3. **CASC-J13 FEQ on Canonical 8-Core Hardware (`cooperative-feq-equal-candidate-casc-j13`)**:
-   - Evaluated on `mtsdev01` (8 cores, 96 GB RAM).
+3. **CASC-J13 FEQ on 8-Core Hardware (`cooperative-feq-equal-candidate-casc-j13`)**:
+   - Evaluated on `mtsdev01` (8 cores, 96 GB RAM) at the historical 180 s budget;
+     this is not a canonical 240 s comparison under current repository policy.
    - **69 Theorems solved out of 300 (23.00% raw solve rate)**.
    - **100% Strict Self-Certification: 69 of 69 `VerifiedGood` (100.0%)**, with **0 `VerifiedBad`**, **0 `Unknown`**, and 0 timeouts.
 
 4. **CASC-J13 FEQ on 32-Core Comparator (`cooperative-feq-equal-candidate-casc-j13-x`)**:
-   - Evaluated on `tlpnf9701`.
+   - Evaluated on `tlpnf9701` at the historical 180 s budget; this is also
+     supplemental, not a canonical 240 s comparison.
    - **72 Theorems solved out of 300 (24.00% raw solve rate)**, up from 71 baseline.
    - **100% Strict Pass on Emitted Proofs**: **71 `VerifiedGood`**, **0 `VerifiedBad`**, 0 `Unknown`, and 1 `Proof Omitted` (`SWV406+1`, 83.4 MB > 32 MB limit).
 
-5. **Decision Rule Compliance (AGENTS.md §11)**:
-   The candidate portfolio achieves consistent gains across both competition editions ($+3$ to $+5$ on CASC-30, up to 72 on CASC-J13) with zero regressions on identical hardware and flawless zero-defect soundness across all 365 refutations. It is formally adopted as the canonical `casc_feq` schedule.
+5. **Evidence status under `AGENTS.md` §11**:
+   The campaigns show positive observed cooperative results and zero
+   `VerifiedBad` proofs, but they are single runs, not replicated comparisons.
+   The reported coverage deltas are observations, not estimates of the mean or
+   evidence that the portfolio is optimal. The J13 runs also used a noncanonical
+   180 s limit. A paired candidate/baseline comparison at 240 s with at least
+   five replicates is still needed for a decisive cross-edition claim.
 
 ---
 
@@ -56,7 +70,7 @@ was evaluated across four standalone full-division campaigns in **CASC-30** (240
 | **Timestamp** | 2026-10-23 19:07:03 | 2026-10-23 19:13:00 | 2026-10-24 15:28:33 | 2026-10-24 15:14:27 |
 | **Commit** | `94ec2841` (dirty) | `94ec2841` (dirty) | `94ec2841` (dirty) | `94ec2841` (dirty) |
 | **Compiler** | `rustc 1.99.1` | `rustc 1.99.1` | `rustc 1.99.1` | `rustc 1.99.1` |
-| **Limit** | 240 s (`--time 240`) | 240 s (`--time 240`) | 180 s (`--time 180`) | 180 s (`--time 180`) |
+| **Limit** | 240 s (`--time 240`) | 240 s (`--time 240`) | 180 s (`--time 180`, supplemental) | 180 s (`--time 180`, supplemental) |
 | **Workers** | 8 | 8 | 8 | 8 |
 | **Portfolio** | `12,11,10,6,8,1,4,13` | `12,11,10,6,8,1,4,13` | `12,11,10,6,8,1,4,13` | `12,11,10,6,8,1,4,13` |
 | **Shared Pool** | Disabled (`0`) | Disabled (`0`) | Disabled (`0`) | Disabled (`0`) |
@@ -111,6 +125,9 @@ Zero unsound proofs were generated (`0 VerifiedBad` across 365 refutations).
 
 ### 4.2 Cross-Edition Outcome Matrix
 
+These are observed campaign counts, not replicated means. In particular, the
+CASC-J13 results below use the supplemental 180 s limit described above.
+
 | Metric | Shipped Baseline | Adopted Portfolio ($\mathbf{P}_{\text{FEQ}}$) | Pure Greedy Candidate |
 |:---|:---:|:---:|:---:|
 | **CASC-30 Solves** | 108 / 400 | **111–114 / 400** | **115 / 400** |
@@ -131,8 +148,13 @@ On CASC-30, the pure greedy candidate solves 115 vs. 114 for the adopted portfol
    - Under Strategy 15 alone, `GEO641+1` solves in **0.169 s** solo (and 0.199 s in the greedy portfolio).
    - All other 14 base strategies time out on `GEO641+1`.
 
-### 4.4 Why the Adopted Portfolio Wins
-Adopting the pure greedy portfolio would gain `GEO641+1` on CASC-30, but at the cost of dropping `s04` and inducing **4 regressed theorems on CASC-J13** (including `SET017+1` and `BIO006+1`). The adopted portfolio balances both editions, ensures zero regressions on CASC-30, and yields the highest verified pass rate.
+### 4.4 Observed Tradeoff (Not a Replicated Conclusion)
+In these campaign observations, the pure greedy portfolio gains `GEO641+1` on
+CASC-30 but drops `s04` and has **4 observed regressions on CASC-J13** (including
+`SET017+1` and `BIO006+1`). Because the CASC-J13 runs used 180 s and the
+comparison was not replicated, this does not establish a robust cross-edition
+tradeoff or show that the candidate order is optimal. Replicated paired runs at
+the canonical 240 s limit remain necessary.
 
 ---
 

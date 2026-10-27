@@ -604,11 +604,12 @@ pub fn casc_fne(total_time: Duration, workers: usize) -> StrategySchedule {
 /// A purely static schedule optimized for FEQ (First-Order with Equality).
 ///
 /// Promotes the s12 HornHeuristic anchor to worker 0, retains s11/s10/s6/s8/s1,
-/// keeps s04 to safeguard baseline coverage on CASC-J13, and substitutes s13
-/// (SOS + quadratic function penalty, +2 marginal solves) for redundant s14
-/// (+0 marginal gain). Strategy 15 sits in slot 8 to activate immediately
-/// on >=9 worker hosts. Evaluated cooperatively across CASC-30 and CASC-J13
-/// campaigns (October 2026).
+/// keeps s04 based on observed CASC-J13 baseline coverage, and substitutes s13
+/// (SOS + quadratic function penalty, +2 observed marginal solves) for s14
+/// (+0 observed marginal gain). Strategy 15 sits in slot 8 to activate
+/// immediately on >=9 worker hosts. October 2026 campaign results are single-run
+/// observations; the J13 runs used a supplemental 180 s limit, not the current
+/// canonical 240 s FEQ limit. Replicated paired validation remains pending.
 pub fn casc_feq(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule(total_time, workers, &CASC_FEQ_ORDER)
 }
