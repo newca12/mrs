@@ -277,8 +277,8 @@ def main() -> int:
         ),
         (
             "congruence ignores function symbol or argument agreement",
-            "if !check_congruence_step_exec(s, t, u, v) {\n        return false;\n    }",
-            "if false {\n        return false;\n    }",
+            "if check_congruence_step_exec(s, t, u, v) {",
+            "if true {",
         ),
         (
             "nested congruence ignores unchanged binary sibling",

@@ -5791,20 +5791,56 @@ fn verify_congruence(parents: &[Formula], conclusion: &Formula) -> KernelVerdict
     if parents.len() != 1 {
         return KernelVerdict::Rejected("congruence must have one parent".into());
     }
-    let Some((parent_pos, parent_s, parent_t)) = equality_parts(strip_forall_core(&parents[0]))
-    else {
-        return KernelVerdict::Rejected("congruence parent is not an equality".into());
-    };
-    let Some((concl_pos, concl_u, concl_v)) = equality_parts(strip_forall_core(conclusion)) else {
-        return KernelVerdict::Rejected("congruence conclusion is not an equality".into());
-    };
-    if !parent_pos || !concl_pos {
-        return KernelVerdict::Rejected("congruence requires positive equalities".into());
-    }
-    if congruent_term_context(parent_s, parent_t, concl_u, concl_v) {
-        KernelVerdict::Certified
+    if let (Some((parent_pos, parent_s, parent_t)), Some((concl_pos, concl_u, concl_v))) = (
+        equality_parts(strip_forall_core(&parents[0])),
+        equality_parts(strip_forall_core(conclusion)),
+    ) {
+        if !parent_pos || !concl_pos {
+            return KernelVerdict::Rejected("congruence requires positive equalities".into());
+        }
+        if congruent_term_context(parent_s, parent_t, concl_u, concl_v) {
+            KernelVerdict::Certified
+        } else {
+            KernelVerdict::Rejected(
+                "congruence conclusion is not congruent to parent equality".into(),
+            )
+        }
+    } else if let (Some(parent_clause), Some(concl_clause)) = (
+        clause_from_formula(&parents[0], VerificationLimits::default()),
+        clause_from_formula(conclusion, VerificationLimits::default()),
+    ) {
+        if parent_clause.len() != concl_clause.len() || parent_clause.is_empty() {
+            return KernelVerdict::Rejected(
+                "congruence requires matching non-empty clauses".into(),
+            );
+        }
+        let mut congruent = false;
+        for k in 0..parent_clause.len() {
+            if parent_clause[k].positive
+                && concl_clause[k].positive
+                && let (Atom::Eq(s, t), Atom::Eq(u, v)) =
+                    (&parent_clause[k].atom, &concl_clause[k].atom)
+                && congruent_term_context(s, t, u, v)
+                && parent_clause
+                    .iter()
+                    .enumerate()
+                    .all(|(j, l)| j == k || *l == concl_clause[j])
+            {
+                congruent = true;
+                break;
+            }
+        }
+        if congruent {
+            KernelVerdict::Certified
+        } else {
+            KernelVerdict::Rejected(
+                "congruence conclusion is not congruent to parent equality".into(),
+            )
+        }
     } else {
-        KernelVerdict::Rejected("congruence conclusion is not congruent to parent equality".into())
+        KernelVerdict::Rejected(
+            "congruence parent or conclusion is not an equality or clause".into(),
+        )
     }
 }
 

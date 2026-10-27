@@ -576,7 +576,26 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
 
-    // Copy / rename via instantiation:
+    // Multi-literal clause congruence:
+    let multi_cong_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,p(c)|a=b). cnf(b,axiom,~p(c)). cnf(c,axiom,f(a)!=f(b)).")
+            .unwrap();
+    let multi_cong_text = "cnf(a,axiom,p(c)|a=b,file('input',a)).
+        cnf(b,axiom,~p(c),file('input',b)).
+        cnf(c,axiom,f(a)!=f(b),file('input',c)).
+        cnf(cg,plain,p(c)|f(a)=f(b),inference(congruence,[status(thm)],[a])).
+        cnf(r1,plain,f(a)=f(b),inference(resolution,[status(thm)],[cg,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,c])).";
+    let multi_cong_proof = mrs_tptp::parse_tptp(multi_cong_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &multi_cong_problem,
+        &multi_cong_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
     let rename_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p(X)). cnf(b,axiom,~p(Y)).").unwrap();
     let rename_text = "cnf(a,axiom,p(X),file('input',a)).
         cnf(b,axiom,~p(Y),file('input',b)).
@@ -1048,6 +1067,46 @@ fn multi_step_and_multi_parent_demodulation_refutations() {
     let (kernel, report) = verify_with_verus_gate(
         &mp_problem,
         &mp_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 6. Multi-parent consequence with redundant parent:
+    let conseq_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,p|q). cnf(b,axiom,~p). cnf(c,axiom,r). cnf(d,axiom,~q|~r).",
+    )
+    .unwrap();
+    let conseq_text = "cnf(a,axiom,p|q,file('input',a)).
+        cnf(b,axiom,~p,file('input',b)).
+        cnf(c,axiom,r,file('input',c)).
+        cnf(d,axiom,~q|~r,file('input',d)).
+        cnf(q_clause,plain,q,inference(consequence,[status(thm)],[a,b,c])).
+        cnf(d2,plain,~r,inference(resolution,[status(thm)],[q_clause,d])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[d2,c])).";
+    let conseq_proof = mrs_tptp::parse_tptp(conseq_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &conseq_problem,
+        &conseq_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 7. cnf_transformation via instantiation:
+    let cnf_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p(X)). cnf(b,axiom,~p(c)).").unwrap();
+    let cnf_text = "cnf(a,axiom,p(X),file('input',a)).
+        cnf(b,axiom,~p(c),file('input',b)).
+        cnf(c1,plain,p(X),inference(cnf_transformation,[status(thm)],[a])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[c1,b])).";
+    let cnf_proof = mrs_tptp::parse_tptp(cnf_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &cnf_problem,
+        &cnf_proof,
         Some("input"),
         VerificationLimits::default(),
         &cfg,

@@ -94,13 +94,14 @@ Its theorem `excluded_middle_sound` and checker `check_excluded_middle_and_repla
 prove universal validity.
 
 DAG support also includes **equality congruence**:
-from universally valid unit equality parent `s = t`, the congruent conclusion
-`C[s] = C[t]` is derived, allowing either orientation of the parent equality.
+from universally valid parent clause `C` containing a positive equality literal `s = t`, the congruent conclusion
+with that literal replaced by `C[s] = C[t]` (or `C[t] = C[s]`) and all other literals preserved is derived.
+This covers both unit equality clauses and arbitrary multi-literal clauses.
 `C` is a nonempty single-hole context formed recursively from unary functions
 and either argument of binary functions. Function symbols and all off-path
 sibling terms must agree exactly; no substitution or simultaneous multi-hole
 replacement is implicit. Nested contexts such as `h(g(c, f(_)), d)` are supported.
-Its theorem `equality_congruence_sound` and checker `check_congruence_and_replay`
+Its theorems `clause_congruence_sound` and `equality_congruence_sound` and checker `check_congruence_and_replay`
 prove universal validity preservation via `oriented_congruence_preserves_value`.
 The existing clause-structure preflight bounds syntax before recursive replay;
 this extension does not claim exact cumulative comparison-work accounting.
