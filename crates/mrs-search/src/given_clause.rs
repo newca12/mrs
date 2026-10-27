@@ -2296,6 +2296,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     {
                         continue;
                     }
+                    // Parent guidance mutates `state`; own the active clause
+                    // before sampling so the processed-store borrow is released.
+                    // Without the feature, keep this hot path zero-copy.
+                    #[cfg(feature = "parent-guidance")]
+                    let active_owned = active.clone();
+                    #[cfg(feature = "parent-guidance")]
+                    let active = &active_owned;
                     #[cfg(feature = "parent-guidance")]
                     let (reject, parent_sample) = state.reject_parent_pair(
                         &given,
@@ -2480,6 +2487,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     {
                         continue;
                     }
+                    // Parent guidance mutates `state`; own the active clause
+                    // before sampling so the processed-store borrow is released.
+                    // Without the feature, keep this hot path zero-copy.
+                    #[cfg(feature = "parent-guidance")]
+                    let active_owned = active.clone();
+                    #[cfg(feature = "parent-guidance")]
+                    let active = &active_owned;
                     #[cfg(feature = "parent-guidance")]
                     let (reject, parent_sample) = state.reject_parent_pair(
                         &given,
