@@ -2334,9 +2334,34 @@ fn dag_request(
                 Some("equality_resolution")
                 | Some("destructive_equality_resolution")
                 | Some("trivial_inequality_removal") => {
-                    let c = equality_resolution_certificate(parent, &raw, limits)?;
-                    let conclusion = c.conclusion.clone();
-                    (Kind::EqualityResolution(c), conclusion, parents)
+                    if let Ok(c) = equality_resolution_certificate(parent, &raw, limits) {
+                        let conclusion = c.conclusion.clone();
+                        (Kind::EqualityResolution(c), conclusion, parents)
+                    } else if let Some(certs) = reduce_via_equality_resolution(parent, &raw, limits)
+                        && !certs.is_empty()
+                    {
+                        let mut prev_idx = parents[0];
+                        for cert in &certs[..certs.len() - 1] {
+                            let intermediate_idx = nodes.len();
+                            if intermediate_idx >= MAX_NODES {
+                                return Err("expanded DAG node ceiling".into());
+                            }
+                            nodes.push(WireNode {
+                                clause: cert.conclusion.clone(),
+                                parents: vec![prev_idx],
+                                kind: Kind::EqualityResolution(cert.clone()),
+                            });
+                            prev_idx = intermediate_idx;
+                        }
+                        let last_cert = &certs[certs.len() - 1];
+                        (
+                            Kind::EqualityResolution(last_cert.clone()),
+                            raw,
+                            vec![prev_idx],
+                        )
+                    } else {
+                        return Err("no supported equality resolution certificate".into());
+                    }
                 }
                 Some("factoring") => {
                     let c = factoring_certificate(parent, &raw, limits)?;
@@ -2370,7 +2395,8 @@ fn dag_request(
                 | Some("assume")
                 | Some("duplicate")
                 | Some("alpha")
-                | Some("rewrite") => {
+                | Some("rewrite")
+                | Some("cnf_transformation") => {
                     let c = instantiation_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::Instantiation(c), conclusion, parents)

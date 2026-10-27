@@ -1096,4 +1096,21 @@ fn multi_step_and_multi_parent_demodulation_refutations() {
     );
     assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 7. cnf_transformation via instantiation:
+    let cnf_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p(X)). cnf(b,axiom,~p(c)).").unwrap();
+    let cnf_text = "cnf(a,axiom,p(X),file('input',a)).
+        cnf(b,axiom,~p(c),file('input',b)).
+        cnf(c1,plain,p(X),inference(cnf_transformation,[status(thm)],[a])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[c1,b])).";
+    let cnf_proof = mrs_tptp::parse_tptp(cnf_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &cnf_problem,
+        &cnf_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
 }

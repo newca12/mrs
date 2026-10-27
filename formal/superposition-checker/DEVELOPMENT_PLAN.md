@@ -35,10 +35,11 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** added multi-literal clause congruence examples and forged regression cases in `executable_congruence_examples`.
 - **DONE:** updated `mutation-check.py` covering equality congruence orientation and DAG replay dispatch.
 - **DONE:** updated `mrs-proof-kernel::verus` and `mrs-proof-kernel::lib` to recognize and certify
-  multi-literal clause congruence, and added pairwise resolution discovery for multi-parent consequence steps.
-- **DONE:** verified by integration tests in `verus_bridge.rs` certifying refutations with multi-literal congruence
-  and multi-parent consequence through the formal dual-check gate.
-- **Scope:** generalizes equality congruence to arbitrary multi-literal clauses and supports multi-parent consequence resolution under M6.
+  multi-literal clause congruence, added pairwise resolution discovery for multi-parent consequence steps,
+  multi-inequality reduction in equality resolution via intermediate DAG steps, and cnf_transformation via instantiation.
+- **DONE:** verified by integration tests in `verus_bridge.rs` certifying refutations with multi-literal congruence,
+  multi-parent consequence, and cnf_transformation through the formal dual-check gate.
+- **Scope:** generalizes equality congruence to arbitrary multi-literal clauses and supports multi-parent consequence resolution, multi-inequality reduction, and cnf_transformation aliases under M6.
 
 ### 2026-10-26 multi-literal clause equality symmetry checkpoint
 
