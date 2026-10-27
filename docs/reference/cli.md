@@ -22,7 +22,7 @@ memory-aware count based on physical CPUs.
 | `--schedule NAME` | Select a named schedule; default is `casc`. |
 | `--auto-schedule` | Select `casc_ueq`, `casc_epr`, `casc_fne`, or `casc_feq` from clause shape. An explicit `--schedule` wins. |
 | `--strategy N` | Run one base strategy for the full budget. Valid IDs are 1 through 15 and require a CASC schedule. |
-| `--portfolio IDS` | Run an explicit cooperative portfolio such as `11,12,1,6,10,8,14,4`; supply one ID per worker. |
+| `--portfolio IDS` | Run an explicit cooperative portfolio such as `12,11,10,6,8,1,4,13`; supply one ID per worker. |
 | `--list-schedules` | Print registered schedule names and exit. |
 | `--fast` | Deprecated alias for `--schedule fast`. |
 | `--goal-transform MODE` | Override goal transformation: `recursive`/`all`, `maximal`/`top`, or `none`/`off`. |
@@ -155,7 +155,7 @@ nix develop -c cargo run -- problems/socrates.p
 nix develop -c cargo run -- --workers 1 --schedule casc_fne --strategy 11 problem.p
 nix develop -c cargo run -- --auto-schedule --workers 8 problem.p
 nix develop -c cargo run -- --workers 8 --schedule casc_feq \
-    --portfolio 11,12,1,6,10,8,14,4 problem.p
+    --portfolio 12,11,10,6,8,1,4,13 problem.p
 ```
 
 ## Environment variables

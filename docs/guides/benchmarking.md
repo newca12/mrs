@@ -158,12 +158,12 @@ is descriptive, not a confidence interval or a division-wide noise estimate.
 ```bash
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \
   crates/mrs-bench/cooperative_portfolio_sweep.sh \
-  casc-30 feq 11,12,1,6,10,8,14,4 30 1 \
+  casc-30 feq 12,11,10,6,8,1,4,13 30 1 \
   crates/mrs-bench/results/cooperative-feq
 
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
   crates/mrs-bench/cooperative_portfolio_sweep.sh \
-  casc-30 feq 11,12,1,6,10,8,14,4 30 1 \
+  casc-30 feq 12,11,10,6,8,1,4,13 30 1 \
   crates/mrs-bench/results/cooperative-feq-no-sharing
 ```
 

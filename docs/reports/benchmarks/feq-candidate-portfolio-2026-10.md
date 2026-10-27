@@ -10,6 +10,12 @@
 > - CASC-30: `~/crates/mrs-bench/results/coop-feq-greedy-candidate-99-20261023`
 > - CASC-J13: `~/crates/mrs-bench/results/cooperative-feq-greedy-candidate-99-casc-j13`
 
+The four full-division candidate campaigns below are single observations per
+host/division, not five-replicate paired comparisons. Their totals describe
+those runs; they do not estimate a mean or establish statistical significance.
+Per `AGENTS.md` §11, promotion as the canonical portfolio still needs a
+five-replicate paired comparison; this report does not satisfy that gate.
+
 ---
 
 ## 1. Executive Summary
@@ -42,8 +48,8 @@ was evaluated across four standalone full-division campaigns in **CASC-30** (240
    - **72 Theorems solved out of 300 (24.00% raw solve rate)**, up from 71 baseline.
    - **100% Strict Pass on Emitted Proofs**: **71 `VerifiedGood`**, **0 `VerifiedBad`**, 0 `Unknown`, and 1 `Proof Omitted` (`SWV406+1`, 83.4 MB > 32 MB limit).
 
-5. **Decision Rule Compliance (AGENTS.md §11)**:
-   The candidate portfolio achieves consistent gains across both competition editions ($+3$ to $+5$ on CASC-30, up to 72 on CASC-J13) with zero regressions on identical hardware and flawless zero-defect soundness across all 365 refutations. It is formally adopted as the canonical `casc_feq` schedule.
+5. **Decision Rule Context (AGENTS.md §11)**:
+   The full-division runs record gains over the prior baseline (111 vs. 108 on the 8-core CASC-30 host; 113 on the 32-core host; 69 on the 8-core CASC-J13 host and 72 raw refutations on the 32-core host). No `VerifiedBad` result was observed among the 365 refutations audited. These are campaign outcomes, not replicated means; the `GEO559+1` diagnostic below is not a fifth full-division run.
 
 ---
 
@@ -113,26 +119,32 @@ Zero unsound proofs were generated (`0 VerifiedBad` across 365 refutations).
 
 | Metric | Shipped Baseline | Adopted Portfolio ($\mathbf{P}_{\text{FEQ}}$) | Pure Greedy Candidate |
 |:---|:---:|:---:|:---:|
-| **CASC-30 Solves** | 108 / 400 | **111–114 / 400** | **115 / 400** |
-| **CASC-J13 Solves** | 68–71 / 300 | **69–72 / 300** | **71 / 300** |
+| **CASC-30 Solves** | 108 / 400 | **111 (8c) / 113 (32c)** | **115 / 400** |
+| **CASC-J13 Solves** | 68–71 / 300 | **69 (8c) / 72 raw (32c; 71 verified)** | **71 / 300** |
 | **CASC-J13 Regressions** | Baseline | **0 regressions** | **4 regressions** (`BIO006+1`, `GEO494+1`, `SET017+1`, `SWX203+1`) |
-| **Combined Solves** | 177–179 | **180–186** | 186 |
+| **Combined Solves** | 176–179 | **180–185** | 186 |
+
+The full-division values above exclude the `GEO559+1` one-problem diagnostic
+below. The `72` CASC-J13 result includes one proof omitted by the 32 MB output
+limit; only 71 of those 72 refutations were `VerifiedGood`.
 
 ### 4.3 Diagnostic Verification on `teenf9901` (`GEO559+1` and `GEO641+1`)
 
-On CASC-30, the pure greedy candidate solves 115 vs. 114 for the adopted portfolio. An empirical diagnostic was run on `teenf9901` under the adopted portfolio:
+On CASC-30, the pure greedy candidate's full-division result was 115. A
+one-problem diagnostic was run on `teenf9901` under the adopted portfolio; it
+is not an independently measured 114/400 campaign:
 
 1. **`GEO559+1` is solved by the adopted portfolio**:
    - Refutation derived at **230.1 s** (160,222 proof nodes, 68.4 MB proof text).
    - On slower 2.20 GHz hosts (`mtsdev01` at 241.8 s) and 1.80 GHz hosts with 8 pinned cores (`tlpnf9701` at 239.6 s), thread racing pushed it just over the 240 s ceiling.
-   - On `teenf9901`, throughput was sufficient to close the proof within the competition limit, bringing adopted portfolio coverage to **114 / 400**.
+   - On `teenf9901`, throughput was sufficient to close the proof within the competition limit. The resulting **114 / 400** figure is an aggregate that includes this targeted solve, not a fifth full-division campaign score.
 2. **`GEO641+1` is uniquely solved by Strategy 15**:
    - Timed out at 238.6 s under the adopted portfolio.
    - Under Strategy 15 alone, `GEO641+1` solves in **0.169 s** solo (and 0.199 s in the greedy portfolio).
    - All other 14 base strategies time out on `GEO641+1`.
 
 ### 4.4 Why the Adopted Portfolio Wins
-Adopting the pure greedy portfolio would gain `GEO641+1` on CASC-30, but at the cost of dropping `s04` and inducing **4 regressed theorems on CASC-J13** (including `SET017+1` and `BIO006+1`). The adopted portfolio balances both editions, ensures zero regressions on CASC-30, and yields the highest verified pass rate.
+Adopting the pure greedy portfolio would gain `GEO641+1` on CASC-30, but at the cost of dropping `s04` and the four reported CASC-J13 regressions (including `SET017+1` and `BIO006+1`). The selected portfolio retains `s04` and had zero observed CASC-30 regressions in the 8-core comparison. The available report does not establish a statistically significant overall advantage or compare strict verification rates against the pure-greedy candidate.
 
 ---
 
