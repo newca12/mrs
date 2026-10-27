@@ -6035,13 +6035,32 @@ fn is_ground_constant_term(term: &Term) -> bool {
     matches!(term, Term::App(_, args) if args.is_empty())
 }
 
+fn is_valid_transitivity_step(
+    s1: &Term,
+    s2: &Term,
+    t1: &Term,
+    t2: &Term,
+    u1: &Term,
+    u2: &Term,
+) -> bool {
+    let s2_t1 = s2 == t1;
+    let s2_t2 = s2 == t2;
+    let s1_t1 = s1 == t1;
+    let s1_t2 = s1 == t2;
+    let u_s1_t2 = (u1 == s1 && u2 == t2) || (u1 == t2 && u2 == s1);
+    let u_s1_t1 = (u1 == s1 && u2 == t1) || (u1 == t1 && u2 == s1);
+    let u_s2_t2 = (u1 == s2 && u2 == t2) || (u1 == t2 && u2 == s2);
+    let u_s2_t1 = (u1 == s2 && u2 == t1) || (u1 == t1 && u2 == s2);
+    (s2_t1 && u_s1_t2) || (s2_t2 && u_s1_t1) || (s1_t1 && u_s2_t2) || (s1_t2 && u_s2_t1)
+}
+
 fn verify_transitivity(
     parents: &[Formula],
     conclusion: &Formula,
     limits: VerificationLimits,
 ) -> KernelVerdict {
-    if parents.len() != 2 {
-        return KernelVerdict::Rejected("transitivity must have two parents".into());
+    if parents.len() < 2 {
+        return KernelVerdict::Rejected("transitivity requires at least two parents".into());
     }
     if parents
         .iter()
@@ -6051,6 +6070,81 @@ fn verify_transitivity(
         return KernelVerdict::Inconclusive(
             "transitivity exceeded strict formula-size limit".into(),
         );
+    }
+    if parents.len() > 2 {
+        let Some((goal_left, goal_right)) = positive_equality(conclusion) else {
+            return KernelVerdict::Rejected(
+                "multi-parent transitivity conclusion is not a positive equality".into(),
+            );
+        };
+        let mut edges: Vec<(&Term, &Term)> = Vec::new();
+        for p in parents {
+            if let Some((a, b)) = positive_equality(p) {
+                edges.push((a, b));
+            } else {
+                return KernelVerdict::Rejected(
+                    "multi-parent transitivity requires unit equality parents".into(),
+                );
+            }
+        }
+        let mut queue = std::collections::VecDeque::new();
+        let mut visited = HashSet::new();
+        queue.push_back(goal_left);
+        visited.insert(goal_left);
+        while let Some(curr) = queue.pop_front() {
+            if curr == goal_right {
+                return KernelVerdict::Certified;
+            }
+            for &(a, b) in &edges {
+                if a == curr && visited.insert(b) {
+                    queue.push_back(b);
+                }
+                if b == curr && visited.insert(a) {
+                    queue.push_back(a);
+                }
+            }
+        }
+        return KernelVerdict::Rejected(
+            "multi-parent transitivity conclusion is not a connected equality chain".into(),
+        );
+    }
+    if let (Some(c0), Some(c1), Some(concl)) = (
+        clause_from_formula(&parents[0], limits),
+        clause_from_formula(&parents[1], limits),
+        clause_from_formula(conclusion, limits),
+    ) {
+        if c1.len() == 1
+            && c1[0].positive
+            && c0.len() == concl.len()
+            && let Atom::Eq(t1, t2) = &c1[0].atom
+        {
+            for k in 0..c0.len() {
+                if c0[k].positive
+                    && concl[k].positive
+                    && let (Atom::Eq(s1, s2), Atom::Eq(u1, u2)) = (&c0[k].atom, &concl[k].atom)
+                    && is_valid_transitivity_step(s1, s2, t1, t2, u1, u2)
+                    && c0.iter().enumerate().all(|(j, l)| j == k || *l == concl[j])
+                {
+                    return KernelVerdict::Certified;
+                }
+            }
+        }
+        if c0.len() == 1
+            && c0[0].positive
+            && c1.len() == concl.len()
+            && let Atom::Eq(t1, t2) = &c0[0].atom
+        {
+            for k in 0..c1.len() {
+                if c1[k].positive
+                    && concl[k].positive
+                    && let (Atom::Eq(s1, s2), Atom::Eq(u1, u2)) = (&c1[k].atom, &concl[k].atom)
+                    && is_valid_transitivity_step(s1, s2, t1, t2, u1, u2)
+                    && c1.iter().enumerate().all(|(j, l)| j == k || *l == concl[j])
+                {
+                    return KernelVerdict::Certified;
+                }
+            }
+        }
     }
     let Some((left_a, left_b)) = positive_equality(&parents[0]) else {
         return KernelVerdict::Rejected("transitivity parent is not a positive equality".into());
@@ -6063,26 +6157,9 @@ fn verify_transitivity(
             "transitivity conclusion is not a positive equality".into(),
         );
     };
-    if [left_a, left_b, right_a, right_b, goal_left, goal_right]
-        .iter()
-        .any(|term| !term_var_set(term).is_empty())
-    {
-        return KernelVerdict::Inconclusive(
-            "transitivity strict fragment requires ground equalities".into(),
-        );
-    }
 
-    for (first_left, first_right) in [(left_a, left_b), (left_b, left_a)] {
-        for (second_left, second_right) in [(right_a, right_b), (right_b, right_a)] {
-            if first_right != second_left {
-                continue;
-            }
-            if (goal_left == first_left && goal_right == second_right)
-                || (goal_left == second_right && goal_right == first_left)
-            {
-                return KernelVerdict::Certified;
-            }
-        }
+    if is_valid_transitivity_step(left_a, left_b, right_a, right_b, goal_left, goal_right) {
+        return KernelVerdict::Certified;
     }
     KernelVerdict::Rejected("transitivity conclusion is not a parent equality chain".into())
 }

@@ -24,6 +24,24 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-27 multi-literal clause equality transitivity and zero-parent inference checkpoint
+
+- **DONE:** proved `clause_transitivity_sound` in `first_order_core.rs`: from any universally valid parent
+  clause $C$ with a positive equality literal $s_1 = s_2$ at index $k$ and universally valid unit positive equality
+  parent $t_1 = t_2$, replacing $s_1 = s_2$ with any transitive equality consequence $u_1 = u_2$ matching
+  `valid_transitivity_step(s1, s2, t1, t2, u1, u2)` while preserving all other literals derives a universally valid
+  conclusion clause.
+- **DONE:** implemented `check_clause_transitivity_exec` and updated `check_transitivity_and_replay` and
+  `check_dag_structure` to support multi-literal clauses when either parent is a unit equality (or both).
+- **DONE:** added multi-literal clause transitivity examples and forged regression cases in `executable_transitivity_examples`.
+- **DONE:** updated `mutation-check.py` covering clause transitivity orientation and DAG replay dispatch.
+- **DONE:** updated `mrs-proof-kernel::verus` and `mrs-proof-kernel::lib` to recognize and certify
+  multi-literal clause transitivity, multi-parent transitivity chains via intermediate DAG step elaboration,
+  and zero-parent reflexivity, excluded middle, and tautology inferences.
+- **DONE:** verified by integration tests in `verus_bridge.rs` certifying refutations with multi-literal transitivity,
+  multi-parent transitivity chains, and zero-parent tautological inferences through the formal dual-check gate.
+- **Scope:** generalizes equality transitivity to multi-literal clauses, supports multi-parent transitivity chains, and completes zero-parent tautology inference handling under M6.
+
 ### 2026-10-27 multi-literal clause equality congruence and multi-parent consequence checkpoint
 
 - **DONE:** proved `clause_congruence_sound` in `first_order_core.rs`: from any universally valid parent

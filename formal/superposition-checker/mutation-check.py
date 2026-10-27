@@ -252,7 +252,12 @@ def main() -> int:
         ),
         (
             "transitivity ignores valid chained orientation",
-            "if !check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {\n        return false;\n    }",
+            "if check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {",
+            "if true {",
+        ),
+        (
+            "DAG transitivity skips rule replay",
+            "if !check_transitivity_and_replay(\n        &nodes[node.parents[0]].clause,\n        &nodes[node.parents[1]].clause,\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
             "if false {\n        return false;\n    }",
         ),
         (

@@ -76,9 +76,11 @@ Its theorem `equality_reflexivity_sound` and checker `check_reflexivity_and_repl
 prove universal validity.
 
 DAG support also includes **equality transitivity**:
-from universally valid unit equality parents `s1 = s2` and `t1 = t2`, any chained
-conclusion `u1 = u2` matching a transitive orientation is derived.
-Its theorem `equality_transitivity_sound` and checker `check_transitivity_and_replay`
+from universally valid parent clause `C` containing a positive equality literal `s1 = s2` and unit positive
+equality parent `t1 = t2`, the chained conclusion with that literal replaced by `u1 = u2` matching a transitive
+orientation and all other literals preserved is derived. This covers both unit equality clauses and arbitrary
+multi-literal clauses.
+Its theorems `clause_transitivity_sound` and `equality_transitivity_sound` and checker `check_transitivity_and_replay`
 prove universal validity preservation.
 
 DAG support also includes **equality symmetry**:

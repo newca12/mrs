@@ -112,7 +112,7 @@
       "id": "equality-transitivity",
       "module": "first_order_core.rs",
       "status": "verified_executable_step_and_dag_dispatch",
-      "description": "Equality transitivity: from unit positive equality parents s1 = s2 and t1 = t2, any chained conclusion u1 = u2 matching a transitive orientation is universally valid. Dispatched in proof DAGs via ProofNodeKind::Transitivity; proven by equality_transitivity_sound to preserve universal validity.",
+      "description": "Equality transitivity: from parent clause C containing a positive equality literal s1 = s2 and unit positive equality parent t1 = t2, any chained conclusion u1 = u2 matching a transitive orientation while preserving all other literals is universally valid. This covers both unit equality clauses and arbitrary multi-literal clauses. Dispatched in proof DAGs via ProofNodeKind::Transitivity; proven by clause_transitivity_sound and equality_transitivity_sound to preserve universal validity.",
       "production_certification": false
     },
     {

@@ -1113,4 +1113,84 @@ fn multi_step_and_multi_parent_demodulation_refutations() {
     );
     assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 8. Multi-literal clause transitivity:
+    let multi_trans_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,p(c)|a=b). cnf(b,axiom,b=d). cnf(c,axiom,~p(c)). cnf(d,axiom,a!=d).",
+    )
+    .unwrap();
+    let multi_trans_text = "cnf(a,axiom,p(c)|a=b,file('input',a)).
+        cnf(b,axiom,b=d,file('input',b)).
+        cnf(c,axiom,~p(c),file('input',c)).
+        cnf(d,axiom,a!=d,file('input',d)).
+        cnf(tr,plain,p(c)|a=d,inference(transitivity,[status(thm)],[a,b])).
+        cnf(r1,plain,a=d,inference(resolution,[status(thm)],[tr,c])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[r1,d])).";
+    let multi_trans_proof = mrs_tptp::parse_tptp(multi_trans_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &multi_trans_problem,
+        &multi_trans_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 9. Multi-parent transitivity chain (3 parents: a=b, b=c, c=d -> a=d):
+    let chain_trans_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,a=b). cnf(b,axiom,b=c). cnf(c,axiom,c=d). cnf(d,axiom,a!=d).",
+    )
+    .unwrap();
+    let chain_trans_text = "cnf(a,axiom,a=b,file('input',a)).
+        cnf(b,axiom,b=c,file('input',b)).
+        cnf(c,axiom,c=d,file('input',c)).
+        cnf(d,axiom,a!=d,file('input',d)).
+        cnf(tr,plain,a=d,inference(transitivity,[status(thm)],[a,b,c])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[tr,d])).";
+    let chain_trans_proof = mrs_tptp::parse_tptp(chain_trans_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &chain_trans_problem,
+        &chain_trans_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 10. Zero-parent reflexivity inference:
+    let zero_refl_problem =
+        mrs_tptp::parse_tptp("cnf(a,axiom,p(a)). cnf(b,axiom,a!=a|~p(a)).").unwrap();
+    let zero_refl_text = "cnf(a,axiom,p(a),file('input',a)).
+        cnf(b,axiom,a!=a|~p(a),file('input',b)).
+        cnf(r,plain,a=a,inference(reflexivity,[status(thm)],[])).
+        cnf(m1,plain,~p(a),inference(resolution,[status(thm)],[r,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[m1,a])).";
+    let zero_refl_proof = mrs_tptp::parse_tptp(zero_refl_text).unwrap();
+    let (_, report) = verify_with_shadow(
+        &zero_refl_problem,
+        &zero_refl_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 11. Zero-parent excluded middle inference:
+    let zero_em_problem = mrs_tptp::parse_tptp("cnf(a,axiom,p). cnf(b,axiom,~p).").unwrap();
+    let zero_em_text = "cnf(a,axiom,p,file('input',a)).
+        cnf(b,axiom,~p,file('input',b)).
+        cnf(em,plain,p|~p,inference(excluded_middle,[status(thm)],[])).
+        cnf(m1,plain,~p,inference(resolution,[status(thm)],[em,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,m1])).";
+    let zero_em_proof = mrs_tptp::parse_tptp(zero_em_text).unwrap();
+    let (_, report) = verify_with_shadow(
+        &zero_em_problem,
+        &zero_em_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
 }

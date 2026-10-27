@@ -1977,6 +1977,67 @@ fn is_tautology_clause(clause: &[Literal]) -> bool {
     false
 }
 
+fn is_valid_transitivity_step(
+    s1: &Term,
+    s2: &Term,
+    t1: &Term,
+    t2: &Term,
+    u1: &Term,
+    u2: &Term,
+) -> bool {
+    let s2_t1 = s2 == t1;
+    let s2_t2 = s2 == t2;
+    let s1_t1 = s1 == t1;
+    let s1_t2 = s1 == t2;
+    let u_s1_t2 = (u1 == s1 && u2 == t2) || (u1 == t2 && u2 == s1);
+    let u_s1_t1 = (u1 == s1 && u2 == t1) || (u1 == t1 && u2 == s1);
+    let u_s2_t2 = (u1 == s2 && u2 == t2) || (u1 == t2 && u2 == s2);
+    let u_s2_t1 = (u1 == s2 && u2 == t1) || (u1 == t1 && u2 == s2);
+    (s2_t1 && u_s1_t2) || (s2_t2 && u_s1_t1) || (s1_t1 && u_s2_t2) || (s1_t2 && u_s2_t1)
+}
+
+fn find_transitivity_chain(
+    parents: &[usize],
+    nodes: &[WireNode],
+    goal_u: &Term,
+    goal_v: &Term,
+) -> Option<Vec<(usize, Term)>> {
+    let mut edges: Vec<(usize, &Term, &Term)> = Vec::new();
+    for &p_idx in parents {
+        let c = &nodes[p_idx].clause;
+        if c.len() == 1
+            && c[0].positive
+            && let Atom::Eq(a, b) = &c[0].atom
+        {
+            edges.push((p_idx, a, b));
+        }
+    }
+    let mut queue = std::collections::VecDeque::new();
+    let mut visited = HashSet::new();
+    queue.push_back((goal_u.clone(), Vec::new()));
+    visited.insert(goal_u.clone());
+    while let Some((curr, path)) = queue.pop_front() {
+        if curr == *goal_v && !path.is_empty() {
+            return Some(path);
+        }
+        for &(p_idx, a, b) in &edges {
+            if *a == curr && !visited.contains(b) {
+                visited.insert(b.clone());
+                let mut new_path = path.clone();
+                new_path.push((p_idx, b.clone()));
+                queue.push_back((b.clone(), new_path));
+            }
+            if *b == curr && !visited.contains(a) {
+                visited.insert(a.clone());
+                let mut new_path = path.clone();
+                new_path.push((p_idx, a.clone()));
+                queue.push_back((a.clone(), new_path));
+            }
+        }
+    }
+    None
+}
+
 fn dag_request(
     problem: &mrs_tptp::TPTPProblem<'_>,
     proof: &mrs_tptp::TPTPProblem<'_>,
@@ -2050,12 +2111,48 @@ fn dag_request(
             })
             .collect::<Result<_, String>>()?;
         let (kind, clause, parents) = if parents.is_empty() {
-            verify_leaf(node, problem, source, &mut symbols, limits).map_err(|v| v.to_string())?;
-            // Exact raw syntax, no AC/alpha leaf relaxation in this bridge.
-            if !inputs.contains(&raw) {
-                return Err("leaf differs from exact problem clause".into());
+            if node.rule == Some("reflexivity") && raw.len() == 1 && raw[0].positive {
+                if let Atom::Eq(s, t) = &raw[0].atom
+                    && s == t
+                {
+                    let parent_idx = if !nodes.is_empty() {
+                        0
+                    } else {
+                        return Err("reflexivity requires at least one prior node".into());
+                    };
+                    (Kind::Reflexivity, raw, vec![parent_idx])
+                } else {
+                    return Err("reflexivity requires t = t".into());
+                }
+            } else if node.rule == Some("excluded_middle")
+                && raw.len() == 2
+                && raw[0].positive != raw[1].positive
+                && raw[0].atom == raw[1].atom
+            {
+                let parent_idx = if !nodes.is_empty() {
+                    0
+                } else {
+                    return Err("excluded_middle requires at least one prior node".into());
+                };
+                (Kind::ExcludedMiddle, raw, vec![parent_idx])
+            } else if matches!(node.rule, Some("tautology") | Some("clause_tautology"))
+                && is_tautology_clause(&raw)
+            {
+                let parent_idx = if !nodes.is_empty() {
+                    0
+                } else {
+                    return Err("tautology requires at least one prior node".into());
+                };
+                (Kind::Tautology, raw, vec![parent_idx])
+            } else {
+                verify_leaf(node, problem, source, &mut symbols, limits)
+                    .map_err(|v| v.to_string())?;
+                // Exact raw syntax, no AC/alpha leaf relaxation in this bridge.
+                if !inputs.contains(&raw) {
+                    return Err("leaf differs from exact problem clause".into());
+                }
+                (Kind::Input, raw, parents)
             }
-            (Kind::Input, raw, parents)
         } else if (matches!(
             node.rule,
             Some("demodulation") | Some("equality_normalization")
@@ -2295,34 +2392,78 @@ fn dag_request(
                 Some("transitivity") => {
                     let p1 = left;
                     let p2 = right;
-                    if p1.len() != 1 || p2.len() != 1 || raw.len() != 1 {
-                        return Err("transitivity requires unit equality clauses".into());
-                    }
-                    if !p1[0].positive || !p2[0].positive || !raw[0].positive {
-                        return Err("transitivity requires positive equalities".into());
-                    }
-                    let (Atom::Eq(s1, s2), Atom::Eq(t1, t2), Atom::Eq(u1, u2)) =
-                        (&p1[0].atom, &p2[0].atom, &raw[0].atom)
-                    else {
-                        return Err("transitivity requires equality atoms".into());
-                    };
-                    let s2_t1 = s2 == t1;
-                    let s2_t2 = s2 == t2;
-                    let s1_t1 = s1 == t1;
-                    let s1_t2 = s1 == t2;
-                    let u_s1_t2 = (u1 == s1 && u2 == t2) || (u1 == t2 && u2 == s1);
-                    let u_s1_t1 = (u1 == s1 && u2 == t1) || (u1 == t1 && u2 == s1);
-                    let u_s2_t2 = (u1 == s2 && u2 == t2) || (u1 == t2 && u2 == s2);
-                    let u_s2_t1 = (u1 == s2 && u2 == t1) || (u1 == t1 && u2 == s2);
-                    if (s2_t1 && u_s1_t2)
-                        || (s2_t2 && u_s1_t1)
-                        || (s1_t1 && u_s2_t2)
-                        || (s1_t2 && u_s2_t1)
-                    {
-                        (Kind::Transitivity, raw.clone(), parents)
+                    if p1.len() == 1 && p2.len() == 1 && raw.len() == 1 {
+                        if !p1[0].positive || !p2[0].positive || !raw[0].positive {
+                            return Err("transitivity requires positive equalities".into());
+                        }
+                        let (Atom::Eq(s1, s2), Atom::Eq(t1, t2), Atom::Eq(u1, u2)) =
+                            (&p1[0].atom, &p2[0].atom, &raw[0].atom)
+                        else {
+                            return Err("transitivity requires equality atoms".into());
+                        };
+                        if is_valid_transitivity_step(s1, s2, t1, t2, u1, u2) {
+                            (Kind::Transitivity, raw.clone(), parents)
+                        } else {
+                            return Err(
+                                "transitivity conclusion does not match parent equality chain"
+                                    .into(),
+                            );
+                        }
+                    } else if p2.len() == 1 && p2[0].positive && raw.len() == p1.len() {
+                        let Atom::Eq(t1, t2) = &p2[0].atom else {
+                            return Err("transitivity requires equality atom".into());
+                        };
+                        let mut chained = false;
+                        for k in 0..p1.len() {
+                            if p1[k].positive
+                                && raw[k].positive
+                                && let (Atom::Eq(s1, s2), Atom::Eq(u1, u2)) =
+                                    (&p1[k].atom, &raw[k].atom)
+                                && is_valid_transitivity_step(s1, s2, t1, t2, u1, u2)
+                                && p1.iter().enumerate().all(|(j, l)| j == k || *l == raw[j])
+                            {
+                                chained = true;
+                                break;
+                            }
+                        }
+                        if chained {
+                            (Kind::Transitivity, raw.clone(), parents)
+                        } else {
+                            return Err(
+                                "transitivity conclusion does not match chained equality".into()
+                            );
+                        }
+                    } else if p1.len() == 1 && p1[0].positive && raw.len() == p2.len() {
+                        let Atom::Eq(t1, t2) = &p1[0].atom else {
+                            return Err("transitivity requires equality atom".into());
+                        };
+                        let mut chained = false;
+                        for k in 0..p2.len() {
+                            if p2[k].positive
+                                && raw[k].positive
+                                && let (Atom::Eq(s1, s2), Atom::Eq(u1, u2)) =
+                                    (&p2[k].atom, &raw[k].atom)
+                                && is_valid_transitivity_step(s1, s2, t1, t2, u1, u2)
+                                && p2.iter().enumerate().all(|(j, l)| j == k || *l == raw[j])
+                            {
+                                chained = true;
+                                break;
+                            }
+                        }
+                        if chained {
+                            (
+                                Kind::Transitivity,
+                                raw.clone(),
+                                vec![parents[1], parents[0]],
+                            )
+                        } else {
+                            return Err(
+                                "transitivity conclusion does not match chained equality".into()
+                            );
+                        }
                     } else {
                         return Err(
-                            "transitivity conclusion does not match parent equality chain".into(),
+                            "transitivity requires at least one unit equality parent".into()
                         );
                     }
                 }
@@ -2601,6 +2742,57 @@ fn dag_request(
                 res
             } else {
                 return Err("no supported pairwise resolution in multi-parent consequence".into());
+            }
+        } else if node.rule == Some("transitivity") && parents.len() > 2 {
+            if raw.len() != 1 || !raw[0].positive {
+                return Err(
+                    "multi-parent transitivity requires unit positive equality conclusion".into(),
+                );
+            }
+            let Atom::Eq(goal_u, goal_v) = &raw[0].atom else {
+                return Err("multi-parent transitivity requires equality conclusion".into());
+            };
+            let Some(path) = find_transitivity_chain(&parents, &nodes, goal_u, goal_v) else {
+                return Err("no supported transitivity chain in multi-parent transitivity".into());
+            };
+            if path.len() < 2 {
+                return Err("transitivity chain too short".into());
+            }
+            if path.len() == 2 {
+                (Kind::Transitivity, raw, vec![path[0].0, path[1].0])
+            } else {
+                let mut prev_idx = nodes.len();
+                if prev_idx >= MAX_NODES {
+                    return Err("expanded DAG node ceiling".into());
+                }
+                nodes.push(WireNode {
+                    clause: vec![Literal {
+                        positive: true,
+                        atom: Atom::Eq(goal_u.clone(), path[1].1.clone()),
+                    }],
+                    parents: vec![path[0].0, path[1].0],
+                    kind: Kind::Transitivity,
+                });
+                for step in &path[2..(path.len() - 1)] {
+                    let intermediate_idx = nodes.len();
+                    if intermediate_idx >= MAX_NODES {
+                        return Err("expanded DAG node ceiling".into());
+                    }
+                    nodes.push(WireNode {
+                        clause: vec![Literal {
+                            positive: true,
+                            atom: Atom::Eq(goal_u.clone(), step.1.clone()),
+                        }],
+                        parents: vec![prev_idx, step.0],
+                        kind: Kind::Transitivity,
+                    });
+                    prev_idx = intermediate_idx;
+                }
+                (
+                    Kind::Transitivity,
+                    raw,
+                    vec![prev_idx, path[path.len() - 1].0],
+                )
             }
         } else {
             return Err("unsupported parent count".into());

@@ -2904,6 +2904,75 @@ proof fn equality_transitivity_sound(
     }
 }
 
+spec fn valid_clause_transitivity(
+    clause: Clause,
+    unit_eq: Clause,
+    conclusion: Clause,
+    k: int,
+) -> bool {
+    0 <= k < clause.literals.len()
+        && clause.literals.len() == conclusion.literals.len()
+        && unit_eq.literals.len() == 1
+        && unit_eq.literals[0].positive
+        && clause.literals[k].positive
+        && conclusion.literals[k].positive
+        && match (clause.literals[k].atom, unit_eq.literals[0].atom, conclusion.literals[k].atom) {
+            (Atom::Eq(s1, s2), Atom::Eq(t1, t2), Atom::Eq(u1, u2)) => valid_transitivity_step(s1, s2, t1, t2, u1, u2),
+            _ => false,
+        }
+        && forall|j: int| 0 <= j < clause.literals.len() && j != k
+            ==> clause.literals[j] == conclusion.literals[j]
+}
+
+/// Soundness theorem for clause-level equality transitivity:
+/// from universally valid parent clause C containing a positive equality literal at index k
+/// and universally valid unit positive equality parent t1 = t2,
+/// replacing the equality literal with a transitive consequence while preserving all other literals
+/// preserves universal validity of the clause.
+proof fn clause_transitivity_sound(
+    clause: Clause,
+    unit_eq: Clause,
+    conclusion: Clause,
+    k: int,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(clause, interp),
+        clause_valid(unit_eq, interp),
+        valid_clause_transitivity(clause, unit_eq, conclusion, k),
+    ensures
+        clause_valid(conclusion, interp),
+{
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(conclusion, interp, valuation) by {
+        assert(clause_holds(clause, interp, valuation));
+        assert(clause_holds(unit_eq, interp, valuation));
+        assert(literal_holds(unit_eq.literals[0], interp, valuation));
+        let pos = choose|j: int| 0 <= j < clause.literals.len()
+            && literal_holds(clause.literals[j], interp, valuation);
+        if pos == k {
+            let lit = clause.literals[k];
+            let u_lit = unit_eq.literals[0];
+            let concl_lit = conclusion.literals[k];
+            match (lit.atom, u_lit.atom, concl_lit.atom) {
+                (Atom::Eq(s1, s2), Atom::Eq(t1, t2), Atom::Eq(u1, u2)) => {
+                    assert(eval(s1, interp, valuation) == eval(s2, interp, valuation));
+                    assert(eval(t1, interp, valuation) == eval(t2, interp, valuation));
+                    assert(eval(u1, interp, valuation) == eval(u2, interp, valuation));
+                    assert(literal_holds(concl_lit, interp, valuation));
+                    assert(clause_holds(conclusion, interp, valuation));
+                },
+                _ => {},
+            }
+        } else {
+            assert(clause.literals[pos] == conclusion.literals[pos]);
+            assert(literal_holds(conclusion.literals[pos], interp, valuation));
+            assert(clause_holds(conclusion, interp, valuation));
+        }
+    }
+}
+
 spec fn valid_symmetry_step(
     s: Term, t: Term,
     u: Term, v: Term,
@@ -7695,6 +7764,83 @@ fn check_transitivity_step_exec(
     (s2_t1 && u_s1_t2) || (s2_t2 && u_s1_t1) || (s1_t1 && u_s2_t2) || (s1_t2 && u_s2_t1)
 }
 
+fn check_clause_transitivity_exec(
+    clause: &ExecClause,
+    unit_eq: &ExecClause,
+    conclusion: &ExecClause,
+) -> (result: Option<usize>)
+    ensures
+        match result {
+            Some(k) => valid_clause_transitivity(view_clause(*clause), view_clause(*unit_eq), view_clause(*conclusion), k as int),
+            None => true,
+        },
+{
+    if clause.literals.len() != conclusion.literals.len() || clause.literals.len() == 0 || unit_eq.literals.len() != 1 {
+        return None;
+    }
+    let u_lit = &unit_eq.literals[0];
+    if !u_lit.positive {
+        return None;
+    }
+    let ExecAtom::Eq(t1, t2) = &u_lit.atom else {
+        return None;
+    };
+    proof {
+        assert(view_clause(*unit_eq).literals[0] == view_literal(*u_lit));
+    }
+    let mut k: usize = 0;
+    while k < clause.literals.len()
+        invariant
+            clause.literals.len() == conclusion.literals.len(),
+            unit_eq.literals.len() == 1,
+            u_lit.positive,
+            u_lit.atom == ExecAtom::Eq(*t1, *t2),
+            view_clause(*unit_eq).literals[0] == view_literal(*u_lit),
+            k <= clause.literals.len(),
+        decreases clause.literals.len() - k,
+    {
+        let p_lit = &clause.literals[k];
+        let c_lit = &conclusion.literals[k];
+        if p_lit.positive && c_lit.positive {
+            if let (ExecAtom::Eq(s1, s2), ExecAtom::Eq(u1, u2)) = (&p_lit.atom, &c_lit.atom) {
+                if check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {
+                    let mut all_others_match = true;
+                    let mut j: usize = 0;
+                    while j < clause.literals.len()
+                        invariant
+                            clause.literals.len() == conclusion.literals.len(),
+                            k < clause.literals.len(),
+                            j <= clause.literals.len(),
+                            all_others_match ==> forall|m: int| 0 <= m < j as int && m != k as int
+                                ==> view_literal(clause.literals@[m]) == view_literal(conclusion.literals@[m]),
+                        decreases clause.literals.len() - j,
+                    {
+                        if j != k && !same_literal(&clause.literals[j], &conclusion.literals[j]) {
+                            all_others_match = false;
+                        }
+                        j += 1;
+                    }
+                    if all_others_match {
+                        assert forall|m: int| 0 <= m < clause.literals@.len() && m != k as int implies {
+                            view_clause(*clause).literals[m] == view_clause(*conclusion).literals[m]
+                        } by {
+                            assert(view_literal(clause.literals@[m]) == view_literal(conclusion.literals@[m]));
+                            assert(view_clause(*clause).literals[m] == view_literal(clause.literals@[m]));
+                            assert(view_clause(*conclusion).literals[m] == view_literal(conclusion.literals@[m]));
+                        };
+                        assert(view_clause(*clause).literals[k as int] == view_literal(*p_lit));
+                        assert(view_clause(*unit_eq).literals[0] == view_literal(*u_lit));
+                        assert(view_clause(*conclusion).literals[k as int] == view_literal(*c_lit));
+                        return Some(k);
+                    }
+                }
+            }
+        }
+        k += 1;
+    }
+    None
+}
+
 fn check_transitivity_and_replay(
     left: &ExecClause,
     right: &ExecClause,
@@ -7713,40 +7859,45 @@ fn check_transitivity_and_replay(
     {
         return false;
     }
-    if left.literals.len() != 1 || right.literals.len() != 1 || conclusion.literals.len() != 1 {
-        return false;
+    if right.literals.len() == 1 {
+        if let Some(k) = check_clause_transitivity_exec(left, right, conclusion) {
+            proof {
+                assert forall|interp: Interpretation| interpretation_well_formed(interp)
+                    && clause_valid(view_clause(*left), interp)
+                    && clause_valid(view_clause(*right), interp)
+                    implies clause_valid(view_clause(*conclusion), interp) by {
+                    clause_transitivity_sound(
+                        view_clause(*left),
+                        view_clause(*right),
+                        view_clause(*conclusion),
+                        k as int,
+                        interp,
+                    );
+                };
+            }
+            return true;
+        }
     }
-    let left_lit = &left.literals[0];
-    let right_lit = &right.literals[0];
-    let concl_lit = &conclusion.literals[0];
-    if !left_lit.positive || !right_lit.positive || !concl_lit.positive {
-        return false;
+    if left.literals.len() == 1 {
+        if let Some(k) = check_clause_transitivity_exec(right, left, conclusion) {
+            proof {
+                assert forall|interp: Interpretation| interpretation_well_formed(interp)
+                    && clause_valid(view_clause(*left), interp)
+                    && clause_valid(view_clause(*right), interp)
+                    implies clause_valid(view_clause(*conclusion), interp) by {
+                    clause_transitivity_sound(
+                        view_clause(*right),
+                        view_clause(*left),
+                        view_clause(*conclusion),
+                        k as int,
+                        interp,
+                    );
+                };
+            }
+            return true;
+        }
     }
-    let ExecAtom::Eq(s1, s2) = &left_lit.atom else { return false; };
-    let ExecAtom::Eq(t1, t2) = &right_lit.atom else { return false; };
-    let ExecAtom::Eq(u1, u2) = &concl_lit.atom else { return false; };
-
-    if !check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {
-        return false;
-    }
-
-    proof {
-        assert forall|interp: Interpretation| interpretation_well_formed(interp)
-            && clause_valid(view_clause(*left), interp)
-            && clause_valid(view_clause(*right), interp)
-            implies clause_valid(view_clause(*conclusion), interp) by {
-            equality_transitivity_sound(
-                view_clause(*left),
-                view_clause(*right),
-                view_clause(*conclusion),
-                view(*s1), view(*s2),
-                view(*t1), view(*t2),
-                view(*u1), view(*u2),
-                interp,
-            );
-        };
-    }
-    true
+    false
 }
 
 fn check_symmetry_step_exec(
@@ -10140,18 +10291,9 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             assert(node.parents[1] < dag.nodes.len());
             let p1 = &dag.nodes[node.parents[0]].clause;
             let p2 = &dag.nodes[node.parents[1]].clause;
-            if p1.literals.len() != 1 || p2.literals.len() != 1 || node.clause.literals.len() != 1 {
-                return DagVerdict::Rejected;
-            }
-            if !p1.literals[0].positive || !p2.literals[0].positive || !node.clause.literals[0].positive {
-                return DagVerdict::Rejected;
-            }
-            let (ExecAtom::Eq(s1, s2), ExecAtom::Eq(t1, t2), ExecAtom::Eq(u1, u2)) = (
-                &p1.literals[0].atom, &p2.literals[0].atom, &node.clause.literals[0].atom,
-            ) else {
-                return DagVerdict::Rejected;
-            };
-            if !check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {
+            let valid = (p2.literals.len() == 1 && check_clause_transitivity_exec(p1, p2, &node.clause).is_some())
+                || (p1.literals.len() == 1 && check_clause_transitivity_exec(p2, p1, &node.clause).is_some());
+            if !valid {
                 return DagVerdict::Rejected;
             }
         }
@@ -12121,6 +12263,45 @@ fn executable_transitivity_examples() -> bool {
         ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(4)) },
     ] };
     if check_transitivity_and_replay(&c1, &c2, &forged, 1000) {
+        return false;
+    }
+
+    // Multi-literal clause transitivity:
+    // Left parent: p(c) | 1 = 2
+    // Right parent: 2 = 3
+    // Conclusion: p(c) | 1 = 3
+    let multi_c1 = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(5))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
+    ] };
+    let multi_concl = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(5))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(3)) },
+    ] };
+    if !check_transitivity_and_replay(&multi_c1, &c2, &multi_concl, 1000) {
+        return false;
+    }
+
+    // Right parent multi-literal (flipped parents):
+    if !check_transitivity_and_replay(&c2, &multi_c1, &multi_concl, 1000) {
+        return false;
+    }
+
+    // Forged multi-literal conclusion term:
+    let multi_forged_term = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(5))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(4)) },
+    ] };
+    if check_transitivity_and_replay(&multi_c1, &c2, &multi_forged_term, 1000) {
+        return false;
+    }
+
+    // Forged multi-literal side literal:
+    let multi_forged_side = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(6))) },
+        ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(3)) },
+    ] };
+    if check_transitivity_and_replay(&multi_c1, &c2, &multi_forged_side, 1000) {
         return false;
     }
 
