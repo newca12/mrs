@@ -65,7 +65,7 @@ pub const ALL: &[&str] = &[
 ];
 
 const DEFAULT_CASC_ORDER: [usize; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-const CASC_FEQ_ORDER: [usize; 15] = [11, 12, 1, 6, 10, 8, 14, 4, 5, 2, 3, 7, 9, 13, 15];
+const CASC_FEQ_ORDER: [usize; 15] = [12, 11, 10, 6, 8, 1, 4, 13, 15, 14, 5, 2, 3, 7, 9];
 const CASC_FNE_ORDER: [usize; 15] = [11, 13, 4, 8, 15, 7, 3, 1, 10, 12, 6, 2, 9, 14, 5];
 const CASC_UEQ_ORDER: [usize; 15] = [4, 8, 12, 11, 2, 14, 15, 1, 3, 5, 6, 7, 9, 10, 13];
 const CASC_EPR_ORDER: [usize; 15] = [6, 2, 1, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -602,7 +602,13 @@ pub fn casc_fne(total_time: Duration, workers: usize) -> StrategySchedule {
 }
 
 /// A purely static schedule optimized for FEQ (First-Order with Equality).
-/// Tunes the portfolio according to CASC-30 priority sweeps.
+///
+/// Promotes the s12 HornHeuristic anchor to worker 0, retains s11/s10/s6/s8/s1,
+/// keeps s04 to safeguard baseline coverage on CASC-J13, and substitutes s13
+/// (SOS + quadratic function penalty, +2 marginal solves) for redundant s14
+/// (+0 marginal gain). Strategy 15 sits in slot 8 to activate immediately
+/// on >=9 worker hosts. Evaluated cooperatively across CASC-30 and CASC-J13
+/// campaigns (October 2026).
 pub fn casc_feq(total_time: Duration, workers: usize) -> StrategySchedule {
     build_casc_schedule(total_time, workers, &CASC_FEQ_ORDER)
 }

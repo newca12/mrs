@@ -209,7 +209,7 @@ rules: `docs/results/perf/README.md`.
 | `--sim-time-factor <mult\|0\|unbounded>` | `2` | casc-sim only: multiple of the CASC wall clock to keep searching after, or `0`/`unbounded` to drop the wall clock and let the resource ceilings decide. The run records where it stood at the CASC limit either way. |
 | `--workers <N>` | per hardware mode | Max parallel search threads. Overrides the mode, so `casc --workers 2` really runs 2 workers. Sharing is disabled unless `MRS_SHARED_POOL_INTERVAL` is positive. Use `--workers 1` to isolate a sequential strategy without sibling contention or sharing. This is not a determinism guarantee: wall-clock LRS and deadlines still depend on host timing. Fixed-work diagnostics require fixed pruning budgets, stable tie-breaking/seeds and trajectory comparison. |
 | `--strategy <N>` | — | Run exact base strategy `N` (1–15) from the selected CASC division schedule for the full budget; diagnostic solo coverage only. |
-| `--portfolio <IDs>` | — | Run an explicit cooperative portfolio, e.g. `11,12,1,6,10,8,14,4`; one ID is required per worker. Set `MRS_SHARED_POOL_INTERVAL` to a positive value to enable shared equality exchange. |
+| `--portfolio <IDs>` | — | Run an explicit cooperative portfolio, e.g. `12,11,10,6,8,1,4,13`; one ID is required per worker. Set `MRS_SHARED_POOL_INTERVAL` to a positive value to enable shared equality exchange. |
 | `--schedule <name>` | `casc` | Strategy schedule; see registry below |
 | `--auto-schedule` | — | Rule-based division detection (EPR/UEQ/FNE/FEQ) picks the matching `casc_*` portfolio; an explicit `--schedule` wins. Replaces the retired ML schedule classifier (`--ml-schedule` is a deprecated alias). |
 | `--list-schedules` | — | Print known schedule names and exit |

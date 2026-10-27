@@ -424,7 +424,7 @@ def behavioural_taxonomy(features, problems, solved, strategies, elapsed):
 # beat is measured rather than assumed. Mirrors `strategy/named.rs`.
 NAMED_ORDERS = {
     "casc":    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-    "casc_feq":[11, 12, 1, 6, 10, 8, 14, 4, 5, 2, 3, 7, 9, 13, 15],
+    "casc_feq":[12, 11, 10, 6, 8, 1, 4, 13, 15, 14, 5, 2, 3, 7, 9],
     "casc_fne":[11, 13, 4, 8, 15, 7, 3, 1, 10, 12, 6, 2, 9, 14, 5],
     "casc_ueq":[4, 8, 12, 11, 2, 14, 15, 1, 3, 5, 6, 7, 9, 10, 13],
     "casc_epu":[1, 6, 14, 11, 4, 2, 3, 7, 5, 8, 10, 9, 12, 13, 15],

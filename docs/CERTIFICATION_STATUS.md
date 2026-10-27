@@ -836,6 +836,24 @@ portfolio achieves higher certified solve counts on 8 cores (39 vs 37 on J13; 45
 with cleaner kernel replay. Full details are in the
 [FNE MultiQueue report](reports/benchmarks/fne-multiqueue-2026-10.md).
 
+### Adopted Cooperative FEQ Portfolio Campaigns (2026-10-23 and 2026-10-24)
+
+The newly adopted FEQ portfolio $\mathbf{P}_{\text{FEQ}} = [12, 11, 10, 6, 8, 1, 4, 13]$ (promotes $s12$ Horn heuristic anchor to worker 0, retains $s11/s10/s06/s08/s01$, retains $s04$ to protect CASC-J13 baseline coverage, and substitutes $s13$ for redundant $s14$) was evaluated with 8 workers and no shared equality pool across four standalone full-division campaigns:
+
+1. **CASC-30 on Canonical 8-Core Hardware (`cooperative-feq-equal-candidate-casc30`)**:
+   Evaluated on `mtsdev01` (8 physical cores, 96 GB RAM) at official 240 s limit. Generated **111 refutations (`Theorem`)**, strictly certifying **106 `VerifiedGood` (97.25% of emitted)**, **0 `VerifiedBad`**, 2 `Unknown`, 1 verifier timeout (`ALG049+1` > 120 s), and 2 `Proof Omitted` (`SET017+1`, `SET072+1` > 32 MB). Demonstrates zero regressions vs. the shipped 108 baseline.
+
+2. **CASC-30 on 32-Core Host (`cooperative-feq-equal-candidate-casc30-x`)**:
+   Evaluated on `tlpnf9701` at 240 s limit. Generated **113 refutations (`Theorem`)**, strictly certifying **107 `VerifiedGood`**, **0 `VerifiedBad`**, 3 `Unknown`, 1 timeout (`ALG049+1`), and 2 `Proof Omitted`.
+
+3. **CASC-J13 on Canonical 8-Core Hardware (`cooperative-feq-equal-candidate-casc-j13`)**:
+   Evaluated on `mtsdev01` at official 180 s limit. Generated **69 refutations (`Theorem`)**, with **69 of 69 `VerifiedGood` (100.0%)**, **0 `VerifiedBad`**, and 0 `Unknown`.
+
+4. **CASC-J13 on 32-Core Host (`cooperative-feq-equal-candidate-casc-j13-x`)**:
+   Evaluated on `tlpnf9701` at 180 s limit. Generated **72 refutations (`Theorem`)**, strictly certifying **71 `VerifiedGood` (100.0% of emitted)**, **0 `VerifiedBad`**, 0 `Unknown`, and 1 `Proof Omitted` (`SWV406+1` > 32 MB).
+
+Across all 365 refutations evaluated across the four campaigns, **0 `VerifiedBad`** were detected. Full details are in the [FEQ candidate portfolio report](reports/benchmarks/feq-candidate-portfolio-2026-10.md).
+
 ---
 
 ## 3. Robustness beyond the corpus

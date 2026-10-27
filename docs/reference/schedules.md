@@ -73,7 +73,7 @@ workers, entries cycle through the order.
 
 | Schedule | Order |
 |---|---|
-| `casc_feq` | `11,12,1,6,10,8,14,4,5,2,3,7,9,13,15` |
+| `casc_feq` | `12,11,10,6,8,1,4,13,15,14,5,2,3,7,9` |
 | `casc_fne` | `11,8,4,15,10,3,12,1,6,2,5,7,9,13,14` |
 | `casc_ueq` | `4,8,12,11,2,14,15,1,3,5,6,7,9,10,13` |
 | `casc_epr` | `6,2,1,3,4,5,7,8,9,10,11,12,13,14,15` |
@@ -93,5 +93,5 @@ worker, and the same worker count as the list length:
 ```bash
 MRS_SHARED_POOL_INTERVAL=500 \
   nix develop -c cargo run -- --workers 8 --schedule casc_feq \
-  --portfolio 11,12,1,6,10,8,14,4 problem.p
+  --portfolio 12,11,10,6,8,1,4,13 problem.p
 ```

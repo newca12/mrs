@@ -193,6 +193,10 @@ definitive answers. A SAT abstraction is not a first-order model certificate.
 ## P5 — Actual eight-core portfolio (months 6–9)
 
 - [ ] Optimize certified outcomes including proof size and checking latency.
+- [ ] FEQ MultiQueue / Strategy 15 retention: integrate Strategy 15's SymbolWeight
+  heuristic into MultiQueue priority channels or a hybrid archetype (`casc_feq_mq_hybrid`)
+  to capture dense geometry refutations (`GEO641+1` class) without displacing core
+  eight-worker coverage (`s04`).
 - [ ] Compare sharing off/on with identical portfolios and budgets.
 - [ ] Measure seven-search-plus-one-checker versus other within-eight-core allocations.
 - [ ] Try bounded behavioral probes only where their full overhead is recovered.
