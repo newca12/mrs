@@ -221,7 +221,11 @@ an explicit exit with the same numeric code from a signal.
 `last_completed_stage` records the last `% Stage complete:` marker on stderr;
 parse and preparation markers precede search, and preparation reports lowering,
 include and clausification costs. Missing markers are missing observations,
-not proof that the process failed in a particular stage.
+not proof that the process failed in a particular stage. On the MRS EPS
+dual-search route, `invoke.sh` appends portfolio stderr after certifier stderr;
+if one track is stopped, the field can therefore describe the last completed
+stage of the other track rather than the selected result. Read the per-track SZS
+details when interpreting it.
 
 Every report must record:
 

@@ -373,6 +373,7 @@ does not apply.
 | CASC-30 | FNE | `~/crates/mrs-bench/results/casc-30/coop-fne-candidate-20261021` | 70,669 MB (`BOO109+1`) | 5 |
 | CASC-30 | FNE | `~/crates/mrs-bench/results/cooperative-fne-mq-hybrid-no-sharing` | 64,723 MB (`NLP260+1`) | 4 (+ 1 omitted >32 MB) |
 | CASC-30 | EPS | `~/crates/mrs-bench/results/campaign-casc30-eps-W8CASCHJ1-01-20261019` | 33,731 MB (`SYN888-1`) | N/A (model certificates; no `proof_bytes`) |
+| CASC-30 | EPS | `~/crates/mrs-bench/results/campaign-casc30-eps-W8CASCHJ1-99-20261026` | 66,644 MB (`SYN888-1`; 34,002 MB RSS) | N/A (model certificates; no `proof_bytes`) |
 | CASC-30 | EPU | `~/crates/mrs-bench/results/campaign-casc30-epu-W8CASCHJ1-02-20261019` | 25,692 MB (`HWV081-1`) | 2 |
 | CASC-30 | ICU | `~/crates/mrs-bench/results/campaign-casc30-icu-W8CASCHJ1-97-20261019` | 53,772 MB (`EEE009+1`) | 0 |
 
@@ -442,6 +443,29 @@ Provenance: `run_meta.json` records commit `40278337`, `git_dirty=true`, Rust
 `a2f8178145f688bdf1deeb47648938d88d7d0039a19d8754237901aa458b046d`. See the
 [EPS certification summary](../CERTIFICATION_STATUS.md) and the EPS
 [intermittency list](intermittency.md).
+
+## `casc-30` EPS, 2026-10-26 CASC-profile rerun
+
+`campaign-casc30-eps-W8CASCHJ1-99-20261026` reran all 100 problems with
+`MRS_HARDWARE=casc`, eight workers, `jobs=1`, and the official 120-second limit.
+It returned **44 reference-matched `Satisfiable` answers**, 13 `GaveUp`, and 43
+`Timeout`, with no `Error` or `ko` rows. The solved problem set is identical to
+the 2026-10-19 campaign; `HWV063-1`, `HWV077-1`, and `HWV080-1` changed only
+from `Timeout` to `GaveUp`. These are still unsolved rows, not coverage changes.
+
+This was a `casc` profile run on a host with 128,019 MB RAM; the engine detected
+16 physical cores and the run metadata reports 32 CPUs. The profile uses the
+fixed CASC worker/memory allowances but does not pin CPUs, so this is not an
+eight-physical-core simulation. All 44 answers selected the Tier-2 certifier;
+the ordinary portfolio produced no unique solve. The archived `certification/`
+directory is empty, however, so this run has no independent strict-kernel model
+audit and does not establish 44 kernel-certified models.
+
+The run metadata records commit `ff316de52f297c5014722ef04efc594d3b1bb1a`, a
+dirty worktree, Rust 1.99.1, and binary SHA-256
+`222464664d2bad81393aafa09f5514ac824a8ce86434c1bfe6762532a35bbc76`. For the
+timings, track split, audit caveat, and stage-marker interpretation, see the
+[EPS benchmark report](../reports/benchmarks/eps-2026-09.md#full-casc-profile-rerun-2026-10-26-ff316de).
 
 ## `casc-30` EPU, 2026-10-19 CASC-mode campaign
 
