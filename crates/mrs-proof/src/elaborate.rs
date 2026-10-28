@@ -640,12 +640,30 @@ pub fn topological_sort(clauses: &[Clause]) -> Result<Vec<Clause>, ElaborationEr
     }
 
     for c in clauses {
-        let mut parents = Vec::new();
-        if let ClauseSource::Inference { parents: p, .. }
-        | ClauseSource::Introduced { parents: p, .. } = &c.source
-        {
-            parents.extend_from_slice(p);
+        // Witness parents must be cited by the inference itself. Certificate
+        // edges are also dependencies in the proof DAG, but cannot stand in
+        // for an omitted inference parent (or AC axiom citation).
+        let source_parents: &[ClauseId] = match &c.source {
+            ClauseSource::Inference { parents, .. } | ClauseSource::Introduced { parents, .. } => {
+                parents.as_slice()
+            }
+            ClauseSource::Input { .. } => &[],
+        };
+        let ac_rule = match &c.source {
+            ClauseSource::Inference { rule, .. }
+                if *rule == "ac_superposition" || *rule == "ac_resolution" =>
+            {
+                Some(*rule)
+            }
+            _ => None,
+        };
+        if ac_rule.is_some() && source_parents.len() < 3 {
+            return Err(ElaborationError::Inconclusive(format!(
+                "clause c{} AC inference must cite two inference parents and at least one AC axiom",
+                c.id.0
+            )));
         }
+        let mut parents = source_parents.to_vec();
         if let Some(cert) = &c.certificate {
             match cert {
                 ClauseCertificate::AvatarComponent { split_parent, .. } => {
@@ -673,8 +691,27 @@ pub fn topological_sort(clauses: &[Clause]) -> Result<Vec<Clause>, ElaborationEr
             )));
         }
         if let Some(witness) = &c.witness {
+            if let Some(rule) = ac_rule {
+                let witness_matches_rule = match (rule, witness) {
+                    ("ac_superposition", ProofWitness::Superposition { .. })
+                    | ("ac_resolution", ProofWitness::Resolution { .. }) => true,
+                    (
+                        rule,
+                        ProofWitness::Legacy {
+                            rule: witness_rule, ..
+                        },
+                    ) => rule == *witness_rule,
+                    _ => false,
+                };
+                if !witness_matches_rule {
+                    return Err(ElaborationError::Inconclusive(format!(
+                        "clause c{} AC rule {rule} has an incompatible witness",
+                        c.id.0
+                    )));
+                }
+            }
             for reference in witness.parent_ids() {
-                if !parents.contains(&ClauseId(reference.0)) {
+                if !source_parents.contains(&ClauseId(reference.0)) {
                     return Err(ElaborationError::Inconclusive(format!(
                         "clause c{} witness references uncited parent c{}",
                         c.id.0, reference.0
@@ -692,22 +729,18 @@ pub fn topological_sort(clauses: &[Clause]) -> Result<Vec<Clause>, ElaborationEr
                     rhs_parent: parent_right,
                     ..
                 } => {
-                    let is_ac = matches!(
-                        &c.source,
-                        ClauseSource::Inference { rule, .. }
-                            if *rule == "ac_superposition" || *rule == "ac_resolution"
-                    );
-                    // Standard binary inferences have exactly 2 parents.
-                    // AC inferences (ac_superposition, ac_resolution) additionally
-                    // cite the required AC axioms in `parents`, so they have >= 2 parents.
-                    if !parents.contains(&ClauseId(parent_left.0))
-                        || !parents.contains(&ClauseId(parent_right.0))
-                        || (!is_ac && parents.len() != 2)
-                        || (is_ac && parents.len() < 2)
+                    let is_ac = ac_rule.is_some();
+                    // Standard binary inferences cite exactly two parents.
+                    // The strict kernel requires AC inferences to cite those
+                    // two parents plus at least one AC axiom (three total).
+                    if source_parents.first() != Some(&ClauseId(parent_left.0))
+                        || source_parents.get(1) != Some(&ClauseId(parent_right.0))
+                        || (!is_ac && source_parents.len() != 2)
+                        || (is_ac && source_parents.len() < 3)
                     {
                         return Err(ElaborationError::Inconclusive(format!(
                             "clause c{} binary witness does not match cited parents {:?}",
-                            c.id.0, parents
+                            c.id.0, source_parents
                         )));
                     }
                 }
@@ -715,24 +748,24 @@ pub fn topological_sort(clauses: &[Clause]) -> Result<Vec<Clause>, ElaborationEr
                     target: parent_left,
                     subsumer: parent_right,
                     ..
-                } if parents.len() != 2
-                    || !parents.contains(&ClauseId(parent_left.0))
-                    || !parents.contains(&ClauseId(parent_right.0)) =>
+                } if source_parents.len() != 2
+                    || !source_parents.contains(&ClauseId(parent_left.0))
+                    || !source_parents.contains(&ClauseId(parent_right.0)) =>
                 {
                     return Err(ElaborationError::Inconclusive(format!(
                         "clause c{} binary witness does not match cited parents {:?}",
-                        c.id.0, parents
+                        c.id.0, source_parents
                     )));
                 }
                 ProofWitness::Factoring { parent, .. }
                 | ProofWitness::EqualityResolution { parent, .. }
                 | ProofWitness::EqualityFactoring { parent, .. }
                 | ProofWitness::Condensation { parent, .. }
-                    if parents.len() != 1 || parents[0] != ClauseId(parent.0) =>
+                    if source_parents.len() != 1 || source_parents[0] != ClauseId(parent.0) =>
                 {
                     return Err(ElaborationError::Inconclusive(format!(
                         "clause c{} unary witness parent c{} does not match cited parents {:?}",
-                        c.id.0, parent.0, parents
+                        c.id.0, parent.0, source_parents
                     )));
                 }
                 _ => {}
@@ -922,16 +955,55 @@ mod tests {
             unifier: None,
         });
         assert!(topological_sort(&[input.clone(), derived, unary_extra]).is_err());
+
+        // A certificate dependency is a DAG edge, not a substitute for an
+        // inference parent cited by the source and witness.
+        let certificate_parent = dummy_input_clause(11, vec![]);
+        let mut certificate_laundered = Clause::new(
+            ClauseId(22),
+            vec![],
+            ClauseSource::Inference {
+                rule: "resolution",
+                parents: vec![ClauseId(10)].into(),
+            },
+        );
+        certificate_laundered.certificate = Some(ClauseCertificate::AvatarComponent {
+            split_parent: ClauseId(11),
+            branch_index: 0,
+            sat_var: 1,
+        });
+        certificate_laundered.witness = Some(ProofWitness::Resolution {
+            parent_left: ProofNodeId(10),
+            parent_right: ProofNodeId(11),
+            lit_idx_left: 0,
+            lit_idx_right: 0,
+            renaming_offset: 0,
+            unifier: None,
+        });
+        assert!(topological_sort(&[input, certificate_parent, certificate_laundered]).is_err());
     }
 
     #[test]
-    fn topological_sort_allows_ac_superposition_and_resolution_with_ac_axioms() {
+    fn topological_sort_accepts_ac_nodes_with_cited_axiom_parents() {
         let ax1 = dummy_input_clause(1, vec![]);
         let ax2 = dummy_input_clause(2, vec![]);
-        let ac1 = dummy_input_clause(3, vec![]);
-        let ac2 = dummy_input_clause(4, vec![]);
+        let mut ac_symbols = SymbolTable::new();
+        let f = ac_symbols.intern("f");
+        let x = Term::Var(0);
+        let y = Term::Var(1);
+        let z = Term::Var(2);
+        let ac1 = dummy_eq_clause(
+            3,
+            Term::App(f, vec![x.clone(), y.clone()]),
+            Term::App(f, vec![y.clone(), x.clone()]),
+        );
+        let ac2 = dummy_eq_clause(
+            4,
+            Term::App(f, vec![Term::App(f, vec![x.clone(), y.clone()]), z.clone()]),
+            Term::App(f, vec![x, Term::App(f, vec![y, z])]),
+        );
 
-        // Valid AC superposition citing lhs, rhs, and AC axioms
+        // The topology check permits the two inference parents plus AC axioms.
         let mut ac_sup = Clause::new(
             ClauseId(10),
             vec![],
@@ -950,7 +1022,7 @@ mod tests {
             unifier: None,
         });
 
-        // Valid AC resolution citing left, right, and AC axioms
+        // AC resolution parent layout: two inference parents, then an axiom.
         let mut ac_res = Clause::new(
             ClauseId(11),
             vec![],
@@ -980,9 +1052,77 @@ mod tests {
             .is_ok()
         );
 
+        // The AC rule is not allowed to omit all axiom citations: the strict
+        // kernel requires at least one auxiliary AC parent.
+        let mut ac_without_axiom = Clause::new(
+            ClauseId(12),
+            vec![],
+            ClauseSource::Inference {
+                rule: "ac_superposition",
+                parents: vec![ClauseId(1), ClauseId(2)].into(),
+            },
+        );
+        ac_without_axiom.witness = Some(ProofWitness::Superposition {
+            lhs_parent: ProofNodeId(1),
+            rhs_parent: ProofNodeId(2),
+            lhs_lit_idx: 0,
+            rhs_lit_idx: 0,
+            term_path: vec![],
+            orientation_left: true,
+            unifier: None,
+        });
+        assert!(topological_sort(&[ax1.clone(), ax2.clone(), ac_without_axiom]).is_err());
+
+        // A rule name must agree with the typed witness, even when there are
+        // enough cited parents to satisfy the AC arity requirement.
+        let mut mismatched_ac_witness = Clause::new(
+            ClauseId(13),
+            vec![],
+            ClauseSource::Inference {
+                rule: "ac_resolution",
+                parents: vec![ClauseId(1), ClauseId(2), ClauseId(3)].into(),
+            },
+        );
+        mismatched_ac_witness.witness = Some(ProofWitness::Superposition {
+            lhs_parent: ProofNodeId(1),
+            rhs_parent: ProofNodeId(2),
+            lhs_lit_idx: 0,
+            rhs_lit_idx: 0,
+            term_path: vec![],
+            orientation_left: true,
+            unifier: None,
+        });
+        assert!(
+            topological_sort(&[ax1.clone(), ax2.clone(), ac1.clone(), mismatched_ac_witness,])
+                .is_err()
+        );
+
+        // The serialized parent order must put the two inference parents
+        // first, followed by AC axiom citations.
+        let mut reordered_ac_parents = Clause::new(
+            ClauseId(14),
+            vec![],
+            ClauseSource::Inference {
+                rule: "ac_resolution",
+                parents: vec![ClauseId(2), ClauseId(1), ClauseId(3)].into(),
+            },
+        );
+        reordered_ac_parents.witness = Some(ProofWitness::Resolution {
+            parent_left: ProofNodeId(1),
+            parent_right: ProofNodeId(2),
+            lit_idx_left: 0,
+            lit_idx_right: 0,
+            renaming_offset: 0,
+            unifier: None,
+        });
+        assert!(
+            topological_sort(&[ax1.clone(), ax2.clone(), ac1.clone(), reordered_ac_parents,])
+                .is_err()
+        );
+
         // Standard superposition with extraneous parents must be refused
         let mut bad_sup = Clause::new(
-            ClauseId(12),
+            ClauseId(15),
             vec![],
             ClauseSource::Inference {
                 rule: "superposition",
@@ -1002,7 +1142,7 @@ mod tests {
 
         // AC superposition missing a cited lhs or rhs parent must be refused
         let mut missing_parent_ac_sup = Clause::new(
-            ClauseId(13),
+            ClauseId(16),
             vec![],
             ClauseSource::Inference {
                 rule: "ac_superposition",

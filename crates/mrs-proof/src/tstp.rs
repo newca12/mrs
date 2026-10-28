@@ -449,6 +449,7 @@ mod tests {
     }
     use super::*;
     use mrs_core::clause::{Clause, ClauseId, ClauseSource};
+    use mrs_core::witness::{ProofNodeId, ProofWitness};
     use mrs_core::{Atom, Literal, Term};
 
     /// `PROBLEM_PATH` is a process-global `OnceLock`, so any test that reads or
@@ -577,6 +578,71 @@ mod tests {
             },
         );
         assert!(format_tstp(&[child], &symbols).is_empty());
+    }
+
+    #[test]
+    fn format_ac_inference_with_auxiliary_axiom_parent() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let f = symbols.intern("f");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let x = Term::Var(0);
+        let y = Term::Var(1);
+
+        let left = Clause::new(
+            ClauseId(1),
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::App(f, vec![Term::constant(a), Term::constant(b)])],
+            ))],
+            ClauseSource::Input {
+                name: "left".into(),
+                role: "axiom".into(),
+            },
+        );
+        let right = Clause::new(
+            ClauseId(2),
+            vec![Literal::neg(Atom::pred(
+                p,
+                vec![Term::App(f, vec![Term::constant(b), Term::constant(a)])],
+            ))],
+            ClauseSource::Input {
+                name: "right".into(),
+                role: "axiom".into(),
+            },
+        );
+        let commutativity = Clause::new(
+            ClauseId(3),
+            vec![Literal::pos(Atom::eq(
+                Term::App(f, vec![x.clone(), y.clone()]),
+                Term::App(f, vec![y, x]),
+            ))],
+            ClauseSource::Input {
+                name: "commutativity".into(),
+                role: "axiom".into(),
+            },
+        );
+        let mut conclusion = Clause::new(
+            ClauseId(4),
+            vec![],
+            ClauseSource::Inference {
+                rule: "ac_resolution",
+                parents: vec![ClauseId(1), ClauseId(2), ClauseId(3)].into(),
+            },
+        );
+        conclusion.witness = Some(ProofWitness::Resolution {
+            parent_left: ProofNodeId(1),
+            parent_right: ProofNodeId(2),
+            lit_idx_left: 0,
+            lit_idx_right: 0,
+            renaming_offset: 0,
+            unifier: None,
+        });
+
+        let output = format_tstp(&[left, right, commutativity, conclusion], &symbols);
+        assert!(output.contains("inference(ac_resolution, [status(thm)], [c1, c2, c3])"));
+        assert!(output.contains("cnf(c4, plain, $false"));
     }
 
     #[test]

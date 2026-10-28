@@ -68,8 +68,12 @@ the strict kernel.
 The empty cases have an SZS proof-start/proof-end envelope but no `cnf(...)` or
 `fof(...)` derivation lines. Examples include `GRP167-1` and `GRP185-2` in
 CASC-30, and `GRP178-1` and `LAT017-1` in CASC-J13. The available campaign
-artifacts do not establish why these proof blocks are empty; no cause is
-attributed here. See [UI-11](../../policies/unresolved-issues.md#ui-11--ueq-candidate-refutations-have-empty-tstp-proof-blocks).
+artifacts do not retain the proof DAGs, and both recorded binaries were dirty
+tree builds. Subsequent source review found a topological-sort failure mode for
+AC inferences with cited AC axioms; the code fix and evidence limits are recorded
+in [UI-11](../../policies/unresolved-issues.md#ui-11--ueq-candidate-refutations-have-empty-tstp-proof-blocks).
+This explains the matching source path but does not prove that every archived
+empty block followed it or certify any candidate status.
 
 ### CASC-J13 reference-label caveat
 
@@ -121,8 +125,9 @@ output gaps prevent treating its raw statuses as verified results.
 Do not replace the shipped UEQ order on the basis of these runs. First:
 
 1. Strictly audit all nonempty candidate proofs and preserve the audit outputs.
-2. Investigate and reproduce the empty proof blocks without assuming a root
-   cause from the commit history.
+2. Keep the archived empty-proof outcomes labeled as unaudited: the source-level
+   serialization failure is fixed, but the archived artifacts contain no proof
+   DAG to audit and do not establish which individual rows took that path.
 3. If the candidate remains viable, run matched baseline/candidate comparisons
    using the same build and host, with at least five replicates as required by
    the portfolio-measurement guidance in `AGENTS.md` §11.

@@ -59,6 +59,18 @@ mod budget_tests {
             Duration::from_secs(31_536_000)
         );
     }
+
+    #[test]
+    fn proof_node_count_rejects_empty_and_header_only_output() {
+        assert_eq!(count_proof_nodes(""), 0);
+        assert_eq!(count_proof_nodes("% Proof : input\n\n"), 0);
+        assert_eq!(
+            count_proof_nodes(
+                "% Proof : input\nfof(c1, plain, $false, inference(test, [], [])).\n"
+            ),
+            1
+        );
+    }
 }
 
 fn main() {
@@ -1472,13 +1484,13 @@ fn run() {
     } else if emit_extras
         && proof_certified
         && let SearchResult::Refutation(_, tstp_proof) = &result
-        && !tstp_proof.trim().is_empty()
+        && proof_nodes > 0
     {
         println!("{}", szs_output_start("Proof", problem_name));
         println!("{}", tstp_proof);
         println!("{}", szs_output_end("Proof", problem_name));
     } else if emit_extras && proof_certified && matches!(result, SearchResult::Refutation(..)) {
-        eprintln!("% Proof omitted: empty proof text");
+        eprintln!("% Proof omitted: no TSTP derivation steps");
     }
 
     if emit_extras {

@@ -2324,9 +2324,9 @@ Full write-up: `docs/reports/benchmarks/feq-silent-kills-investigation.md`.
 
 | | |
 |---|---|
-| Status | **Resolved** |
+| Status | **Serialization fix landed; historical campaign soundness remains unverified** |
 | Severity | 85 refutation-status rows across two October 26 UEQ candidate campaigns |
-| Soundness | **Sound.** Derivations were valid refutations; proof serialization failed during topological sort due to AC axiom citations. |
+| Soundness | **Unverified.** The serialization failure explains missing proof text, but does not certify the archived refutations. The nonempty candidate proofs still lack strict audit results, and the empty blocks contain no derivation to audit. |
 
 ### Observation
 
@@ -2351,40 +2351,42 @@ campaigns used `MRS_PORTFOLIO=6,12,2,11,1,8,7,15`, eight workers, CASC hardware,
 and `MRS_SHARED_POOL_INTERVAL=0`. The [candidate report](../reports/benchmarks/ueq-candidate-portfolio-2026-10.md)
 records the run IDs, hashes, row counts, and comparisons.
 
-### Root cause
+### Root cause and evidence
 
-Commit `323e8f22a` introduced parent-citation validation inside
+Source inspection found a deterministic failure mode matching the empty-block
+symptom. Commit `323e8f22a` introduced parent-citation validation inside
 `crates/mrs-proof/src/elaborate.rs:topological_sort` to verify that binary
-inferences citing a witness match the exact number and identity of parents
-(`parents.len() == 2`).
+inference witnesses match the cited parents, including an exact two-parent
+check.
 
-However, in AC reasoning, `ac_superposition` and `ac_resolution` inferences extend
-`parents` with the necessary AC axioms (associativity and commutativity axioms
-required for strict kernel verification and TSTP fidelity), resulting in
-`parents.len() >= 2` (e.g. `[lhs, rhs, ac1, ac2, ...]`). Because
-`topological_sort` strictly required `parents.len() == 2` for all
-`ProofWitness::Resolution` and `ProofWitness::Superposition` steps without
-accounting for `ac_superposition` and `ac_resolution`, `topological_sort`
-failed with `ElaborationError::Inconclusive` for every proof DAG containing an AC
-inference step.
+AC inference producers append their cited AC axioms after the two inference
+parents (for example, `[lhs, rhs, commutativity, associativity, ...]`). The exact
+two-parent check therefore rejected an `ac_superposition` or `ac_resolution`
+step carrying a typed binary witness and these additional parent citations.
+`write_tstp` maps that topological-sort error to a formatting error, and
+`format_tstp` returns an empty string on that error; the CLI then emitted the
+empty SZS proof envelope.
 
-When `topological_sort` failed, `write_tstp` failed, causing `format_tstp` to
-return an empty string (`""`), which was passed to `SearchResult::Refutation(id, "")`.
-Finally, `src/main.rs` unconditionally emitted `% SZS output start Proof` and
-`% SZS output end Proof` envelope markers, creating empty proof blocks on all
-49 (CASC-30) and 36 (CASC-J13) AC-bearing candidate refutations.
+This source-level mechanism explains the symptom for any proof DAG that follows
+that path. The candidate binaries were dirty-tree builds and the archived
+outputs do not retain their proof DAGs, so this does not establish that every
+one of the 49 CASC-30 and 36 CASC-J13 empty blocks followed that exact path. It
+also does not certify any of the candidate statuses.
 
 ### Resolution
 
 1. Updated `topological_sort` in `crates/mrs-proof/src/elaborate.rs` to recognize
-   `ac_superposition` and `ac_resolution` rules, permitting them to cite AC
-   axioms in `parents` (`parents.len() >= 2`) alongside the derivation parents,
-   while preserving the strict `parents.len() == 2` check for non-AC binary
-   inferences.
-2. Guarded `src/main.rs` so that empty proof text never emits an empty
-   `% SZS output start Proof` envelope and emits a descriptive diagnostic on
-   stderr instead.
-3. Added regression tests in `crates/mrs-proof/src/elaborate.rs` verifying
-   topological sorting of `ac_superposition` and `ac_resolution` with AC
-   axioms, while ensuring uncited parents and extraneous parents for standard
-   binary inferences remain refused.
+   matching AC rule/witness pairs and require the two inference parents plus at
+   least one cited AC parent. Standard binary inferences retain the strict
+   two-parent check; the strict kernel remains responsible for validating the
+   content of the cited AC axioms.
+2. Guarded `src/main.rs` so proof envelopes are emitted only when the text has
+   at least one `cnf(...)` or `fof(...)` derivation step; empty and header-only
+   text now produces a diagnostic instead.
+3. Added regression tests for AC parent ordering/serialization, missing AC
+   axiom citations, mismatched AC rule/witness pairs, extra parents on standard
+   binary inferences, and proof text with no derivation steps.
+
+The archived October 26 outcomes remain raw, unaudited observations. Do not use
+them as certified UEQ coverage or infer that the old empty blocks were valid
+proofs.
