@@ -7,6 +7,7 @@
 # Example:
 #   cooperative_portfolio_sweep.sh casc-30 feq 12,11,10,6,8,1,4,13 30 4 results/coop-feq
 #   cooperative_portfolio_sweep.sh casc-30 fne schedule:casc_fne_mq_hybrid 240 1 results/fne-hybrid
+#   cooperative_portfolio_sweep.sh casc-30 feq schedule:casc_feq_mq_hybrid 240 1 results/feq-hybrid
 #
 # Unlike run_codex_sweep.sh/run_strategy_sweep.sh, this launches one mrs
 # process per problem with the requested number of workers. Set

@@ -46,6 +46,7 @@ pub const ALL: &[&str] = &[
     "casc_epu",
     "casc_icu",
     "casc_fne_mq_hybrid",
+    "casc_feq_mq_hybrid",
     "fast",
     "mini",
     "ml",
@@ -184,6 +185,7 @@ pub fn by_name(name: &str, total_time: Duration, workers: usize) -> Option<Strat
         "casc_epu" => Some(casc_epu(total_time, workers)),
         "casc_icu" => Some(casc_icu(total_time, workers)),
         "casc_fne_mq_hybrid" => Some(casc_fne_mq_hybrid(total_time, workers)),
+        "casc_feq_mq_hybrid" => Some(casc_feq_mq_hybrid(total_time, workers)),
         "fast" => Some(fast(total_time, workers)),
         "mini" => Some(mini(total_time, workers)),
         "ml" | "ml_feq" => Some(ml_feq(total_time, workers)),
@@ -694,6 +696,29 @@ pub fn casc_fne_mq_hybrid(total_time: Duration, workers: usize) -> StrategySched
     build_from_template(total_time, workers, &template)
 }
 
+/// Eight-slot FEQ experiment retaining four high-coverage base strategies
+/// ([s12, s11, s01, s06]) and adding four equational and goal-directed
+/// MultiQueue configurations (Archetypes 3, 6, 2, and 4: fast unit equational
+/// demodulation under LPO, aggressive goal-directed under LPO, goal & SOS
+/// directed under KBO, and ConjSymbolBoost multi-queue). This is diagnostic
+/// until replicated cooperative runs establish its coverage and certification.
+pub fn casc_feq_mq_hybrid(total_time: Duration, workers: usize) -> StrategySchedule {
+    let base_ids = [12, 11, 1, 6];
+    let mq_indices = [3, 6, 2, 4];
+    let base_configs = super::StrategySchedule::_all_strategies(Duration::ZERO, 0)
+        .strategies
+        .into_iter()
+        .map(|(config, _)| config)
+        .collect::<Vec<_>>();
+    let archetypes = mq_archetypes();
+    let template = base_ids
+        .iter()
+        .map(|&id| base_configs[id - 1].clone())
+        .chain(mq_indices.iter().map(|&index| archetypes[index].clone()))
+        .collect::<Vec<_>>();
+    build_from_template(total_time, workers, &template)
+}
+
 fn mq_archetypes() -> [SearchConfig; 8] {
     let archetype_specs = [
         // 0: Balanced multi-queue
@@ -948,6 +973,7 @@ mod tests {
             "casc_epu",
             "casc_icu",
             "casc_fne_mq_hybrid",
+            "casc_feq_mq_hybrid",
             "ml_fne",
             "ml_ueq",
             "ml_epr",
@@ -997,6 +1023,7 @@ mod tests {
             "mq_7",
             "mq_8",
             "casc_fne_mq_hybrid",
+            "casc_feq_mq_hybrid",
         ] {
             let schedule = by_name(name, Duration::from_secs(8), 8).unwrap();
             assert!(
@@ -1082,6 +1109,59 @@ mod tests {
         assert!(!matches!(
             schedule.strategies[0].0.selection,
             SelectionStrategy::MultiQueue(_)
+        ));
+    }
+
+    #[test]
+    fn feq_mq_hybrid_keeps_base_strategies_and_adds_four_attributed_mq_slots() {
+        let budget = Duration::from_secs(240);
+        let schedule = by_name("casc_feq_mq_hybrid", budget, 8).unwrap();
+        let ids = schedule
+            .strategies
+            .iter()
+            .map(|(config, _)| config.strategy_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![12, 11, 1, 6, 104, 107, 103, 105]);
+        assert_eq!(
+            schedule
+                .strategies
+                .iter()
+                .map(|(_, slice)| *slice)
+                .sum::<Duration>(),
+            budget
+        );
+        assert!(matches!(
+            schedule.strategies[4].0.selection,
+            SelectionStrategy::MultiQueue(_)
+        ));
+        assert!(!matches!(
+            schedule.strategies[0].0.selection,
+            SelectionStrategy::MultiQueue(_)
+        ));
+        // Verify equational attributes on MQ slots:
+        // Archetype 3 (slot 4) should be LPO and All literals
+        assert!(matches!(
+            schedule.strategies[4].0.ordering,
+            TermOrdering::LPO
+        ));
+        assert!(matches!(
+            schedule.strategies[4].0.literal_selection,
+            LiteralSelection::All
+        ));
+        // Archetype 6 (slot 5) should be LPO
+        assert!(matches!(
+            schedule.strategies[5].0.ordering,
+            TermOrdering::LPO
+        ));
+        // Archetype 2 (slot 6) should be KBO
+        assert!(matches!(
+            schedule.strategies[6].0.ordering,
+            TermOrdering::KBO
+        ));
+        // Archetype 4 (slot 7) should have ConjSymbolBoost weight fn
+        assert!(matches!(
+            schedule.strategies[7].0.weight_fn,
+            crate::ClauseWeightFn::ConjSymbolBoost
         ));
     }
 

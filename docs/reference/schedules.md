@@ -48,6 +48,7 @@ On equality-free inputs, the search engine may dynamically switch
 | `casc_epu` | EPR unsatisfiable local regression schedule. |
 | `casc_icu` | Legacy ICU local regression schedule. |
 | `casc_fne_mq_hybrid` | Experimental FNE mix of s11, s13, s04, s15 and four MultiQueue archetypes; not yet validated cooperatively. |
+| `casc_feq_mq_hybrid` | Experimental FEQ mix of s12, s11, s01, s06 and four MultiQueue archetypes (mq_4, mq_7, mq_3, mq_5: fast unit demodulation LPO, goal LPO, goal & SOS KBO, ConjSymbolBoost KBO); diagnostic until validated cooperatively. |
 | `fast` | One KBO strategy for short ATP queries. |
 | `mini` | Three-strategy short-budget portfolio. |
 | `mq` | Multi-queue portfolio using unit, Horn, goal, SOS, age, and weight queues. |
@@ -58,7 +59,7 @@ The registry currently exposes these names through `--list-schedules`:
 
 ```text
 casc casc_feq casc_fne casc_ueq casc_epr casc_eps casc_epu casc_icu
-casc_fne_mq_hybrid fast mini ml ml_feq ml_fne ml_ueq ml_epr
+casc_fne_mq_hybrid casc_feq_mq_hybrid fast mini ml ml_feq ml_fne ml_ueq ml_epr
 mq mq_1 mq_2 mq_3 mq_4 mq_5 mq_6 mq_7 mq_8
 ```
 

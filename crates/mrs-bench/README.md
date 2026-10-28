@@ -138,6 +138,12 @@ MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
   casc-30 fne schedule:casc_fne_mq_hybrid 240 1 \
   results/cooperative-fne-mq-hybrid-no-sharing
 
+# Eight-worker FEQ/MultiQueue hybrid candidate.
+MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
+  crates/mrs-bench/cooperative_portfolio_sweep.sh \
+  casc-30 feq schedule:casc_feq_mq_hybrid 240 1 \
+  results/cooperative-feq-mq-hybrid-no-sharing
+
 # Diagnose one MultiQueue archetype across the corpus as one full-budget worker.
 MRS_WORKERS=1 MRS_SHARED_POOL_INTERVAL=0 \
   crates/mrs-bench/cooperative_portfolio_sweep.sh \
