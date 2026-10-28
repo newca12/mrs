@@ -9281,7 +9281,13 @@ fn verify_condensation(
                 // condensing both sides (CSR115+6, SEV606+1, GEO111+1).
                 let condensed_expected = condense_clause(&expected);
                 let mut matching_steps = 0;
-                let subsumes_parent = match clause_subsumes(
+                // Verify that the condensed clause subsumes the parent clause
+                // under standard set subsumption (sound: C' ⊨ C, ensuring C' ≡ C).
+                // Search uses set-style matching (match_literals_id without multiset
+                // consumption); multiset matching incorrectly rejects valid condensation
+                // steps where multiple conclusion literals coincide or mirror symmetric
+                // equalities into the same target literal (GEO526+1, SWB073+1, COM133+1).
+                let subsumes_parent = match clause_subsumes_set(
                     &condensed_expected,
                     &parent,
                     &mut matching_steps,
@@ -19950,6 +19956,30 @@ mod tests {
                      cnf(c, plain, p(a) | r(a), inference(condensation, [status(thm)], [a])).\
                      fof(bot, plain, $false, inference(consequence, [status(thm)], [c])).";
         assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn certifies_condensation_with_symmetric_equality_coincidence() {
+        // SWB073+1 c1681→c254477 shape: unifying ~iext(X1, X2, X3) with
+        // ~iext(X1, X2, X4) substitutes X3↦X4. In the remaining literals,
+        // `X3 = X5` becomes `X4 = X5`, which coincides with `X5 = X4` up to
+        // symmetry. Set subsumption verifies that the condensed clause subsumes
+        // the parent clause without multiset target exhaustion.
+        let problem = "fof(a, axiom, ~d(X1, X2) | ~i(X1, X2, X3) | ~i(X1, X2, X4) | ~i(X1, X2, X5) | X3 = X5 | X5 = X4).\n\
+                       fof(nd, axiom, d(a, b)).\n\
+                       fof(ni, axiom, i(a, b, c)).\n\
+                       fof(ne, axiom, c != c).";
+        let proof = "fof(a, axiom, ~d(X1, X2) | ~i(X1, X2, X3) | ~i(X1, X2, X4) | ~i(X1, X2, X5) | X3 = X5 | X5 = X4, file('problem.p', a)).\
+                     fof(nd, axiom, d(a, b), file('problem.p', nd)).\
+                     fof(ni, axiom, i(a, b, c), file('problem.p', ni)).\
+                     fof(ne, axiom, c != c, file('problem.p', ne)).\
+                     cnf(c, plain, ~d(X1, X2) | ~i(X1, X2, X4) | ~i(X1, X2, X5) | X4 = X5 | X5 = X4, inference(condensation, [status(thm)], [a])).\
+                     cnf(c1, plain, ~i(a, b, X4) | ~i(a, b, X5) | X4 = X5 | X5 = X4, inference(resolution, [status(thm)], [c, nd])).\
+                     cnf(c2, plain, ~i(a, b, X5) | c = X5 | X5 = c, inference(resolution, [status(thm)], [c1, ni])).\
+                     cnf(c3, plain, c = c | c = c, inference(resolution, [status(thm)], [c2, ni])).\
+                     cnf(c4, plain, c = c, inference(condensation, [status(thm)], [c3])).\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [c4, ne])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
     #[test]
