@@ -73,9 +73,9 @@ refutations did. The J13 exception is `REL045-2`:
   recognizes.
 - The SZS detail nevertheless says `proof_nodes=0 proof_bytes=80
   proof_emitted=true`. The 80-byte value is header-only text, not a derivation.
-  The current telemetry computes `proof_emitted` from the byte-limit flag, not
-  whether a proof block was actually printed. See [UI-12 in the unresolved
-  issues list](../../policies/unresolved-issues.md).
+  At the time of this archived run, telemetry computed `proof_emitted` from
+  the byte-limit flag, not whether a proof block was actually printed. See
+  [UI-12 in the unresolved issues list](../../policies/unresolved-issues.md).
 - The same problem in the CASC-30 artifact has a 170-node, 28,142-byte proof
   and passes strict verification. Subsequent investigation reproduced the
   anomaly deterministically under Strategy 15: `given` was rewritten by forward
@@ -86,8 +86,9 @@ refutations did. The J13 exception is `REL045-2`:
   Strategy 15 to emit a 126-node proof that certifies strictly as `VerifiedGood`.
   See [UI-12 in the unresolved issues list](../../policies/unresolved-issues.md).
 
-Do not count J13 `REL045-2` as certified. The separate October 26 empty-block
-artifacts remain unaudited; this follow-up does not retroactively certify them.
+Do not count the archived J13 campaign row for `REL045-2` as certified; the
+subsequent local, strictly verified proof does not retroactively certify that
+run. The separate October 26 empty-block artifacts remain unaudited as well.
 
 ## Memory observations
 

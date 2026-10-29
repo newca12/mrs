@@ -2450,8 +2450,8 @@ complete failure chain:
    clause `c6016` into the empty clause (`$false`, `c138657`), citing parents
    `[c6016, c138057]`. Because the empty clause was derived, the loop immediately
    returned `SearchResult::Refutation(simplified.id, String::new())` (return site 4b).
-   The search loop never reached line 2714 (`state.register_clause(&given)`), so
-   `c138057` was never inserted into `clause_store`.
+   The search loop never reached its later `state.register_clause(&given)` call,
+   so `c138057` was never inserted into `clause_store`.
 3. **Fail-closed proof extraction**:
    When `mrs_proof::extract::extract_interned_proof` walked backwards from
    `c138657`, looking up parent `c138057` in `clause_store` returned `None`.
@@ -2474,9 +2474,9 @@ complete failure chain:
    - Register the simplified clause in `state.clause_store` immediately upon
      creation in forward demodulation, destructive equality resolution (DER), and
      condensation.
-   - Register `given` in its fully simplified form at line 2113 before inference
-     generation and backward simplification, and explicitly register `given` in
-     backward subsumption resolution.
+   - Register `given` in its fully simplified form before inference generation
+     and backward simplification, and explicitly register `given` in backward
+     subsumption resolution.
    - Recompute `given_fv = FeatureVector::from_id_clause(&given, &state.term_bank)`
      whenever `given` is simplified.
 2. In `src/main.rs`:
