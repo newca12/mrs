@@ -1235,7 +1235,41 @@ fn multi_step_and_multi_parent_demodulation_refutations() {
     assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
 
-    // 14. Multi-parent consequence resolution chain (3 parents: a, b, c -> r):
+    // 14. Multi-parent Horn chaining standardizes variables apart and accepts
+    // an alpha-renamed universally quantified conclusion.
+    let horn_alpha_problem = mrs_tptp::parse_tptp(
+        "cnf(r1,axiom,~p(X)|q(X)). cnf(r2,axiom,~q(X)|r(X)). cnf(fact,axiom,p(Y)). cnf(nr,axiom,~r(Y)).",
+    )
+    .unwrap();
+    let horn_alpha_text = "cnf(r1,axiom,~p(X)|q(X),file('input',r1)).
+        cnf(r2,axiom,~q(X)|r(X),file('input',r2)).
+        cnf(fact,axiom,p(Y),file('input',fact)).
+        cnf(h,plain,r(Y),inference(horn,[status(thm)],[r2,fact,r1])).
+        cnf(nr,axiom,~r(Y),file('input',nr)).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[h,nr])).";
+    let horn_alpha_proof = mrs_tptp::parse_tptp(horn_alpha_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &horn_alpha_problem,
+        &horn_alpha_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+    let contra_alpha_text = horn_alpha_text.replace("inference(horn,", "inference(contrapositive,");
+    let contra_alpha_proof = mrs_tptp::parse_tptp(&contra_alpha_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &horn_alpha_problem,
+        &contra_alpha_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 15. Multi-parent consequence resolution chain (3 parents: a, b, c -> r):
     let conseq_chain_problem = mrs_tptp::parse_tptp(
         "cnf(a,axiom,~p|~q|r). cnf(b,axiom,p). cnf(c,axiom,q). cnf(d,axiom,~r).",
     )
@@ -1257,7 +1291,7 @@ fn multi_step_and_multi_parent_demodulation_refutations() {
     assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
 
-    // 15. Contrapositive rule alias:
+    // 16. Contrapositive rule alias:
     let contra_problem =
         mrs_tptp::parse_tptp("cnf(rule,axiom,~p(X)|q(X)). cnf(nq,axiom,~q(a)). cnf(p,axiom,p(a)).")
             .unwrap();
@@ -1277,7 +1311,7 @@ fn multi_step_and_multi_parent_demodulation_refutations() {
     assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
 
-    // 16. Equality factoring with commuted literal:
+    // 17. Equality factoring with commuted literal:
     let eq_fact_commuted_problem = mrs_tptp::parse_tptp(
         "cnf(a,axiom,p(a)=p(b)|q(c)=p(a)). cnf(b,axiom,p(a)!=p(b)). cnf(c,axiom,p(b)=q(c)).",
     )
@@ -1299,7 +1333,46 @@ fn multi_step_and_multi_parent_demodulation_refutations() {
     assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
 
-    // 17. Forged Horn conclusion fail-closed regression:
+    // 18. Exact resolution accepts equality pivots modulo equality symmetry.
+    let symmetric_eq_problem =
+        mrs_tptp::parse_tptp("cnf(eq,axiom,a=b). cnf(neq,axiom,b!=a).").unwrap();
+    let symmetric_eq_text = "cnf(eq,axiom,a=b,file('input',eq)).
+        cnf(neq,axiom,b!=a,file('input',neq)).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[eq,neq])).";
+    let symmetric_eq_proof = mrs_tptp::parse_tptp(symmetric_eq_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &symmetric_eq_problem,
+        &symmetric_eq_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 19. Standardized first-order resolution also unifies swapped equality
+    // pivots, then the ordinary resolution tail closes the refutation.
+    let symmetric_fo_problem = mrs_tptp::parse_tptp(
+        "cnf(eq,axiom,f(X)=a|p(X)). cnf(neq,axiom,a!=f(a)). cnf(np,axiom,~p(a)).",
+    )
+    .unwrap();
+    let symmetric_fo_text = "cnf(eq,axiom,f(X)=a|p(X),file('input',eq)).
+        cnf(neq,axiom,a!=f(a),file('input',neq)).
+        cnf(np,axiom,~p(a),file('input',np)).
+        cnf(pos,plain,p(a),inference(resolution,[status(thm)],[eq,neq])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[pos,np])).";
+    let symmetric_fo_proof = mrs_tptp::parse_tptp(symmetric_fo_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &symmetric_fo_problem,
+        &symmetric_fo_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 20. Forged Horn conclusion fail-closed regression:
     let forged_horn_text = "cnf(r1,axiom,~p(X)|q(X),file('input',r1)).
         cnf(r2,axiom,~q(X)|r(X),file('input',r2)).
         cnf(fact,axiom,p(a),file('input',fact)).

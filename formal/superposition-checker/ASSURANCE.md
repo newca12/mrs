@@ -108,6 +108,8 @@ middle, equality congruence, and clause tautology in addition to superposition
 and exact-atom resolution. Each accepted replay is bound to its declared parent
 edges (or has no edges for a zero-parent tautology introduction) and its
 conclusion, and proves local universal-validity preservation.
+Exact and standardized first-order resolution accept equality pivots in either
+ordered or swapped orientation; executable regressions cover both forms.
 Compiled refutations certify from nonempty inputs; exact cumulative replay-work
 accounting and broader rules remain open.
 

@@ -22,7 +22,9 @@ def main() -> int:
     mutations = [
         (
             "exact resolution ignores atom identity",
-            "if !same_atom(&left.literals[lp].atom, &right.literals[rp].atom) { return false; }",
+            "if !same_atom(&left.literals[lp].atom, &right.literals[rp].atom)\n"
+            "        && !same_symmetric_equality(&left.literals[lp].atom, &right.literals[rp].atom)\n"
+            "    { return false; }",
             "if false { return false; }",
         ),
         (
@@ -122,7 +124,11 @@ def main() -> int:
         ),
         (
             "first-order resolution ignores unified atom equality",
-            "if !same_atom(&inst_left.literals[certificate.left_pivot].atom, &inst_right.literals[certificate.right_pivot].atom) {",
+            "if !same_atom(&inst_left.literals[certificate.left_pivot].atom,\n"
+            "        &inst_right.literals[certificate.right_pivot].atom)\n"
+            "        && !same_symmetric_equality(&inst_left.literals[certificate.left_pivot].atom,\n"
+            "            &inst_right.literals[certificate.right_pivot].atom)\n"
+            "    {",
             "if false {",
         ),
         (

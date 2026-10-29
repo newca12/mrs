@@ -6654,6 +6654,22 @@ fn same_atom(left: &ExecAtom, right: &ExecAtom) -> (same: bool)
     }
 }
 
+/// Equality atoms are symmetric for resolution pivots; predicate arguments
+/// remain ordered. This comparison is deliberately separate from `same_atom`
+/// because the other replay rules use exact atom identity.
+fn same_symmetric_equality(left: &ExecAtom, right: &ExecAtom) -> (same: bool)
+    ensures same == match (view_atom(*left), view_atom(*right)) {
+        (Atom::Eq(s, t), Atom::Eq(u, v)) => s == v && t == u,
+        _ => false,
+    }
+    decreases left
+{
+    match (left, right) {
+        (ExecAtom::Eq(a, b), ExecAtom::Eq(c, d)) => same_term(a, d) && same_term(b, c),
+        _ => false,
+    }
+}
+
 fn same_literal(left: &ExecLiteral, right: &ExecLiteral) -> (same: bool)
     ensures same == (view_literal(*left) == view_literal(*right))
 {
@@ -6822,7 +6838,9 @@ fn check_exact_resolution(left: &ExecClause, right: &ExecClause,
         || !charge_clause_structure(conclusion, &mut work, work_limit) { return false; }
     if lp >= left.literals.len() || rp >= right.literals.len() { return false; }
     if !left.literals[lp].positive || right.literals[rp].positive { return false; }
-    if !same_atom(&left.literals[lp].atom, &right.literals[rp].atom) { return false; }
+    if !same_atom(&left.literals[lp].atom, &right.literals[rp].atom)
+        && !same_symmetric_equality(&left.literals[lp].atom, &right.literals[rp].atom)
+    { return false; }
     let expected = build_nullary_resolution_conclusion(left, right, lp, rp);
     if !same_clause_exact(&expected, conclusion) { return false; }
     proof {
@@ -6831,8 +6849,15 @@ fn check_exact_resolution(left: &ExecClause, right: &ExecClause,
             implies clause_valid(view_clause(*conclusion), interp) by {
             assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
                 implies clause_holds(view_clause(*conclusion), interp, valuation) by {
-                exact_atom_resolution_sound(view_clause(*left), view_clause(*right), lp as int,
-                    rp as int, interp, valuation);
+                if view_atom(left.literals@[lp as int].atom)
+                    == view_atom(right.literals@[rp as int].atom)
+                {
+                    exact_atom_resolution_sound(view_clause(*left), view_clause(*right), lp as int,
+                        rp as int, interp, valuation);
+                } else {
+                    exact_resolution_symmetric_sound(view_clause(*left), view_clause(*right),
+                        lp as int, rp as int, interp, valuation);
+                }
                 assert(view_clause(*conclusion).literals =~= resolution_conclusion(
                     view_clause(*left), view_clause(*right), lp as int, rp as int).literals);
             }
@@ -6974,7 +6999,11 @@ fn check_first_order_resolution_and_replay(
     {
         return false;
     }
-    if !same_atom(&inst_left.literals[certificate.left_pivot].atom, &inst_right.literals[certificate.right_pivot].atom) {
+    if !same_atom(&inst_left.literals[certificate.left_pivot].atom,
+        &inst_right.literals[certificate.right_pivot].atom)
+        && !same_symmetric_equality(&inst_left.literals[certificate.left_pivot].atom,
+            &inst_right.literals[certificate.right_pivot].atom)
+    {
         return false;
     }
     let expected = build_nullary_resolution_conclusion(&inst_left, &inst_right, certificate.left_pivot, certificate.right_pivot);
@@ -6992,8 +7021,6 @@ fn check_first_order_resolution_and_replay(
                 substitute_clause(view_clause(certificate.right),
                     view_subst(certificate.right_freshening@)),
                 view_subst(certificate.unifier@)));
-        assert(view_atom(inst_left.literals@[certificate.left_pivot as int].atom)
-            == view_atom(inst_right.literals@[certificate.right_pivot as int].atom));
         assert(view_clause(inst_left).literals[certificate.left_pivot as int].atom
             == view_atom(inst_left.literals@[certificate.left_pivot as int].atom));
         assert(view_clause(inst_right).literals[certificate.right_pivot as int].atom
@@ -7002,16 +7029,38 @@ fn check_first_order_resolution_and_replay(
             && clause_valid(view_clause(certificate.left), interp)
             && clause_valid(view_clause(certificate.right), interp)
             implies clause_valid(view_clause(certificate.conclusion), interp) by {
-            standardized_first_order_resolution_sound(
-                view_clause(certificate.left),
-                view_clause(certificate.right),
-                certificate.left_pivot as int,
-                certificate.right_pivot as int,
-                view_subst(certificate.left_freshening@),
-                view_subst(certificate.right_freshening@),
-                view_subst(certificate.unifier@),
-                interp,
-            );
+            if view_atom(inst_left.literals@[certificate.left_pivot as int].atom)
+                == view_atom(inst_right.literals@[certificate.right_pivot as int].atom)
+            {
+                assert(view_clause(inst_left).literals[certificate.left_pivot as int].atom
+                    == view_clause(inst_right).literals[certificate.right_pivot as int].atom);
+                standardized_first_order_resolution_sound(
+                    view_clause(certificate.left),
+                    view_clause(certificate.right),
+                    certificate.left_pivot as int,
+                    certificate.right_pivot as int,
+                    view_subst(certificate.left_freshening@),
+                    view_subst(certificate.right_freshening@),
+                    view_subst(certificate.unifier@),
+                    interp,
+                );
+            } else {
+                assert(match (view_clause(inst_left).literals[certificate.left_pivot as int].atom,
+                    view_clause(inst_right).literals[certificate.right_pivot as int].atom) {
+                    (Atom::Eq(s, t), Atom::Eq(u, v)) => s == v && t == u,
+                    _ => false,
+                });
+                standardized_first_order_resolution_symmetric_sound(
+                    view_clause(certificate.left),
+                    view_clause(certificate.right),
+                    certificate.left_pivot as int,
+                    certificate.right_pivot as int,
+                    view_subst(certificate.left_freshening@),
+                    view_subst(certificate.right_freshening@),
+                    view_subst(certificate.unifier@),
+                    interp,
+                );
+            }
             assert(clause_equal(view_clause(expected), resolution_conclusion(
                 view_clause(inst_left), view_clause(inst_right),
                 certificate.left_pivot as int, certificate.right_pivot as int)));
@@ -11022,6 +11071,51 @@ fn executable_first_order_resolution_examples() -> bool {
         return false;
     }
 
+    // Standardized first-order resolution also accepts an equality pivot in
+    // the opposite orientation: f(X) = a resolves with a != f(a).
+    let symmetric_cert = FirstOrderResolutionCertificate {
+        left: ExecClause { literals: vec![
+            ExecLiteral {
+                positive: true,
+                atom: ExecAtom::Eq(
+                    ExecTerm::App1(1, Box::new(ExecTerm::Var(7))),
+                    ExecTerm::Const(1),
+                ),
+            },
+            ExecLiteral {
+                positive: true,
+                atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))),
+            },
+        ] },
+        right: ExecClause { literals: vec![ExecLiteral {
+            positive: false,
+            atom: ExecAtom::Eq(
+                ExecTerm::Const(1),
+                ExecTerm::App1(1, Box::new(ExecTerm::Const(1))),
+            ),
+        }] },
+        left_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(10) }],
+        right_freshening: Vec::new(),
+        unifier: vec![ExecBinding { variable: 10, replacement: ExecTerm::Const(1) }],
+        left_pivot: 0,
+        right_pivot: 0,
+        conclusion: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))),
+        }] },
+    };
+    if !check_first_order_resolution_and_replay(&symmetric_cert, 1000) {
+        return false;
+    }
+    let mut forged_symmetric = symmetric_cert;
+    forged_symmetric.right.literals[0].atom = ExecAtom::Eq(
+        ExecTerm::Const(2),
+        ExecTerm::App1(1, Box::new(ExecTerm::Const(1))),
+    );
+    if check_first_order_resolution_and_replay(&forged_symmetric, 1000) {
+        return false;
+    }
+
     // Forged conclusion (wrong constant 99) fails closed.
     cert.conclusion = ExecClause { literals: vec![
         ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(99))) },
@@ -11091,6 +11185,24 @@ fn executable_resolution_chain_examples() -> bool {
     check_nullary_resolution(&left, &right, 1, 0, &resolution_unit(9, true), 1000)
 }
 
+fn exact_symmetric_resolution_left() -> ExecClause {
+    ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)),
+        }],
+    }
+}
+
+fn exact_symmetric_resolution_right() -> ExecClause {
+    ExecClause {
+        literals: vec![ExecLiteral {
+            positive: false,
+            atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)),
+        }],
+    }
+}
+
 fn executable_resolution_dag_examples() -> bool {
     let mut dag = ProofDag {
         nodes: vec![
@@ -11118,7 +11230,30 @@ fn executable_resolution_dag_examples() -> bool {
     if certify_dag(&dag, 10, 10000) == DagVerdict::Certified { return false; }
     dag.nodes[2].parents = vec![0usize, 1usize];
     if certify_dag(&dag, 10, 0) == DagVerdict::Certified { return false; }
-    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+    if certify_dag(&dag, 10, 10000) != DagVerdict::Certified { return false; }
+
+    let left = exact_symmetric_resolution_left();
+    let right = exact_symmetric_resolution_right();
+    let empty = ExecClause { literals: Vec::new() };
+    if !check_exact_resolution(&left, &right, 0, 0, &empty, 10000) { return false; }
+    let wrong_right = ExecClause { literals: vec![ExecLiteral {
+        positive: false,
+        atom: ExecAtom::Eq(ExecTerm::Const(3), ExecTerm::Const(1)),
+    }] };
+    if check_exact_resolution(&left, &wrong_right, 0, 0, &empty, 10000) { return false; }
+    let symmetric_dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: exact_symmetric_resolution_left(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 2, clause: exact_symmetric_resolution_right(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 3, clause: empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![0usize, 1usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+        ],
+        input_clauses: vec![exact_symmetric_resolution_left(), exact_symmetric_resolution_right()],
+        root: 2,
+    };
+    certify_dag(&symmetric_dag, 10, 10000) == DagVerdict::Certified
 }
 
 fn res_fo_in1() -> ExecClause {
@@ -11144,6 +11279,46 @@ fn res_fo_n4() -> ExecClause {
     ExecClause { literals: vec![
         ExecLiteral { positive: true, atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))) },
     ] }
+}
+
+fn first_order_symmetric_resolution_left() -> ExecClause {
+    ExecClause { literals: vec![
+        ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Eq(
+                ExecTerm::App1(1, Box::new(ExecTerm::Var(7))),
+                ExecTerm::Const(1),
+            ),
+        },
+        ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Var(7))),
+        },
+    ] }
+}
+
+fn first_order_symmetric_resolution_right() -> ExecClause {
+    ExecClause { literals: vec![ExecLiteral {
+        positive: false,
+        atom: ExecAtom::Eq(
+            ExecTerm::Const(1),
+            ExecTerm::App1(1, Box::new(ExecTerm::Const(1))),
+        ),
+    }] }
+}
+
+fn first_order_symmetric_resolution_positive_fact() -> ExecClause {
+    ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))),
+    }] }
+}
+
+fn first_order_symmetric_resolution_negative_fact() -> ExecClause {
+    ExecClause { literals: vec![ExecLiteral {
+        positive: false,
+        atom: ExecAtom::Pred1(2, Box::new(ExecTerm::Const(1))),
+    }] }
 }
 
 fn executable_first_order_resolution_dag_examples() -> bool {
@@ -11174,7 +11349,40 @@ fn executable_first_order_resolution_dag_examples() -> bool {
         input_clauses: vec![res_fo_in1(), res_fo_in2(), res_fo_in3()],
         root: 4,
     };
-    certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+    if certify_dag(&dag, 10, 10000) != DagVerdict::Certified { return false; }
+
+    let symmetric_empty = ExecClause { literals: Vec::new() };
+    let symmetric_cert = FirstOrderResolutionCertificate {
+        left: first_order_symmetric_resolution_left(),
+        right: first_order_symmetric_resolution_right(),
+        left_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(10) }],
+        right_freshening: Vec::new(),
+        unifier: vec![ExecBinding { variable: 10, replacement: ExecTerm::Const(1) }],
+        left_pivot: 0,
+        right_pivot: 0,
+        conclusion: first_order_symmetric_resolution_positive_fact(),
+    };
+    let symmetric_dag = ProofDag {
+        nodes: vec![
+            ProofNode { id: 1, clause: first_order_symmetric_resolution_left(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 2, clause: first_order_symmetric_resolution_right(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 3, clause: first_order_symmetric_resolution_negative_fact(), kind: ProofNodeKind::Input,
+                parents: Vec::new(), step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 4, clause: first_order_symmetric_resolution_positive_fact(), kind: ProofNodeKind::FirstOrderResolution,
+                parents: vec![0usize, 1usize], step: None, res_step: Some(symmetric_cert), eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+            ProofNode { id: 5, clause: symmetric_empty, kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![3usize, 2usize], step: None, res_step: None, eq_step: None, fact_step: None, eq_fact_step: None, sub_step: None, weaken_step: None, demod_step: None, inst_step: None, cond_step: None },
+        ],
+        input_clauses: vec![
+            first_order_symmetric_resolution_left(),
+            first_order_symmetric_resolution_right(),
+            first_order_symmetric_resolution_negative_fact(),
+        ],
+        root: 4,
+    };
+    certify_dag(&symmetric_dag, 10, 10000) == DagVerdict::Certified
 }
 
 fn eq_res_in1() -> ExecClause {

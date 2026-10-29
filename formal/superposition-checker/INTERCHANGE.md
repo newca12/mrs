@@ -101,6 +101,14 @@ subsequent nodes. These trusted transformations are not advertised as
 Verus-refined lowering. AC reasoning, ordered-calculus conditions and broader
 transformations remain unsupported.
 
+Exact and standardized first-order resolution accept equality pivots in either
+ordered or swapped orientation. Multi-parent Horn, consequence and contrapositive
+citations are lowered to bounded binary resolution chains (at most six steps and
+128 discovered states, within the caller's comparison budget). Only intermediate
+steps on the final derivation are emitted; original proof nodes are retained, so
+an unused cited parent still fails the whole-DAG root-closure check. Alpha-renamed
+conclusions use the generated clause representation for subsequent nodes.
+
 Multi-step demodulation and ground equality normalization are expanded into
 binary demodulation nodes, each replayed by the verified checker. Discovery uses
 a shared 50,000-comparison ceiling and at most six rewrites and 128 states,

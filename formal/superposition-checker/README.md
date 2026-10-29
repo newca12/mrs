@@ -78,7 +78,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `428 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `437 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -133,6 +133,8 @@ addition to superposition and exact-atom resolution. Every accepted replay is
 bound to its cited parents and conclusion and proves local universal-validity
 preservation. Compiled refutations certify from nonempty inputs; exact cumulative
 replay-work accounting and broader rules remain open.
+Exact and standardized first-order resolution also accept equality pivots in
+either ordered or swapped orientation.
 
 `first_order_core.rs` adds recursive first-order terms and formal,
 simultaneous-substitution semantics. It includes executable term copying,

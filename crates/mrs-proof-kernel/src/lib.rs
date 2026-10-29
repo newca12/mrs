@@ -5456,6 +5456,9 @@ fn verify_contrapositive(
     limits: VerificationLimits,
 ) -> KernelVerdict {
     if parents.len() != 2 {
+        if parents.len() > 2 {
+            return verify_consequence(parents, conclusion, limits);
+        }
         return KernelVerdict::Rejected("contrapositive must have two parents".into());
     }
     if parents
@@ -5632,10 +5635,10 @@ fn verify_horn(
                 }
                 rules.push(rule_formula);
             } else {
-                derived.push(parent.clone());
+                derived.push(body.clone());
             }
         } else {
-            derived.push(parent.clone());
+            derived.push(body.clone());
         }
     }
     if rules.is_empty() || derived.is_empty() {
@@ -5665,14 +5668,14 @@ fn verify_horn(
                         "horn derived formula exceeded strict formula-size limit".into(),
                     );
                 }
-                if alpha_equiv(&candidate, conclusion) {
+                if alpha_equiv_universally_closed(&candidate, conclusion) {
                     return KernelVerdict::Certified;
                 }
                 if matches!(candidate, Formula::Implies(_, _)) {
                     if rules
                         .iter()
                         .chain(&new_rules)
-                        .any(|known| alpha_equiv(known, &candidate))
+                        .any(|known| alpha_equiv_universally_closed(known, &candidate))
                     {
                         continue;
                     }
@@ -5684,7 +5687,10 @@ fn verify_horn(
                     new_rules.push(candidate);
                     changed = true;
                 } else {
-                    if derived.iter().any(|known| alpha_equiv(known, &candidate)) {
+                    if derived
+                        .iter()
+                        .any(|known| alpha_equiv_universally_closed(known, &candidate))
+                    {
                         continue;
                     }
                     if derived.len() >= limits.max_equivalence_steps {
@@ -6545,6 +6551,20 @@ fn leading_forall_core(formula: &Formula) -> (Vec<VarId>, &Formula) {
         current = body;
     }
     (variables, current)
+}
+
+fn alpha_equiv_universally_closed(left: &Formula, right: &Formula) -> bool {
+    fn close(formula: &Formula) -> Formula {
+        let mut variables: Vec<_> = formula.free_vars().into_iter().collect();
+        variables.sort_unstable();
+        variables
+            .into_iter()
+            .rev()
+            .fold(formula.clone(), |body, variable| {
+                Formula::forall(variable, body)
+            })
+    }
+    alpha_equiv(&close(left), &close(right))
 }
 
 fn match_universal_instance(
@@ -8740,6 +8760,7 @@ fn verify_consequence(
         return KernelVerdict::Rejected("consequence must have at least one parent".into());
     }
     let mut attempts = 0usize;
+    let mut resolution_inconclusive = false;
     let is_conclusion_false = matches!(conclusion, Formula::False)
         || clause_from_formula(conclusion, limits)
             .map(|c| c.is_empty())
@@ -8767,17 +8788,22 @@ fn verify_consequence(
             }
             attempts += 1;
             let pair = [parents[i].clone(), parents[j].clone()];
-            if matches!(
-                verify_resolution(&pair, conclusion, limits),
-                KernelVerdict::Certified
-            ) {
-                return KernelVerdict::Certified;
+            match verify_resolution(&pair, conclusion, limits) {
+                KernelVerdict::Certified => return KernelVerdict::Certified,
+                KernelVerdict::Inconclusive(_) => resolution_inconclusive = true,
+                KernelVerdict::Rejected(_) => {}
             }
         }
     }
-    let horn_outcome = verify_horn(parents, conclusion, limits);
-    if matches!(horn_outcome, KernelVerdict::Certified) {
-        return KernelVerdict::Certified;
+    match verify_horn(parents, conclusion, limits) {
+        KernelVerdict::Certified => return KernelVerdict::Certified,
+        KernelVerdict::Inconclusive(reason) => return KernelVerdict::Inconclusive(reason),
+        KernelVerdict::Rejected(_) if resolution_inconclusive => {
+            return KernelVerdict::Inconclusive(
+                "consequence resolution attempts exceeded a strict verification limit".into(),
+            );
+        }
+        KernelVerdict::Rejected(_) => {}
     }
     KernelVerdict::Rejected("consequence conclusion is not justified by parents".into())
 }
@@ -18723,6 +18749,21 @@ mod tests {
                      fof(h, plain, r(a), inference(horn, [status(thm)], [r2,fact,r1])).\
                      fof(nr, axiom, ~r(a), file('problem.p', nr)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [h,nr])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_horn_chain_from_universal_cnf_facts_with_renamed_goal() {
+        let problem = "cnf(r1,axiom,~p(X)|q(X)).\n\
+                       cnf(r2,axiom,~q(X)|r(X)).\n\
+                       cnf(fact,axiom,p(Y)).\n\
+                       cnf(nr,axiom,~r(Y)).";
+        let proof = "cnf(r1,axiom,~p(X)|q(X),file('problem.p',r1)).\
+                     cnf(r2,axiom,~q(X)|r(X),file('problem.p',r2)).\
+                     cnf(fact,axiom,p(Y),file('problem.p',fact)).\
+                     cnf(h,plain,r(Y),inference(horn,[status(thm)],[r2,fact,r1])).\
+                     cnf(nr,axiom,~r(Y),file('problem.p',nr)).\
+                     cnf(bot,plain,$false,inference(resolution,[status(thm)],[h,nr])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 

@@ -5,18 +5,22 @@ see `INTERCHANGE.md` for the trusted decoding/normalization boundary. Step suppo
 also includes **first-order binary resolution**: complementary positive-left/negative-right
 occurrences of unified predicate or equality atoms under independent parent
 standardization apart and a common simultaneous one-step unifier, with one pivot
-removed per parent and left-context/right-context concatenation. Its theorem
-`standardized_first_order_resolution_sound` and executable checker
-`check_first_order_resolution_and_replay` prove universal validity preservation.
+removed per parent and left-context/right-context concatenation. Equality pivots
+may be identical or have the opposite argument orientation after substitution.
+Theorems `standardized_first_order_resolution_sound` and
+`standardized_first_order_resolution_symmetric_sound`, together with executable
+checker `check_first_order_resolution_and_replay`, prove universal validity
+preservation.
 DAG support also includes **exact-atom resolution**: complementary positive-left/negative-right
-occurrences of the identical predicate or equality atom, with exactly one pivot
-removed per parent and left-context/right-context concatenation. Its theorem
-`exact_atom_resolution_sound` and checker `check_exact_resolution` prove local
-validity preservation without unification; DAG dispatch binds the actual cited
-clauses. This includes unary/binary predicates and equality, not just nullary
-predicates. DAG lowering also supports multi-parent Horn forward chains and
-multi-parent consequence resolution chains by elaborating intermediate resolution
-steps, as well as contrapositive rule citations.
+occurrences of the identical predicate atom or identical/symmetric equality
+atoms, with exactly one pivot removed per parent and left-context/right-context
+concatenation. Theorems `exact_atom_resolution_sound` and
+`exact_resolution_symmetric_sound`, together with checker `check_exact_resolution`,
+prove local validity preservation without unification; DAG dispatch binds the
+actual cited clauses. This includes unary/binary predicates and equality, not
+just nullary predicates. DAG lowering also supports multi-parent Horn forward
+chains and multi-parent consequence resolution chains by elaborating intermediate
+resolution steps, as well as contrapositive rule citations.
 
 DAG support also includes **equality resolution** (reflexivity resolution):
 from a clause with a negative equality literal `s != t` where `s` and `t` unify
@@ -210,7 +214,8 @@ Whole-DAG IR acceptance is now proved by `certify_dag`: acceptance implies no
 well-formed model of the supplied universally closed input clauses. Exact input
 membership is checked; no runtime semantic-validity test is required.
 The proof DAG also dispatches nullary and exact-atom resolution,
-standardized-apart first-order resolution, equality resolution, clause and
+standardized-apart first-order resolution (including equality pivots modulo
+symmetry), equality resolution, clause and
 equality factoring, subsumption resolution, weakening, demodulation, clause
 instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, and equality congruence. Each rule's replay is bound to cited parents and conclusion and
 has a universal-validity preservation postcondition. The nullary-resolution

@@ -772,6 +772,38 @@ fn bounded_unify_atoms(
     }
 }
 
+fn resolution_atoms_match(a: &Atom, b: &Atom) -> bool {
+    match (a, b) {
+        (Atom::Eq(a1, a2), Atom::Eq(b1, b2)) => (a1 == b1 && a2 == b2) || (a1 == b2 && a2 == b1),
+        _ => a == b,
+    }
+}
+
+fn clauses_alpha_equiv(left: &[Literal], right: &[Literal]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let (mut forward, mut backward) = (HashMap::new(), HashMap::new());
+    left.iter().zip(right).all(|(a, b)| {
+        a.positive == b.positive && atom_alpha_equiv(&a.atom, &b.atom, &mut forward, &mut backward)
+    })
+}
+
+fn bounded_unify_resolution_atoms(
+    a: &Atom,
+    b: &Atom,
+    fuel: &mut usize,
+) -> Result<Option<HashMap<VarId, Term>>, String> {
+    if let Some(subst) = bounded_unify_atoms(a, b, fuel)? {
+        return Ok(Some(subst));
+    }
+    let (Atom::Eq(a1, a2), Atom::Eq(b1, b2)) = (a, b) else {
+        return Ok(None);
+    };
+    let reversed = Atom::Eq(b2.clone(), b1.clone());
+    bounded_unify_atoms(&Atom::Eq(a1.clone(), a2.clone()), &reversed, fuel)
+}
+
 fn bounded_match_atoms_into(
     pattern: &Atom,
     target: &Atom,
@@ -825,6 +857,17 @@ fn resolution_certificate(
     goal: &[Literal],
     limits: VerificationLimits,
 ) -> Result<ResolutionCertificate, String> {
+    let mut fuel = limits.max_comparison_steps.min(200_000);
+    resolution_certificate_with_fuel(left, right, goal, limits, &mut fuel)
+}
+
+fn resolution_certificate_with_fuel(
+    left: &[Literal],
+    right: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+    fuel: &mut usize,
+) -> Result<ResolutionCertificate, String> {
     let mut next = max_var_clause(left)
         .max(max_var_clause(right))
         .checked_add(1)
@@ -832,7 +875,6 @@ fn resolution_certificate(
     let (fresh_left, left_map) = freshen(left, &mut next)?;
     let (fresh_right, right_map) = freshen(right, &mut next)?;
     let mut attempts = 0usize;
-    let mut fuel = limits.max_comparison_steps.min(200_000);
     for (lp, l) in fresh_left.iter().enumerate() {
         if !l.positive {
             continue;
@@ -841,25 +883,26 @@ fn resolution_certificate(
             if r.positive {
                 continue;
             }
+            consume_search_fuel(fuel)?;
             attempts += 1;
             if attempts > limits.max_comparison_steps.min(10_000) {
                 return Err("resolution certificate search budget exhausted".into());
             }
-            let Some(subst) = bounded_unify_atoms(&l.atom, &r.atom, &mut fuel)? else {
+            let Some(subst) = bounded_unify_resolution_atoms(&l.atom, &r.atom, fuel)? else {
                 continue;
             };
             let mut expected: Vec<_> = fresh_left
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| *i != lp)
-                .map(|(_, lit)| instantiate(lit, &subst, &mut fuel))
+                .map(|(_, lit)| instantiate(lit, &subst, fuel))
                 .collect::<Result<_, _>>()?;
             expected.extend(
                 fresh_right
                     .iter()
                     .enumerate()
                     .filter(|(i, _)| *i != rp)
-                    .map(|(_, lit)| instantiate(lit, &subst, &mut fuel))
+                    .map(|(_, lit)| instantiate(lit, &subst, fuel))
                     .collect::<Result<Vec<_>, _>>()?,
             );
             if expected.len() != goal.len() {
@@ -874,7 +917,7 @@ fn resolution_certificate(
             }
             let mut unifier: Vec<_> = subst
                 .iter()
-                .map(|(v, t)| Ok((*v, instance(t, &subst, &mut fuel, 0)?)))
+                .map(|(v, t)| Ok((*v, instance(t, &subst, fuel, 0)?)))
                 .collect::<Result<_, String>>()?;
             unifier.sort_by_key(|(v, _)| *v);
             return Ok(ResolutionCertificate {
@@ -1824,6 +1867,234 @@ mod resolution_chain_tests {
     }
 
     #[test]
+    fn multi_step_resolution_chain_accepts_alpha_renamed_goal_variables() {
+        let mut symbols = SymbolTable::new();
+        let p_sym = symbols.intern("p");
+        let q_sym = symbols.intern("q");
+        let r_sym = symbols.intern("r");
+        let x = Term::Var(1);
+        let y = Term::Var(2);
+        let z = Term::Var(3);
+        let nodes = vec![
+            WireNode {
+                clause: vec![
+                    Literal {
+                        positive: false,
+                        atom: Atom::Pred(p_sym, vec![x.clone()]),
+                    },
+                    Literal {
+                        positive: true,
+                        atom: Atom::Pred(q_sym, vec![x]),
+                    },
+                ],
+                parents: vec![],
+                kind: Kind::Input,
+            },
+            WireNode {
+                clause: vec![
+                    Literal {
+                        positive: false,
+                        atom: Atom::Pred(q_sym, vec![y.clone()]),
+                    },
+                    Literal {
+                        positive: true,
+                        atom: Atom::Pred(r_sym, vec![y]),
+                    },
+                ],
+                parents: vec![],
+                kind: Kind::Input,
+            },
+            WireNode {
+                clause: vec![Literal {
+                    positive: true,
+                    atom: Atom::Pred(p_sym, vec![z.clone()]),
+                }],
+                parents: vec![],
+                kind: Kind::Input,
+            },
+        ];
+        let goal = vec![Literal {
+            positive: true,
+            atom: Atom::Pred(r_sym, vec![Term::Var(4)]),
+        }];
+        let chain = find_resolution_chain(&[0, 1, 2], &nodes, &goal, VerificationLimits::default())
+            .expect("multi-step first-order chain with alpha-renamed goal");
+        assert_eq!(chain.len(), 2);
+        assert!(clauses_alpha_equiv(
+            &chain.last().unwrap().conclusion,
+            &goal
+        ));
+    }
+
+    #[test]
+    fn resolution_accepts_symmetric_equality_pivots() {
+        let mut symbols = SymbolTable::new();
+        let a = Term::App(symbols.intern("a"), vec![]);
+        let b = Term::App(symbols.intern("b"), vec![]);
+        let p = symbols.intern("p");
+        let left = vec![
+            Literal {
+                positive: true,
+                atom: Atom::Eq(a.clone(), b.clone()),
+            },
+            Literal {
+                positive: true,
+                atom: Atom::Pred(p, vec![]),
+            },
+        ];
+        let right = vec![Literal {
+            positive: false,
+            atom: Atom::Eq(b.clone(), a.clone()),
+        }];
+        let goal = vec![Literal {
+            positive: true,
+            atom: Atom::Pred(p, vec![]),
+        }];
+        let nodes = vec![
+            WireNode {
+                clause: left,
+                parents: vec![],
+                kind: Kind::Input,
+            },
+            WireNode {
+                clause: right,
+                parents: vec![],
+                kind: Kind::Input,
+            },
+        ];
+        let chain = find_resolution_chain(&[0, 1], &nodes, &goal, VerificationLimits::default())
+            .expect("symmetric exact equality resolution");
+        assert_eq!(chain.len(), 1);
+        assert!(matches!(chain[0].kind, Kind::Resolution(_, _)));
+        assert_eq!(chain[0].conclusion, goal);
+    }
+
+    #[test]
+    fn first_order_resolution_accepts_symmetric_equality_pivots() {
+        let mut symbols = SymbolTable::new();
+        let a = Term::App(symbols.intern("a"), vec![]);
+        let f = symbols.intern("f");
+        let p = symbols.intern("p");
+        let x = Term::Var(1);
+        let left = vec![
+            Literal {
+                positive: true,
+                atom: Atom::Eq(Term::App(f, vec![x.clone()]), a.clone()),
+            },
+            Literal {
+                positive: true,
+                atom: Atom::Pred(p, vec![x.clone()]),
+            },
+        ];
+        let right = vec![Literal {
+            positive: false,
+            atom: Atom::Eq(a.clone(), Term::App(f, vec![a.clone()])),
+        }];
+        let goal = vec![Literal {
+            positive: true,
+            atom: Atom::Pred(p, vec![a]),
+        }];
+        let nodes = vec![
+            WireNode {
+                clause: left,
+                parents: vec![],
+                kind: Kind::Input,
+            },
+            WireNode {
+                clause: right,
+                parents: vec![],
+                kind: Kind::Input,
+            },
+        ];
+        let chain = find_resolution_chain(&[0, 1], &nodes, &goal, VerificationLimits::default())
+            .expect("symmetric first-order equality resolution");
+        assert_eq!(chain.len(), 1);
+        assert!(matches!(chain[0].kind, Kind::FirstOrderResolution(_)));
+        assert_eq!(chain[0].conclusion, goal);
+    }
+
+    #[test]
+    fn resolvent_enumeration_keeps_first_order_pivots_after_exact_matches() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let a = Term::App(symbols.intern("a"), vec![]);
+        let left = vec![
+            Literal {
+                positive: true,
+                atom: Atom::Pred(p, vec![a.clone()]),
+            },
+            Literal {
+                positive: true,
+                atom: Atom::Pred(q, vec![Term::Var(1)]),
+            },
+        ];
+        let right = vec![
+            Literal {
+                positive: false,
+                atom: Atom::Pred(p, vec![a.clone()]),
+            },
+            Literal {
+                positive: false,
+                atom: Atom::Pred(q, vec![a.clone()]),
+            },
+        ];
+        let goal = vec![
+            Literal {
+                positive: true,
+                atom: Atom::Pred(p, vec![a]),
+            },
+            Literal {
+                positive: false,
+                atom: Atom::Pred(p, vec![Term::App(symbols.intern("a"), vec![])]),
+            },
+        ];
+        let mut fuel = 10_000;
+        let resolvents = find_all_resolvents(
+            &left,
+            &right,
+            ChainParent::Original(0),
+            ChainParent::Original(1),
+            &mut fuel,
+        );
+        assert!(resolvents.iter().any(|step| {
+            matches!(step.kind, Kind::FirstOrderResolution(_)) && step.conclusion == goal
+        }));
+    }
+
+    #[test]
+    fn compact_resolution_chain_drops_unused_steps_and_remaps_parents() {
+        let clause = vec![Literal {
+            positive: true,
+            atom: Atom::Pred(SymbolTable::new().intern("p"), vec![]),
+        }];
+        let steps = vec![
+            ChainStep {
+                kind: Kind::Resolution(0, 0),
+                left: ChainParent::Original(0),
+                right: ChainParent::Original(1),
+                conclusion: clause.clone(),
+            },
+            ChainStep {
+                kind: Kind::Resolution(0, 0),
+                left: ChainParent::Step(0),
+                right: ChainParent::Original(2),
+                conclusion: clause.clone(),
+            },
+            ChainStep {
+                kind: Kind::Resolution(0, 0),
+                left: ChainParent::Step(0),
+                right: ChainParent::Original(3),
+                conclusion: clause,
+            },
+        ];
+        let compacted = compact_resolution_chain(steps).expect("valid resolution chain");
+        assert_eq!(compacted.len(), 2);
+        assert_eq!(compacted[0].left, ChainParent::Original(0));
+        assert_eq!(compacted[1].left, ChainParent::Step(0));
+    }
+
+    #[test]
     fn equality_factoring_with_symmetry_flips_second_equality() {
         let mut symbols = SymbolTable::new();
         let a = Term::App(symbols.intern("a"), vec![]);
@@ -2302,17 +2573,20 @@ struct ChainStep {
     conclusion: Vec<Literal>,
 }
 
-fn try_single_resolution(
+fn find_all_resolvents(
     left: &[Literal],
     right: &[Literal],
     left_parent: ChainParent,
     right_parent: ChainParent,
-    goal: &[Literal],
-    limits: VerificationLimits,
-) -> Option<ChainStep> {
+    fuel: &mut usize,
+) -> Vec<ChainStep> {
+    let mut steps = Vec::new();
     for (lp, l) in left.iter().enumerate() {
         for (rp, r) in right.iter().enumerate() {
-            if l.positive && !r.positive && l.atom == r.atom {
+            if consume_search_fuel(fuel).is_err() {
+                return steps;
+            }
+            if l.positive && !r.positive && resolution_atoms_match(&l.atom, &r.atom) {
                 let expected: Vec<_> = left
                     .iter()
                     .enumerate()
@@ -2320,8 +2594,11 @@ fn try_single_resolution(
                     .chain(right.iter().enumerate().filter(|(idx, _)| *idx != rp))
                     .map(|(_, lit)| lit.clone())
                     .collect();
-                if expected == goal {
-                    return Some(ChainStep {
+                if !steps
+                    .iter()
+                    .any(|step: &ChainStep| step.conclusion == expected)
+                {
+                    steps.push(ChainStep {
                         kind: Kind::Resolution(lp, rp),
                         left: left_parent,
                         right: right_parent,
@@ -2333,7 +2610,10 @@ fn try_single_resolution(
     }
     for (rp, r) in right.iter().enumerate() {
         for (lp, l) in left.iter().enumerate() {
-            if r.positive && !l.positive && r.atom == l.atom {
+            if consume_search_fuel(fuel).is_err() {
+                return steps;
+            }
+            if r.positive && !l.positive && resolution_atoms_match(&r.atom, &l.atom) {
                 let expected: Vec<_> = right
                     .iter()
                     .enumerate()
@@ -2341,82 +2621,17 @@ fn try_single_resolution(
                     .chain(left.iter().enumerate().filter(|(idx, _)| *idx != lp))
                     .map(|(_, lit)| lit.clone())
                     .collect();
-                if expected == goal {
-                    return Some(ChainStep {
+                if !steps
+                    .iter()
+                    .any(|step: &ChainStep| step.conclusion == expected)
+                {
+                    steps.push(ChainStep {
                         kind: Kind::Resolution(rp, lp),
                         left: right_parent,
                         right: left_parent,
                         conclusion: expected,
                     });
                 }
-            }
-        }
-    }
-    if let Ok(c) = resolution_certificate(left, right, goal, limits) {
-        let conclusion = c.conclusion.clone();
-        return Some(ChainStep {
-            kind: Kind::FirstOrderResolution(c),
-            left: left_parent,
-            right: right_parent,
-            conclusion,
-        });
-    }
-    if let Ok(c) = resolution_certificate(right, left, goal, limits) {
-        let conclusion = c.conclusion.clone();
-        return Some(ChainStep {
-            kind: Kind::FirstOrderResolution(c),
-            left: right_parent,
-            right: left_parent,
-            conclusion,
-        });
-    }
-    None
-}
-
-fn find_all_resolvents(
-    left: &[Literal],
-    right: &[Literal],
-    left_parent: ChainParent,
-    right_parent: ChainParent,
-    _limits: VerificationLimits,
-    fuel: &mut usize,
-) -> Vec<ChainStep> {
-    let mut steps = Vec::new();
-    for (lp, l) in left.iter().enumerate() {
-        for (rp, r) in right.iter().enumerate() {
-            if l.positive && !r.positive && l.atom == r.atom {
-                let expected: Vec<_> = left
-                    .iter()
-                    .enumerate()
-                    .filter(|(idx, _)| *idx != lp)
-                    .chain(right.iter().enumerate().filter(|(idx, _)| *idx != rp))
-                    .map(|(_, lit)| lit.clone())
-                    .collect();
-                steps.push(ChainStep {
-                    kind: Kind::Resolution(lp, rp),
-                    left: left_parent,
-                    right: right_parent,
-                    conclusion: expected,
-                });
-            }
-        }
-    }
-    for (rp, r) in right.iter().enumerate() {
-        for (lp, l) in left.iter().enumerate() {
-            if r.positive && !l.positive && r.atom == l.atom {
-                let expected: Vec<_> = right
-                    .iter()
-                    .enumerate()
-                    .filter(|(idx, _)| *idx != rp)
-                    .chain(left.iter().enumerate().filter(|(idx, _)| *idx != lp))
-                    .map(|(_, lit)| lit.clone())
-                    .collect();
-                steps.push(ChainStep {
-                    kind: Kind::Resolution(rp, lp),
-                    left: right_parent,
-                    right: left_parent,
-                    conclusion: expected,
-                });
             }
         }
     }
@@ -2449,7 +2664,10 @@ fn find_all_resolvents(
                 if r.positive {
                     continue;
                 }
-                let subst = match bounded_unify_atoms(&l.atom, &r.atom, f) {
+                if consume_search_fuel(f).is_err() {
+                    return;
+                }
+                let subst = match bounded_unify_resolution_atoms(&l.atom, &r.atom, f) {
                     Ok(Some(s)) => s,
                     _ => continue,
                 };
@@ -2474,6 +2692,9 @@ fn find_all_resolvents(
                     Err(_) => continue,
                 };
                 expected.extend(r_part);
+                if out.iter().any(|step| step.conclusion == expected) {
+                    continue;
+                }
                 let unifier = match subst
                     .iter()
                     .map(|(v, t)| Ok((*v, instance(t, &subst, f, 0)?)))
@@ -2504,11 +2725,53 @@ fn find_all_resolvents(
             }
         }
     };
-    if steps.is_empty() {
-        try_fo(left, right, left_parent, right_parent, &mut steps, fuel);
-        try_fo(right, left, right_parent, left_parent, &mut steps, fuel);
-    }
+    try_fo(left, right, left_parent, right_parent, &mut steps, fuel);
+    try_fo(right, left, right_parent, left_parent, &mut steps, fuel);
     steps
+}
+
+fn compact_resolution_chain(steps: Vec<ChainStep>) -> Option<Vec<ChainStep>> {
+    let last = steps.len().checked_sub(1)?;
+    let mut needed = vec![false; steps.len()];
+    let mut pending = vec![last];
+    while let Some(index) = pending.pop() {
+        if index >= steps.len() {
+            return None;
+        }
+        if needed[index] {
+            continue;
+        }
+        needed[index] = true;
+        for parent in [steps[index].left, steps[index].right] {
+            if let ChainParent::Step(parent_step) = parent {
+                if parent_step >= index {
+                    return None;
+                }
+                pending.push(parent_step);
+            }
+        }
+    }
+
+    let mut remap = vec![usize::MAX; steps.len()];
+    let mut compacted = Vec::new();
+    for (index, step) in steps.into_iter().enumerate() {
+        if needed[index] {
+            remap[index] = compacted.len();
+            compacted.push(step);
+        }
+    }
+    for step in &mut compacted {
+        for parent in [&mut step.left, &mut step.right] {
+            if let ChainParent::Step(index) = parent {
+                let mapped = *remap.get(*index)?;
+                if mapped == usize::MAX {
+                    return None;
+                }
+                *index = mapped;
+            }
+        }
+    }
+    Some(compacted)
 }
 
 fn find_resolution_chain(
@@ -2517,26 +2780,9 @@ fn find_resolution_chain(
     goal: &[Literal],
     limits: VerificationLimits,
 ) -> Option<Vec<ChainStep>> {
-    for i in 0..parents.len() {
-        for j in (i + 1)..parents.len() {
-            let pi = parents[i];
-            let pj = parents[j];
-            if let Some(step) = try_single_resolution(
-                &nodes[pi].clause,
-                &nodes[pj].clause,
-                ChainParent::Original(pi),
-                ChainParent::Original(pj),
-                goal,
-                limits,
-            ) {
-                return Some(vec![step]);
-            }
-        }
-    }
-
+    let mut fuel = limits.max_comparison_steps.min(100_000);
     let max_depth = parents.len().min(6);
     let max_states = 128;
-    let mut fuel = limits.max_comparison_steps.min(100_000);
 
     #[derive(Clone)]
     struct SearchClause {
@@ -2556,7 +2802,7 @@ fn find_resolution_chain(
 
     let mut queue = std::collections::VecDeque::new();
     queue.push_back((initial_clauses, Vec::<ChainStep>::new()));
-    let mut visited: Vec<Vec<Literal>> = Vec::new();
+    let mut visited: Vec<(Vec<Literal>, Vec<usize>)> = Vec::new();
 
     while let Some((clauses, steps)) = queue.pop_front() {
         if steps.len() >= max_depth {
@@ -2564,6 +2810,7 @@ fn find_resolution_chain(
         }
         for i in 0..clauses.len() {
             for j in (i + 1)..clauses.len() {
+                consume_search_fuel(&mut fuel).ok()?;
                 let c1 = &clauses[i];
                 let c2 = &clauses[j];
                 if !steps.is_empty()
@@ -2575,33 +2822,32 @@ fn find_resolution_chain(
                 if c1.used.iter().any(|u| c2.used.contains(u)) {
                     continue;
                 }
-                if let Some(step) = try_single_resolution(
-                    &c1.clause, &c2.clause, c1.source, c2.source, goal, limits,
-                ) {
-                    let mut final_steps = steps.clone();
-                    final_steps.push(step);
-                    return Some(final_steps);
-                }
-                for step in find_all_resolvents(
-                    &c1.clause, &c2.clause, c1.source, c2.source, limits, &mut fuel,
-                ) {
-                    if step.conclusion == goal {
+                for step in
+                    find_all_resolvents(&c1.clause, &c2.clause, c1.source, c2.source, &mut fuel)
+                {
+                    consume_search_fuel(&mut fuel).ok()?;
+                    if clauses_alpha_equiv(&step.conclusion, goal) {
                         let mut final_steps = steps.clone();
                         final_steps.push(step);
-                        return Some(final_steps);
+                        return compact_resolution_chain(final_steps);
                     }
-                    if visited.len() < max_states && !visited.contains(&step.conclusion) {
-                        visited.push(step.conclusion.clone());
+                    let mut combined_used = c1.used.clone();
+                    for &u in &c2.used {
+                        if !combined_used.contains(&u) {
+                            combined_used.push(u);
+                        }
+                    }
+                    combined_used.sort_unstable();
+                    if visited.len() < max_states
+                        && !visited.iter().any(|(clause, used)| {
+                            clause == &step.conclusion && used == &combined_used
+                        })
+                    {
+                        visited.push((step.conclusion.clone(), combined_used.clone()));
                         let mut next_steps = steps.clone();
                         let next_step_idx = next_steps.len();
                         next_steps.push(step.clone());
                         let mut next_clauses = clauses.clone();
-                        let mut combined_used = c1.used.clone();
-                        for &u in &c2.used {
-                            if !combined_used.contains(&u) {
-                                combined_used.push(u);
-                            }
-                        }
                         next_clauses.push(SearchClause {
                             clause: step.conclusion,
                             source: ChainParent::Step(next_step_idx),
@@ -2890,7 +3136,8 @@ fn dag_request(
                     let mut exact_pivot = None;
                     for (lp, l) in left.iter().enumerate() {
                         for (rp, r) in right.iter().enumerate() {
-                            if l.positive && !r.positive && l.atom == r.atom {
+                            if l.positive && !r.positive && resolution_atoms_match(&l.atom, &r.atom)
+                            {
                                 let expected: Vec<_> = left
                                     .iter()
                                     .enumerate()
@@ -2907,7 +3154,10 @@ fn dag_request(
                     if exact_pivot.is_none() {
                         for (rp, r) in right.iter().enumerate() {
                             for (lp, l) in left.iter().enumerate() {
-                                if r.positive && !l.positive && r.atom == l.atom {
+                                if r.positive
+                                    && !l.positive
+                                    && resolution_atoms_match(&r.atom, &l.atom)
+                                {
                                     let expected: Vec<_> = right
                                         .iter()
                                         .enumerate()
@@ -3262,9 +3512,7 @@ fn dag_request(
         ) && parents.len() > 2)
         {
             let Some(steps) = find_resolution_chain(&parents, &nodes, &raw, limits) else {
-                return Err(
-                    "no supported resolution chain in multi-parent consequence/horn".into(),
-                );
+                return Err("no supported multi-parent resolution chain".into());
             };
             if steps.len() == 1 {
                 let step = &steps[0];
@@ -3276,7 +3524,11 @@ fn dag_request(
                     ChainParent::Original(idx) => idx,
                     ChainParent::Step(_) => return Err("invalid 1-step chain parent".into()),
                 };
-                (step.kind.clone(), raw, vec![left, right])
+                (
+                    step.kind.clone(),
+                    step.conclusion.clone(),
+                    vec![left, right],
+                )
             } else {
                 let mut intermediate_indices = Vec::new();
                 for step in &steps[..(steps.len() - 1)] {
@@ -3308,7 +3560,11 @@ fn dag_request(
                     ChainParent::Original(idx) => idx,
                     ChainParent::Step(s) => intermediate_indices[s],
                 };
-                (last.kind.clone(), raw, vec![left, right])
+                (
+                    last.kind.clone(),
+                    last.conclusion.clone(),
+                    vec![left, right],
+                )
             }
         } else if node.rule == Some("transitivity") && parents.len() > 2 {
             if raw.len() != 1 || !raw[0].positive {

@@ -35,14 +35,14 @@
       "id": "exact-atom-resolution",
       "module": "first_order_core.rs",
       "status": "verified_executable_step_and_dag_dispatch",
-      "description": "Positive-left/negative-right identical predicate or equality atoms, exact ordered contexts, no pivot unification. Enables complete superposition plus exact-resolution refutation DAGs through wire v1.",
+      "description": "Positive-left/negative-right identical predicate atoms or equality atoms identical up to argument symmetry, exact ordered contexts, no pivot unification. Enables complete superposition plus exact-resolution refutation DAGs through wire v1.",
       "production_certification": false
     },
     {
       "id": "first-order-resolution",
       "module": "first_order_core.rs",
       "status": "verified_executable_step_and_dag_dispatch",
-      "description": "Standardized-apart first-order binary resolution with independent parent freshening, common simultaneous one-step unifier, positive-left/negative-right unified atom pivot equation, and exact concatenated resolvent construction. Dispatched in proof DAGs via ProofNodeKind::FirstOrderResolution; proven by standardized_first_order_resolution_sound to preserve universal validity.",
+      "description": "Standardized-apart first-order binary resolution with independent parent freshening, common simultaneous one-step unifier, positive-left/negative-right unified predicate pivots or equality pivots identical up to symmetry, and exact concatenated resolvent construction. Dispatched in proof DAGs via ProofNodeKind::FirstOrderResolution; proven by standardized_first_order_resolution_sound and standardized_first_order_resolution_symmetric_sound to preserve universal validity.",
       "production_certification": false
     },
     {
