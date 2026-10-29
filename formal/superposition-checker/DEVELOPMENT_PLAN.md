@@ -24,6 +24,16 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** enabled `executable_unifier_certificate_examples` in `run_examples()`
   so the adversarial suite is verified at proof time and executed in runtime regressions.
 
+### 2026-10-29 multi-parent Horn forward chain resolution and equality factoring symmetry checkpoint
+
+- **DONE:** implemented `find_resolution_chain` in `mrs-proof-kernel::verus`: bounded forward chain discovery that searches across multiple parents to find multi-step resolution derivations (via exact pivot resolution or first-order binary resolution with unifier) reaching the goal clause, elaborating them into topologically ordered intermediate `Kind::Resolution` and `Kind::FirstOrderResolution` DAG nodes.
+- **DONE:** expanded proof DAG inference routing in `mrs-proof-kernel::verus` to recognize `horn`, `consequence`, and `contrapositive` rule annotations for both binary (2-parent direct resolution) and multi-parent (>2-parent resolution chains) inferences, with graceful handling of redundant parents.
+- **DONE:** implemented `equality_factoring_with_symmetry` in `mrs-proof-kernel::verus`: discovers symmetric orientations in equality factoring by commuting the second, first, or both equality literals via verified intermediate `Kind::Symmetry` steps when direct left-left unification does not immediately match.
+- **DONE:** expanded 1-parent formula equivalence and simplification aliases in `mrs-proof-kernel::verus` to recognize `double_negation`, `remove_double_negation`, `simplification`, `fof_simplification`, and `flattening`.
+- **DONE:** generalized `verify_horn` in `mrs-proof-kernel::lib` to support clausal implications and intermediate derived implication rules during forward chaining.
+- **DONE:** unit tests in `resolution_chain_tests` and integration tests in `verus_bridge.rs` certify refutations with multi-parent Horn forward chains (3 parents), multi-parent consequence resolution chains, contrapositive inferences, and commuted equality factoring through the formal dual-check gate.
+- **Scope:** expands multi-parent resolution forward chaining, Horn clause inference, contrapositive deduction, and symmetric equality factoring under M6.
+
 ### 2026-10-27 multi-literal clause equality transitivity and zero-parent inference checkpoint
 
 - **DONE:** proved `clause_transitivity_sound` in `first_order_core.rs`: from any universally valid parent

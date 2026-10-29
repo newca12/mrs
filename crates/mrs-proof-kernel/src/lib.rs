@@ -5502,6 +5502,10 @@ fn verify_contrapositive(
             return KernelVerdict::Certified;
         }
     }
+    let res_outcome = verify_resolution(parents, conclusion, limits);
+    if matches!(res_outcome, KernelVerdict::Certified) {
+        return KernelVerdict::Certified;
+    }
     if exhausted {
         KernelVerdict::Inconclusive("contrapositive exceeded strict matching-step limit".into())
     } else {
@@ -5610,7 +5614,26 @@ fn verify_horn(
     for parent in parents {
         let (_, body) = leading_forall_core(parent);
         if matches!(body, Formula::Implies(_, _)) {
-            rules.push(body);
+            rules.push(body.clone());
+        } else if let Some(clause) = clause_from_formula(body, limits) {
+            let mut neg_atoms = Vec::new();
+            let mut pos_atoms = Vec::new();
+            for lit in clause {
+                if lit.positive {
+                    pos_atoms.push(Formula::Atom(lit.atom));
+                } else {
+                    neg_atoms.push(Formula::Atom(lit.atom));
+                }
+            }
+            if !neg_atoms.is_empty() && pos_atoms.len() <= 1 {
+                let mut rule_formula = pos_atoms.pop().unwrap_or(Formula::False);
+                for neg in neg_atoms {
+                    rule_formula = Formula::implies(neg, rule_formula);
+                }
+                rules.push(rule_formula);
+            } else {
+                derived.push(parent.clone());
+            }
         } else {
             derived.push(parent.clone());
         }
@@ -5626,6 +5649,7 @@ fn verify_horn(
     while changed {
         changed = false;
         let snapshot = derived.clone();
+        let mut new_rules = Vec::new();
         for rule in &rules {
             for fact in &snapshot {
                 let Some(candidate) = instantiate_horn_rule(rule, fact, &mut steps, limits) else {
@@ -5644,18 +5668,36 @@ fn verify_horn(
                 if alpha_equiv(&candidate, conclusion) {
                     return KernelVerdict::Certified;
                 }
-                if derived.iter().any(|known| alpha_equiv(known, &candidate)) {
-                    continue;
+                if matches!(candidate, Formula::Implies(_, _)) {
+                    if rules
+                        .iter()
+                        .chain(&new_rules)
+                        .any(|known| alpha_equiv(known, &candidate))
+                    {
+                        continue;
+                    }
+                    if rules.len() + new_rules.len() >= limits.max_equivalence_steps {
+                        return KernelVerdict::Inconclusive(
+                            "horn exceeded strict derived-formula limit".into(),
+                        );
+                    }
+                    new_rules.push(candidate);
+                    changed = true;
+                } else {
+                    if derived.iter().any(|known| alpha_equiv(known, &candidate)) {
+                        continue;
+                    }
+                    if derived.len() >= limits.max_equivalence_steps {
+                        return KernelVerdict::Inconclusive(
+                            "horn exceeded strict derived-formula limit".into(),
+                        );
+                    }
+                    derived.push(candidate);
+                    changed = true;
                 }
-                if derived.len() >= limits.max_equivalence_steps {
-                    return KernelVerdict::Inconclusive(
-                        "horn exceeded strict derived-formula limit".into(),
-                    );
-                }
-                derived.push(candidate);
-                changed = true;
             }
         }
+        rules.extend(new_rules);
     }
     KernelVerdict::Rejected("horn conclusion is not reachable from its parents".into())
 }
@@ -8732,6 +8774,10 @@ fn verify_consequence(
                 return KernelVerdict::Certified;
             }
         }
+    }
+    let horn_outcome = verify_horn(parents, conclusion, limits);
+    if matches!(horn_outcome, KernelVerdict::Certified) {
+        return KernelVerdict::Certified;
     }
     KernelVerdict::Rejected("consequence conclusion is not justified by parents".into())
 }

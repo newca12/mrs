@@ -1212,4 +1212,108 @@ fn multi_step_and_multi_parent_demodulation_refutations() {
     );
     assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
     assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 13. Multi-parent Horn forward chain (3 parents: r2, fact, r1 -> r(a)):
+    let horn_problem = mrs_tptp::parse_tptp(
+        "cnf(r1,axiom,~p(X)|q(X)). cnf(r2,axiom,~q(X)|r(X)). cnf(fact,axiom,p(a)). cnf(nr,axiom,~r(a)).",
+    )
+    .unwrap();
+    let horn_text = "cnf(r1,axiom,~p(X)|q(X),file('input',r1)).
+        cnf(r2,axiom,~q(X)|r(X),file('input',r2)).
+        cnf(fact,axiom,p(a),file('input',fact)).
+        cnf(h,plain,r(a),inference(horn,[status(thm)],[r2,fact,r1])).
+        cnf(nr,axiom,~r(a),file('input',nr)).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[h,nr])).";
+    let horn_proof = mrs_tptp::parse_tptp(horn_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &horn_problem,
+        &horn_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 14. Multi-parent consequence resolution chain (3 parents: a, b, c -> r):
+    let conseq_chain_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,~p|~q|r). cnf(b,axiom,p). cnf(c,axiom,q). cnf(d,axiom,~r).",
+    )
+    .unwrap();
+    let conseq_chain_text = "cnf(a,axiom,~p|~q|r,file('input',a)).
+        cnf(b,axiom,p,file('input',b)).
+        cnf(c,axiom,q,file('input',c)).
+        cnf(d,axiom,~r,file('input',d)).
+        cnf(res,plain,r,inference(consequence,[status(thm)],[a,b,c])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[res,d])).";
+    let conseq_chain_proof = mrs_tptp::parse_tptp(conseq_chain_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &conseq_chain_problem,
+        &conseq_chain_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 15. Contrapositive rule alias:
+    let contra_problem =
+        mrs_tptp::parse_tptp("cnf(rule,axiom,~p(X)|q(X)). cnf(nq,axiom,~q(a)). cnf(p,axiom,p(a)).")
+            .unwrap();
+    let contra_text = "cnf(rule,axiom,~p(X)|q(X),file('input',rule)).
+        cnf(nq,axiom,~q(a),file('input',nq)).
+        cnf(p,axiom,p(a),file('input',p)).
+        cnf(np,plain,~p(a),inference(contrapositive,[status(thm)],[rule,nq])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[np,p])).";
+    let contra_proof = mrs_tptp::parse_tptp(contra_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &contra_problem,
+        &contra_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 16. Equality factoring with commuted literal:
+    let eq_fact_commuted_problem = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,p(a)=p(b)|q(c)=p(a)). cnf(b,axiom,p(a)!=p(b)). cnf(c,axiom,p(b)=q(c)).",
+    )
+    .unwrap();
+    let eq_fact_commuted_text = "cnf(a,axiom,p(a)=p(b)|q(c)=p(a),file('input',a)).
+        cnf(b,axiom,p(a)!=p(b),file('input',b)).
+        cnf(c,axiom,p(b)=q(c),file('input',c)).
+        cnf(ef,plain,p(a)=p(b)|p(b)!=q(c),inference(equality_factoring,[status(thm)],[a])).
+        cnf(r1,plain,p(b)!=q(c),inference(resolution,[status(thm)],[ef,b])).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[c,r1])).";
+    let eq_fact_commuted_proof = mrs_tptp::parse_tptp(eq_fact_commuted_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &eq_fact_commuted_problem,
+        &eq_fact_commuted_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_eq!(kernel, KernelVerdict::Certified, "{report:?}");
+    assert_eq!(report.verdict, ShadowVerdict::CertifiedDagIr, "{report:?}");
+
+    // 17. Forged Horn conclusion fail-closed regression:
+    let forged_horn_text = "cnf(r1,axiom,~p(X)|q(X),file('input',r1)).
+        cnf(r2,axiom,~q(X)|r(X),file('input',r2)).
+        cnf(fact,axiom,p(a),file('input',fact)).
+        cnf(h,plain,s(a),inference(horn,[status(thm)],[r2,fact,r1])).
+        cnf(nr,axiom,~r(a),file('input',nr)).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[h,nr])).";
+    let forged_horn_proof = mrs_tptp::parse_tptp(forged_horn_text).unwrap();
+    let (kernel, report) = verify_with_verus_gate(
+        &horn_problem,
+        &forged_horn_proof,
+        Some("input"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert_ne!(kernel, KernelVerdict::Certified);
+    assert_ne!(report.verdict, ShadowVerdict::CertifiedDagIr);
 }

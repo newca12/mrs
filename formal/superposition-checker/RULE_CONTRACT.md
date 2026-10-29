@@ -14,7 +14,9 @@ removed per parent and left-context/right-context concatenation. Its theorem
 `exact_atom_resolution_sound` and checker `check_exact_resolution` prove local
 validity preservation without unification; DAG dispatch binds the actual cited
 clauses. This includes unary/binary predicates and equality, not just nullary
-predicates.
+predicates. DAG lowering also supports multi-parent Horn forward chains and
+multi-parent consequence resolution chains by elaborating intermediate resolution
+steps, as well as contrapositive rule citations.
 
 DAG support also includes **equality resolution** (reflexivity resolution):
 from a clause with a negative equality literal `s != t` where `s` and `t` unify
@@ -34,7 +36,9 @@ DAG support also includes **equality factoring**:
 from a clause `C | s = t | u = v` where `s` and `u` unify under simultaneous unifier
 `sigma`, the conclusion derives `(C | t != v | s = t) sigma`. Its theorem
 `equality_factoring_sound` and checker `check_equality_factoring_and_replay`
-prove universal validity preservation.
+prove universal validity preservation. DAG lowering also supports all symmetric
+equality orientations (unifying `s` with `v`, `t` with `u`, or `t` with `v`)
+by elaborating intermediate `Kind::Symmetry` steps.
 
 DAG support also includes **subsumption resolution** (contextual literal elimination):
 from target clause `C | L` and active clause `A | ~L'` where `L'` unifies with `L`

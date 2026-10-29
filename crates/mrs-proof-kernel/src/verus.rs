@@ -254,6 +254,7 @@ impl Wire {
 
 type Bindings = Vec<(VarId, Term)>;
 
+#[derive(Clone, Debug)]
 struct Certificate {
     source: Vec<Literal>,
     target: Vec<Literal>,
@@ -267,6 +268,7 @@ struct Certificate {
     path: Vec<usize>,
 }
 
+#[derive(Clone, Debug)]
 struct ResolutionCertificate {
     left: Vec<Literal>,
     right: Vec<Literal>,
@@ -278,7 +280,7 @@ struct ResolutionCertificate {
     rp: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct EqualityResolutionCertificate {
     clause: Vec<Literal>,
     pivot: usize,
@@ -286,6 +288,7 @@ struct EqualityResolutionCertificate {
     conclusion: Vec<Literal>,
 }
 
+#[derive(Clone, Debug)]
 struct FactoringCertificate {
     clause: Vec<Literal>,
     first: usize,
@@ -294,6 +297,7 @@ struct FactoringCertificate {
     conclusion: Vec<Literal>,
 }
 
+#[derive(Clone, Debug)]
 struct EqualityFactoringCertificate {
     clause: Vec<Literal>,
     first: usize,
@@ -302,6 +306,7 @@ struct EqualityFactoringCertificate {
     conclusion: Vec<Literal>,
 }
 
+#[derive(Clone, Debug)]
 struct SubsumptionResolutionCertificate {
     target: Vec<Literal>,
     active: Vec<Literal>,
@@ -313,12 +318,14 @@ struct SubsumptionResolutionCertificate {
     matches: Vec<usize>,
 }
 
+#[derive(Clone, Debug)]
 struct WeakeningCertificate {
     parent: Vec<Literal>,
     inclusions: Vec<usize>,
     conclusion: Vec<Literal>,
 }
 
+#[derive(Clone, Debug)]
 struct DemodulationCertificate {
     target: Vec<Literal>,
     equality: Vec<Literal>,
@@ -332,12 +339,14 @@ struct DemodulationCertificate {
     reversed: bool,
 }
 
+#[derive(Clone, Debug)]
 struct InstantiationCertificate {
     parent: Vec<Literal>,
     substitution: Vec<(VarId, Term)>,
     conclusion: Vec<Literal>,
 }
 
+#[derive(Clone, Debug)]
 struct CondensationCertificate {
     parent: Vec<Literal>,
     substitution: Vec<(VarId, Term)>,
@@ -1041,6 +1050,52 @@ fn equality_factoring_certificate(
     Err("no supported equality factoring certificate".into())
 }
 
+fn equality_factoring_with_symmetry(
+    parent: &[Literal],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Option<(Vec<Vec<Literal>>, EqualityFactoringCertificate)> {
+    for first in 0..parent.len() {
+        for second in (first + 1)..parent.len() {
+            let (l1, l2) = (&parent[first], &parent[second]);
+            if !l1.positive || !l2.positive {
+                continue;
+            }
+            let (Atom::Eq(s, t), Atom::Eq(u, v)) = (&l1.atom, &l2.atom) else {
+                continue;
+            };
+            // 1. Try commute second: u=v -> v=u
+            let mut clause2 = parent.to_vec();
+            clause2[second] = Literal {
+                positive: true,
+                atom: Atom::Eq(v.clone(), u.clone()),
+            };
+            if let Ok(c) = equality_factoring_certificate(&clause2, goal, limits) {
+                return Some((vec![clause2], c));
+            }
+            // 2. Try commute first: s=t -> t=s
+            let mut clause1 = parent.to_vec();
+            clause1[first] = Literal {
+                positive: true,
+                atom: Atom::Eq(t.clone(), s.clone()),
+            };
+            if let Ok(c) = equality_factoring_certificate(&clause1, goal, limits) {
+                return Some((vec![clause1], c));
+            }
+            // 3. Try commute both: s=t -> t=s and u=v -> v=u
+            let mut clause12 = clause1.clone();
+            clause12[second] = Literal {
+                positive: true,
+                atom: Atom::Eq(v.clone(), u.clone()),
+            };
+            if let Ok(c) = equality_factoring_certificate(&clause12, goal, limits) {
+                return Some((vec![clause1, clause12], c));
+            }
+        }
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 fn match_active_literals(
     active: &[Literal],
@@ -1635,6 +1690,180 @@ mod demod_chain_tests {
     }
 }
 
+#[cfg(test)]
+mod resolution_chain_tests {
+    use super::*;
+
+    #[test]
+    fn exact_resolution_chain_derives_goal_in_steps() {
+        let mut symbols = SymbolTable::new();
+        let p = Atom::Pred(symbols.intern("p"), vec![]);
+        let q = Atom::Pred(symbols.intern("q"), vec![]);
+        let r = Atom::Pred(symbols.intern("r"), vec![]);
+
+        // Node 0: ~p | ~q | r
+        let n0 = WireNode {
+            clause: vec![
+                Literal {
+                    positive: false,
+                    atom: p.clone(),
+                },
+                Literal {
+                    positive: false,
+                    atom: q.clone(),
+                },
+                Literal {
+                    positive: true,
+                    atom: r.clone(),
+                },
+            ],
+            parents: vec![],
+            kind: Kind::Input,
+        };
+        // Node 1: p
+        let n1 = WireNode {
+            clause: vec![Literal {
+                positive: true,
+                atom: p.clone(),
+            }],
+            parents: vec![],
+            kind: Kind::Input,
+        };
+        // Node 2: q
+        let n2 = WireNode {
+            clause: vec![Literal {
+                positive: true,
+                atom: q.clone(),
+            }],
+            parents: vec![],
+            kind: Kind::Input,
+        };
+        let nodes = vec![n0, n1, n2];
+        let parents = vec![0, 1, 2];
+        let goal = vec![Literal {
+            positive: true,
+            atom: r.clone(),
+        }];
+        let limits = VerificationLimits::default();
+
+        let chain = find_resolution_chain(&parents, &nodes, &goal, limits);
+        assert!(chain.is_some());
+        let steps = chain.unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps.last().unwrap().conclusion, goal);
+
+        // Forged goal is rejected
+        let forged = vec![Literal {
+            positive: true,
+            atom: p,
+        }];
+        assert!(find_resolution_chain(&parents, &nodes, &forged, limits).is_none());
+    }
+
+    #[test]
+    fn first_order_resolution_chain_derives_horn_conclusion() {
+        let mut symbols = SymbolTable::new();
+        let p_sym = symbols.intern("p");
+        let q_sym = symbols.intern("q");
+        let r_sym = symbols.intern("r");
+        let a = Term::App(symbols.intern("a"), vec![]);
+        let x = Term::Var(1);
+
+        // Node 0: ~p(X) | q(X)
+        let n0 = WireNode {
+            clause: vec![
+                Literal {
+                    positive: false,
+                    atom: Atom::Pred(p_sym, vec![x.clone()]),
+                },
+                Literal {
+                    positive: true,
+                    atom: Atom::Pred(q_sym, vec![x.clone()]),
+                },
+            ],
+            parents: vec![],
+            kind: Kind::Input,
+        };
+        // Node 1: ~q(X) | r(X)
+        let n1 = WireNode {
+            clause: vec![
+                Literal {
+                    positive: false,
+                    atom: Atom::Pred(q_sym, vec![x.clone()]),
+                },
+                Literal {
+                    positive: true,
+                    atom: Atom::Pred(r_sym, vec![x.clone()]),
+                },
+            ],
+            parents: vec![],
+            kind: Kind::Input,
+        };
+        // Node 2: p(a)
+        let n2 = WireNode {
+            clause: vec![Literal {
+                positive: true,
+                atom: Atom::Pred(p_sym, vec![a.clone()]),
+            }],
+            parents: vec![],
+            kind: Kind::Input,
+        };
+        let nodes = vec![n0, n1, n2];
+        let parents = vec![0, 1, 2];
+        let goal = vec![Literal {
+            positive: true,
+            atom: Atom::Pred(r_sym, vec![a]),
+        }];
+        let limits = VerificationLimits::default();
+
+        let chain = find_resolution_chain(&parents, &nodes, &goal, limits);
+        assert!(chain.is_some());
+        let steps = chain.unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps.last().unwrap().conclusion, goal);
+    }
+
+    #[test]
+    fn equality_factoring_with_symmetry_flips_second_equality() {
+        let mut symbols = SymbolTable::new();
+        let a = Term::App(symbols.intern("a"), vec![]);
+        let b = Term::App(symbols.intern("b"), vec![]);
+        let c = Term::App(symbols.intern("c"), vec![]);
+        // Parent: a = b | c = a  (note: c = a has 'a' on the right, so direct equality factoring fails)
+        let parent = vec![
+            Literal {
+                positive: true,
+                atom: Atom::Eq(a.clone(), b.clone()),
+            },
+            Literal {
+                positive: true,
+                atom: Atom::Eq(c.clone(), a.clone()),
+            },
+        ];
+        // After symmetry on 2nd literal: a = b | a = c
+        // Equality factoring gives: a = b | b != c
+        let goal = vec![
+            Literal {
+                positive: true,
+                atom: Atom::Eq(a, b.clone()),
+            },
+            Literal {
+                positive: false,
+                atom: Atom::Eq(b, c),
+            },
+        ];
+        let limits = VerificationLimits::default();
+        // Direct fails:
+        assert!(equality_factoring_certificate(&parent, &goal, limits).is_err());
+        // With symmetry succeeds:
+        let res = equality_factoring_with_symmetry(&parent, &goal, limits);
+        assert!(res.is_some());
+        let (symm_steps, cert) = res.unwrap();
+        assert_eq!(symm_steps.len(), 1);
+        assert_eq!(cert.conclusion, goal);
+    }
+}
+
 fn instantiation_certificate(
     parent: &[Literal],
     goal: &[Literal],
@@ -1937,6 +2166,7 @@ pub fn check_tptp_step(
     }
 }
 
+#[derive(Clone, Debug)]
 enum Kind {
     Input,
     Superposition(Certificate),
@@ -2056,6 +2286,334 @@ fn find_transitivity_chain(
     }
     path.reverse();
     Some(path)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ChainParent {
+    Original(usize),
+    Step(usize),
+}
+
+#[derive(Clone, Debug)]
+struct ChainStep {
+    kind: Kind,
+    left: ChainParent,
+    right: ChainParent,
+    conclusion: Vec<Literal>,
+}
+
+fn try_single_resolution(
+    left: &[Literal],
+    right: &[Literal],
+    left_parent: ChainParent,
+    right_parent: ChainParent,
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Option<ChainStep> {
+    for (lp, l) in left.iter().enumerate() {
+        for (rp, r) in right.iter().enumerate() {
+            if l.positive && !r.positive && l.atom == r.atom {
+                let expected: Vec<_> = left
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| *idx != lp)
+                    .chain(right.iter().enumerate().filter(|(idx, _)| *idx != rp))
+                    .map(|(_, lit)| lit.clone())
+                    .collect();
+                if expected == goal {
+                    return Some(ChainStep {
+                        kind: Kind::Resolution(lp, rp),
+                        left: left_parent,
+                        right: right_parent,
+                        conclusion: expected,
+                    });
+                }
+            }
+        }
+    }
+    for (rp, r) in right.iter().enumerate() {
+        for (lp, l) in left.iter().enumerate() {
+            if r.positive && !l.positive && r.atom == l.atom {
+                let expected: Vec<_> = right
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| *idx != rp)
+                    .chain(left.iter().enumerate().filter(|(idx, _)| *idx != lp))
+                    .map(|(_, lit)| lit.clone())
+                    .collect();
+                if expected == goal {
+                    return Some(ChainStep {
+                        kind: Kind::Resolution(rp, lp),
+                        left: right_parent,
+                        right: left_parent,
+                        conclusion: expected,
+                    });
+                }
+            }
+        }
+    }
+    if let Ok(c) = resolution_certificate(left, right, goal, limits) {
+        let conclusion = c.conclusion.clone();
+        return Some(ChainStep {
+            kind: Kind::FirstOrderResolution(c),
+            left: left_parent,
+            right: right_parent,
+            conclusion,
+        });
+    }
+    if let Ok(c) = resolution_certificate(right, left, goal, limits) {
+        let conclusion = c.conclusion.clone();
+        return Some(ChainStep {
+            kind: Kind::FirstOrderResolution(c),
+            left: right_parent,
+            right: left_parent,
+            conclusion,
+        });
+    }
+    None
+}
+
+fn find_all_resolvents(
+    left: &[Literal],
+    right: &[Literal],
+    left_parent: ChainParent,
+    right_parent: ChainParent,
+    _limits: VerificationLimits,
+    fuel: &mut usize,
+) -> Vec<ChainStep> {
+    let mut steps = Vec::new();
+    for (lp, l) in left.iter().enumerate() {
+        for (rp, r) in right.iter().enumerate() {
+            if l.positive && !r.positive && l.atom == r.atom {
+                let expected: Vec<_> = left
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| *idx != lp)
+                    .chain(right.iter().enumerate().filter(|(idx, _)| *idx != rp))
+                    .map(|(_, lit)| lit.clone())
+                    .collect();
+                steps.push(ChainStep {
+                    kind: Kind::Resolution(lp, rp),
+                    left: left_parent,
+                    right: right_parent,
+                    conclusion: expected,
+                });
+            }
+        }
+    }
+    for (rp, r) in right.iter().enumerate() {
+        for (lp, l) in left.iter().enumerate() {
+            if r.positive && !l.positive && r.atom == l.atom {
+                let expected: Vec<_> = right
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| *idx != rp)
+                    .chain(left.iter().enumerate().filter(|(idx, _)| *idx != lp))
+                    .map(|(_, lit)| lit.clone())
+                    .collect();
+                steps.push(ChainStep {
+                    kind: Kind::Resolution(rp, lp),
+                    left: right_parent,
+                    right: left_parent,
+                    conclusion: expected,
+                });
+            }
+        }
+    }
+    let try_fo = |l_clause: &[Literal],
+                  r_clause: &[Literal],
+                  l_p: ChainParent,
+                  r_p: ChainParent,
+                  out: &mut Vec<ChainStep>,
+                  f: &mut usize| {
+        let mut next = match max_var_clause(l_clause)
+            .max(max_var_clause(r_clause))
+            .checked_add(1)
+        {
+            Some(n) => n,
+            None => return,
+        };
+        let (fresh_l, l_map) = match freshen(l_clause, &mut next) {
+            Ok(res) => res,
+            Err(_) => return,
+        };
+        let (fresh_r, r_map) = match freshen(r_clause, &mut next) {
+            Ok(res) => res,
+            Err(_) => return,
+        };
+        for (lp, l) in fresh_l.iter().enumerate() {
+            if !l.positive {
+                continue;
+            }
+            for (rp, r) in fresh_r.iter().enumerate() {
+                if r.positive {
+                    continue;
+                }
+                let subst = match bounded_unify_atoms(&l.atom, &r.atom, f) {
+                    Ok(Some(s)) => s,
+                    _ => continue,
+                };
+                let mut expected = match fresh_l
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != lp)
+                    .map(|(_, lit)| instantiate(lit, &subst, f))
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                let r_part = match fresh_r
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != rp)
+                    .map(|(_, lit)| instantiate(lit, &subst, f))
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                expected.extend(r_part);
+                let unifier = match subst
+                    .iter()
+                    .map(|(v, t)| Ok((*v, instance(t, &subst, f, 0)?)))
+                    .collect::<Result<Vec<_>, String>>()
+                {
+                    Ok(mut u) => {
+                        u.sort_by_key(|(v, _)| *v);
+                        u
+                    }
+                    Err(_) => continue,
+                };
+                let cert = ResolutionCertificate {
+                    left: l_clause.to_vec(),
+                    right: r_clause.to_vec(),
+                    conclusion: expected.clone(),
+                    left_map: l_map.clone(),
+                    right_map: r_map.clone(),
+                    unifier,
+                    lp,
+                    rp,
+                };
+                out.push(ChainStep {
+                    kind: Kind::FirstOrderResolution(cert),
+                    left: l_p,
+                    right: r_p,
+                    conclusion: expected,
+                });
+            }
+        }
+    };
+    if steps.is_empty() {
+        try_fo(left, right, left_parent, right_parent, &mut steps, fuel);
+        try_fo(right, left, right_parent, left_parent, &mut steps, fuel);
+    }
+    steps
+}
+
+fn find_resolution_chain(
+    parents: &[usize],
+    nodes: &[WireNode],
+    goal: &[Literal],
+    limits: VerificationLimits,
+) -> Option<Vec<ChainStep>> {
+    for i in 0..parents.len() {
+        for j in (i + 1)..parents.len() {
+            let pi = parents[i];
+            let pj = parents[j];
+            if let Some(step) = try_single_resolution(
+                &nodes[pi].clause,
+                &nodes[pj].clause,
+                ChainParent::Original(pi),
+                ChainParent::Original(pj),
+                goal,
+                limits,
+            ) {
+                return Some(vec![step]);
+            }
+        }
+    }
+
+    let max_depth = parents.len().min(6);
+    let max_states = 128;
+    let mut fuel = limits.max_comparison_steps.min(100_000);
+
+    #[derive(Clone)]
+    struct SearchClause {
+        clause: Vec<Literal>,
+        source: ChainParent,
+        used: Vec<usize>,
+    }
+
+    let initial_clauses: Vec<_> = parents
+        .iter()
+        .map(|&p| SearchClause {
+            clause: nodes[p].clause.clone(),
+            source: ChainParent::Original(p),
+            used: vec![p],
+        })
+        .collect();
+
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back((initial_clauses, Vec::<ChainStep>::new()));
+    let mut visited: Vec<Vec<Literal>> = Vec::new();
+
+    while let Some((clauses, steps)) = queue.pop_front() {
+        if steps.len() >= max_depth {
+            continue;
+        }
+        for i in 0..clauses.len() {
+            for j in (i + 1)..clauses.len() {
+                let c1 = &clauses[i];
+                let c2 = &clauses[j];
+                if !steps.is_empty()
+                    && matches!(c1.source, ChainParent::Original(_))
+                    && matches!(c2.source, ChainParent::Original(_))
+                {
+                    continue;
+                }
+                if c1.used.iter().any(|u| c2.used.contains(u)) {
+                    continue;
+                }
+                if let Some(step) = try_single_resolution(
+                    &c1.clause, &c2.clause, c1.source, c2.source, goal, limits,
+                ) {
+                    let mut final_steps = steps.clone();
+                    final_steps.push(step);
+                    return Some(final_steps);
+                }
+                for step in find_all_resolvents(
+                    &c1.clause, &c2.clause, c1.source, c2.source, limits, &mut fuel,
+                ) {
+                    if step.conclusion == goal {
+                        let mut final_steps = steps.clone();
+                        final_steps.push(step);
+                        return Some(final_steps);
+                    }
+                    if visited.len() < max_states && !visited.contains(&step.conclusion) {
+                        visited.push(step.conclusion.clone());
+                        let mut next_steps = steps.clone();
+                        let next_step_idx = next_steps.len();
+                        next_steps.push(step.clone());
+                        let mut next_clauses = clauses.clone();
+                        let mut combined_used = c1.used.clone();
+                        for &u in &c2.used {
+                            if !combined_used.contains(&u) {
+                                combined_used.push(u);
+                            }
+                        }
+                        next_clauses.push(SearchClause {
+                            clause: step.conclusion,
+                            source: ChainParent::Step(next_step_idx),
+                            used: combined_used,
+                        });
+                        queue.push_back((next_clauses, next_steps));
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn dag_request(
@@ -2326,7 +2884,9 @@ fn dag_request(
                 | Some("consequence")
                 | Some("ex_falso")
                 | Some("modus_ponens")
-                | Some("instantiate_mp") => {
+                | Some("instantiate_mp")
+                | Some("contrapositive")
+                | Some("horn") => {
                     let mut exact_pivot = None;
                     for (lp, l) in left.iter().enumerate() {
                         for (rp, r) in right.iter().enumerate() {
@@ -2522,9 +3082,30 @@ fn dag_request(
                     (Kind::Condensation(c), conclusion, parents)
                 }
                 Some("equality_factoring") => {
-                    let c = equality_factoring_certificate(parent, &raw, limits)?;
-                    let conclusion = c.conclusion.clone();
-                    (Kind::EqualityFactoring(c), conclusion, parents)
+                    if let Ok(c) = equality_factoring_certificate(parent, &raw, limits) {
+                        let conclusion = c.conclusion.clone();
+                        (Kind::EqualityFactoring(c), conclusion, parents)
+                    } else if let Some((symm_steps, c)) =
+                        equality_factoring_with_symmetry(parent, &raw, limits)
+                    {
+                        let mut prev_idx = parents[0];
+                        for symm_clause in &symm_steps {
+                            let intermediate_idx = nodes.len();
+                            if intermediate_idx >= MAX_NODES {
+                                return Err("expanded DAG node ceiling".into());
+                            }
+                            nodes.push(WireNode {
+                                clause: symm_clause.clone(),
+                                parents: vec![prev_idx],
+                                kind: Kind::Symmetry,
+                            });
+                            prev_idx = intermediate_idx;
+                        }
+                        let conclusion = c.conclusion.clone();
+                        (Kind::EqualityFactoring(c), conclusion, vec![prev_idx])
+                    } else {
+                        return Err("no supported equality factoring certificate".into());
+                    }
                 }
                 Some("weaken") => {
                     let c = weakening_certificate(parent, &raw)?;
@@ -2542,7 +3123,12 @@ fn dag_request(
                 | Some("duplicate")
                 | Some("alpha")
                 | Some("rewrite")
-                | Some("cnf_transformation") => {
+                | Some("cnf_transformation")
+                | Some("double_negation")
+                | Some("remove_double_negation")
+                | Some("simplification")
+                | Some("fof_simplification")
+                | Some("flattening") => {
                     let c = instantiation_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::Instantiation(c), conclusion, parents)
@@ -2670,83 +3256,59 @@ fn dag_request(
                 }
                 _ => return Err("unsupported inference rule".into()),
             }
-        } else if node.rule == Some("consequence") && parents.len() > 2 {
-            let mut resolved = None;
-            for i in 0..parents.len() {
-                for j in (i + 1)..parents.len() {
-                    let left = &nodes[parents[i]].clause;
-                    let right = &nodes[parents[j]].clause;
-                    let mut exact_pivot = None;
-                    for (lp, l) in left.iter().enumerate() {
-                        for (rp, r) in right.iter().enumerate() {
-                            if l.positive && !r.positive && l.atom == r.atom {
-                                let expected: Vec<_> = left
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(idx, _)| *idx != lp)
-                                    .chain(right.iter().enumerate().filter(|(idx, _)| *idx != rp))
-                                    .map(|(_, l)| l.clone())
-                                    .collect();
-                                if expected == raw {
-                                    exact_pivot = Some(((lp, rp), false));
-                                }
-                            }
-                        }
-                    }
-                    if exact_pivot.is_none() {
-                        for (rp, r) in right.iter().enumerate() {
-                            for (lp, l) in left.iter().enumerate() {
-                                if r.positive && !l.positive && r.atom == l.atom {
-                                    let expected: Vec<_> = right
-                                        .iter()
-                                        .enumerate()
-                                        .filter(|(idx, _)| *idx != rp)
-                                        .chain(
-                                            left.iter().enumerate().filter(|(idx, _)| *idx != lp),
-                                        )
-                                        .map(|(_, l)| l.clone())
-                                        .collect();
-                                    if expected == raw {
-                                        exact_pivot = Some(((rp, lp), true));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if let Some(((lp, rp), flipped)) = exact_pivot {
-                        let step_parents = if flipped {
-                            vec![parents[j], parents[i]]
-                        } else {
-                            vec![parents[i], parents[j]]
-                        };
-                        resolved = Some((Kind::Resolution(lp, rp), raw.clone(), step_parents));
-                        break;
-                    } else if let Ok(c) = resolution_certificate(left, right, &raw, limits) {
-                        let conclusion = c.conclusion.clone();
-                        resolved = Some((
-                            Kind::FirstOrderResolution(c),
-                            conclusion,
-                            vec![parents[i], parents[j]],
-                        ));
-                        break;
-                    } else if let Ok(c) = resolution_certificate(right, left, &raw, limits) {
-                        let conclusion = c.conclusion.clone();
-                        resolved = Some((
-                            Kind::FirstOrderResolution(c),
-                            conclusion,
-                            vec![parents[j], parents[i]],
-                        ));
-                        break;
-                    }
-                }
-                if resolved.is_some() {
-                    break;
-                }
-            }
-            if let Some(res) = resolved {
-                res
+        } else if (matches!(
+            node.rule,
+            Some("consequence") | Some("horn") | Some("contrapositive")
+        ) && parents.len() > 2)
+        {
+            let Some(steps) = find_resolution_chain(&parents, &nodes, &raw, limits) else {
+                return Err(
+                    "no supported resolution chain in multi-parent consequence/horn".into(),
+                );
+            };
+            if steps.len() == 1 {
+                let step = &steps[0];
+                let left = match step.left {
+                    ChainParent::Original(idx) => idx,
+                    ChainParent::Step(_) => return Err("invalid 1-step chain parent".into()),
+                };
+                let right = match step.right {
+                    ChainParent::Original(idx) => idx,
+                    ChainParent::Step(_) => return Err("invalid 1-step chain parent".into()),
+                };
+                (step.kind.clone(), raw, vec![left, right])
             } else {
-                return Err("no supported pairwise resolution in multi-parent consequence".into());
+                let mut intermediate_indices = Vec::new();
+                for step in &steps[..(steps.len() - 1)] {
+                    let left = match step.left {
+                        ChainParent::Original(idx) => idx,
+                        ChainParent::Step(s) => intermediate_indices[s],
+                    };
+                    let right = match step.right {
+                        ChainParent::Original(idx) => idx,
+                        ChainParent::Step(s) => intermediate_indices[s],
+                    };
+                    let intermediate_idx = nodes.len();
+                    if intermediate_idx >= MAX_NODES {
+                        return Err("expanded DAG node ceiling".into());
+                    }
+                    nodes.push(WireNode {
+                        clause: step.conclusion.clone(),
+                        parents: vec![left, right],
+                        kind: step.kind.clone(),
+                    });
+                    intermediate_indices.push(intermediate_idx);
+                }
+                let last = &steps[steps.len() - 1];
+                let left = match last.left {
+                    ChainParent::Original(idx) => idx,
+                    ChainParent::Step(s) => intermediate_indices[s],
+                };
+                let right = match last.right {
+                    ChainParent::Original(idx) => idx,
+                    ChainParent::Step(s) => intermediate_indices[s],
+                };
+                (last.kind.clone(), raw, vec![left, right])
             }
         } else if node.rule == Some("transitivity") && parents.len() > 2 {
             if raw.len() != 1 || !raw[0].positive {
