@@ -61,8 +61,9 @@ hardware mode, available memory, and run-to-run portfolio scheduling differ.
 
 ## Proof-output follow-up
 
-The 2026-10-28 artifacts show that the widespread empty proof output seen in the
-October 26 cooperative candidate campaigns did not recur at the same scale:
+The later 2026-10-28 shipped-schedule artifacts show that the widespread empty
+proof output seen in the October 26 cooperative candidate campaigns did not
+recur at the same scale:
 all 124 CASC-30 refutations passed the strict audit, and 120 of 121 J13
 refutations did. The J13 exception is `REL045-2`:
 
@@ -83,12 +84,21 @@ refutations did. The J13 exception is `REL045-2`:
   prior to backward subsumption resolution deriving `$false`, causing proof
   extraction to fail closed on a missing dependency. Registering simplified
   clauses immediately and updating `given_fv` resolves the issue, allowing
-  Strategy 15 to emit a 126-node proof that certifies strictly as `VerifiedGood`.
-  See [UI-12 in the unresolved issues list](../../policies/unresolved-issues.md).
+Strategy 15 to emit a 126-node proof that certifies strictly as `VerifiedGood`.
 
-Do not count the archived J13 campaign row for `REL045-2` as certified; the
-subsequent local, strictly verified proof does not retroactively certify that
-run. The separate October 26 empty-block artifacts remain unaudited as well.
+This observation is specific to the two shipped-schedule runs above. A separate
+earlier all-division campaign,
+`~/crates/mrs-bench/results/cert-j13-20261028-093240`, used a stale producer
+binary and had 40 empty proof envelopes plus the separate header-only
+`REL045-2` result. Its current strict re-audit certifies 190 of 232 raw
+refutations; it is not part of the table above. See the [combined CASC-J13
+certification report](cert-j13-2026-10-28.md) for provenance and the archived
+proof-output observations.
+
+Do not count the `REL045-2` row in the shipped-schedule J13 artifact above as
+certified; the subsequent local, strictly verified proof does not retroactively
+certify that run. The separate October 26 empty-block artifacts remain
+unaudited as well.
 
 ## Memory observations
 

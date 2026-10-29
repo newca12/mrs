@@ -336,6 +336,30 @@ and [UI-12](../policies/unresolved-issues.md).
 
 ---
 
+## Supplemental combined CASC-J13 certification campaign (2026-10-28)
+
+`~/crates/mrs-bench/results/cert-j13-20261028-093240` covered all 800 FEQ,
+FNE, and UEQ problems with eight workers and `jobs=1`. It generated 232 raw
+refutations: FEQ 74/300, FNE 39/100, and UEQ 119/400. The archived audit had
+189 `VerifiedGood`, 1 `VerifiedBad` (`GEO526+1`), 41 `no_proof`, and 1
+`proof_omitted`. A strict re-audit at HEAD `31b81f3` certifies **190/232**:
+`GEO526+1` now passes following the strict condensation fix, for 190
+`VerifiedGood`, 0 `VerifiedBad`, 41 `no_proof`, and 1 `proof_omitted` overall.
+
+This does not replace a baseline. The producer binary (SHA-256
+`222464664d2bad81393aafa09f5514ac824a8ce86434c1bfe6762532a35bbc76`) was
+stale relative to its dirty `df40f564` source tree, as the run log warns. Forty
+refutations had empty proof envelopes (5 FEQ, 35 UEQ); the 41st `no_proof` row,
+`REL045-2`, had a header-only proof and is tracked separately in UI-12. Current
+source spot checks generate strictly verified proofs for `NUM853+2` and
+`REL024-1`, but do not certify the old archive or establish a full-division
+re-run. The host had 16 physical cores, so `MRS_HARDWARE=casc`'s eight workers
+were not CPU-pinned to an eight-core simulation. See the [full report](../reports/benchmarks/cert-j13-2026-10-28.md),
+[certification status](../CERTIFICATION_STATUS.md), and
+[UI-11](../policies/unresolved-issues.md#ui-11--ueq-candidate-refutations-have-empty-tstp-proof-blocks).
+
+---
+
 ## Cooperative FNE candidate portfolio campaigns (2026-10-21 and 2026-10-22)
 
 Following solo strategy sweeps and greedy set-cover analysis, the candidate 8-strategy

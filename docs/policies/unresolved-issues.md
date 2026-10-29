@@ -2324,7 +2324,7 @@ Full write-up: `docs/reports/benchmarks/feq-silent-kills-investigation.md`.
 
 | | |
 |---|---|
-| Status | **AC-citation serialization regression fixed; October 26 soundness remains unverified. A separate October 28 J13 no-proof case is open in UI-12.** |
+| Status | **AC-citation serialization regression fixed; October 26 and stale-producer October 28 artifacts remain uncertified where no derivation was emitted. A separate `REL045-2` extraction case is resolved in UI-12.** |
 | Severity | 85 refutation-status rows across two October 26 UEQ candidate campaigns |
 | Soundness | **Unverified.** The serialization failure explains missing proof text, but does not certify the archived refutations. The nonempty candidate proofs still lack strict audit results, and the empty blocks contain no derivation to audit. |
 
@@ -2392,9 +2392,10 @@ them as certified UEQ coverage or infer that the old empty blocks were valid
 proofs. The October 28 follow-up is recorded below; it does not retroactively
 certify the archived candidate runs.
 
-### October 28 follow-up evidence
+### October 28 shipped-schedule UEQ follow-up evidence
 
-The post-fix full-division artifacts show no recurrence at the same scale:
+The later shipped-schedule full-division artifacts show no recurrence at the
+same scale:
 
 | Campaign | Raw refutations | Strict `VerifiedGood` | Other |
 |---|---:|---:|---|
@@ -2409,6 +2410,30 @@ is not established by the archived output; see UI-12 below.
 
 Full campaign provenance and the virtual-memory/RSS distinction are in the
 [October 28 UEQ follow-up report](../reports/benchmarks/ueq-follow-up-2026-10-28.md).
+
+### October 28 combined certification campaign: stale producer binary
+
+The separate full CASC-J13 campaign
+`~/crates/mrs-bench/results/cert-j13-20261028-093240` generated 232 raw
+refutations over FEQ, FNE, and UEQ. Its 41 `no_proof` outcomes comprise **40
+empty SZS proof envelopes** (five FEQ and 35 UEQ) and the separate header-only
+`REL045-2` case in UI-12. The archived campaign's `run.log` warns that the
+producer executable was older than the sources; metadata records dirty commit
+`df40f564` and binary SHA-256
+`222464664d2bad81393aafa09f5514ac824a8ce86434c1bfe6762532a35bbc76`. That
+producer predates `c619394`, the AC-citation serialization fix.
+
+The 40 empty envelopes are consistent with the old `topological_sort` check
+rejecting AC superposition nodes that cite their two inference parents plus AC
+axioms. The archived artifact does not retain the in-memory proof DAG, so this
+is not proven as the individual root cause for every row. The archived SZS
+statuses therefore remain **uncertified**. A current-HEAD re-audit certified
+190 of the 232 raw refutations, found zero `VerifiedBad`, and still classified
+the 40 empty envelopes plus `REL045-2` as `no_proof`; it also recorded one
+separate `proof_omitted` (`SWV406+1`). Targeted current-source replays of
+`NUM853+2` and `REL024-1` emitted proofs that passed strict replay, but this
+does not certify their old campaign rows or establish a full rerun. See the
+[combined campaign report](../reports/benchmarks/cert-j13-2026-10-28.md).
 
 ---
 
@@ -2433,6 +2458,13 @@ stdout contains no TSTP derivation block. Stderr contains:
 
 The strict audit row was `generation_status=Unsatisfiable`,
 `strict_status=no_proof`, with no archived proof path.
+
+The separate combined campaign
+`~/crates/mrs-bench/results/cert-j13-20261028-093240` also reports
+`REL045-2` as `no_proof`. Its SZS block contains only a `% Proof :` header
+(72 bytes, zero proof nodes; telemetry still says `proof_emitted=true`). The
+same missing derivation was reproduced and fixed as described below, but that
+later proof does not retroactively certify either archived run.
 
 ### Root cause and reproduction
 

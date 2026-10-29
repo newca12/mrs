@@ -814,6 +814,29 @@ single run, and records a dirty build; it does not change the baseline. Its
 See the [October 28 UEQ follow-up report](reports/benchmarks/ueq-follow-up-2026-10-28.md)
 and [UI-12](policies/unresolved-issues.md).
 
+### Supplemental combined CASC-J13 certification campaign (2026-10-28)
+
+The separate 800-problem campaign
+`~/crates/mrs-bench/results/cert-j13-20261028-093240` generated 232 raw
+refutations: 74 FEQ, 39 FNE, and 119 UEQ. Its original strict audit recorded
+189 `VerifiedGood`, 1 `VerifiedBad` (`GEO526+1`), 41 `no_proof`, and 1
+`proof_omitted`. A strict re-audit at `31b81f3` moved `GEO526+1` to
+`VerifiedGood` after the condensation-kernel correction, yielding **190
+`VerifiedGood`, 0 `VerifiedBad`, 41 `no_proof`, and 1 `proof_omitted`**.
+The 41 missing derivations are not certified; the large `SWV406+1` proof also
+remains omitted. Do not treat the 232 raw SZS refutations as verified coverage.
+
+This is not a replacement baseline. The producer metadata records a dirty
+`df40f564` tree, and `run.log` explicitly warns that its binary was older than
+the sources. It ran with eight requested workers on a 16-physical-core host;
+`casc` did not pin the process to eight cores. Forty refutations had empty SZS
+proof envelopes, consistent with the pre-`c619394` AC-citation serialization
+failure, but the archived DAGs are unavailable and the individual causes are
+not proven. `REL045-2` had a separate header-only proof-output failure tracked
+in UI-12. Full provenance, the current re-audit, and targeted replay limits are
+in the [campaign report](reports/benchmarks/cert-j13-2026-10-28.md); the
+serialization evidence is tracked in [UI-11](policies/unresolved-issues.md).
+
 ### Cooperative FNE candidate portfolio campaigns (2026-10-21 and 2026-10-22)
 
 The candidate 8-strategy FNE portfolio `MRS_PORTFOLIO=11,13,4,8,15,7,3,1` (derived
