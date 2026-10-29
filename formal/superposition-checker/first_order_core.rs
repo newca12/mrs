@@ -1748,6 +1748,51 @@ proof fn exact_atom_resolution_sound(
         interp, valuation);
 }
 
+/// Soundness theorem for exact resolution with symmetric equality pivots:
+/// if positive left pivot has equality s = t and negative right pivot has
+/// equality u != v where s == v and t == u, the concatenated resolvent is sound.
+proof fn exact_resolution_symmetric_sound(
+    left: Clause, right: Clause, left_pivot: int, right_pivot: int,
+    interp: Interpretation, valuation: Valuation,
+)
+    requires
+        clause_holds(left, interp, valuation), clause_holds(right, interp, valuation),
+        0 <= left_pivot < left.literals.len(), 0 <= right_pivot < right.literals.len(),
+        left.literals[left_pivot].positive, !right.literals[right_pivot].positive,
+        match (left.literals[left_pivot].atom, right.literals[right_pivot].atom) {
+            (Atom::Eq(s, t), Atom::Eq(u, v)) => (s == v && t == u),
+            _ => false,
+        },
+    ensures clause_holds(resolution_conclusion(left, right, left_pivot, right_pivot),
+        interp, valuation),
+{
+    let li = choose|i: int| 0 <= i < left.literals.len()
+        && literal_holds(left.literals[i], interp, valuation);
+    let ri = choose|i: int| 0 <= i < right.literals.len()
+        && literal_holds(right.literals[i], interp, valuation);
+    if li != left_pivot {
+        let j = if li < left_pivot { li } else { li - 1 };
+        assert(delete_literal(left, left_pivot).literals[j] == left.literals[li]);
+        assert(clause_holds(delete_literal(left, left_pivot), interp, valuation));
+    } else {
+        match (left.literals[left_pivot].atom, right.literals[right_pivot].atom) {
+            (Atom::Eq(s, t), Atom::Eq(u, v)) => {
+                assert(eval(s, interp, valuation) == eval(t, interp, valuation));
+                assert(eval(u, interp, valuation) == eval(v, interp, valuation));
+                assert(atom_holds(right.literals[right_pivot].atom, interp, valuation));
+                assert(!literal_holds(right.literals[right_pivot], interp, valuation));
+            },
+            _ => {},
+        }
+        assert(ri != right_pivot);
+        let j = if ri < right_pivot { ri } else { ri - 1 };
+        assert(delete_literal(right, right_pivot).literals[j] == right.literals[ri]);
+        assert(clause_holds(delete_literal(right, right_pivot), interp, valuation));
+    }
+    clause_holds_concat(delete_literal(left, left_pivot), delete_literal(right, right_pivot),
+        interp, valuation);
+}
+
 proof fn clause_holds_concat(left: Clause, right: Clause, interp: Interpretation,
     valuation: Valuation)
     ensures clause_holds(clause_concat(left, right), interp, valuation)
@@ -2497,6 +2542,62 @@ proof fn standardized_first_order_resolution_sound(
         assert(!right_inst.literals[right_pivot].positive);
         assert(left_inst.literals[left_pivot].atom == right_inst.literals[right_pivot].atom);
         exact_atom_resolution_sound(left_inst, right_inst, left_pivot, right_pivot, interp, valuation);
+    }
+}
+
+/// Soundness theorem for first-order binary resolution with symmetric equality pivots:
+/// if positive left pivot has equality s = t and negative right pivot has
+/// equality u != v where (s\sigma == v\sigma and t\sigma == u\sigma), the resolvent is sound.
+proof fn standardized_first_order_resolution_symmetric_sound(
+    left: Clause,
+    right: Clause,
+    left_pivot: int,
+    right_pivot: int,
+    left_freshening: Substitution,
+    right_freshening: Substitution,
+    unifier: Substitution,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        clause_valid(left, interp),
+        clause_valid(right, interp),
+        0 <= left_pivot < left.literals.len(),
+        0 <= right_pivot < right.literals.len(),
+        left.literals[left_pivot].positive,
+        !right.literals[right_pivot].positive,
+        match (
+            substitute_atom(substitute_atom(left.literals[left_pivot].atom, left_freshening), unifier),
+            substitute_atom(substitute_atom(right.literals[right_pivot].atom, right_freshening), unifier),
+        ) {
+            (Atom::Eq(s, t), Atom::Eq(u, v)) => (s == v && t == u),
+            _ => false,
+        },
+    ensures
+        clause_valid(
+            resolution_conclusion(
+                substitute_clause(substitute_clause(left, left_freshening), unifier),
+                substitute_clause(substitute_clause(right, right_freshening), unifier),
+                left_pivot,
+                right_pivot,
+            ),
+            interp,
+        ),
+{
+    let left_inst = substitute_clause(substitute_clause(left, left_freshening), unifier);
+    let right_inst = substitute_clause(substitute_clause(right, right_freshening), unifier);
+    standardized_parent_valid(left, left_freshening, interp);
+    clause_valid_after_substitution(substitute_clause(left, left_freshening), unifier, interp);
+    standardized_parent_valid(right, right_freshening, interp);
+    clause_valid_after_substitution(substitute_clause(right, right_freshening), unifier, interp);
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(resolution_conclusion(left_inst, right_inst, left_pivot, right_pivot),
+            interp, valuation) by {
+        assert(clause_holds(left_inst, interp, valuation));
+        assert(clause_holds(right_inst, interp, valuation));
+        assert(left_inst.literals[left_pivot].positive);
+        assert(!right_inst.literals[right_pivot].positive);
+        exact_resolution_symmetric_sound(left_inst, right_inst, left_pivot, right_pivot, interp, valuation);
     }
 }
 

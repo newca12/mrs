@@ -26,6 +26,7 @@ that no interchange or caller exists are superseded by this update.
 
 ### 2026-10-29 multi-parent Horn forward chain resolution and equality factoring symmetry checkpoint
 
+- **DONE:** proved `exact_resolution_symmetric_sound` and `standardized_first_order_resolution_symmetric_sound` in `first_order_core.rs`: binary resolution with symmetric equality pivots ($s = t$ resolving with $t \neq s$) preserves universal clause validity without requiring explicit antecedent symmetry conversions.
 - **DONE:** implemented `find_resolution_chain` in `mrs-proof-kernel::verus`: bounded forward chain discovery that searches across multiple parents to find multi-step resolution derivations (via exact pivot resolution or first-order binary resolution with unifier) reaching the goal clause, elaborating them into topologically ordered intermediate `Kind::Resolution` and `Kind::FirstOrderResolution` DAG nodes.
 - **DONE:** expanded proof DAG inference routing in `mrs-proof-kernel::verus` to recognize `horn`, `consequence`, and `contrapositive` rule annotations for both binary (2-parent direct resolution) and multi-parent (>2-parent resolution chains) inferences, with graceful handling of redundant parents.
 - **DONE:** implemented `equality_factoring_with_symmetry` in `mrs-proof-kernel::verus`: discovers symmetric orientations in equality factoring by commuting the second, first, or both equality literals via verified intermediate `Kind::Symmetry` steps when direct left-left unification does not immediately match.
@@ -568,7 +569,7 @@ invalidate the original code. The gate now removes the actual forbidden-image
 check and requires Verus to reject that mutation. The no-cheating self-test first
 accepts a valid assumption probe without the flag, then requires rejection with
 the flag; the earlier malformed `assume_specification` probe was not evidence.
-Current module counts: **5 / 428 / 5 / 5**, with **58 verifier-negative mutations,
+Current module counts: **5 / 430 / 5 / 5**, with **58 verifier-negative mutations,
 four compiled-runtime mutations, and one no-cheating probe**. The tokenizer
 mutation is rejected at compile time because the weakened source no longer proves
 the tokenizer invariant. The four compiled-runtime mutations cover root closure,
@@ -597,7 +598,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `428`, `5`, and `5` verified functions
+passes all four Verus files (currently `5`, `430`, `5`, and `5` verified functions
 respectively), the compiled runtime fixtures pass, and all mutation gates pass.
 The general replay accepts the manually encoded local c502 step with its semantic
 validity-preservation theorem. These results establish the implemented bounded
