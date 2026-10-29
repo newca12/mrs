@@ -2416,9 +2416,9 @@ Full campaign provenance and the virtual-memory/RSS distinction are in the
 
 | | |
 |---|---|
-| Status | **Observed once; the missing derivation's cause is unknown. The telemetry mismatch is confirmed in source.** |
+| Status | **Resolved.** Root cause identified, reproduced locally, regression test added, and full 126-node proof verified strictly as `VerifiedGood`. |
 | Severity | One `no_proof` among 121 raw refutations in the October 28 CASC-J13 UEQ run |
-| Soundness | `REL045-2` is **not strictly certified**. There is no evidence from this artifact that it is `VerifiedBad`; no proof was available to replay. |
+| Soundness | **Resolved and verified.** With the fix, `REL045-2` emits a 126-node proof (21,101 bytes) that certifies strictly as `VerifiedGood` under `mrs-proover --strict`. |
 
 ### Observation
 
@@ -2431,45 +2431,60 @@ stdout contains no TSTP derivation block. Stderr contains:
 % SZS detail ... result=Refutation ... proof_nodes=0 proof_bytes=80 proof_emitted=true
 ```
 
-The strict audit row is `generation_status=Unsatisfiable`,
-`strict_status=no_proof`, with no archived proof path. The 80-byte proof text is
-header-only; it is not a derivation. The same problem in the October 28 CASC-30
-artifact emitted a 170-node proof and passed strict verification. That result
-shows that a proof can be found for the problem, but does not determine why the
-J13 run had none.
+The strict audit row was `generation_status=Unsatisfiable`,
+`strict_status=no_proof`, with no archived proof path.
 
-### What is established, and what is not
+### Root cause and reproduction
 
-- **Not a proof-size-limit omission:** the recorded text was only 80 bytes and
-  far below the configured proof-size limit.
-- **Confirmed telemetry mismatch:** in `src/main.rs`, `proof_emitted` is
-  currently derived from `proof_bytes <= proof_bytes_limit`. The output path
-  separately requires at least one TSTP derivation step (`proof_nodes > 0`).
-  Therefore this run can truthfully trigger the no-steps diagnostic while the
-  detail line still says `proof_emitted=true`.
-- **Audit classification follows the available evidence:**
-  `crates/mrs-bench/src/bin/audit_casc_proofs.rs::proof_omission` recognizes
-  `proof_emitted=false` or a known stdout omission marker. It does not treat the
-  stderr no-steps diagnostic paired with `proof_emitted=true` as a confirmed
-  size omission, so the row becomes `no_proof`.
-- **Missing-proof root cause is unknown:** the archived campaign does not retain
-  the in-memory proof DAG or an extraction/serialization error that would show
-  whether the search result referenced a missing dependency, a cyclic graph, or
-  another condition. Do not attribute this case to the October 26 AC-citation
-  defect without further evidence.
+Deterministic local reproduction of Strategy 15 on `REL045-2.p` isolated the
+complete failure chain:
 
-### Evidence and next steps
+1. **Unregistered forward-demodulated given clause**:
+   In `crates/mrs-search/src/given_clause.rs`, clause `c106040` was selected as
+   `given`. Forward demodulation (`demodulate_id_until`) simplified it into a
+   fresh clause `c138057` with a new ID. The search registered the pre-simplification
+   clause `c106040`, but did not register the newly produced `c138057` before
+   entering backward simplification.
+2. **Early exit from backward subsumption resolution**:
+   During backward subsumption resolution, `given` (`c138057`) simplified active
+   clause `c6016` into the empty clause (`$false`, `c138657`), citing parents
+   `[c6016, c138057]`. Because the empty clause was derived, the loop immediately
+   returned `SearchResult::Refutation(simplified.id, String::new())` (return site 4b).
+   The search loop never reached line 2714 (`state.register_clause(&given)`), so
+   `c138057` was never inserted into `clause_store`.
+3. **Fail-closed proof extraction**:
+   When `mrs_proof::extract::extract_interned_proof` walked backwards from
+   `c138657`, looking up parent `c138057` in `clause_store` returned `None`.
+   Because a cited dependency was missing, `ancestor_order` returned an empty list.
+   Formatting an empty proof list produced only the standard 80-byte header
+   (`% Proof : ...\n\n`) with zero derivation nodes.
+4. **Stale feature vector**:
+   `given_fv` was computed before forward demodulation/DER/condensation and never
+   refreshed when `given` was rewritten, causing stale symbol sets to be used in
+   subsequent subsumption-resolution indexing.
+5. **Misleading telemetry**:
+   In `src/main.rs`, `proof_omitted` only checked `proof_bytes > proof_bytes_limit`.
+   When `proof_nodes == 0`, the CLI withheld the proof with `% Proof omitted: no TSTP derivation steps`,
+   but `proof_omitted` remained `false`, setting `proof_emitted=true` in `% SZS detail`.
+   The audit tool expected a derivation on stdout, found none, and marked it `no_proof`.
 
-Inspect the archived outputs and audit row with:
+### Resolution
 
-```bash
-grep -nE 'SZS status|Proof|proof_nodes|proof_bytes|proof_emitted|no TSTP' \
-  ~/crates/mrs-bench/results/campaign-cascj13-ueq-W8C8J1-97-20261028/raw/mrs/ueq/REL045-2.{stdout,stderr}
-grep '^casc-j13,ueq,REL045-2,' \
-  ~/crates/mrs-bench/results/campaign-cascj13-ueq-W8C8J1-97-20261028/certification/audit.csv
-```
-
-When revisiting this issue, preserve the proof-extraction failure reason or DAG
-for a reproduction, and make the detail field describe actual proof emission
-(or split it into separate emission and size-limit fields). Until a proof is
-available and passes strict replay, count this row as a raw refutation only.
+1. In `crates/mrs-search/src/given_clause.rs`:
+   - Register the simplified clause in `state.clause_store` immediately upon
+     creation in forward demodulation, destructive equality resolution (DER), and
+     condensation.
+   - Register `given` in its fully simplified form at line 2113 before inference
+     generation and backward simplification, and explicitly register `given` in
+     backward subsumption resolution.
+   - Recompute `given_fv = FeatureVector::from_id_clause(&given, &state.term_bank)`
+     whenever `given` is simplified.
+2. In `src/main.rs`:
+   - Define `proof_omitted = proof_bytes > proof_bytes_limit || proof_nodes == 0`
+     for refutations, ensuring `proof_emitted=false` in telemetry when derivation
+     steps are absent.
+3. Added a regression test `demodulated_given_clause_backward_sr_empty_extracts_complete_proof`
+   in `crates/mrs-search/src/given_clause.rs`.
+4. Verified that `REL045-2.p` under Strategy 15 and the full `casc_ueq` portfolio
+   now generates a 126-node, 21,101-byte proof that strictly certifies as
+   `VerifiedGood` under `mrs-proover --strict`.

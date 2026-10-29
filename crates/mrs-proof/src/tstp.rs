@@ -100,7 +100,15 @@ pub fn write_tstp(
     // Validate original witness/source closure before elaboration can replace
     // compound nodes with fresh witnesses. Invalid metadata must not disappear
     // merely because a reconstruction fallback found a valid derivation.
-    let validated = crate::elaborate::topological_sort(proof).map_err(|_| std::fmt::Error)?;
+    let validated = match crate::elaborate::topological_sort(proof) {
+        Ok(v) => v,
+        Err(e) => {
+            if std::env::var("TRACE_SEARCH").is_ok() {
+                eprintln!("[TRACE] write_tstp: topological_sort failed: {:?}", e);
+            }
+            return Err(std::fmt::Error);
+        }
+    };
     // Elaboration is an optional refinement. If a composite step cannot be
     // replayed, retain a dependency-topological compact proof so the strict
     // kernel can classify it as inconclusive. Never fall back to numeric-ID

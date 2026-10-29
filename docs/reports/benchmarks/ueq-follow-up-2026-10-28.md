@@ -77,9 +77,14 @@ refutations did. The J13 exception is `REL045-2`:
   whether a proof block was actually printed. See [UI-12 in the unresolved
   issues list](../../policies/unresolved-issues.md).
 - The same problem in the CASC-30 artifact has a 170-node, 28,142-byte proof
-  and passes strict verification. This rules out neither an intermittent
-  search/proof-DAG issue nor a build-specific issue; the J13 archive does not
-  preserve the in-memory proof DAG needed to establish the cause.
+  and passes strict verification. Subsequent investigation reproduced the
+  anomaly deterministically under Strategy 15: `given` was rewritten by forward
+  demodulation into a new clause ID that was not registered in `clause_store`
+  prior to backward subsumption resolution deriving `$false`, causing proof
+  extraction to fail closed on a missing dependency. Registering simplified
+  clauses immediately and updating `given_fv` resolves the issue, allowing
+  Strategy 15 to emit a 126-node proof that certifies strictly as `VerifiedGood`.
+  See [UI-12 in the unresolved issues list](../../policies/unresolved-issues.md).
 
 Do not count J13 `REL045-2` as certified. The separate October 26 empty-block
 artifacts remain unaudited; this follow-up does not retroactively certify them.

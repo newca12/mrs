@@ -2043,6 +2043,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             }
             if let Some(simplified) = simplified {
                 state.register_clause(&given);
+                state.register_clause(&simplified);
                 simplified
             } else {
                 given
@@ -2063,6 +2064,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             for s in &steps {
                 state.register_clause(s);
             }
+            state.register_clause(&simplified);
             if simplified.is_empty() {
                 if simplified.avatar.is_empty() || !config.use_avatar {
                     return SearchResult::Refutation(simplified.id, String::new());
@@ -2106,10 +2108,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 return SearchResult::Timeout;
             }
             state.register_clause(&given);
+            state.register_clause(&condensed);
             condensed
         } else {
             given
         };
+        state.register_clause(&given);
+        let given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
 
         // Compute selected literals for the given clause (with the ordered-
         // inference maximal-literal restriction for all-positive clauses).
@@ -3299,6 +3304,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     for s in &steps {
                         state.register_clause(s);
                     }
+                    state.register_clause(&simplified);
                     if simplified.is_empty() {
                         if simplified.avatar.is_empty() || !config.use_avatar {
                             if std::env::var("TRACE_SEARCH").is_ok() {
@@ -4943,6 +4949,94 @@ mod tests {
             matches!(result, SearchResult::Refutation(..)),
             "in-place backward demodulation should refute f(a)!=b, a=c, f(c)=b (got {result:?})"
         );
+    }
+
+    #[test]
+    fn demodulated_given_clause_backward_sr_empty_extracts_complete_proof() {
+        let mut syms = SymbolTable::new();
+        let f = syms.intern("f");
+        let g = syms.intern("g");
+        let h = syms.intern("h");
+        let a = syms.intern("a");
+        let c = syms.intern("c");
+        let mut id_gen = ClauseIdGen::new();
+
+        // c1: f(a) != g(a) (processed first, enters processed set)
+        let c1 = input_clause(
+            &mut id_gen,
+            vec![Literal::neg(Atom::eq(
+                Term::app(f, vec![Term::constant(a)]),
+                Term::app(g, vec![Term::constant(a)]),
+            ))],
+            "goal",
+            "negated_conjecture",
+        );
+        // c2: h(c) = f(a) (processed second, enters processed set and demod index)
+        let c2 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(
+                Term::app(h, vec![Term::constant(c)]),
+                Term::app(f, vec![Term::constant(a)]),
+            ))],
+            "rewrite",
+            "axiom",
+        );
+        // c3: h(c) = g(a) (processed third, forward-demodulated by c2 to f(a) = g(a).
+        // f(a) = g(a) is KBO-incomparable with equal weights, so backward demodulation
+        // cannot orient it, but backward subsumption resolution simplifies c1 to $false).
+        let c3 = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::eq(
+                Term::app(h, vec![Term::constant(c)]),
+                Term::app(g, vec![Term::constant(a)]),
+            ))],
+            "subsumer_raw",
+            "axiom",
+        );
+
+        let mut ordering_cfg = mrs_calculus::ordering::SymbolConfig::default();
+        let max_idx = h
+            .index()
+            .max(f.index())
+            .max(g.index())
+            .max(a.index())
+            .max(c.index()) as usize;
+        ordering_cfg.weights = vec![1; max_idx + 1];
+        ordering_cfg.weights[h.index() as usize] = 5;
+
+        let mut state = crate::state::SearchState::new(
+            vec![c1, c2, c3],
+            id_gen,
+            std::sync::Arc::new(ordering_cfg),
+            std::sync::Arc::new(syms),
+            true,
+        );
+        let config = SearchConfig {
+            ordering: TermOrdering::KBO,
+            selection: crate::SelectionStrategy::Fifo,
+            literal_selection: crate::LiteralSelection::All,
+            ..SearchConfig::default()
+        };
+        let result = search(&mut state, &config);
+        match result {
+            SearchResult::Refutation(empty_id, tstp) => {
+                assert_ne!(empty_id.0, 0);
+                assert!(!tstp.is_empty(), "proof text should not be empty");
+                assert!(
+                    tstp.contains("subsumption_resolution"),
+                    "proof should cite subsumption_resolution: {tstp}"
+                );
+                assert!(
+                    tstp.contains("demodulation"),
+                    "proof should cite demodulation: {tstp}"
+                );
+                assert!(
+                    tstp.contains("$false"),
+                    "proof should contain empty clause $false: {tstp}"
+                );
+            }
+            other => panic!("expected Refutation, got {other:?}"),
+        }
     }
 
     #[test]

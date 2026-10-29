@@ -28,9 +28,15 @@ fn ancestor_order<I: Copy + Eq + std::hash::Hash>(
             order.push(id);
         } else if !finished.contains(&id) {
             if !active.insert(id) {
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!("[TRACE] ancestor_order: cycle detected at node!");
+                }
                 return Vec::new();
             }
             let Some(dependencies) = parents(id) else {
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!("[TRACE] ancestor_order: missing dependency for node!");
+                }
                 return Vec::new();
             };
             stack.push((id, true));
@@ -93,11 +99,24 @@ pub fn extract_proof_ids<S: BuildHasher>(
     empty_clause_id: ClauseId,
     clause_store: &HashMap<ClauseId, IdClause, S>,
 ) -> Vec<ClauseId> {
-    ancestor_order(empty_clause_id, |id| {
-        clause_store
-            .get(&id)
-            .map(|clause| dependencies(&clause.source, clause.certificate.as_ref()))
-    })
+    let ids = ancestor_order(empty_clause_id, |id| {
+        let entry = clause_store.get(&id);
+        if entry.is_none() && std::env::var("TRACE_SEARCH").is_ok() {
+            eprintln!(
+                "[TRACE] extract_proof_ids: clause c{} not found in store!",
+                id.0
+            );
+        }
+        entry.map(|clause| dependencies(&clause.source, clause.certificate.as_ref()))
+    });
+    if std::env::var("TRACE_SEARCH").is_ok() {
+        eprintln!(
+            "[TRACE] extract_proof_ids for root c{}: found {} ids",
+            empty_clause_id.0,
+            ids.len()
+        );
+    }
+    ids
 }
 
 /// Convert only the reachable derivation, rather than the entire search history.

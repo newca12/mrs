@@ -1494,6 +1494,11 @@ fn run() {
     }
 
     if emit_extras {
+        let proof_omitted = if matches!(result, SearchResult::Refutation(..)) {
+            proof_bytes > proof_bytes_limit || proof_nodes == 0
+        } else {
+            false
+        };
         print_statistics(
             status,
             start.elapsed(),
@@ -1502,7 +1507,7 @@ fn run() {
             self_check,
             proof_certified,
             &result,
-            (proof_nodes, proof_bytes, proof_bytes > proof_bytes_limit),
+            (proof_nodes, proof_bytes, proof_omitted),
         );
     }
 }
@@ -1562,15 +1567,18 @@ fn print_statistics(
     }
     println!("% Time elapsed: {:.3} s", elapsed.as_secs_f64());
     if proof_bytes > 0 {
+        let omission_reason = if proof_omitted {
+            if proof_nodes == 0 {
+                " (omitted: no TSTP derivation steps)"
+            } else {
+                " (omitted: over the --proof-bytes-limit)"
+            }
+        } else {
+            ""
+        };
         println!(
             "% Proof: {} nodes, {} bytes{}",
-            proof_nodes,
-            proof_bytes,
-            if proof_omitted {
-                " (omitted: over the --proof-bytes-limit)"
-            } else {
-                ""
-            }
+            proof_nodes, proof_bytes, omission_reason
         );
     }
     if let Some(mb) = peak_memory_mb() {
