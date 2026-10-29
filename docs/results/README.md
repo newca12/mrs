@@ -18,8 +18,8 @@ Re-measure before quoting one.
 
 | Division | Edition | Evaluated | Current Verified Baseline | Historical Unverified Snapshot (`codex.db`) | Audit & Trust Notes |
 |:---|:---|---:|---:|---:|:---|
-| **UEQ** | CASC-J13 | 400 | **117 (29.25%; 2026-10-21 standalone run, 0 VerifiedBad) / 112 (Oct 20, 118 post-fix) / 113 (combined run)** | ~~257 (64.3%)~~ | Standalone CASC-mode run on Oct 21 natively confirms the leaf symmetry fix (`b1033d3`): 117 `VerifiedGood`, 0 `VerifiedBad`, 2 `Unknown` on an 8-core host. The Oct 20 run generated 120 refutations (112 initial, 118 re-audited). Historical 257 remains superseded. See the [CASC-J13 UEQ report](../reports/benchmarks/ueq-j13-2026-10.md). |
-| **UEQ** | CASC-30 | 300 | **119–120 (39.7–40.0%; 2026-10-20/21 standalone runs) / 127 (42.3%; 2026-10-07 run)** | ~~222 (74.0%)~~ | Replicated standalone CASC-mode runs: 120 `VerifiedGood` (Oct 20) and 119 `VerifiedGood` (Oct 21), 0 `VerifiedBad`, 4 `Unknown` across consecutive days (>99% replicate consistency). All 5 historical rejection bugs remain resolved. The 127 baseline (Oct 7 on 16 cores) remains the peak trusted score. Historical 222 remains superseded. See the [UEQ report](../reports/benchmarks/ueq-2026-10.md). |
+| **UEQ** | CASC-J13 | 400 | **107/400 (26.75%; current strictly verified baseline, `c07cac9`)** | ~~257 (64.3%)~~ | The canonical baseline remains the 2026-09-30 `c07cac9` campaign: 107 kernel-certified `VerifiedGood`, 0 `VerifiedBad` (see [certification status](../CERTIFICATION_STATUS.md)). Later campaigns are archive-specific supplemental evidence, not replacements: Oct 21 recorded 117 `VerifiedGood`; Oct 28 recorded 120 `VerifiedGood` plus one `no_proof` (`REL045-2`) in a dirty adaptive-mode run with `MRS_WORKERS=8`. The 16-physical-core figure is host capacity, not worker count. Keep Oct 28 supplemental because it is a dirty, single-run adaptive measurement, not a standardized CASC-profile result. Historical 257 remains superseded. See the [CASC-J13 UEQ report](../reports/benchmarks/ueq-j13-2026-10.md) and [Oct 28 follow-up](../reports/benchmarks/ueq-follow-up-2026-10-28.md). |
+| **UEQ** | CASC-30 | 300 | **119–120 (39.7–40.0%; 2026-10-20/21 standalone runs) / 127 (42.3%; 2026-10-07 run)** | ~~222 (74.0%)~~ | Replicated standalone CASC-mode runs: 120 `VerifiedGood` (Oct 20) and 119 `VerifiedGood` (Oct 21), 0 `VerifiedBad`, 4 `Unknown` across consecutive days (>99% replicate consistency). Oct 28 supplemental run recorded 124 `VerifiedGood` and 0 `VerifiedBad`, but used a dirty build on a 96 GB host below the 128 GB CASC allowance, so it is not promoted as a replacement baseline. The 127 baseline (Oct 7 on 16 cores) remains the peak trusted score. Historical 222 remains superseded. See the [UEQ report](../reports/benchmarks/ueq-2026-10.md) and [Oct 28 follow-up](../reports/benchmarks/ueq-follow-up-2026-10-28.md). |
 | **FEQ** | CASC-J13 | 300 | **69/69 `VerifiedGood` (23.00%; 8-core, 180 s supplemental) / 71/72 `VerifiedGood` (23.67%; 32-core, 180 s supplemental) / 68 (old baseline)** | 72 (24.0%) | Candidate portfolio `12,11,10,6,8,1,4,13` produced 69 refutations (all `VerifiedGood`) on `mtsdev01` and 72 raw refutations (71 `VerifiedGood`, 1 proof omitted) on `tlpnf9701`. These historical 180 s runs are supplemental, not canonical 240 s comparisons; results are single-run observations. See the [candidate FEQ report](../reports/benchmarks/feq-candidate-portfolio-2026-10.md). |
 | **FEQ** | CASC-30 | 400 | **106/111 `VerifiedGood` (26.50%; 8-core) / 107/113 `VerifiedGood` (26.75%; 32-core) / 103 (old baseline)** | 112 (28.0%) | Candidate portfolio `12,11,10,6,8,1,4,13` solved 111/400 on `mtsdev01` (106 `VerifiedGood`), retaining the observed 108 baseline refutations and adding 3 raw solves in that run. It solved 113/400 on `tlpnf9701` (107 `VerifiedGood`). The 114 figure on `teenf9901` includes a targeted `GEO559+1` solve, not a fifth full-division result. These are single-run observations, not five-replicate means; see the [candidate FEQ report](../reports/benchmarks/feq-candidate-portfolio-2026-10.md). |
 | **FNE** | CASC-J13 | 100 | **39–40 (39.0–40.0%; candidate portfolio on 8-core host) / 36 (baseline)** | 35 (35.0%) | Candidate portfolio `11,13,4,8,15,7,3,1` achieves 40 refutations (39 `VerifiedGood`, 1 proof omitted) on canonical 8-core host `mtsdev03` (+4 over shipped 36 baseline). 38/38 certified on `tlpnf9701`. 0 `VerifiedBad` across all runs. See the [candidate FNE report](../reports/benchmarks/fne-candidate-portfolio-2026-10.md). |
@@ -306,6 +306,33 @@ candidate order from these results. Full solve-set deltas, provenance, and the
 proof-output investigation are in the
 [`UEQ candidate report`](../reports/benchmarks/ueq-candidate-portfolio-2026-10.md)
 and [UI-11](../policies/unresolved-issues.md#ui-11--ueq-candidate-refutations-have-empty-tstp-proof-blocks).
+
+---
+
+## UEQ shipped-schedule follow-up campaigns (2026-10-28)
+
+Two later full-division runs used the shipped `casc_ueq` order with eight
+workers and `jobs=1`. They are supplemental results, not replacements for the
+canonical baselines above: both metadata files record `git_dirty=true` and
+distinct binary hashes. The J13 run explicitly used eight workers (`MRS_WORKERS=8`)
+on a host reporting 16 physical cores; that host count does not mean the run
+used 16 workers. The J13 run used the `adaptive` profile rather than `casc`.
+The CASC-30 host had 96,350 MB RAM rather than the full 128 GB CASC allowance.
+
+| Edition | Total | Raw SZS `Unsatisfiable` | Strict `VerifiedGood` | Other refutation audit | `Timeout` | `GaveUp` |
+|:---|---:|---:|---:|:---|---:|---:|
+| CASC-J13 | 400 | 121 | **120** | 1 `no_proof` (`REL045-2`) | 260 | 19 |
+| CASC-30 | 300 | 124 | **124** | none | 166 | 10 |
+
+There were no `VerifiedBad` proofs. CASC-30's 124 refutations all passed the
+strict audit; the J13 `REL045-2` raw status is not a certified solve because
+its output contained no TSTP derivation. The recorded J13 maximum of 79,521 MB
+is **virtual memory**, not RSS; no RSS measurements were archived for that run.
+For CASC-30, the maximum recorded RSS was 32,016 MB and the maximum virtual
+peak was 51,946 MB. Full provenance, timing and memory details, and the J13
+proof-output anomaly are in the
+[`October 28 UEQ follow-up report`](../reports/benchmarks/ueq-follow-up-2026-10-28.md)
+and [UI-12](../policies/unresolved-issues.md).
 
 ---
 

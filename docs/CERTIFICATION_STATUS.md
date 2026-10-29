@@ -733,6 +733,16 @@ on Oct 21. Detailed telemetry and domain breakdowns are in the
 [UEQ campaign report](reports/benchmarks/ueq-2026-10.md) and
 [`results/README.md`](results/README.md).
 
+### Supplemental CASC-30 UEQ follow-up (2026-10-28)
+
+`campaign-casc30-ueq-W8CASCHJ1-01-20261028` returned 124 raw refutations on
+all 300 problems. Strict audit certified **124/124 `VerifiedGood`**, with
+**0 `VerifiedBad`** and no proof omissions. This is a supplemental single run,
+not a baseline update: its build metadata is dirty, and the 8-core host had
+96,350 MB RAM, below the configured 128 GB CASC allowance. The maximum recorded
+RSS was 32,016 MB (`LAT150-1`); the maximum virtual peak was 51,946 MB
+(`ROB005-1`). See the [October 28 UEQ follow-up report](reports/benchmarks/ueq-follow-up-2026-10-28.md).
+
 ### Fresh CASC-J13 FEQ standalone campaigns (2026-10-20 and 2026-10-21)
 
 Two consecutive full 300-problem runs were evaluated on canonical 8-core hardware (`mtsdev03`):
@@ -790,6 +800,19 @@ commit `c45227ff` (binary SHA-256 `088f4b1e613660d094e20185b0dd23e3ce73f70c7fdae
 on Oct 21. Detailed telemetry and domain breakdown are in the
 [CASC-J13 UEQ report](reports/benchmarks/ueq-j13-2026-10.md) and
 [`results/README.md`](results/README.md).
+
+### Supplemental CASC-J13 UEQ follow-up (2026-10-28)
+
+`campaign-cascj13-ueq-W8C8J1-97-20261028` returned 121 raw refutations across
+all 400 problems. Strict audit certified **120 `VerifiedGood`**, with
+**0 `VerifiedBad`** and one `no_proof` (`REL045-2`). Do not count that raw
+status as a certified solve. `MRS_WORKERS=8` was set; the prover's report of 16
+physical cores describes the host, not 16 search workers. The run is
+supplemental because it used `adaptive` rather than `casc` hardware mode, was a
+single run, and records a dirty build; it does not change the baseline. Its
+79,521 MB maximum is `VmPeak`, not resident memory; no RSS data was recorded.
+See the [October 28 UEQ follow-up report](reports/benchmarks/ueq-follow-up-2026-10-28.md)
+and [UI-12](policies/unresolved-issues.md).
 
 ### Cooperative FNE candidate portfolio campaigns (2026-10-21 and 2026-10-22)
 

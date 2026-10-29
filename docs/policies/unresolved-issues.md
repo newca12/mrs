@@ -2324,7 +2324,7 @@ Full write-up: `docs/reports/benchmarks/feq-silent-kills-investigation.md`.
 
 | | |
 |---|---|
-| Status | **Serialization fix landed; historical campaign soundness remains unverified** |
+| Status | **AC-citation serialization regression fixed; October 26 soundness remains unverified. A separate October 28 J13 no-proof case is open in UI-12.** |
 | Severity | 85 refutation-status rows across two October 26 UEQ candidate campaigns |
 | Soundness | **Unverified.** The serialization failure explains missing proof text, but does not certify the archived refutations. The nonempty candidate proofs still lack strict audit results, and the empty blocks contain no derivation to audit. |
 
@@ -2389,4 +2389,87 @@ also does not certify any of the candidate statuses.
 
 The archived October 26 outcomes remain raw, unaudited observations. Do not use
 them as certified UEQ coverage or infer that the old empty blocks were valid
-proofs.
+proofs. The October 28 follow-up is recorded below; it does not retroactively
+certify the archived candidate runs.
+
+### October 28 follow-up evidence
+
+The post-fix full-division artifacts show no recurrence at the same scale:
+
+| Campaign | Raw refutations | Strict `VerifiedGood` | Other |
+|---|---:|---:|---|
+| CASC-30 `campaign-casc30-ueq-W8CASCHJ1-01-20261028` | 124 | 124 | none |
+| CASC-J13 `campaign-cascj13-ueq-W8C8J1-97-20261028` | 121 | 120 | `REL045-2`: `no_proof` |
+
+The J13 exception is not an empty SZS proof envelope: the CLI suppressed the
+proof block and wrote `% Proof omitted: no TSTP derivation steps` to stderr.
+However, its SZS detail says `proof_nodes=0 proof_bytes=80 proof_emitted=true`,
+so the audit classified it as `no_proof`. The cause of the missing derivation
+is not established by the archived output; see UI-12 below.
+
+Full campaign provenance and the virtual-memory/RSS distinction are in the
+[October 28 UEQ follow-up report](../reports/benchmarks/ueq-follow-up-2026-10-28.md).
+
+---
+
+## UI-12 — J13 REL045-2 refutation has no proof root and misleading proof_emitted telemetry
+
+| | |
+|---|---|
+| Status | **Observed once; the missing derivation's cause is unknown. The telemetry mismatch is confirmed in source.** |
+| Severity | One `no_proof` among 121 raw refutations in the October 28 CASC-J13 UEQ run |
+| Soundness | `REL045-2` is **not strictly certified**. There is no evidence from this artifact that it is `VerifiedBad`; no proof was available to replay. |
+
+### Observation
+
+In `~/crates/mrs-bench/results/campaign-cascj13-ueq-W8C8J1-97-20261028`,
+`REL045-2` returned SZS `Unsatisfiable` after 10.398 s of search. The archived
+stdout contains no TSTP derivation block. Stderr contains:
+
+```text
+% Proof omitted: no TSTP derivation steps
+% SZS detail ... result=Refutation ... proof_nodes=0 proof_bytes=80 proof_emitted=true
+```
+
+The strict audit row is `generation_status=Unsatisfiable`,
+`strict_status=no_proof`, with no archived proof path. The 80-byte proof text is
+header-only; it is not a derivation. The same problem in the October 28 CASC-30
+artifact emitted a 170-node proof and passed strict verification. That result
+shows that a proof can be found for the problem, but does not determine why the
+J13 run had none.
+
+### What is established, and what is not
+
+- **Not a proof-size-limit omission:** the recorded text was only 80 bytes and
+  far below the configured proof-size limit.
+- **Confirmed telemetry mismatch:** in `src/main.rs`, `proof_emitted` is
+  currently derived from `proof_bytes <= proof_bytes_limit`. The output path
+  separately requires at least one TSTP derivation step (`proof_nodes > 0`).
+  Therefore this run can truthfully trigger the no-steps diagnostic while the
+  detail line still says `proof_emitted=true`.
+- **Audit classification follows the available evidence:**
+  `crates/mrs-bench/src/bin/audit_casc_proofs.rs::proof_omission` recognizes
+  `proof_emitted=false` or a known stdout omission marker. It does not treat the
+  stderr no-steps diagnostic paired with `proof_emitted=true` as a confirmed
+  size omission, so the row becomes `no_proof`.
+- **Missing-proof root cause is unknown:** the archived campaign does not retain
+  the in-memory proof DAG or an extraction/serialization error that would show
+  whether the search result referenced a missing dependency, a cyclic graph, or
+  another condition. Do not attribute this case to the October 26 AC-citation
+  defect without further evidence.
+
+### Evidence and next steps
+
+Inspect the archived outputs and audit row with:
+
+```bash
+grep -nE 'SZS status|Proof|proof_nodes|proof_bytes|proof_emitted|no TSTP' \
+  ~/crates/mrs-bench/results/campaign-cascj13-ueq-W8C8J1-97-20261028/raw/mrs/ueq/REL045-2.{stdout,stderr}
+grep '^casc-j13,ueq,REL045-2,' \
+  ~/crates/mrs-bench/results/campaign-cascj13-ueq-W8C8J1-97-20261028/certification/audit.csv
+```
+
+When revisiting this issue, preserve the proof-extraction failure reason or DAG
+for a reproduction, and make the detail field describe actual proof emission
+(or split it into separate emission and size-limit fields). Until a proof is
+available and passes strict replay, count this row as a raw refutation only.
