@@ -129,8 +129,9 @@ reported as an MQ speedup. A same-host, same-binary rerun is needed.
    one-worker diagnostic sweeps before revising this composition.
 3. **Run repeated, controlled comparisons before making a portfolio change.**
    Use the same clean binary, canonical eight-worker hardware, `jobs=1`, and at
-   least five replicates for baseline, `mq`, and any hybrid candidate. Include
-   proof auditing where solver theorems are to be reported as certified.
+   least two paired replicates as an initial screen for baseline, `mq`, and any
+   hybrid candidate. Add pairs when deltas disagree or the effect is marginal.
+   Include proof auditing where solver theorems are to be reported as certified.
 4. **Attribute archetypes in future runs.** The archived `mq` runs constructed
    configs without distinct `strategy_id`s, so their telemetry prints
    `strategy_ids=0:0;...;7:0`; those records cannot identify the winning
@@ -148,14 +149,14 @@ The benchmark harness accepts named schedules using `schedule:<name>` in
 `cooperative_portfolio_sweep.sh`; examples and the isolated archetype workflow
 are documented in [`crates/mrs-bench/README.md`](../../../crates/mrs-bench/README.md#portfolio-coverage).
 
-For the decision-quality comparison, run at least five sequential replicates
-for each condition against the same corpus and clean binary, on the canonical
-eight-worker host:
+For an initial comparison, run two sequential replicates for each condition
+against the same corpus and clean binary, on the canonical eight-worker host.
+Extend the comparison if outcomes vary or the difference is marginal:
 
 ```bash
 for schedule in casc_fne mq casc_fne_mq_hybrid; do
   MRS_WORKERS=8 MRS_SCHEDULE="$schedule" MRS_SHARED_POOL_INTERVAL=0 \
-    crates/mrs-bench/run_variance.sh 5 \
+    crates/mrs-bench/run_variance.sh 2 \
       --edition casc-30 --systems mrs --divisions fne --casc-times --jobs 1 \
       --output "crates/mrs-bench/results/variance-fne-${schedule}-$(date +%Y%m%d)"
 done

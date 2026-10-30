@@ -285,11 +285,12 @@ measurement.
 
 ## Follow-up needed
 
-Repeat the shipped-portfolio, no-sharing measurement at least five times on a
-host with eight physical cores and 128 GB before treating the observed coverage
-delta as stable. Keep the calculus and portfolio fixed during those replicates.
-Record source state, binary hashes and environment. Build the verifier
-explicitly: building the audit binary alone does not rebuild `mrs-proover`.
+Repeat the shipped-portfolio, no-sharing measurement as a matched paired screen
+on a host with eight physical cores and 128 GB. Start with two pairs and add
+pairs if the deltas disagree or the effect is marginal. Keep the calculus and
+portfolio fixed, and record source state, binary hashes and environment. Build
+the verifier explicitly: building the audit binary alone does not rebuild
+`mrs-proover`.
 
 ```bash
 cargo build --release -p mrs -p mrs-proover -p mrs-bench \

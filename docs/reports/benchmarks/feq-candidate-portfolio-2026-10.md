@@ -1,8 +1,9 @@
 # FEQ Candidate Cooperative Portfolio Validation Report (October 2026)
 
 > Status: Banked single-run campaign observations; portfolio validation remains
-> provisional. These are not five-replicate means. Current policy requires at
-> least five replicates for decisive comparisons. The CASC-J13 runs used 180 s;
+> provisional. These are not replicated paired comparisons. Current policy uses
+> two paired blocks as an initial screen and adds pairs when results are
+> inconclusive. The CASC-J13 runs used 180 s;
 > current canonical FEQ comparisons use 240 s, so those J13 results are
 > supplemental and must not be treated as canonical-limit comparisons.
 > Campaign directories:
@@ -15,10 +16,11 @@
 > - CASC-J13: `~/crates/mrs-bench/results/cooperative-feq-greedy-candidate-99-casc-j13`
 
 The four full-division candidate campaigns below are single observations per
-host/division, not five-replicate paired comparisons. Their totals describe
+host/division, not replicated paired comparisons. Their totals describe
 those runs; they do not estimate a mean or establish statistical significance.
-Per `AGENTS.md` §11, promotion as the canonical portfolio still needs a
-five-replicate paired comparison; this report does not satisfy that gate.
+Per `AGENTS.md` §11, a canonical portfolio decision needs at least a paired
+screen, with more pairs if the result is ambiguous; this report does not satisfy
+that gate.
 
 ---
 
@@ -63,8 +65,9 @@ The J13 rows are supplemental because the current canonical FEQ limit is 240 s.
    observations, not estimates of means or evidence that the portfolio is
    optimal; the CASC-J13 runs used a supplemental historical 180 s limit, and
    the `GEO559+1` diagnostic below is not a fifth full-division run. A paired
-   candidate/baseline comparison at the canonical 240 s limit with at least
-   five replicates is still needed for a decisive cross-edition claim.
+   candidate/baseline comparison at the canonical 240 s limit, starting with
+   two paired blocks and extending if the result is ambiguous, is still needed
+   for a cross-edition claim.
 
 ---
 

@@ -2,8 +2,9 @@
 """Paired, order-randomized, strictly audited eight-worker CASC comparisons.
 
 Each pair runs both frozen binaries sequentially on one host. No builds are
-triggered and output directories are never reused. Five pairs are a screening
-minimum, not a claim of statistical power. Example:
+triggered and output directories are never reused. Two pairs are the minimum
+screening block, not a claim of statistical power. Report the individual pair
+deltas; add pairs if they disagree or the effect is marginal. Example:
 
 python3 crates/mrs-bench/paired_campaign.py --baseline /path/mrs-base \
   --candidate /path/mrs-next --problems-dir /path/casc-30 --edition casc-30 \
@@ -66,7 +67,8 @@ def main():
     parser.add_argument("--edition", choices=("casc-30", "casc-j13"), required=True)
     parser.add_argument("--divisions", default="fne,feq,ueq")
     parser.add_argument("--schedule", help="same explicit schedule for both arms")
-    parser.add_argument("--reps", type=int, default=5)
+    parser.add_argument("--reps", type=int, default=2,
+                        help="randomized paired blocks (minimum 2; add more if inconclusive)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sharing-interval", type=int, default=0)
     parser.add_argument("--strict-time", type=int, default=120)
@@ -75,8 +77,8 @@ def main():
     parser.add_argument("--auditor", type=Path, default=root / "target/release/audit_casc_proofs")
     parser.add_argument("--proover", type=Path, default=root / "target/release/mrs-proover")
     args = parser.parse_args()
-    if args.reps < 5 or args.sharing_interval < 0 or args.strict_time <= 0:
-        parser.error("require reps >=5, sharing-interval >=0 and strict-time >0")
+    if args.reps < 2 or args.sharing_interval < 0 or args.strict_time <= 0:
+        parser.error("require reps >=2, sharing-interval >=0 and strict-time >0")
     binaries = {"baseline": args.baseline.resolve(), "candidate": args.candidate.resolve()}
     for path in (*binaries.values(), args.auditor, args.proover):
         if not path.is_file() or not os.access(path, os.X_OK):
@@ -98,7 +100,13 @@ def main():
     if args.schedule:
         environment["MRS_SCHEDULE"] = args.schedule
     rng = random.Random(args.seed)
-    orders = [rng.sample(list(binaries), 2) for _ in range(args.reps)]
+    # Balance which arm runs first so a two-pair screen has one order each;
+    # randomize the sequence to avoid a fixed baseline-first pattern.
+    orders = ([['baseline', 'candidate']] * (args.reps // 2)
+              + [['candidate', 'baseline']] * (args.reps // 2))
+    if args.reps % 2:
+        orders.append(rng.sample(list(binaries), 2))
+    rng.shuffle(orders)
     hashes = {name: digest(path) for name, path in binaries.items()}
     manifest = {
         "schema": 1, "arguments": {key: str(value) if isinstance(value, Path) else value
@@ -143,7 +151,7 @@ def main():
         summary = {
             "pairs": pairs, "mean_paired_delta": statistics.mean(deltas),
             "observed_delta_range": [min(deltas), max(deltas)],
-            "interpretation": "descriptive paired screen; no automatic promotion or division-wide noise extrapolation",
+            "interpretation": "descriptive paired evidence; two pairs are a screen, add pairs if outcomes disagree or the effect is marginal; no automatic promotion or division-wide noise extrapolation",
         }
         (output / "paired-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(f"pair {index}: certified delta {deltas[-1]:+d}", flush=True)

@@ -129,8 +129,9 @@ Do not replace the shipped UEQ order on the basis of these runs. First:
    serialization failure is fixed, but the archived artifacts contain no proof
    DAG to audit and do not establish which individual rows took that path.
 3. If the candidate remains viable, run matched baseline/candidate comparisons
-   using the same build and host, with at least five replicates as required by
-   the portfolio-measurement guidance in `AGENTS.md` §11.
+   using the same build and host, starting with two paired blocks. Add pairs if
+   the deltas disagree or the effect is marginal, as described by the current
+   portfolio-measurement guidance in `AGENTS.md` §11.
 
 Until then, keep these counts labeled as **raw, unaudited October 26
 observations**. The previously documented verified baselines and the shipped

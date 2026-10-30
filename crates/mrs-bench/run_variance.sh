@@ -5,7 +5,7 @@
 #   run_variance.sh <reps> <casc-args...>
 #
 # Examples:
-#   crates/mrs-bench/run_variance.sh 5 --edition casc-30 --systems mrs \
+#   crates/mrs-bench/run_variance.sh 2 --edition casc-30 --systems mrs \
 #       --divisions ueq --casc-times --jobs 1 \
 #       --subset crates/mrs-bench/results/ueq-variance/subset.txt \
 #       --output crates/mrs-bench/results/variance-ueq
@@ -27,8 +27,9 @@
 #     round (rounds x 8 slots x 15 candidates), which selects on noise.
 #   * `greedy_set_cover` builds each strategy's solved-set from one `run.csv`.
 #
-# Prefer a mean over >=5 replicates to a
-# single number. See `docs/policies/unresolved-issues.md` UI-8.
+# Use at least two runs to screen within-configuration variation; add runs when
+# outcomes are unstable or the decision is marginal. This script measures one
+# configuration, not a paired A/B. See UI-8 in `docs/policies/unresolved-issues.md`.
 #
 # Method
 # ------
@@ -50,8 +51,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPS="${1:?usage: $0 <reps> <casc-args...>}"
 shift || true
 
-if ! [[ "${REPS}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "Error: reps must be a positive integer, got '${REPS}'." >&2
+if ! [[ "${REPS}" =~ ^[1-9][0-9]*$ ]] || (( REPS < 2 )); then
+  echo "Error: reps must be an integer >= 2, got '${REPS}'." >&2
   exit 2
 fi
 

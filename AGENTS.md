@@ -438,23 +438,35 @@ between shared and no-sharing runs measures cooperation gain separately from
 strategy diversity. Use `cooperative_portfolio_search.sh` for one-swap local
 search over candidate portfolios.
 
-> **Read this before trusting any single-run A/B.** A single run is not a
-> measurement. Five replicates of an identical configuration over a fixed
+> **Replication policy (updated 2026-10-30).** Two randomized paired blocks are
+> the minimum screen, not proof that variance is low. `paired_campaign.py --reps 2`
+> runs two baseline/candidate pairs (four full arms) in randomized order on the
+> same host. Report both pair deltas, per-problem flips, the mean and range, and
+> strict-audit outcomes. A single run remains only an observation.
+>
+> Start with two pairs. Add pairs when the pair deltas disagree, the effect is
+> small relative to observed problem churn, or a result is being selected from
+> many portfolio candidates. Use held-out problems/families for candidates
+> chosen by `cooperative_portfolio_search.sh`; do not promote a selected-subset
+> result alone. A two-pair result is a screening result, not a significance claim.
+> `MRS_SHARED_POOL_INTERVAL=0` removes clause sharing, not worker races, CPU or
+> memory contention, or clock-sensitive LRS behavior.
+>
+> Five historical replicates of an identical configuration over a fixed
 > 25-problem casc-30 UEQ subset solved 21 / 20 / 19 / 21 / 20. This demonstrates
-> subset variability, not a division-wide ±12 noise floor; linear extrapolation
-> does not account for selection or cross-problem correlations.
-> `cooperative_portfolio_search.sh`
-> maximises over ~120 noisy evaluations per round (`rounds × 8 slots × 15
-> candidates`), which selects on noise. Wrap decisive comparisons in
-> `run_variance.sh` and compare **means over ≥5 replicates**:
+> variability on that subset only, not a division-wide ±12 noise floor; do not
+> extrapolate it linearly.
 >
 > ```bash
-> nix develop -c ./crates/mrs-bench/run_variance.sh 5 \
+> nix develop -c env MRS_SHARED_POOL_INTERVAL=0 \
+>     ./crates/mrs-bench/run_variance.sh 2 \
 >     --edition casc-30 --systems mrs --divisions ueq --casc-times --jobs 1 \
 >     --output crates/mrs-bench/results/variance-ueq-$(date +%Y%m%d)
 > ```
 >
-> Variance is bimodal per problem, not uniform jitter: `KLE152-10` takes ~118 s or
+> `run_variance.sh` measures repeated runs of one configuration; use
+> `paired_campaign.py` for paired baseline/candidate comparisons. Variance is
+> bimodal per problem, not uniform jitter: `KLE152-10` takes ~118 s or
 > ~217 s with nothing between, because concurrent strategies race and contention
 > picks the winner. `run_variance.sh` reports per-problem spread for that reason.
 > See `docs/policies/unresolved-issues.md` UI-8.

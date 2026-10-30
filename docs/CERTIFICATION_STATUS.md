@@ -915,10 +915,11 @@ The FEQ candidate portfolio $\mathbf{P}_{\text{FEQ}} = [12, 11, 10, 6, 8, 1, 4, 
 
 Across all 365 refutations evaluated across the four campaigns, **0 `VerifiedBad`** were detected. Full details are in the [FEQ candidate portfolio report](reports/benchmarks/feq-candidate-portfolio-2026-10.md).
 
-These four single full-division campaign observations are not five-replicate
-paired comparisons; their totals are not estimates of means or statistically
-significant gains. Promotion as the canonical portfolio remains pending an
-at-least-five-replicate paired comparison at the canonical 240 s limit.
+These four single full-division campaign observations are not paired
+comparisons; their totals are not estimates of means or statistically
+significant gains. Promotion as the canonical portfolio remains pending at
+least a two-pair screen at the canonical 240 s limit, with more pairs if the
+result is ambiguous under the current replication policy.
 
 ---
 

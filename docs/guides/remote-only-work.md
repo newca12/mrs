@@ -365,28 +365,29 @@ crates/mrs-bench/certification_campaign.sh \
 111 solved against the baseline's 123, but the comparison is **uninterpretable in
 either direction**, for two independent reasons. The baseline ran `--hardware
 adaptive` unpinned while this arm is `casc-sim` pinned to 8 physical cores, so
-throughput moved too; and the -12 is **exactly the measured run-to-run noise
-floor**. Five replicates of a fixed 25-problem subset, identical configuration,
-solved 21 / 20 / 19 / 21 / 20 — ±1 per 25, which scales to ±12 per 300.
+throughput moved too. Five replicates of a fixed 25-problem subset with an
+identical configuration solved 21 / 20 / 19 / 21 / 20. This demonstrates
+variability on that subset; it does not establish a division-wide noise floor,
+and the ±12 extrapolation below is invalid.
 
 The loss distribution (14 of 17 lost problems solved at 120-238 s, against an
 overall solve median of 15 s) looks like per-worker slowdown rather than worse
 search. What survives is the directional sign on this hardware configuration and
 nothing stronger; the earlier "LRS is load-bearing" reading overstated it.
 Settling this needs the control arm — `casc-sim`, pinned, LRS at default — on the
-12-problem subset, **replicated ≥5 times and compared on means**. Full analysis is
-in [`unresolved-issues.md`](../policies/unresolved-issues.md) **UI-8**.
+12-problem subset, beginning with **two paired blocks** and adding more if the
+pair deltas disagree or the effect is marginal. Full analysis is in
+[`unresolved-issues.md`](../policies/unresolved-issues.md) **UI-8**.
 
 **Every portfolio A/B in this file is affected by this.** `cooperative_portfolio_sweep.sh`
 is a single `casc.sh` exec with no replicates, and `cooperative_portfolio_search.sh`
 maximises over ~120 noisy evaluations per round (`rounds × 8 slots × 15
 candidates`), which selects on noise. `greedy_set_cover` builds each strategy's
-solved-set from one `run.csv`. Against a ±12/300 noise floor, a single-run
-comparison cannot resolve a portfolio difference of the size those tools are asked
-to detect. Use `run_variance.sh` and compare means over ≥5 reps. It runs full
-campaign replicates sequentially, so it measures within-configuration variance;
-comparisons between configurations should still be paired/interleaved to limit
-host-drift bias.
+solved-set from one `run.csv`. A single-run comparison cannot establish that a
+small portfolio difference is stable. Start with two paired reps; add more if
+the result is ambiguous. Use `run_variance.sh` for within-configuration
+variation and paired/interleaved campaigns for configuration comparisons to
+limit host-drift bias.
 
 Two things worth keeping from the run mechanics:
 

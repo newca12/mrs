@@ -423,7 +423,12 @@ improvement.
   sharing disabled. Measure the actual eight-worker portfolio for promotion.
 - Run baseline and candidate in paired, interleaved blocks on the same host,
   with identical CPU placement, memory allowance, corpus and official budget.
-  At least five replicates are an initial screen, not a universal power guarantee.
+  Two paired blocks are the minimum low-cost screen, not a universal power
+  guarantee. Report every pair delta and per-problem flips. Add pairs when the
+  deltas disagree, the effect is marginal relative to observed churn, or the
+  candidate was selected from many noisy evaluations; use a fresh held-out set
+  for selected candidates. Sharing disabled does not remove worker races or
+  clock-sensitive behavior.
 - Report paired certified solve-count deltas, per-problem outcomes and uncertainty.
   Never linearly extrapolate a selected subset's observed range into a
   division-wide noise floor. Resampling must preserve repeated observations of

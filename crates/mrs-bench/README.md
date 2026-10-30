@@ -154,9 +154,10 @@ The `mq_1` … `mq_8` schedules repeat one archetype over the requested workers;
 use one worker for an isolated full-budget diagnostic. Compare these diagnostic
 results before changing which MultiQueue archetypes the hybrid contains. The
 initial `casc_fne_mq_hybrid` composition is an experiment, not a fitted or
-validated portfolio. For decisive cooperative comparisons, use
-`run_variance.sh` with at least five replicates and an identical clean binary
-on canonical eight-worker hardware.
+validated portfolio. For cooperative comparisons, start with at least two
+paired replicates using an identical clean binary on canonical eight-worker
+hardware. Add pairs if outcomes disagree or the effect is marginal; two pairs
+are a screen, not a significance guarantee.
 
 ## Cross-build throughput probe
 

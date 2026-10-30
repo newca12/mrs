@@ -2090,10 +2090,13 @@ with **14 of 17 at 120-238 s**, against an overall baseline solve median of
 **15 s**. Losses concentrate exactly where headroom is thinnest, which is the
 signature of a per-worker slowdown under SMT contention, not of worse search.
 
-Independently of that confound, the -12 is **exactly the size of the measured
-run-to-run noise** (next section). Settling this needs the control arm —
-`casc-sim`, pinned, LRS at default — on the 12-problem subset, replicated ≥5
-times, compared on means. A single run cannot resolve a 12-problem difference.
+Independently of that confound, the historical -12 matches the subset variation
+below, but that subset range is not a division-wide noise estimate. Under the
+current replication policy, start the control arm — `casc-sim`, pinned, LRS at
+default — with two paired blocks on the 12-problem subset. Add pairs if the
+paired deltas disagree or the effect is marginal; a two-pair result is only a
+screen. A full, matched campaign is still needed before making a division-wide
+causal claim.
 
 ### What it did establish
 

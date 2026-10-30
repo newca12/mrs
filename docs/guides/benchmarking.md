@@ -144,16 +144,18 @@ For a paired certified comparison of frozen baseline/candidate binaries:
 python3 crates/mrs-bench/paired_campaign.py \
   --baseline /path/to/mrs-baseline --candidate /path/to/mrs-candidate \
   --problems-dir /path/to/casc-30 --edition casc-30 \
-  --divisions fne,feq,ueq --reps 5 --output /path/to/new-experiment
+  --divisions fne,feq,ueq --reps 2 --output /path/to/new-experiment
 ```
 
-The driver randomizes arm order within each pair, runs sequentially with eight
-workers and `jobs=1` in CASC mode, strictly audits every arm, checks matching
-evaluation sets, and reports paired certified gains/losses. It checks frozen
-binary hashes before each arm. It does not build tools or automatically promote
-a candidate. Remaining inherited `MRS_*` overrides are recorded: review the
-manifest and hardware lines before interpreting the result. The reported range
-is descriptive, not a confidence interval or a division-wide noise estimate.
+Two paired blocks are the minimum screening run; add pairs if deltas disagree or
+the effect is marginal. The driver balances and shuffles which arm runs first,
+runs sequentially with eight workers and `jobs=1` in CASC mode, strictly audits
+every arm, checks matching evaluation sets, and reports paired certified
+gains/losses. It checks frozen binary hashes before each arm. It does not build
+tools or automatically promote a candidate. Remaining inherited `MRS_*`
+overrides are recorded: review the manifest and hardware lines before
+interpreting the result. The reported range is descriptive, not a confidence
+interval or a division-wide noise estimate.
 
 ```bash
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \

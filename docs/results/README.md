@@ -11,10 +11,10 @@ Re-measure before quoting one.
 > presented as valid CASC scores.
 >
 > **FEQ candidate evidence caveat:** the October candidate portfolio runs are
-> single-run observations, not five-replicate means. The CASC-J13 runs used
+> single-run observations, not paired comparisons. The CASC-J13 runs used
 > 180 s, while current canonical FEQ comparisons use 240 s; treat J13 results
-> as supplemental and all portfolio deltas as preliminary pending replicated,
-> paired comparisons.
+> as supplemental and portfolio deltas as preliminary pending at least a
+> two-pair screen, with additional pairs if results are ambiguous.
 
 | Division | Edition | Evaluated | Current Verified Baseline | Historical Unverified Snapshot (`codex.db`) | Audit & Trust Notes |
 |:---|:---|---:|---:|---:|:---|
