@@ -101,9 +101,12 @@ extra premise of the semantic soundness theorem.
 Freshening validation now shares a local work counter across domain-uniqueness
 checks, binding lookup comparisons and copied replacement nodes, avoid-set scans
 and injectivity checks. An exact 4-unit success / 3-unit failure regression and
-a compiled mutation that omits a lookup charge exercise that local meter. Work
-is still not cumulative across collectors, unifier replay, derived clause
-construction and DAG helper calls.
+a compiled mutation that omits a lookup charge exercise that local meter.
+Superposition preflight shares this counter across validation of both parents;
+a sequential 7-unit regression checks that the second validation cannot reset
+the remaining budget. Work is still not cumulative across clause collection,
+materialization, unifier replay, derived clause construction and other DAG helper
+calls.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 

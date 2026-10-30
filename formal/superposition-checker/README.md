@@ -82,7 +82,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `449 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `450 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -115,9 +115,11 @@ replay receives the remainder. Nested replay helpers still use distinct
 counters, so exact cumulative operation accounting (including literal
 comparisons) remains an explicit limitation. `check_freshening_with_work` is a
 local exception: one meter covers its domain uniqueness scan, binding lookups
-and replacement copies, avoid scans, and injectivity checks. Its 4-unit success /
-3-unit failure boundary and a compiled charge-removal mutant are tested; the
-meter does not yet span clause collection or the rest of replay. DAG input-leaf
+and replacement copies, avoid scans, and injectivity checks. Superposition
+preflight shares that meter across both parent-freshening validations. Exact
+4-unit/3-unit and sequential 7-unit regressions, plus a compiled charge-removal
+mutant, exercise the boundary; the meter does not yet span collection,
+materialization, unification, or the rest of replay. DAG input-leaf
 validation charges both the node clause and each candidate input clause for every
 repeated exact membership comparison. A runtime regression checks the exact 15-unit threshold
 for three candidates, and a compiled mutation that removes the repeated node

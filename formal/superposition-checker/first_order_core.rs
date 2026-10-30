@@ -5022,6 +5022,47 @@ fn check_freshening(
     check_freshening_with_work(original, avoid, bindings, &mut work, work_limit)
 }
 
+fn freshen_clause_apart_with_work(
+    clause: &ExecClause,
+    variables: &Vec<u64>,
+    avoid: &Vec<u64>,
+    bindings: &Vec<ExecBinding>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<ExecClause>)
+    requires clause_collection_exact(*clause, variables@),
+        *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        match result {
+            Some(fresh) => view_clause(fresh)
+                == substitute_clause(view_clause(*clause), view_subst(bindings@))
+                && (forall|v: u64| term_clause_view_contains(*clause, v)
+                    ==> exists|fresh_id: u64|
+                        lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id))),
+            None => true,
+        },
+        result.is_some() ==> freshening_sequence_valid(
+            variables@, avoid@, view_subst(bindings@)),
+        result.is_some() ==> freshening_images_are_variable(bindings@, variables@),
+        result.is_some() ==> forall|i: int| 0 <= i < clause.literals@.len()
+            ==> renames_variables_on(view_subst(bindings@),
+                literal_variables(view_literal(clause.literals@[i])))
+{
+    if !check_freshening_with_work(variables, avoid, bindings, work, work_limit) {
+        return None;
+    }
+    assert(freshening_images_are_variable(bindings@, variables@));
+    proof {
+        assert forall|i: int| 0 <= i < clause.literals@.len()
+            implies renames_variables_on(view_subst(bindings@),
+                literal_variables(view_literal(clause.literals@[i]))) by {
+            collected_renaming_covers_selected_literal(*clause, variables@, bindings@, i);
+        }
+    }
+    let fresh = freshen_clause_with_variable_map(clause, variables, bindings);
+    Some(fresh)
+}
+
 fn freshen_clause_apart(
     clause: &ExecClause,
     avoid: &Vec<u64>,
@@ -5043,21 +5084,10 @@ fn freshen_clause_apart(
     let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
         return None;
     };
-    let freshening_ok = check_freshening(&variables, avoid, bindings, work_limit);
-    if !freshening_ok {
-        return None;
-    }
-    assert(clause_collection_exact(*clause, variables@));
-    assert(freshening_images_are_variable(bindings@, variables@));
-    proof {
-        assert forall|i: int| 0 <= i < clause.literals@.len()
-            implies renames_variables_on(view_subst(bindings@),
-                literal_variables(view_literal(clause.literals@[i]))) by {
-            collected_renaming_covers_selected_literal(*clause, variables@, bindings@, i);
-        }
-    }
-    let fresh = freshen_clause_with_variable_map(clause, &variables, bindings);
-    Some(fresh)
+    let mut work: usize = 0;
+    freshen_clause_apart_with_work(
+        clause, &variables, avoid, bindings, &mut work, work_limit,
+    )
 }
 
 fn freshen_clause_with_variable_map(
@@ -5777,7 +5807,15 @@ fn executable_freshening_work_accounting_example() -> bool
     let rejected = !check_freshening_with_work(
         &original, &avoid, &bindings, &mut short_work, 3,
     );
+    let mut shared_work: usize = 0;
+    let first_shared = check_freshening_with_work(
+        &original, &avoid, &bindings, &mut shared_work, 7,
+    );
+    let second_shared = !check_freshening_with_work(
+        &original, &avoid, &bindings, &mut shared_work, 7,
+    );
     accepted && exact_work == 4 && rejected && short_work == 3
+        && first_shared && second_shared && shared_work == 7
 }
 
 fn parent_variable_superposition_certificate(
@@ -9116,16 +9154,15 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         Some(vars) => vars,
         None => return false,
     };
-    if !check_freshening(
-        &left_variables, &right_variables, &certificate.source_freshening, work_limit,
-    ) {
-        return false;
-    }
-    if !is_variable_renaming(&left_variables, &certificate.source_freshening) {
-        return false;
-    }
-    let fresh_source = match freshen_clause_apart(
-        &certificate.source, &right_variables, &certificate.source_freshening, work_limit,
+    // Both parent freshening validations debit the same local meter.
+    let mut freshening_check_work: usize = 0;
+    let fresh_source = match freshen_clause_apart_with_work(
+        &certificate.source,
+        &left_variables,
+        &right_variables,
+        &certificate.source_freshening,
+        &mut freshening_check_work,
+        work_limit,
     ) {
         Some(clause) => clause,
         None => return false,
@@ -9143,14 +9180,6 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     {
         return false;
     }
-    if !check_freshening(
-        &right_variables, &avoid_target, &certificate.target_freshening, work_limit,
-    ) {
-        return false;
-    }
-    if !is_variable_renaming(&right_variables, &certificate.target_freshening) {
-        return false;
-    }
     let target_literal_freshening_vars = match collect_clause_variables_bounded(
         &ExecClause { literals: vec![copy_literal(
             &certificate.target.literals[certificate.target_literal_index],
@@ -9163,8 +9192,13 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     if !is_variable_renaming(&target_literal_freshening_vars, &certificate.target_freshening) {
         return false;
     }
-    let fresh_target = match freshen_clause_apart(
-        &certificate.target, &avoid_target, &certificate.target_freshening, work_limit,
+    let fresh_target = match freshen_clause_apart_with_work(
+        &certificate.target,
+        &right_variables,
+        &avoid_target,
+        &certificate.target_freshening,
+        &mut freshening_check_work,
+        work_limit,
     ) {
         Some(clause) => clause,
         None => return false,
