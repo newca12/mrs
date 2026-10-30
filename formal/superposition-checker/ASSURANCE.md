@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and five
+The mutation inventory is now fifty-eight verifier-negative checks and six
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -98,6 +98,12 @@ source-fresh images from both target avoid sets; the mutant still passes
 `--no-cheating` verification but must fail at the collision-specific runtime
 assertion. This checks the standardized-apart representation policy, not an
 extra premise of the semantic soundness theorem.
+Freshening validation now shares a local work counter across domain-uniqueness
+checks, binding lookup comparisons and copied replacement nodes, avoid-set scans
+and injectivity checks. An exact 4-unit success / 3-unit failure regression and
+a compiled mutation that omits a lookup charge exercise that local meter. Work
+is still not cumulative across collectors, unifier replay, derived clause
+construction and DAG helper calls.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
@@ -174,11 +180,12 @@ host and toolchain only.
 The verification gate enforces 58 verifier-negative mutations across inference
 replay, DAG dispatch and wire tokenization. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
-contracts; it is not comprehensive threat-model coverage. Five compiled-runtime
+contracts; it is not comprehensive threat-model coverage. Six compiled-runtime
 mutations cover root-ancestor closure, repeated node-clause charging,
 duplicate-ID rejection, decimal-token validation and target-parent freshening
-collision; each must fail its corresponding runtime regression. The gate also compiles and runs positive and
-negative DAG examples via `runtime-check.py`; the ordinary Rust `main` assertion
+collision, plus the freshening lookup-work charge; each must fail its corresponding
+runtime regression. The gate also compiles and runs positive and negative DAG
+examples via `runtime-check.py`; the ordinary Rust `main` assertion
 is a test oracle outside the verified certification API.
 The mutation suite injects `#[verifier::assume_specification]` into a temporary
 source copy and requires `--no-cheating` to reject it.
@@ -195,9 +202,10 @@ exact 15-unit node budget and rejects at 14. A compiled-runtime mutation that
 removes the repeated node-clause charge must fail this regression. The target
 freshening mutation omits source-parent fresh images from both target avoid sets;
 its compiled program must fail specifically at the parent-variable collision
-assertion. The mutation runner enforces the expected inventory counts so an
-accidental removal of either verifier-negative or compiled-runtime coverage
-fails the gate.
+assertion. A separate freshening-budget mutant removes the binding-lookup charge
+and must fail the exact local meter regression. The mutation runner enforces the
+expected inventory counts so an accidental removal of either verifier-negative
+or compiled-runtime coverage fails the gate.
 
 ## Re-audit triggers
 

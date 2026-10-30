@@ -243,4 +243,6 @@ The compiled-runtime mutation gate weakens the tokenizer's digit guard and maps
 a non-ASCII byte into a digit, then requires the malformed request to remain
 rejected. It also removes the source-fresh variable images from both target
 avoid sets; that mutant must pass Verus verification but fail the dedicated
-superposition parent-variable collision regression.
+superposition parent-variable collision regression. A second runtime mutant
+omits the freshening binding-lookup charge and must fail the 4-unit/3-unit
+freshening work-boundary regression.

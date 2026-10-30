@@ -4547,6 +4547,38 @@ fn contains_u64(values: &Vec<u64>, needle: u64) -> (found: bool)
     false
 }
 
+fn contains_u64_with_work(
+    values: &Vec<u64>,
+    needle: u64,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> result.unwrap() == values@.contains(needle),
+{
+    let mut i: usize = 0;
+    while i < values.len()
+        invariant i <= values.len(),
+            *work <= work_limit,
+            forall|k: int| 0 <= k < i as int ==> values@[k] != needle,
+        decreases values.len() - i
+    {
+        if !consume_work(work, work_limit) { return None; }
+        if values[i] == needle {
+            assert(values@.contains(needle));
+            return Some(true);
+        }
+        assert(values@[i as int] != needle);
+        i += 1;
+    }
+    assert forall|k: int| 0 <= k < values@.len() implies values@[k] != needle by {
+        assert(k < i as int);
+    }
+    assert(!values@.contains(needle));
+    Some(false)
+}
+
 fn term_contains_variable(term: &ExecTerm, variable: u64) -> (found: bool)
     ensures found == exec_term_variables(*term).contains(variable)
     decreases term
@@ -4851,28 +4883,30 @@ fn collect_clause_variables_bounded(
     }
 }
 
-fn check_freshening(
+fn check_freshening_with_work(
     original: &Vec<u64>,
     avoid: &Vec<u64>,
     bindings: &Vec<ExecBinding>,
+    work: &mut usize,
     work_limit: usize,
 ) -> (valid: bool)
+    requires *old(work) <= work_limit,
     ensures
+        *final(work) <= work_limit,
         valid ==> freshening_sequence_valid(original@, avoid@, view_subst(bindings@)),
         valid ==> freshening_images_are_variable(bindings@, original@),
         valid ==> forall|v: u64| original@.contains(v)
             ==> exists|fresh: u64|
                 lookup(view_subst(bindings@), v) == Some(Term::Var(fresh))
 {
-    if !check_domain_unique(bindings, work_limit) {
+    if !check_domain_unique_with_work(bindings, work, work_limit) {
         return false;
     }
     let mut i: usize = 0;
-    let mut work: usize = 0;
     while i < original.len()
         invariant
             i <= original.len(),
-            work <= work_limit,
+            *work <= work_limit,
             forall|k: int| 0 <= k < i as int
                 && #[trigger] renamed_variable(view_subst(bindings@), original@[k]).is_some()
                 ==> exists|fresh: u64|
@@ -4891,12 +4925,16 @@ fn check_freshening(
                     != renamed_variable(view_subst(bindings@), original@[l]),
         decreases original.len() - i
     {
-        if work >= work_limit { return false; }
-        work += 1;
-        if work >= work_limit && i + 1 < original.len() { return false; }
-        let Some(mapped) = lookup_exec(bindings, original[i]) else { return false; };
+        if !consume_work(work, work_limit) { return false; }
+        let Some(mapped) = lookup_exec_with_work(
+            bindings, original[i], work, work_limit,
+        ) else { return false; };
+        let Some(mapped) = mapped else { return false; };
         let ExecTerm::Var(fresh) = mapped else { return false; };
-        if contains_u64(avoid, fresh) { return false; }
+        let Some(is_forbidden) = contains_u64_with_work(
+            avoid, fresh, work, work_limit,
+        ) else { return false; };
+        if is_forbidden { return false; }
         assert(renamed_variable(view_subst(bindings@), original@[i as int]) == Some(fresh));
         assert(lookup(view_subst(bindings@), original@[i as int]) == Some(Term::Var(fresh))) by {
             reveal(renamed_variable);
@@ -4907,7 +4945,7 @@ fn check_freshening(
         let mut j: usize = 0;
         while j < i
             invariant
-                j <= i, i < original.len(), work <= work_limit,
+                j <= i, i < original.len(), *work <= work_limit,
                 forall|k: int| 0 <= k < j as int && original@[k] != original@[i as int]
                     ==> renamed_variable(view_subst(bindings@), original@[k])
                         != Some(fresh),
@@ -4915,13 +4953,16 @@ fn check_freshening(
         {
             assert(j < original.len());
             assert(i < original.len());
-            if work >= work_limit { return false; }
-            work += 1;
+            if !consume_work(work, work_limit) { return false; }
             let same_source = original[j] == original[i];
             let mut diff_image = false;
             if !same_source {
-                let Some(previous) = lookup_exec(bindings, original[j]) else { return false; };
+                let Some(previous) = lookup_exec_with_work(
+                    bindings, original[j], work, work_limit,
+                ) else { return false; };
+                let Some(previous) = previous else { return false; };
                 let ExecTerm::Var(previous_fresh) = previous else { return false; };
+                if !consume_work(work, work_limit) { return false; }
                 if fresh == previous_fresh { return false; }
                 diff_image = true;
                 assert(renamed_variable(view_subst(bindings@), original@[j as int])
@@ -4962,6 +5003,23 @@ fn check_freshening(
         assert(original@[position] == v);
     }
     true
+}
+
+fn check_freshening(
+    original: &Vec<u64>,
+    avoid: &Vec<u64>,
+    bindings: &Vec<ExecBinding>,
+    work_limit: usize,
+) -> (valid: bool)
+    ensures
+        valid ==> freshening_sequence_valid(original@, avoid@, view_subst(bindings@)),
+        valid ==> freshening_images_are_variable(bindings@, original@),
+        valid ==> forall|v: u64| original@.contains(v)
+            ==> exists|fresh: u64|
+                lookup(view_subst(bindings@), v) == Some(Term::Var(fresh))
+{
+    let mut work: usize = 0;
+    check_freshening_with_work(original, avoid, bindings, &mut work, work_limit)
 }
 
 fn freshen_clause_apart(
@@ -5705,6 +5763,23 @@ fn executable_standardization_apart_example() -> bool
     valid && !collision && !pre_existing_collision
 }
 
+fn executable_freshening_work_accounting_example() -> bool
+{
+    let original = vec![1u64];
+    let avoid = Vec::new();
+    let bindings = vec![ExecBinding { variable: 1, replacement: ExecTerm::Var(10) }];
+
+    let mut exact_work: usize = 0;
+    let accepted = check_freshening_with_work(
+        &original, &avoid, &bindings, &mut exact_work, 4,
+    );
+    let mut short_work: usize = 0;
+    let rejected = !check_freshening_with_work(
+        &original, &avoid, &bindings, &mut short_work, 3,
+    );
+    accepted && exact_work == 4 && rejected && short_work == 3
+}
+
 fn parent_variable_superposition_certificate(
     target_image: u64,
     unifier: Vec<ExecBinding>,
@@ -6349,6 +6424,62 @@ fn check_domain_unique(bindings: &Vec<ExecBinding>, work_limit: usize) -> (uniqu
     true
 }
 
+fn check_domain_unique_with_work(
+    bindings: &Vec<ExecBinding>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (unique: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        unique ==> domain_unique(view_subst(bindings@))
+{
+    let mut i: usize = 0;
+    while i < bindings.len()
+        invariant
+            i <= bindings.len(),
+            *work <= work_limit,
+            forall|p: int, q: int|
+                #![auto]
+                0 <= p < i as int && p < q < bindings@.len() as int
+                    ==> bindings@[p].variable != bindings@[q].variable,
+        decreases bindings.len() - i
+    {
+        if !consume_work(work, work_limit) { return false; }
+        let mut j: usize = i + 1;
+        while j < bindings.len()
+            invariant
+                i < bindings.len(),
+                i < j <= bindings.len(),
+                *work <= work_limit,
+                forall|p: int, q: int|
+                    #![auto]
+                    0 <= p < i as int && p < q < bindings@.len() as int
+                        ==> bindings@[p].variable != bindings@[q].variable,
+                forall|k: int| i < k < j as int
+                    ==> bindings@[i as int].variable != bindings@[k].variable,
+            decreases bindings.len() - j
+        {
+            if !consume_work(work, work_limit) { return false; }
+            if bindings[i].variable == bindings[j].variable {
+                return false;
+            }
+            j += 1;
+        }
+        assert forall|k: int| i < k < bindings@.len() as int
+            implies bindings@[i as int].variable != bindings@[k].variable by {
+            assert(k < j as int);
+        }
+        i += 1;
+    }
+    assert forall|p: int, q: int|
+        0 <= p < q < bindings@.len() as int
+        implies bindings@[p].variable != bindings@[q].variable by {
+        assert(p < i as int);
+    }
+    assert(domain_unique(view_subst(bindings@)));
+    true
+}
+
 fn copy_term(term: &ExecTerm) -> (copy: ExecTerm)
     ensures view(copy) == view(*term)
     decreases term
@@ -6663,6 +6794,41 @@ fn lookup_exec(bindings: &Vec<ExecBinding>, variable: u64) -> (result: Option<Ex
         }
     }
     None
+}
+
+fn lookup_exec_with_work(
+    bindings: &Vec<ExecBinding>,
+    variable: u64,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<Option<ExecTerm>>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> match result.unwrap() {
+            Some(term) => Some(view(term)) == lookup(view_subst(bindings@), variable),
+            None => lookup(view_subst(bindings@), variable) == None,
+        }
+{
+    let mut i: usize = bindings.len();
+    while i > 0
+        invariant i <= bindings.len(),
+            *work <= work_limit,
+            lookup_rec(view_subst(bindings@).bindings, variable, i as nat)
+                == lookup(view_subst(bindings@), variable),
+        decreases i
+    {
+        i -= 1;
+        // Charge each binding-domain comparison and every node copied from a
+        // matching replacement term.
+        if !consume_work(work, work_limit) { return None; }
+        if bindings[i].variable == variable {
+            if !charge_term_structure(&bindings[i].replacement, work, work_limit) {
+                return None;
+            }
+            return Some(Some(copy_term(&bindings[i].replacement)));
+        }
+    }
+    Some(None)
 }
 
 fn apply_exec(term: &ExecTerm, bindings: &Vec<ExecBinding>) -> (result: ExecTerm)
@@ -14359,6 +14525,7 @@ fn run_examples() -> bool {
     executable_clause_replay_example();
     executable_unifier_certificate_examples();
     if !executable_standardization_apart_example() { return false; }
+    if !executable_freshening_work_accounting_example() { return false; }
     if !executable_disjoint_parent_freshening_example() { return false; }
     if !executable_parent_variable_freshening_collision_rejected_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
@@ -14413,6 +14580,8 @@ fn regression_main() {
         "source-variable unification regression failed");
     assert!(executable_standardization_apart_example(),
         "standardization-apart collision regression failed");
+    assert!(executable_freshening_work_accounting_example(),
+        "freshening cumulative work regression failed");
     assert!(executable_disjoint_parent_freshening_example(),
         "disjoint superposition freshening regression failed");
     assert!(executable_parent_variable_freshening_collision_rejected_example(),

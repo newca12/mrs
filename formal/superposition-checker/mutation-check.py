@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 5
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 6
 
 
 def main() -> int:
@@ -37,7 +37,7 @@ def main() -> int:
         ),
         (
             "freshening ignores forbidden variable images",
-            "if contains_u64(avoid, fresh) { return false; }",
+            "if is_forbidden { return false; }",
             "if false { return false; }",
         ),
         (
@@ -534,6 +534,60 @@ def main() -> int:
         print(
             "runtime mutation rejected: target freshening permits a source-variable collision"
         )
+        compiled_runtime_mutations += 1
+
+        freshening_lookup_charge = (
+            "        // Charge each binding-domain comparison and every node copied from a\n"
+            "        // matching replacement term.\n"
+            "        if !consume_work(work, work_limit) { return None; }"
+        )
+        if source.count(freshening_lookup_charge) != 1:
+            print("freshening lookup-charge mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_freshening_lookup_charge.rs"
+        mutated_path.write_text(source.replace(
+            freshening_lookup_charge,
+            "        // Mutant omits the binding-domain comparison charge.\n"
+            "        if false { return None; }",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-freshening-lookup-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "freshening lookup-charge mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "freshening cumulative work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: freshening omits lookup work", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "freshening lookup-charge mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: freshening omits lookup work")
         compiled_runtime_mutations += 1
 
         tokenizer_guard = "if byte < 48 || byte > 57 { return None; }"

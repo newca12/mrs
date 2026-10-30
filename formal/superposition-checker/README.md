@@ -59,10 +59,11 @@ subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
 tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
-forward parents, and nonempty-root acceptance. Five compiled-runtime mutations
+forward parents, and nonempty-root acceptance. Six compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
 duplicate-ID rejection, decimal-token guard, or target-parent freshening avoid
-set; each must fail its corresponding regression. The mutation runner enforces
+set, or freshening lookup-work charge; each must fail its corresponding
+regression. The mutation runner enforces
 the expected counts, so deleting a gate cannot silently shrink the inventory.
 The
 source tree is not modified by these negative checks.
@@ -81,7 +82,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `440 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `449 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -112,9 +113,13 @@ and per-node replay; within a node, the validated parent edges and clause
 structure, plus the cited parents and conclusion, are charged before local
 replay receives the remainder. Nested replay helpers still use distinct
 counters, so exact cumulative operation accounting (including literal
-comparisons) remains an explicit limitation. DAG input-leaf validation charges
-both the node clause and each candidate input clause for every repeated exact
-membership comparison. A runtime regression checks the exact 15-unit threshold
+comparisons) remains an explicit limitation. `check_freshening_with_work` is a
+local exception: one meter covers its domain uniqueness scan, binding lookups
+and replacement copies, avoid scans, and injectivity checks. Its 4-unit success /
+3-unit failure boundary and a compiled charge-removal mutant are tested; the
+meter does not yet span clause collection or the rest of replay. DAG input-leaf
+validation charges both the node clause and each candidate input clause for every
+repeated exact membership comparison. A runtime regression checks the exact 15-unit threshold
 for three candidates, and a compiled mutation that removes the repeated node
 charge must fail. If integer division would
 leave any node with a zero validation share, certification returns `Unknown`.
@@ -122,7 +127,8 @@ Runtime adversarial cases also reject standardized variable-ID collisions,
 malformed/deep positions, mismatched raw/fresh paths, invalid argument slots and
 forged conclusions. A target-parent collision fixture has a disjoint positive
 control; the compiled mutation that omits source-fresh images from both target
-avoid sets must fail that specific rejection regression.
+avoid sets must fail that specific rejection regression. A separate mutant
+omitting the freshening lookup charge must fail the exact work-boundary test.
 `validated_dag_has_no_model` composes these facts with topological induction and
 a total valuation into the nonempty carrier. No interpretation or assumed input
 validity is supplied to the executable API.
