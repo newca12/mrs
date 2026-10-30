@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and four
+The mutation inventory is now fifty-eight verifier-negative checks and five
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -91,9 +91,13 @@ repeated exact-membership scan, with a runtime regression for the exact cutoff;
 this closes that specific repeated-comparison undercount, not all comparison
 accounting. The runtime suite also exercises standardized-parent collision
 rejection, malformed/deep target paths, mismatched pre/post-freshening paths,
-out-of-range atom slots and forged conclusions. The source-mutation suite tests
-forbidden freshening images, but the compiled-runtime mutation set does not yet
-independently remove the target-parent freshening guard.
+out-of-range atom slots and forged conclusions. A superposition certificate
+with a target freshening that collides with a source-fresh variable is rejected,
+alongside a disjoint positive control. A compiled-runtime mutation removes
+source-fresh images from both target avoid sets; the mutant still passes
+`--no-cheating` verification but must fail at the collision-specific runtime
+assertion. This checks the standardized-apart representation policy, not an
+extra premise of the semantic soundness theorem.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
@@ -167,13 +171,13 @@ retain a build artifact unless `VERUS_LOG` is set.
 values before running it; this currently checks byte reproducibility on one
 host and toolchain only.
 
-The verification gate runs 58 verifier-negative mutations across inference
+The verification gate enforces 58 verifier-negative mutations across inference
 replay, DAG dispatch and wire tokenization. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
-contracts; it is not comprehensive threat-model coverage. Four compiled-runtime
+contracts; it is not comprehensive threat-model coverage. Five compiled-runtime
 mutations cover root-ancestor closure, repeated node-clause charging,
-duplicate-ID rejection and decimal-token validation; each must fail its
-corresponding runtime regression. The gate also compiles and runs positive and
+duplicate-ID rejection, decimal-token validation and target-parent freshening
+collision; each must fail its corresponding runtime regression. The gate also compiles and runs positive and
 negative DAG examples via `runtime-check.py`; the ordinary Rust `main` assertion
 is a test oracle outside the verified certification API.
 The mutation suite injects `#[verifier::assume_specification]` into a temporary
@@ -188,10 +192,12 @@ An additional runtime regression rejects a disconnected but valid input node
 and exercises both zero-budget and exact-threshold closure exhaustion/success.
 Input-leaf comparison regression exercises three candidates, accepts at the
 exact 15-unit node budget and rejects at 14. A compiled-runtime mutation that
-removes the repeated node-clause charge must fail this regression. A separate
-runtime regression exercises standardized-variable-collision rejection, but no
-compiled mutation currently removes the target-parent freshening guard; this
-remains an explicit mutation-testing gap.
+removes the repeated node-clause charge must fail this regression. The target
+freshening mutation omits source-parent fresh images from both target avoid sets;
+its compiled program must fail specifically at the parent-variable collision
+assertion. The mutation runner enforces the expected inventory counts so an
+accidental removal of either verifier-negative or compiled-runtime coverage
+fails the gate.
 
 ## Re-audit triggers
 

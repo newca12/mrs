@@ -241,4 +241,6 @@ artifact/hash. Rust tests requiring the artifact are explicitly ignored in
 ordinary `cargo test`; they are mandatory in the formal CI job.
 The compiled-runtime mutation gate weakens the tokenizer's digit guard and maps
 a non-ASCII byte into a digit, then requires the malformed request to remain
-rejected.
+rejected. It also removes the source-fresh variable images from both target
+avoid sets; that mutant must pass Verus verification but fail the dedicated
+superposition parent-variable collision regression.

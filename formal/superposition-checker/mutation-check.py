@@ -10,6 +10,9 @@ import subprocess
 import sys
 import tempfile
 
+EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 5
+
 
 def main() -> int:
     if len(sys.argv) != 3:
@@ -318,6 +321,15 @@ def main() -> int:
         ),
     ]
 
+    if len(mutations) != EXPECTED_VERIFIER_NEGATIVE_MUTATIONS:
+        print(
+            "verifier-negative mutation inventory changed: "
+            f"expected {EXPECTED_VERIFIER_NEGATIVE_MUTATIONS}, found {len(mutations)}",
+            file=sys.stderr,
+        )
+        return 2
+    compiled_runtime_mutations = 0
+
     with tempfile.TemporaryDirectory(prefix="mrs-verus-mutation-") as temp_dir:
         cheating_path = pathlib.Path(temp_dir) / "cheating_probe.rs"
         cheating_path.write_text(
@@ -394,6 +406,7 @@ def main() -> int:
             print("runtime accepted mutation: certifier skips root-ancestor closure", file=sys.stderr)
             return 1
         print("runtime mutation rejected: certifier skips root-ancestor closure")
+        compiled_runtime_mutations += 1
 
         input_charge = (
             "if !charge_clause_structure(&node.clause, &mut work, work_limit) {\n"
@@ -426,6 +439,7 @@ def main() -> int:
                   file=sys.stderr)
             return 1
         print("runtime mutation rejected: input leaf comparisons omit repeated node charge")
+        compiled_runtime_mutations += 1
 
         duplicate_id_guard = "if dag.nodes[prior].id == node.id {\n                return DagVerdict::Rejected;\n            }"
         if source.count(duplicate_id_guard) != 1:
@@ -456,6 +470,71 @@ def main() -> int:
                 print("runtime accepted mutation: duplicate DAG node IDs", file=sys.stderr)
                 return 1
             print("runtime mutation rejected: duplicate DAG node IDs")
+        compiled_runtime_mutations += 1
+
+        target_freshening_anchors = (
+            "|| !extend_unique(&mut avoid_target, &fresh_source_variables, work_limit)",
+            "|| !extend_unique(&mut target_avoid, &fresh_source_variables, remaining_work)",
+        )
+        mutated_source = source
+        for anchor in target_freshening_anchors:
+            if mutated_source.count(anchor) != 1:
+                print(
+                    "target-parent freshness mutation anchor is missing or ambiguous: "
+                    f"{anchor}",
+                    file=sys.stderr,
+                )
+                return 2
+            mutated_source = mutated_source.replace(
+                anchor,
+                "|| { let _fresh_source_variable_count = fresh_source_variables.len(); false }",
+                1,
+            )
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_target_freshening_guard.rs"
+        mutated_path.write_text(mutated_source)
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-target-freshening-guard"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "target-parent freshness mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "superposition parent-variable collision regression failed"
+        if runtime.returncode == 0:
+            print(
+                "runtime accepted mutation: target freshening permits a source-variable collision",
+                file=sys.stderr,
+            )
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "target-parent freshness mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            "runtime mutation rejected: target freshening permits a source-variable collision"
+        )
+        compiled_runtime_mutations += 1
 
         tokenizer_guard = "if byte < 48 || byte > 57 { return None; }"
         digit_mapping = "let digit = (byte - 48) as u64;"
@@ -491,6 +570,20 @@ def main() -> int:
                 print("runtime accepted mutation: tokenizer accepts nondecimal token", file=sys.stderr)
                 return 1
             print("runtime mutation rejected: tokenizer accepts nondecimal bytes")
+        compiled_runtime_mutations += 1
+
+    if compiled_runtime_mutations != EXPECTED_COMPILED_RUNTIME_MUTATIONS:
+        print(
+            "compiled-runtime mutation inventory changed: "
+            f"expected {EXPECTED_COMPILED_RUNTIME_MUTATIONS}, found {compiled_runtime_mutations}",
+            file=sys.stderr,
+        )
+        return 2
+    print(
+        "mutation gate passed: "
+        f"verifier_negative={len(mutations)} "
+        f"compiled_runtime={compiled_runtime_mutations}"
+    )
 
     return 0
 

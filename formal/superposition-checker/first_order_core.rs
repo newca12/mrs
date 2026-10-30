@@ -5705,6 +5705,70 @@ fn executable_standardization_apart_example() -> bool
     valid && !collision && !pre_existing_collision
 }
 
+fn parent_variable_superposition_certificate(
+    target_image: u64,
+    unifier: Vec<ExecBinding>,
+) -> SuperpositionCertificate
+{
+    SuperpositionCertificate {
+        source: ExecClause {
+            literals: vec![ExecLiteral {
+                positive: true,
+                atom: ExecAtom::Eq(
+                    ExecTerm::App1(4, Box::new(ExecTerm::Var(0))),
+                    ExecTerm::Var(1),
+                ),
+            }],
+        },
+        target: ExecClause {
+            literals: vec![ExecLiteral {
+                positive: true,
+                atom: ExecAtom::Pred1(8, Box::new(ExecTerm::App1(
+                    4, Box::new(ExecTerm::Var(2)),
+                ))),
+            }],
+        },
+        source_freshening: vec![
+            ExecBinding { variable: 0, replacement: ExecTerm::Var(100) },
+            ExecBinding { variable: 1, replacement: ExecTerm::Var(101) },
+        ],
+        target_freshening: vec![ExecBinding {
+            variable: 2,
+            replacement: ExecTerm::Var(target_image),
+        }],
+        source_equality_index: 0,
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        target_path: Vec::new(),
+        fresh_target_path: Vec::new(),
+        unifier,
+        conclusion: ExecClause {
+            literals: vec![ExecLiteral {
+                positive: true,
+                atom: ExecAtom::Pred1(8, Box::new(ExecTerm::Var(101))),
+            }],
+        },
+    }
+}
+
+fn executable_disjoint_parent_freshening_example() -> bool
+{
+    // The target variable is first renamed to 200, then unified with source 100.
+    let certificate = parent_variable_superposition_certificate(
+        200,
+        vec![ExecBinding { variable: 200, replacement: ExecTerm::Var(100) }],
+    );
+    check_superposition_and_replay(&certificate, 1000)
+}
+
+fn executable_parent_variable_freshening_collision_rejected_example() -> bool
+{
+    // Mapping the target variable directly to the source fresh ID violates
+    // the checker’s standardized-apart certificate policy.
+    let certificate = parent_variable_superposition_certificate(100, Vec::new());
+    !check_superposition_and_replay(&certificate, 1000)
+}
+
 fn executable_superposition_certificate_example() -> bool
 {
     let source = ExecClause {
@@ -14295,6 +14359,8 @@ fn run_examples() -> bool {
     executable_clause_replay_example();
     executable_unifier_certificate_examples();
     if !executable_standardization_apart_example() { return false; }
+    if !executable_disjoint_parent_freshening_example() { return false; }
+    if !executable_parent_variable_freshening_collision_rejected_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
 
     // Supplied unifier certificate binding target-side variable 42 to
@@ -14347,6 +14413,10 @@ fn regression_main() {
         "source-variable unification regression failed");
     assert!(executable_standardization_apart_example(),
         "standardization-apart collision regression failed");
+    assert!(executable_disjoint_parent_freshening_example(),
+        "disjoint superposition freshening regression failed");
+    assert!(executable_parent_variable_freshening_collision_rejected_example(),
+        "superposition parent-variable collision regression failed");
     assert!(executable_superposition_certificate_example(),
         "superposition path regression failed");
     assert!(executable_dag_certification_examples(), "base DAG certification regression failed");

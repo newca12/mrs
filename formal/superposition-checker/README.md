@@ -59,10 +59,12 @@ subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
 tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
-forward parents, and nonempty-root acceptance. Four compiled-runtime mutations
+forward parents, and nonempty-root acceptance. Five compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
-duplicate-ID rejection, or decimal-token guard; each must fail its corresponding
-regression. The
+duplicate-ID rejection, decimal-token guard, or target-parent freshening avoid
+set; each must fail its corresponding regression. The mutation runner enforces
+the expected counts, so deleting a gate cannot silently shrink the inventory.
+The
 source tree is not modified by these negative checks.
 `runtime-check.py` compiles the verified core and runs DAG regressions in a
 temporary directory. It performs the compile twice and requires byte-identical
@@ -71,14 +73,15 @@ determinism check, not a cross-host reproducible-build claim.
 The mutation gate first verifies a valid assumption probe without strict mode,
 then requires Verus `--no-cheating` to reject it. It also rejects the actual
 forbidden-image freshness mutation; removing a redundant check alone is not a
-valid negative test.
+valid negative test. Separately, the compiled target-parent collision mutant
+must fail the collision-specific runtime assertion.
 
 The checks use pinned Verus `0.2026.10.18.7d82994`.
 This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `437 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `440 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -117,8 +120,9 @@ charge must fail. If integer division would
 leave any node with a zero validation share, certification returns `Unknown`.
 Runtime adversarial cases also reject standardized variable-ID collisions,
 malformed/deep positions, mismatched raw/fresh paths, invalid argument slots and
-forged conclusions; a compiled mutation removing the target-parent freshening
-guard must fail the collision regression.
+forged conclusions. A target-parent collision fixture has a disjoint positive
+control; the compiled mutation that omits source-fresh images from both target
+avoid sets must fail that specific rejection regression.
 `validated_dag_has_no_model` composes these facts with topological induction and
 a total valuation into the nonempty carrier. No interpretation or assumed input
 validity is supplied to the executable API.
