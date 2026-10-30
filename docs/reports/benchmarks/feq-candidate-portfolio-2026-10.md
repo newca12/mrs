@@ -6,6 +6,8 @@
 > inconclusive. The CASC-J13 runs used 180 s;
 > current canonical FEQ comparisons use 240 s, so those J13 results are
 > supplemental and must not be treated as canonical-limit comparisons.
+> A separate October 29 CASC-30 FEQ run is documented in §5; it is not included
+> in the original four-campaign aggregate or promoted as a baseline.
 > Campaign directories:
 > - CASC-30 (8c host): `~/crates/mrs-bench/results/cooperative-feq-equal-candidate-casc30`
 > - CASC-30 (32c host): `~/crates/mrs-bench/results/cooperative-feq-equal-candidate-casc30-x`
@@ -60,7 +62,7 @@ The J13 rows are supplemental because the current canonical FEQ limit is 240 s.
    - **100% Strict Pass on Emitted Proofs**: **71 `VerifiedGood`**, **0 `VerifiedBad`**, 0 `Unknown`, and 1 `Proof Omitted` (`SWV406+1`, 83.4 MB > 32 MB limit).
 
 5. **Evidence status under `AGENTS.md` §11**:
-   These single-run campaigns show positive observed results and zero
+   The original four single-run campaigns show positive observed results and zero
    `VerifiedBad` proofs among 365 audited refutations. Their coverage deltas are
    observations, not estimates of means or evidence that the portfolio is
    optimal; the CASC-J13 runs used a supplemental historical 180 s limit, and
@@ -177,7 +179,67 @@ Replicated paired runs at the canonical 240 s limit remain necessary.
 
 ---
 
-## 5. Roadmap: Retaining Strategy 15 via MultiQueue in FEQ
+## 5. Supplemental CASC-30 FEQ run (2026-10-29)
+
+`~/crates/mrs-bench/results/campaign-casc30-feq-02-20261029-123324` is a later
+full-division run using the adopted candidate order. It completed all 400
+problems at the official 240 s FEQ limit:
+
+| Outcome | Count | Strict audit |
+|:---|---:|:---|
+| `Theorem` | 109 | 104 `VerifiedGood`, 0 `VerifiedBad` |
+| `Timeout` | 219 | no proof to check |
+| `GaveUp` | 72 | no proof to check |
+| Errors / resource-outs | 0 | — |
+
+The five generated proofs not certified `VerifiedGood` were: `COM149+1`
+(`Unknown`, demodulation replay mismatch), `GEO340+1` (`Unknown`, factoring
+step limit), `KLE071+1` (`Unknown`, incomplete AC-superposition replay),
+`ALG049+1` (strict verifier exceeded 120 s), and `GEO559+1` (proof omitted at
+57.46 MB / 137,948 nodes). Thus the raw result is 109/400 (27.25%), while the
+strictly verified count is 104/400 (26.0%).
+
+### Oct 28 proof-output comparison
+
+The preceding full run on the same host,
+`campaign-casc30-feq-20261028-093955`, also used `mtsdev02`, eight workers, and
+the same strategy order (`12,11,10,6,8,1,4,13`). It produced 108 `Theorem`
+statuses, but the audit had only 92 `VerifiedGood` and 12 `no_proof` rows. In
+the Oct 29 run:
+
+- All 92 previous `VerifiedGood` problems certified again.
+- All 108 Oct 28 raw theorem statuses recurred.
+- Eleven of the 12 prior `no_proof` cases now passed strict verification:
+  `KLE113+1`, `KLE132+1`, `LCL894+1`, `LCL895+1`, `LCL896+1`, `LCL901+1`,
+  `NUM835+1`, `NUM839+2`, `NUM852+1`, `NUM853+2`, and `NUM926+2`.
+- `KLE071+1` now emitted a proof but remains `Unknown`; `SWV458+1` is one new
+  raw theorem and passed strict verification.
+
+This raises the observed strict count from 92 to 104 (+12) and the raw theorem
+count from 108 to 109 (+1). It is consistent with recovery of proof emission,
+but it is **not a controlled attribution**: both metadata files report dirty
+trees and different binary hashes, and each is a single run. The Oct 29 result
+also remains two `VerifiedGood` below the earlier documented 8-core candidate
+run (106/111); do not replace that observation or infer a regression from this
+one run.
+
+### Provenance and resource observations
+
+The run used `MRS_HARDWARE=casc`, eight workers, `jobs=1`, and the automatic FEQ
+schedule (observed order `12,11,10,6,8,1,4,13`). Host: `mtsdev02`, Xeon E5-2407,
+8 physical cores, 95,979 MB RAM. The configured CASC allowance was 131,072 MB;
+effective memory was 81,582 MB (`mem_unrepresentable=1`). No row ended in
+`ResourceOut`; the maximum RSS was 65,174 MB (`CSR037+5`). The maximum virtual
+peak was 79,607 MB on the same problem and is not RSS. Five emitted proofs
+exceeded 8 MB; the 57.46 MB `GEO559+1` proof was withheld.
+
+Provenance: run ID `mrs_bench_20261029_123429_6cc4f7d9`, commit
+`3bb872130a77ea2f1586ff89ab69082fd14c09ff` (`git_dirty=true`), binary SHA-256
+`2681fbf48120e1d619fcf60f3f12fa85f3ae25ffa0bcd821c0f5993fa0c0c1a7`. The 400
+problem rows are unique; raw stdout/stderr and the 108 present proof files match
+their recorded hashes, and the `run.csv` digest matches the audit identity.
+
+## 6. Roadmap: Retaining Strategy 15 via MultiQueue in FEQ
 
 Strategy 15 (`SymbolWeight` + `AgeWeight(4)` + `AllNegative` + `KBO`, no AVATAR) possesses extraordinary solving power on dense geometric and algebraic problems (`GEO641+1` in 0.17 s, `GEO559+1` in 2.33 s solo). Its core mechanism is **inverse-frequency / arity symbol weighting**: rare symbols cost more, guiding the given-clause loop toward common symbols that trigger rapid demodulation and equational collapse.
 

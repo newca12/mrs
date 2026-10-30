@@ -147,11 +147,16 @@ run above. The certification gap that dominates that table (the 18
 `demodulation` rows) is therefore not what limits this division; the 293
 remaining rows are `N/A: Incomplete`, i.e. they produced no proof to check.
 
-The number to watch is not the 107 but the comparison: the stored `codex.db`
-CASC-J13 UEQ run answers 257/400 on the same problems, so this campaign loses
-161 and gains 11, with median `processed_per_s` on the regressed rows falling
-from 1649.5 to 116.0. Coverage, not certification, is the open question. See
-[`reports/benchmarks/ueq-2026-09.md`](reports/benchmarks/ueq-2026-09.md).
+The stored `codex.db` CASC-J13 UEQ run reported 257/400 raw `Unsatisfiable`
+statuses, but its legacy engine used an AC fallback now known to permit invalid
+substitutions. A separate strict audit of the archived
+`campaign-cascj13-clean-unsound` run found 82 `VerifiedBad` among its 114
+proofs. That audit does not classify the specific 257/400 `codex.db` rows or
+establish a corrected full-division count. The archived overlap (96 shared raw
+labels, 161 legacy-only, 11 current-only) and throughput figures are not a
+verified coverage delta. Do not describe 107/400 as a 150-problem regression or
+use 257/400 as a valid score.
+See [`reports/benchmarks/ueq-2026-09.md`](reports/benchmarks/ueq-2026-09.md).
 
 ### Fresh UEQ syntactic-recovery campaign (2026-10-16)
 
@@ -475,8 +480,8 @@ different campaign builds, not a controlled A/B. See
 [`results/README.md`](results/README.md) for the evidence, per-problem status
 sets, and provenance.
 
-Accordingly, keep **127/300** from the October 7 audited campaign as the
-current trusted CASC-30 UEQ result. The October 16 result of 118
+At the time of this October 16 review, keep **127/300** from the October 7
+audited campaign as the CASC-30 UEQ comparison baseline. The October 16 result of 118
 `VerifiedGood` is lower and carries five `VerifiedBad` proofs plus one
 refutation without a proof root; it is not a replacement baseline. The five
 rejected UEQ proofs span mismatched cited leaves (`MVA008-1`, `MVA009-1`,
@@ -700,6 +705,39 @@ on Oct 21. Detailed telemetry and domain breakdowns are in the
 [FEQ campaign report](reports/benchmarks/feq-2026-10.md) and
 [`results/README.md`](results/README.md).
 
+### Supplemental CASC-30 FEQ run (2026-10-29)
+
+`~/crates/mrs-bench/results/campaign-casc30-feq-02-20261029-123324` completed
+all 400 problems at the official 240-second FEQ limit. It returned **109
+`Theorem`**, 219 `Timeout`, and 72 `GaveUp`. Strict audit certified **104/109
+proofs as `VerifiedGood`**, with **0 `VerifiedBad`**, 3 `Unknown`, 1 verifier
+timeout, and 1 proof omitted. The strict verified count is **104/400 (26.0%)**;
+the raw theorem count is 109/400 (27.25%). No process errors or resource-outs
+were recorded.
+
+The non-`VerifiedGood` refutations are `COM149+1`, `GEO340+1`, and `KLE071+1`
+(`Unknown`); `ALG049+1` (verification exceeded the 120-second limit); and
+`GEO559+1` (57.46 MB proof omitted at 137,948 nodes). All 92 `VerifiedGood`
+proofs from the Oct 28 FEQ artifact on `mtsdev02` re-certified. Eleven of its
+12 `no_proof` rows now pass strict audit; `KLE071+1` emitted a proof but remains
+`Unknown`. `SWV458+1` is one new raw theorem and is `VerifiedGood`. This is a
+notable proof-output improvement across the two artifacts, not a controlled
+source-change attribution: both builds are dirty and have different binary
+hashes. The new 104/109 result is also two strict solves below the earlier
+8-core candidate observation (106/111), so it does not replace that baseline.
+
+The run used the automatic FEQ order `12,11,10,6,8,1,4,13`, eight workers,
+`jobs=1`, and `MRS_HARDWARE=casc`. Host `mtsdev02` has 8 physical cores and
+95,979 MB RAM; the effective memory limit was 81,582 MB, below the configured
+131,072 MB allowance. No job reached that limit; maximum RSS was 65,174 MB
+(`CSR037+5`). Provenance: run ID `mrs_bench_20261029_123429_6cc4f7d9`, commit
+`3bb872130a77ea2f1586ff89ab69082fd14c09ff` (`git_dirty=true`), binary SHA-256
+`2681fbf48120e1d619fcf60f3f12fa85f3ae25ffa0bcd821c0f5993fa0c0c1a7`. All 400
+problem rows are unique; raw output and present proof hashes match, and the
+`run.csv` digest matches the audit identity. Full observations are in the
+[FEQ candidate report](reports/benchmarks/feq-candidate-portfolio-2026-10.md)
+and [`results/README.md`](results/README.md).
+
 ### Fresh CASC-30 UEQ campaigns (2026-10-20 and 2026-10-21)
 
 Two consecutive full 300-problem runs were evaluated on canonical 8-core hardware (`mtsdev02`):
@@ -742,6 +780,48 @@ not a baseline update: its build metadata is dirty, and the 8-core host had
 96,350 MB RAM, below the configured 128 GB CASC allowance. The maximum recorded
 RSS was 32,016 MB (`LAT150-1`); the maximum virtual peak was 51,946 MB
 (`ROB005-1`). See the [October 28 UEQ follow-up report](reports/benchmarks/ueq-follow-up-2026-10-28.md).
+
+### Supplemental CASC-30 UEQ follow-up (2026-10-29)
+
+`~/crates/mrs-bench/results/campaign-casc-30-ueq-CASCHJ1-97-20261029` ran all
+300 CASC-30 UEQ problems with eight workers, `jobs=1`, automatic UEQ schedule,
+and `use_casc_times=1` (the official 240-second UEQ limit; the recorded 120 s
+is only the harness default). It returned **149 `Unsatisfiable`**, 118
+`Timeout`, 25 `ResourceOut`, and 8 `GaveUp`. Strict proof audit certified
+**149/149 `VerifiedGood`**, with **0 `VerifiedBad`**, no omitted proofs, and no
+checker errors. Thus **149/300 (49.7%) is a valid strictly verified count for
+this artifact**; it does not validate the historical, unsound 222/300 UEQ
+snapshot.
+
+This is a supplemental observation, not a controlled comparison or replacement
+for the established CASC-30 baseline. The build was dirty, this was one run,
+and the host (`tlpnf9701`, Xeon Silver 4108) reported 16 physical cores and
+63,763 MB RAM. It used eight search workers, but the host was not an 8-core
+machine or CPU-pinned. Although `MRS_HARDWARE=casc` configured the 131,072 MB
+allowance, the effective memory limit was only 54,198 MB
+(`mem_unrepresentable=1`). All 25 `ResourceOut` rows hit that memory ceiling:
+7 GRP, 11 LAT, 4 REL, 2 RNG, and 1 MVA. The resource-limited problems were
+`GRP164-1`, `GRP164-2`, `GRP177-1`, `GRP180-1`, `GRP180-2`, `GRP181-1`,
+`GRP181-2`, `LAT139-1`, `LAT141-1`, `LAT149-1`, `LAT150-1`, `LAT151-1`,
+`LAT154-1`, `LAT155-1`, `LAT162-1`, `LAT186-10`, `LAT206-10`, `LAT223-10`,
+`MVA003-1`, `REL016-10`, `REL016-3`, `REL017-1`, `REL044-1`, `RNG019-7`, and
+`RNG020-7`.
+
+The `peak_rss_mb` column is empty for this campaign. Its 299 recorded
+`peak_virtual_mb` values are virtual address-space peaks, not RSS; the maximum
+was 94,366 MB (`GRP181-2`). Each resource-out detail records the 54,198 MB
+limit and RSS at or above that threshold. The 149 emitted proofs are present
+and all pass their recorded SHA-256 checks; raw stdout/stderr hashes agree with
+`run.csv`, and its hash agrees with `certification/audit-identity.json`.
+
+Provenance: run ID `mrs_bench_20261029_193614_f1f40707`, commit
+`31b81f32e312f2fb9f142d79a95d163056356b29` (`git_dirty=true`), binary SHA-256
+`f7735b2c1578e5e9e0fd10f953615da541c0f469c693d0d61e7f22d358c7ac26`. The 149
+count is higher than prior audited CASC-30 runs, but the dirty binary, smaller
+memory envelope, different host, and single replicate prevent attributing that
+difference to a code or portfolio change. Full observations are in the
+[October UEQ campaign report](reports/benchmarks/ueq-2026-10.md) and
+[`results/README.md`](results/README.md).
 
 ### Fresh CASC-J13 FEQ standalone campaigns (2026-10-20 and 2026-10-21)
 

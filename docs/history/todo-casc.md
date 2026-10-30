@@ -81,23 +81,32 @@ only being found by manual code review after the fact.
 
 ---
 
-## Codex-Driven Current Priorities
+## Archived Codex-Driven Priorities (Superseded)
 
-The old division table below was based on commit `c0816a7a` and is no longer a
-useful baseline. The current measured baselines are maintained in
-[`reports/codex/status-2026-09-11.md`](../reports/codex/status-2026-09-11.md):
+The table below is an archived database snapshot from commit `c0816a7a`, not a
+current baseline. Its UEQ counts are especially unsafe: the historical engine's
+AC fallback permitted invalid substitutions. The reported 222/300 CASC-30 and
+257/400 CASC-J13 figures are raw legacy status counts, not valid solve scores.
+The separate `campaign-cascj13-clean-unsound` re-audit rejected 82 of its 114
+proofs; it does not audit the specific database snapshots or establish
+corrected full-division counts for either edition. Use the current audited
+records in [`docs/results/README.md`](../results/README.md) and
+[`docs/CERTIFICATION_STATUS.md`](../CERTIFICATION_STATUS.md).
 
-| Corpus | Division | Definitive | Evaluated | Rate |
+| Corpus | Division | Legacy database status count (uncertified) | Evaluated | Legacy rate (not a score) |
 |---|---|---:|---:|---:|
 | CASC-30 | FEQ | 112 | 400 | 28.0% |
 | CASC-30 | FNE | 43 | 100 | 43.0% |
-| CASC-30 | UEQ | 222 | 300 | 74.0% |
+| CASC-30 | UEQ | 222* | 300 | 74.0%* |
 | CASC-30 | EPS | 17 | 100 | 17.0% |
 | CASC-30 | EPU | 18 | 100 | 18.0% |
 | CASC-30 | ICU | 7 | 39 | 17.9% |
 | CASC-J13 | FEQ | 72 | 300 | 24.0% |
 | CASC-J13 | FNE | 35 | 100 | 35.0% |
-| CASC-J13 | UEQ | 257 | 400 | 64.3% |
+| CASC-J13 | UEQ | 257* | 400 | 64.3%* |
+
+* UEQ figures are unsound/unverified historical labels. Do not quote them as
+  solved counts, use them as baselines, or retain them as optimization gates.
 
 Failure labels are overlapping diagnostics, not disjoint buckets. A single
 problem can be large, EPR, deep, non-Horn, and LRS-heavy at the same time. Do
@@ -187,8 +196,10 @@ resource telemetry, clause/term ceilings, memory watchdogs, graceful
   size alone is not a reliable predictor.
 - Build held-out morphology portfolios using definite ratio, goal-clause ratio,
   conjecture overlap, non-linearity, clause length, and predicate connectivity.
-- For UEQ, retain the 74.0% CASC-30 and 64.3% CASC-J13 portfolios as gates and
-  test conservative non-AC/combinator guidance on LCL, COL, RNG, and SWX.
+- For UEQ, do **not** retain the historical 74.0% CASC-30 or 64.3% CASC-J13
+  figures as gates: they are unsound legacy status counts, not valid scores.
+  Test conservative non-AC/combinator guidance on LCL, COL, RNG, and SWX only
+  against current, strictly audited measurements.
 
 ### Soundness And Release Gate
 

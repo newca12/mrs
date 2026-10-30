@@ -49,6 +49,8 @@ certified signature.
 | `c30-16` | CASC-30 FEQ, UEQ | `campaign-casc30-ueq-feq-W8CASCHJ1-20261016` (combined CASC-mode run) |
 | `c30-20` | CASC-30 FEQ, UEQ | `campaign-casc30-feq-W8CASCHJ1-01-20261020`; `campaign-casc30-ueq-W8CASCHJ1-02-20261020` |
 | `c30-21` | CASC-30 FEQ, UEQ | `campaign-casc30-feq-W8CASCHJ1-01-20261021`; `campaign-casc30-ueq-W8CASCHJ1-02-20261021` |
+| `c30-feq-28` | CASC-30 FEQ | `campaign-casc30-feq-20261028-093955` |
+| `c30-feq-29` | CASC-30 FEQ | `campaign-casc30-feq-02-20261029-123324` |
 | `c30-cand-21` | CASC-30 FNE | `casc-30/coop-fne-candidate-20261021` |
 | `c30-clean` | CASC-30 FEQ | `campaign-casc30-feq-clean` |
 | `c30-19` | CASC-30 FNE, EPS, EPU | `campaign-casc30-fne-W8CASCHJ1-99-20261019`; `campaign-casc30-eps-W8CASCHJ1-01-20261019`; `campaign-casc30-epu-W8CASCHJ1-02-20261019` |
@@ -107,18 +109,31 @@ certified signature.
 
 ## CASC-30
 
-### FEQ — 49 intermittent problems
+### FEQ — 58 intermittent problems
 
 | Certified in | Not certified in | Problems |
 |---|---|---|
-| `c30-20`, `c30-21`, `c30-16` | `c30-clean` | `ALG210+2`, `GEO126+1`, `GEO331+1`, `GEO499+1`, `GEO524+1`, `ITP013+1`, `KLE113+1`, `LCL518+1`, `LCL895+1`, `LCL896+1`, `LCL901+1`, `MGT054+1`, `NUM835+1`, `NUM852+1`, `SET090+1`, `SET637+3`, `SWV449+1`, `SWV451+1`, `SWV452+1`, `SWV453+1`, `SWV455+1`, `SWV460+1`, `SWV462+1`, `SWV466+1`, `SWV468+1`, `SWV471+1`, `SWV473+1`, `SWV476+1`, `SWV480+1`, `SWV487+1`, `SWW383+1` |
-| `c30-16` | `c30-20`, `c30-21`, `c30-clean` | `GEO559+1`, `GEO641+1`, `NUM926+2`, `NUN086+2`, `SET017+1`, `SET072+1`, `SWV459+1` |
-| `c30-16`, `c30-21` | `c30-20`, `c30-clean` | `SWV457+1` |
-| `c30-20` | `c30-16`, `c30-21`, `c30-clean` | `SWV458+1` |
-| `c30-20`, `c30-21` | `c30-16`, `c30-clean` | `COM135+1`, `KLE071+1`, `SWV472+1`, `SWV486+2` |
-| `c30-20`, `c30-21`, `c30-clean` | `c30-16` | `GEO625+1`, `SWB073+1` |
-| `c30-clean` | `c30-20`, `c30-21`, `c30-16` | `GRA009+1`, `SWW313+1` |
-| `c30-16`, `c30-clean` | `c30-20`, `c30-21` | `SET095+1` |
+| `c30-16`, `c30-20`, `c30-21`, `c30-feq-28`, `c30-feq-29` | `c30-clean` | `ALG210+2`, `GEO126+1`, `GEO331+1`, `GEO499+1`, `GEO524+1`, `ITP013+1`, `LCL518+1`, `MGT054+1`, `SET090+1`, `SET637+3`, `SWV449+1`, `SWV451+1`, `SWV452+1`, `SWV453+1`, `SWV455+1`, `SWV460+1`, `SWV462+1`, `SWV466+1`, `SWV468+1`, `SWV471+1`, `SWV473+1`, `SWV476+1`, `SWV480+1`, `SWV487+1`, `SWW383+1` |
+| `c30-16` | `c30-20`, `c30-21`, `c30-clean`, `c30-feq-28`, `c30-feq-29` | `GEO559+1`, `GEO641+1`, `NUN086+2`, `SET017+1`, `SET072+1`, `SWV459+1` |
+| `c30-16`, `c30-20`, `c30-21`, `c30-feq-29` | `c30-clean`, `c30-feq-28` | `KLE113+1`, `LCL895+1`, `LCL896+1`, `LCL901+1`, `NUM835+1`, `NUM852+1` |
+| `c30-16`, `c30-20`, `c30-21`, `c30-clean` | `c30-feq-28`, `c30-feq-29` | `BIO005+1`, `BIO006+1`, `COM149+1` |
+| `c30-20`, `c30-21`, `c30-feq-28`, `c30-feq-29` | `c30-16`, `c30-clean` | `COM135+1`, `SWV472+1`, `SWV486+2` |
+| `c30-16`, `c30-20`, `c30-21`, `c30-clean`, `c30-feq-29` | `c30-feq-28` | `NUM839+2`, `NUM853+2` |
+| `c30-20`, `c30-21`, `c30-clean`, `c30-feq-28`, `c30-feq-29` | `c30-16` | `GEO625+1`, `SWB073+1` |
+| `c30-clean` | `c30-16`, `c30-20`, `c30-21`, `c30-feq-28`, `c30-feq-29` | `GRA009+1`, `SWW313+1` |
+| `c30-feq-28`, `c30-feq-29` | `c30-16`, `c30-20`, `c30-21`, `c30-clean` | `GRP776+1`, `PRO012+1` |
+| `c30-feq-29` | `c30-16`, `c30-20`, `c30-21`, `c30-clean`, `c30-feq-28` | `KLE132+1`, `LCL894+1` |
+| `c30-16`, `c30-21` | `c30-20`, `c30-clean`, `c30-feq-28`, `c30-feq-29` | `SWV457+1` |
+| `c30-16`, `c30-clean` | `c30-20`, `c30-21`, `c30-feq-28`, `c30-feq-29` | `SET095+1` |
+| `c30-16`, `c30-feq-29` | `c30-20`, `c30-21`, `c30-clean`, `c30-feq-28` | `NUM926+2` |
+| `c30-20`, `c30-21` | `c30-16`, `c30-clean`, `c30-feq-28`, `c30-feq-29` | `KLE071+1` |
+| `c30-20`, `c30-feq-29` | `c30-16`, `c30-21`, `c30-clean`, `c30-feq-28` | `SWV458+1` |
+
+The Oct 28 and Oct 29 FEQ runs used the same host and strategy order but
+different dirty binaries. The later run re-certified all 92 `VerifiedGood`
+proofs from Oct 28, strictly verified 11 of its 12 `no_proof` rows, and added
+`SWV458+1`; `KLE071+1` emitted a proof but remained `Unknown`. Treat the change
+as an observed cross-build difference, not a replicated same-binary result.
 
 ### FNE — 12 intermittent problems
 

@@ -271,8 +271,10 @@ restore test (§2.6), each written to fail without the change it pins.
 
 - **No division score.** Every number here is one strategy, one worker, on a
   2-core host. The 11-vs-10 in §3.2 is a regression check on a 60-row subset, not
-  a UEQ score, and the [UEQ report](ueq-2026-09.md)'s 107/400 and the stored
-  `codex.db` 257/400 are both 8-worker measurements on 16-core hosts.
+  a UEQ score. The [UEQ report](ueq-2026-09.md)'s 107/400 is strictly verified
+  for its artifact but is a development-mode measurement. The stored `codex.db`
+  257/400 is an unsound legacy status count, not a valid score; do not compare
+  the two as solve coverage.
 - **Nothing here is CASC-shaped.** AGENTS.md §11's decision rule applies: a
   throughput change on this host says nothing about a CASC entry's ranking, and
   the FNE report's ±4-problem host band is a reminder that a solved-count
@@ -281,9 +283,11 @@ restore test (§2.6), each written to fail without the change it pins.
   the 61 FNE failures and is a search-power problem, not a throughput one
   ([FNE report](fne-2026-09.md) §2). FNE moves 1.02x here and that is what
   should be expected.
-- **The sharing question is untouched.** The UEQ report's §2 four-cell A/B is
-  still the open question about the 150-problem regression, and this work does
-  not speak to it: `MRS_SHARED_POOL_INTERVAL=0` throughout.
+- **The sharing question is untouched.** The historical 257-to-107 comparison
+  is invalidated by the unsound legacy count, so it does not establish a
+  150-problem regression. This work does not measure sharing:
+  `MRS_SHARED_POOL_INTERVAL=0` throughout. Any new sharing study needs matched,
+  strictly audited runs of the current producer.
 
 ## 7. What I would do next
 

@@ -370,14 +370,20 @@ The question is whether those division schedules are optimal for 8 cores.
 > **UEQ historical numbers — do not quote superseded/unsound runs as current scores.**
 > Historical unverified snapshots in `codex.db` (such as 257/400 for CASC-J13
 > and 222/300 for CASC-30) were derived from an older engine whose AC fallback
-> permitted invalid substitutions. Independent strict-kernel re-audits showed 82
-> of 114 audited proofs were rejected as `VerifiedBad` (see UI-1 in
+> permitted invalid substitutions. A separate strict audit of the archived
+> `campaign-cascj13-clean-unsound` run rejected 82 of its 114 proofs as
+> `VerifiedBad`; this does not audit the specific `codex.db` 257/400 or 222/300
+> snapshots and supplies no corrected score (see UI-1 in
 > `docs/policies/unresolved-issues.md`, `docs/CERTIFICATION_STATUS.md`, and
 > `docs/reports/benchmarks/ueq-soundness-regression-2026-10.md`). The current
 > strictly verified UEQ baseline is **107/400** on CASC-J13 (all 107
-> kernel-certified `VerifiedGood`, 0 `VerifiedBad`). Whenever reporting CASC
-> scores, never present the raw 257/400 or 222/300 numbers as valid scores
-> without explicitly stating they are superseded by soundness re-audits.
+> kernel-certified `VerifiedGood`, 0 `VerifiedBad`). A 2026-10-29 CASC-30 run
+> produced 149/300 strict `VerifiedGood`, but is a dirty, single-run result on
+> an unpinned 16-core host with only 54,198 MB effective memory and 25 memory
+> resource-outs; it is supplemental, not a standardized baseline (see
+> `docs/reports/benchmarks/ueq-2026-10.md`).
+> Never present the raw 257/400 or 222/300 figures as valid scores: they are
+> unsound/unverified legacy status counts and are superseded.
 
 ### Decision rule for implementing `--casc`
 

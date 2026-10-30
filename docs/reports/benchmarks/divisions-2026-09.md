@@ -106,20 +106,28 @@ order; the exact coverage for the compromise order has not been measured.
 > which raises solo diagnostic coverage from 35/38 to 38/38 (100%) on J13 and from
 > 40/44 to 44/44 (100%) on CASC-30. See [`fne-fulltime-portfolio-2026-10.md`](fne-fulltime-portfolio-2026-10.md).
 
-### UEQ measured cooperatively: 107/400, and a 150-problem regression
+### UEQ CASC-J13: 107 strictly verified; legacy comparison invalidated
 
 `docs/reports/benchmarks/ueq-2026-09.md` is the first cooperative 8-worker
 measurement of the UEQ division (CASC-J13, 400 problems, 180 s, commit
-`c07cac9`). Headline: **107/400, all 107 kernel-certified, zero violations** —
-against the `codex.db` CASC-J13 UEQ run's 257/400, that is 96 solved in common,
-**161 lost**, 11 gained, with median `processed_per_s` on the regressed rows
-falling from 1649.5 to 116.0. The UEQ order above shipped at `b214a13` on solo
-set-cover evidence that its own source document calls unvalidated for the
-cooperative case, and cross-strategy sharing was disabled by default at
-`ce7bdc5`; both fall inside the regression window and neither is yet
-established as the cause. The four-cell A/B that separates them is §2 of that
-report. The row in the table above should be read as a candidate, not as a
-measured schedule.
+`c07cac9`). Its 107/400 refutations all passed strict kernel verification, with
+zero `VerifiedBad` and no reference or polarity violations. The apparent
+comparison against the `codex.db` CASC-J13 count of 257/400 is withdrawn: that
+legacy AC-fallback engine permitted invalid substitutions. A separate strict
+audit of `campaign-cascj13-clean-unsound` found 82 `VerifiedBad` proofs among
+114 artifacts; it does not audit the specific 257/400 database run. The exact
+valid subset of the old 257 is unknown. The recorded 96 common labels, 161
+legacy-only labels, 11 current-only solves, and throughput difference are raw
+archival comparisons, not evidence of a 150-problem sound-coverage regression
+or its cause.
+
+The UEQ order above shipped at `b214a13` on solo set-cover evidence that its
+source document calls unvalidated for the cooperative case; cross-strategy
+sharing was disabled by default at `ce7bdc5`. Those are configuration changes,
+not established explanations of the invalidated score difference. Any new
+portfolio comparison must use the current sound producer and strict audits.
+The row in the table above should be read as a candidate, not as a measured
+schedule.
 
 ---
 

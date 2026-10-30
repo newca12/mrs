@@ -2,6 +2,12 @@
 # Source: ueq-casc-j13-20260930-run.csv (400 rows, system mrs, commit c07cac9, dirty tree)
 # Hardware: Xeon Silver 4108, 16 physical cores visible, --hardware adaptive,
 #   8 workers, effective_mem_mb ~47000, official CASC-J13 wall clock 180 s.
+# Soundness correction: the legacy `codex.db` UEQ counts below (including 257/400)
+# are raw status labels from the old unsound AC-fallback engine, not valid solves.
+# A separate audit of campaign-cascj13-clean-unsound found 82 VerifiedBad among
+# its 114 proofs; it does not audit the specific codex.db 257/400 run. Its exact
+# valid subset is unknown. All codexdb/lost/gained fields below are
+# raw-label overlap only, not a verified coverage delta.
 metric	value
 problems	400
 solved_ok	107
@@ -33,8 +39,8 @@ rows_shared_published_gt0	0
 rows_with_no_telemetry	23
 solved_processed_per_s_median	356.1
 timeout_processed_per_s_median	114.2
-# Comparison against the codex.db CASC-J13 UEQ run (800-row campaign, 180 s, 8 workers)
-# that docs/reports/codex/status-2026-09-11.md reports as 257/400.
+# Archived raw-label comparison against the codex.db CASC-J13 UEQ run (800-row campaign).
+# 257/400 is an unverified legacy count, not a valid score.
 codexdb_problems	400
 codexdb_solved	257
 codexdb_solved_rate_pct	64.3
@@ -46,7 +52,7 @@ common_solved_wall_new_median_s	7.76
 common_solved_slower_now	61
 regressed_rows_db_pps_median	1649.5
 regressed_rows_new_pps_median	116.0
-# Per-family: total, codex.db solved, this run solved, lost, gained
+# Per-family: total, legacy raw labels, this run's strictly verified solves, raw overlap deltas
 family	total	codexdb_solved	this_run_solved	lost	gained
 GRP	79	66	25	42	1
 LAT	78	72	21	51	0

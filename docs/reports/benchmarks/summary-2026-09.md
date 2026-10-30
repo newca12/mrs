@@ -183,11 +183,11 @@ Important limitations:
 - Profile/result correlations are hypotheses, not causal proof.
 - The competition binary must profile the input itself; it must not depend on a filename lookup in `codex.db`.
 
-### Current CASC-30 Snapshot
+### Legacy CASC-30 Database Snapshot (UEQ count invalid)
 
 The Codex summary records one 8-worker run over 1,039 rows:
 
-| Division | Evaluated | Definitive | Rate |
+| Division | Evaluated | Legacy raw status count (uncertified) | Legacy rate (not a score) |
 |---|---:|---:|---:|
 | FNE | 100 | 43 | 43.0% |
 | FEQ | 400 | 112 | 28.0% |
@@ -197,7 +197,7 @@ The Codex summary records one 8-worker run over 1,039 rows:
 | ICU | 39 | 7 | 17.9% |
 | Total | 1,039 | 419 | 40.3% |
 
-*\* **UEQ caveat:** Superseded historical snapshot. Proofs in this older run were derived before AC fallback soundness fixes and are not strictly verified. See UI-1 in `docs/policies/unresolved-issues.md`.*
+*\* **UEQ caveat:** The 222/300 is an unsound, unverified legacy status count, not a valid score. The older engine's AC fallback permitted invalid substitutions; no strict audit establishes a corrected full-division count for this run. See UI-1 in `docs/policies/unresolved-issues.md`.*
 
 The run had no reference-status violations. ICU also contained the recorded
 OS-OOM event and must not be treated as an ordinary performance result.
@@ -226,78 +226,86 @@ equality guard and `HWC004-1`, which has a one-element model but is refused
 before grounding. Only 38 cases reach the deadline. Details and reproduction:
 [`eps-2026-09.md`](eps-2026-09.md).
 
-### Current CASC-J13 Snapshot
+### Legacy CASC-J13 Database Snapshot (UEQ count invalid)
 
 The stored 800-row run records:
 
-| Division | Evaluated | Definitive | Rate |
+| Division | Evaluated | Legacy raw status count (uncertified) | Legacy rate (not a score) |
 |---|---:|---:|---:|
 | FNE | 100 | 35 | 35.0% |
 | FEQ | 300 | 72 | 24.0% |
 | UEQ* | 400 | 257* | 64.3%* |
 | Total | 800 | 364 | 45.5% |
 
-*\* **UEQ caveat:** Superseded. Independent re-audits showed historical AC fallback unsoundness (82 `VerifiedBad` on 114 audited proofs). Current certified baseline is **107/400 (26.8%)** (`VerifiedGood`, 0 `VerifiedBad`). See below and UI-1 in `docs/policies/unresolved-issues.md`.*
+*\* **UEQ caveat:** The 257/400 is an unsound, unverified legacy status count, not a valid score. A separate strict audit of `campaign-cascj13-clean-unsound` found 82 `VerifiedBad` among 114 proofs; it does not audit the specific 257-row database run. The current strictly verified CASC-J13 result is **107/400 (26.8%)** (`VerifiedGood`, 0 `VerifiedBad`). See below and UI-1 in `docs/policies/unresolved-issues.md`.*
 
 There were no errors, no `ko` rows, and no reference or polarity violations.
 
-**The UEQ row is superseded.** A later CASC-J13 UEQ campaign at commit
+**The UEQ row is superseded and unsound.** A later CASC-J13 campaign at commit
 `c07cac9` (`docs/results/ueq-casc-j13-20260930-run.csv`, 400 problems, 180 s,
 8 workers) answers **107/400 (26.8%)**, all 107 kernel-certified with zero
-violations. Row-by-row against this snapshot it solves 96 in common, **loses
-161**, and gains 11; on the regressed rows carrying telemetry on both sides
-median `processed_per_s` falls from 1649.5 to 116.0. Two changes fall inside
-that window — cross-strategy sharing disabled by default (`ce7bdc5`) and the
-`casc_ueq` portfolio reorder (`b214a13`) — and neither is yet established as
-the cause. Do not quote 257/400 as the current UEQ number, and do not quote
-26.8% as a CASC result: the new run is `hardware=adaptive` on 16 cores, not
-CASC-shaped. Full analysis and the separating A/B:
-[`ueq-2026-09.md`](ueq-2026-09.md). The FNE and FEQ rows above are
-unaffected by that campaign and stand.
+violations. The old 257/400 came from the legacy AC-fallback engine and is not
+a valid solve count. A separate audit rejected 82 of 114 proofs from
+`campaign-cascj13-clean-unsound`; that does not establish the exact valid
+subset of the `codex.db` 257. The archived row overlap (96
+common raw labels, 161 legacy-only, 11 current-only) and throughput difference
+are descriptive telemetry only, not a 150-problem verified regression. Do not
+attribute a coverage change to sharing or portfolio order from this pair. Also
+do not quote 26.8% as a CASC result: the 107-proof run used `hardware=adaptive`
+on 16 cores, not CASC-shaped hardware. See
+[`ueq-2026-09.md`](ueq-2026-09.md). The FNE and FEQ rows above are unaffected.
 
-### A third candidate for part of the UEQ gap: engine throughput
+### UEQ throughput probe (not an explanation of the invalidated score difference)
 
-The UEQ report above leaves the 150-problem gap with two candidate causes, both
-portfolio-level. A third is engine-level and does not depend on either: a
-callgrind profile of a single-strategy UEQ run attributed **88 %** of search
+The callgrind profile of a single-strategy UEQ run attributed **88 %** of search
 instructions to redundancy elimination — 47 % forward subsumption, 41 % forward
-demodulation — with a 4 % subsumption hit rate. Six no-op changes to that path
-(now a memoised negative answer for demodulation, an empty-substitution early-out
-in the subsumption matcher, and a term-bank memo for the maximum variable id)
-retire **1.24x** more clauses out of the same budget on a 30-problem UEQ set and
-1.27x on a 60-problem one, with 2 gains, 1 budget-pathological loss, and 12 of 12
-strict-verified proofs. This is a throughput measurement on a 2-core host with one
-worker, not a division score, and it does not speak to the sharing question.
+demodulation — with a 4 % subsumption hit rate. Six changes to that path retire
+**1.24x** more clauses out of the same budget on a 30-problem UEQ set and 1.27x
+on a 60-problem one, with 2 gains, 1 budget-pathological loss, and 12 of 12
+strict-verified proofs. This is a throughput measurement on a 2-core host with
+one worker, not a division score; it does not validate the legacy 257/400 count
+or explain a sound-coverage regression.
 [`redundancy-throughput-2026-10.md`](redundancy-throughput-2026-10.md).
 
-### Cooperative Sharing Evidence
+### Cooperative Sharing Evidence (limited and not a UEQ score comparison)
 
-The controlled results so far show that sharing is workload-dependent.
+The available data is insufficient to establish a general sharing effect. One
+CASC-30 FEQ pair is a single observation; the historical CASC-J13 comparison
+below is not a valid UEQ coverage comparison.
 
 | Workload | Shared | No sharing | Observation |
 |---|---:|---:|---|
 | CASC-30 FEQ, explicit portfolio | 119/400 | 122/400 | One pair; sharing was three solves lower and faster on solved rows |
-| CASC-J13 full FNE/FEQ/UEQ | 364/800 | 225/800 | Separate runs; difference concentrated in UEQ, not a strict same-run A/B |
+| CASC-J13 full FNE/FEQ/UEQ | 364/800 legacy raw statuses | 225/800 later outcomes | Invalid as a sharing score comparison: the 364 includes unsound legacy UEQ labels; separate runs |
 
 Do not conclude that sharing is globally harmful from the FEQ pair or globally
-beneficial from the J13 pair. Repeat controlled runs with identical hardware,
-jobs, timeout, binary, portfolio, and problem set.
+beneficial from the J13 pair. The J13 comparison is not a valid UEQ coverage
+comparison because the legacy shared run includes the unsound 257/400 status
+count. Repeat controlled runs with identical hardware, jobs, timeout, binary,
+portfolio, and problem set, and strictly audit the emitted proofs.
 
-### UEQ Sharing-Interval Sweep
+### UEQ Sharing-Interval Sweep (historical raw counts; not certified)
 
-One CASC-30 UEQ interval sweep produced:
+The legacy sweep recorded the following raw status counts. This report has no
+strict proof audit for those rows, so none of these numbers is a verified
+coverage score. In particular, do not treat the matching 222/300 entry as a
+valid UEQ result or as evidence for an interval choice; the separate legacy
+`codex.db` 222/300 snapshot is known unsound.
 
-| Interval | Solved | Average |
+| Interval | Raw `Unsatisfiable` statuses (uncertified) | Average |
 |---:|---:|---:|
 | 25 | 224/300 | 12.747 s |
 | 50 | 226/300 | 12.491 s |
 | 100 | **228/300** | **12.160 s** |
 | 250 | 222/300 | 11.549 s |
 
-All reported zero disagreements, zero polarity violations, and zero reference
-violations. Interval 100 is a historical UEQ candidate, not a proven global
-default. The runtime default is now no sharing; retain explicit `0` and
-positive-interval controls such as `500` when repeating this experiment.
+The sweep reported zero disagreements, zero polarity violations, and zero
+reference violations, but those checks do not certify proof derivations.
+Interval 100 is only a historical candidate from an unaudited run, not a valid
+coverage result or a proven global default. Re-run the sweep with the current
+sound engine and strict proof audits before using its counts to choose an
+interval. The runtime default is now no sharing; retain explicit `0` and
+positive-interval controls such as `500` in any new experiment.
 
 ## 5. Runtime Profile And ML Direction
 
@@ -431,6 +439,8 @@ The second and seventh items exist because both were violated on the UEQ path:
 `casc_ueq` was reordered at `b214a13` on solo set-cover evidence that
 [`greedy_portfolios_20260925.md`](../../results/greedy_portfolios_20260925.md)
 flags as unvalidated cooperatively, and cross-strategy sharing was disabled by
-default at `ce7bdc5` in the same window. UEQ coverage fell 257 → 107 on the same
-400 problems across those two changes. Neither was re-measured as a control
-before or after. See [`ueq-2026-09.md`](ueq-2026-09.md) §2.
+default at `ce7bdc5` in the same window. The old 257/400 UEQ count was later
+found to come from an unsound AC-fallback engine, so the apparent 257-to-107
+difference is not a valid coverage regression and cannot attribute an effect to
+either change. Any schedule/sharing claim needs a current, strictly audited,
+matched experiment. See [`ueq-2026-09.md`](ueq-2026-09.md) §2.

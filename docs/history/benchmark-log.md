@@ -2,6 +2,15 @@
 
 > Status: Historical append-only log. It contains runs from multiple commits,
 > machines, and branches. Do not use its tables as the current baseline.
+>
+> **UEQ soundness correction (2026-10-30):** MRS UEQ counts in the legacy
+> AC-fallback-era runs—especially CASC-30's 222/300 and CASC-J13's 257/400—are
+> raw SZS/database status counts, not valid solve scores. The producer's AC
+> fallback permitted invalid substitutions; a separate strict audit of
+> `campaign-cascj13-clean-unsound` rejected 82 of its 114 proofs. That audit
+> does not cover the specific 257/400 or 222/300 snapshots or correct either
+> division's full count. Preserve the entries below as raw
+> history only; see `docs/CERTIFICATION_STATUS.md` for current audited results.
 
 ## CASC Division Canary Suite Methodology (Include-Drift Detection)
 
