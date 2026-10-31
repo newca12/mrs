@@ -5951,6 +5951,29 @@ fn replace_clause_literal_exec(
     }
 }
 
+fn replace_clause_literal_exec_with_work(
+    clause: &ExecClause,
+    literal_index: usize,
+    slot: u64,
+    path: &Vec<u64>,
+    replacement: &ExecTerm,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<ExecClause>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> replace_clause_literal(
+            view_clause(*clause), literal_index as int, slot as nat,
+            view_position(path@), view(*replacement),
+        ) == Some(view_clause(result.unwrap()))
+{
+    // Charge the target traversal and replacement data before recursive replay.
+    if !charge_clause_structure(clause, work, work_limit) { return None; }
+    if !charge_u64_sequence(path, work, work_limit) { return None; }
+    if !charge_term_structure(replacement, work, work_limit) { return None; }
+    replace_clause_literal_exec(clause, literal_index, slot, path, replacement)
+}
+
 proof fn clause_literal_replacement_is_pointwise(
     clause: ExecClause,
     literal_index: int,
@@ -6313,6 +6336,64 @@ fn executable_replay_substitution_work_accounting_example() -> bool
         &parent, &parent, &unifier, &mut short_work, 11,
     );
     exact_ok && exact_work == 12 && short_result.is_none() && short_work == 11
+}
+
+fn executable_replay_output_work_accounting_example() -> bool
+{
+    let source = ExecClause { literals: vec![
+        ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)),
+        },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred0(3) },
+    ] };
+    let target = ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Pred1(5, Box::new(ExecTerm::Const(8))),
+    }] };
+    let replacement = ExecTerm::Const(9);
+    let path = Vec::<u64>::new();
+    let expected = ExecClause { literals: vec![
+        ExecLiteral { positive: false, atom: ExecAtom::Pred0(3) },
+        ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(5, Box::new(ExecTerm::Const(9))),
+        },
+    ] };
+
+    let mut exact_work: usize = 0;
+    let exact_replay = match replace_clause_literal_exec_with_work(
+        &target, 0, 0, &path, &replacement, &mut exact_work, 23,
+    ) {
+        Some(rewritten) => match build_superposition_conclusion_exec_with_work(
+            &source, 0, &rewritten, &mut exact_work, 23,
+        ) {
+            Some(replayed) => match same_clause_exact_with_work(
+                &replayed, &expected, &mut exact_work, 23,
+            ) {
+                Some(same) => same,
+                None => false,
+            },
+            None => false,
+        },
+        None => false,
+    };
+
+    let mut short_work: usize = 0;
+    let short_result = match replace_clause_literal_exec_with_work(
+        &target, 0, 0, &path, &replacement, &mut short_work, 22,
+    ) {
+        Some(rewritten) => match build_superposition_conclusion_exec_with_work(
+            &source, 0, &rewritten, &mut short_work, 22,
+        ) {
+            Some(replayed) => same_clause_exact_with_work(
+                &replayed, &expected, &mut short_work, 22,
+            ),
+            None => None,
+        },
+        None => None,
+    };
+    exact_replay && exact_work == 23 && short_result.is_none() && short_work == 22
 }
 
 fn parent_variable_superposition_certificate(
@@ -6737,6 +6818,43 @@ fn build_superposition_conclusion_exec(
     assert(view_clause(conclusion).literals.len() == source.literals.len() - 1
         + rewritten_target.literals.len());
     conclusion
+}
+
+fn build_superposition_conclusion_exec_with_work(
+    source: &ExecClause,
+    source_equality_index: usize,
+    rewritten_target: &ExecClause,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<ExecClause>)
+    requires source_equality_index < source.literals.len(),
+        *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> view_clause(result.unwrap()).literals.len()
+            == source.literals.len() - 1 + rewritten_target.literals.len(),
+        result.is_some() ==> forall|k: int| 0 <= k < view_clause(result.unwrap()).literals.len()
+            ==> view_clause(result.unwrap()).literals[k]
+                == if k < source.literals.len() as int - 1 {
+                    view_literal(source.literals@[if k < source_equality_index as int {
+                        k
+                    } else {
+                        k + 1
+                    }])
+                } else {
+                    view_literal(rewritten_target.literals@[
+                        k - (source.literals.len() as int - 1)])
+                }
+{
+    if rewritten_target.literals.len() > usize::MAX - (source.literals.len() - 1) {
+        return None;
+    }
+    // Charge both input clauses before copying the resolvent literals.
+    if !charge_clause_structure(source, work, work_limit)
+        || !charge_clause_structure(rewritten_target, work, work_limit)
+    {
+        return None;
+    }
+    Some(build_superposition_conclusion_exec(source, source_equality_index, rewritten_target))
 }
 
 proof fn exact_resolvent_width_decomposition(
@@ -7562,6 +7680,25 @@ fn same_clause_exact(left: &ExecClause, right: &ExecClause) -> (same: bool)
         assert(j < i as int);
     }
     true
+}
+
+fn same_clause_exact_with_work(
+    left: &ExecClause,
+    right: &ExecClause,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() && result.unwrap() ==> clause_equal(view_clause(*left), view_clause(*right))
+{
+    // Charge both compared clause structures before exact ordered comparison.
+    if !charge_clause_structure(left, work, work_limit)
+        || !charge_clause_structure(right, work, work_limit)
+    {
+        return None;
+    }
+    Some(same_clause_exact(left, right))
 }
 
 fn build_nullary_resolution_conclusion(left: &ExecClause, right: &ExecClause,
@@ -10300,21 +10437,26 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
             view_subst(certificate.unifier@)));
     assert(view(*source_right) == certificate_selected_source_right(*certificate));
     assert(view(*source_right) == selected_rewrite_rhs(*certificate));
-    let Some(rewritten_target) = replace_clause_literal_exec(
+    let Some(rewritten_target) = replace_clause_literal_exec_with_work(
         &instantiated_target,
         certificate.target_literal_index,
         certificate.target_argument_slot,
         &certificate.fresh_target_path,
         source_right,
+        &mut replay_freshening_work,
+        remaining_work,
     ) else { return false; };
 
-    let replayed_conclusion = build_superposition_conclusion_exec(
+    let Some(replayed_conclusion) = build_superposition_conclusion_exec_with_work(
         &instantiated_source, certificate.source_equality_index, &rewritten_target,
-    );
+        &mut replay_freshening_work, remaining_work,
+    ) else { return false; };
     assert(view_clause(replayed_conclusion).literals
         == expected_superposition_conclusion(*certificate, work_limit as nat));
     let conclusion = &certificate.conclusion;
-    let same = same_clause_exact(&replayed_conclusion, conclusion);
+    let Some(same) = same_clause_exact_with_work(
+        &replayed_conclusion, conclusion, &mut replay_freshening_work, remaining_work,
+    ) else { return false; };
     if !same { return false; }
     assert(clause_equal(view_clause(replayed_conclusion), view_clause(*conclusion)));
     assert(clause_equal(view_clause(*conclusion), Clause {
@@ -15237,6 +15379,7 @@ fn run_examples() -> bool {
     if !executable_clause_freshening_work_accounting_example() { return false; }
     if !executable_unifier_work_accounting_example() { return false; }
     if !executable_replay_substitution_work_accounting_example() { return false; }
+    if !executable_replay_output_work_accounting_example() { return false; }
     if !executable_disjoint_parent_freshening_example() { return false; }
     if !executable_parent_variable_freshening_collision_rejected_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
@@ -15299,6 +15442,8 @@ fn regression_main() {
         "unifier cumulative work regression failed");
     assert!(executable_replay_substitution_work_accounting_example(),
         "replay substitution cumulative work regression failed");
+    assert!(executable_replay_output_work_accounting_example(),
+        "replay output cumulative work regression failed");
     assert!(executable_disjoint_parent_freshening_example(),
         "disjoint superposition freshening regression failed");
     assert!(executable_parent_variable_freshening_collision_rejected_example(),

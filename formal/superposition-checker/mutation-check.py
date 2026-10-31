@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 10
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 13
 
 
 def main() -> int:
@@ -753,6 +753,92 @@ def main() -> int:
             return 1
         print("runtime mutation rejected: replay omits parent substitution work")
         compiled_runtime_mutations += 1
+
+        replay_output_charges = (
+            (
+                "    // Charge the target traversal and replacement data before recursive replay.\n"
+                "    if !charge_clause_structure(clause, work, work_limit) { return None; }",
+                "replay target-replacement mutation anchor is missing or ambiguous",
+                "first_order_core_without_replay_target_replacement_charge.rs",
+                "first-order-core-without-replay-target-replacement-charge",
+                "runtime accepted mutation: replay replacement omits target-structure work",
+                "runtime mutation rejected: replay replacement omits target-structure work",
+            ),
+            (
+                "    // Charge both input clauses before copying the resolvent literals.\n"
+                "    if !charge_clause_structure(source, work, work_limit)\n"
+                "        || !charge_clause_structure(rewritten_target, work, work_limit)\n"
+                "    {\n"
+                "        return None;\n"
+                "    }",
+                "replay conclusion-build mutation anchor is missing or ambiguous",
+                "first_order_core_without_replay_conclusion_build_charge.rs",
+                "first-order-core-without-replay-conclusion-build-charge",
+                "runtime accepted mutation: replay conclusion assembly omits input work",
+                "runtime mutation rejected: replay conclusion assembly omits input work",
+            ),
+            (
+                "    // Charge both compared clause structures before exact ordered comparison.\n"
+                "    if !charge_clause_structure(left, work, work_limit)\n"
+                "        || !charge_clause_structure(right, work, work_limit)\n"
+                "    {\n"
+                "        return None;\n"
+                "    }",
+                "replay comparison mutation anchor is missing or ambiguous",
+                "first_order_core_without_replay_comparison_charge.rs",
+                "first-order-core-without-replay-comparison-charge",
+                "runtime accepted mutation: replay conclusion comparison omits structure work",
+                "runtime mutation rejected: replay conclusion comparison omits structure work",
+            ),
+        )
+        for anchor, missing_message, filename, binary_name, accepted_message, rejected_message in replay_output_charges:
+            if source.count(anchor) != 1:
+                print(missing_message, file=sys.stderr)
+                return 2
+            mutated_path = pathlib.Path(temp_dir) / filename
+            mutated_path.write_text(source.replace(
+                anchor,
+                anchor.splitlines()[0] + "\n    if false { return None; }",
+                1,
+            ))
+            binary = pathlib.Path(temp_dir) / binary_name
+            compile_result = subprocess.run(
+                [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+                 str(mutated_path), "-o", str(binary)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=300,
+            )
+            if compile_result.returncode != 0:
+                print(
+                    "replay output mutant must pass Verus before its runtime test:\n"
+                    + compile_result.stdout,
+                    file=sys.stderr,
+                )
+                return 1
+            runtime = subprocess.run(
+                [str(binary)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=30,
+            )
+            expected_failure = "replay output cumulative work regression failed"
+            if runtime.returncode == 0:
+                print(accepted_message, file=sys.stderr)
+                return 1
+            if expected_failure not in runtime.stdout:
+                print(
+                    "replay output mutation failed for an unexpected reason:\n"
+                    + runtime.stdout,
+                    file=sys.stderr,
+                )
+                return 1
+            print(rejected_message)
+            compiled_runtime_mutations += 1
 
         unifier_term_charge = (
             "    // Charge one unit for each compared term-node pair.\n"

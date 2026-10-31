@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and ten
+The mutation inventory is now fifty-eight verifier-negative checks and thirteen
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -104,11 +104,12 @@ comparisons and copied replacement nodes, avoid-set scans, injectivity checks,
 and freshened-clause materialization. The preflight meter also covers unifier
 domain validation, substitution application and term comparison; the replay
 counter carries on through substitution materialization for both freshened
-parents. Exact 4/3, sequential 7-unit, 21/20-unit, 11/10-unit and 12/11-unit
+parents, target replacement, resolvent construction and exact output comparison.
+Exact 4/3, sequential 7-unit, 21/20-unit, 11/10-unit, 12/11-unit and 23/22-unit
 regressions exercise these boundaries; compiled mutations remove lookup,
-clause-literal, materialization, unifier-comparison and replay parent-substitution
-charges. Replay replacement/conclusion construction and other DAG helper calls
-still lack one cumulative meter.
+clause-literal, materialization, unifier-comparison, replay substitution,
+replacement, build and comparison charges. Preflight and replay still use separate
+counters; other inference families and DAG helper calls lack one cumulative meter.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
