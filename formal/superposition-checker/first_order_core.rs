@@ -6234,6 +6234,25 @@ fn executable_clause_freshening_work_accounting_example() -> bool
     exact_result.is_some() && exact_work == 21 && short_result.is_none() && short_work == 20
 }
 
+fn executable_unifier_work_accounting_example() -> bool
+{
+    let left = ExecTerm::Var(1);
+    let right = ExecTerm::Var(2);
+    let bindings = vec![
+        ExecBinding { variable: 1, replacement: ExecTerm::Const(3) },
+        ExecBinding { variable: 2, replacement: ExecTerm::Const(3) },
+    ];
+    let mut exact_work: usize = 0;
+    let accepted = check_unifier_with_work(
+        &left, &right, &bindings, &mut exact_work, 11,
+    );
+    let mut short_work: usize = 0;
+    let rejected = !check_unifier_with_work(
+        &left, &right, &bindings, &mut short_work, 10,
+    );
+    accepted && exact_work == 11 && rejected && short_work == 10
+}
+
 fn parent_variable_superposition_certificate(
     target_image: u64,
     unifier: Vec<ExecBinding>,
@@ -7362,6 +7381,38 @@ fn same_term(left: &ExecTerm, right: &ExecTerm) -> (same: bool)
             *f == *g && same_term(ll, rl) && same_term(lr, rr)
         },
         _ => false,
+    }
+}
+
+fn same_term_with_work(
+    left: &ExecTerm,
+    right: &ExecTerm,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> result.unwrap() == (view(*left) == view(*right)),
+    decreases left
+{
+    // Charge one unit for each compared term-node pair.
+    if !consume_work(work, work_limit) { return None; }
+    match (left, right) {
+        (ExecTerm::Var(x), ExecTerm::Var(y)) => Some(*x == *y),
+        (ExecTerm::Const(x), ExecTerm::Const(y)) => Some(*x == *y),
+        (ExecTerm::App1(f, l), ExecTerm::App1(g, r)) => {
+            if *f != *g { return Some(false); }
+            same_term_with_work(l, r, work, work_limit)
+        },
+        (ExecTerm::App2(f, ll, lr), ExecTerm::App2(g, rl, rr)) => {
+            if *f != *g { return Some(false); }
+            let Some(left_same) = same_term_with_work(ll, rl, work, work_limit) else {
+                return None;
+            };
+            if !left_same { return Some(false); }
+            same_term_with_work(lr, rr, work, work_limit)
+        },
+        _ => Some(false),
     }
 }
 
@@ -9247,6 +9298,34 @@ fn check_unifier(
     same
 }
 
+fn check_unifier_with_work(
+    left: &ExecTerm,
+    right: &ExecTerm,
+    bindings: &Vec<ExecBinding>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (unifies: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        unifies ==> domain_unique(view_subst(bindings@)),
+        unifies ==> apply(view(*left), view_subst(bindings@))
+            == apply(view(*right), view_subst(bindings@))
+{
+    if !check_domain_unique_with_work(bindings, work, work_limit) {
+        return false;
+    }
+    let Some(left_instance) = apply_exec_with_work(left, bindings, work, work_limit) else {
+        return false;
+    };
+    let Some(right_instance) = apply_exec_with_work(right, bindings, work, work_limit) else {
+        return false;
+    };
+    let Some(same) = same_term_with_work(
+        &left_instance, &right_instance, work, work_limit,
+    ) else { return false; };
+    same
+}
+
 proof fn accepted_unifier_has_semantic_equal_instances(
     left: ExecTerm,
     right: ExecTerm,
@@ -9699,8 +9778,9 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     if !same_term(&raw_selected_after_freshening, &fresh_target_subterm) {
         return false;
     }
-    let unifies = check_unifier(
-        fresh_source_left, &fresh_target_subterm, &certificate.unifier, work_limit,
+    let unifies = check_unifier_with_work(
+        fresh_source_left, &fresh_target_subterm, &certificate.unifier,
+        &mut freshening_check_work, work_limit,
     );
     if !unifies {
         return false;
@@ -15089,6 +15169,7 @@ fn run_examples() -> bool {
     if !executable_standardization_apart_example() { return false; }
     if !executable_freshening_work_accounting_example() { return false; }
     if !executable_clause_freshening_work_accounting_example() { return false; }
+    if !executable_unifier_work_accounting_example() { return false; }
     if !executable_disjoint_parent_freshening_example() { return false; }
     if !executable_parent_variable_freshening_collision_rejected_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
@@ -15147,6 +15228,8 @@ fn regression_main() {
         "freshening cumulative work regression failed");
     assert!(executable_clause_freshening_work_accounting_example(),
         "clause freshening cumulative work regression failed");
+    assert!(executable_unifier_work_accounting_example(),
+        "unifier cumulative work regression failed");
     assert!(executable_disjoint_parent_freshening_example(),
         "disjoint superposition freshening regression failed");
     assert!(executable_parent_variable_freshening_collision_rejected_example(),

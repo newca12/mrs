@@ -248,4 +248,5 @@ omits the freshening binding-lookup charge and must fail the 4-unit/3-unit
 freshening work-boundary regression. A third omits clause-literal collection
 work and must fail the collection-plus-freshening boundary. A fourth omits the
 freshened-clause materialization charge and must fail the 21-unit/20-unit
-collection-plus-freshening regression.
+collection-plus-freshening regression. A fifth mutant omits the unifier's
+term-comparison charge and must fail the 11-unit/10-unit unifier work regression.

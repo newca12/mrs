@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and eight
+The mutation inventory is now fifty-eight verifier-negative checks and nine
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -98,13 +98,14 @@ source-fresh images from both target avoid sets; the mutant still passes
 `--no-cheating` verification but must fail at the collision-specific runtime
 assertion. This checks the standardized-apart representation policy, not an
 extra premise of the semantic soundness theorem.
-Superposition preflight and replay now share a local meter across clause-variable
+Superposition preflight and replay now share local meters across clause-variable
 collection, coverage/membership scans, domain-uniqueness checks, binding lookup
-comparisons and copied replacement nodes, avoid-set scans, and injectivity checks.
-The meter also covers freshened-clause materialization. Exact 4/3, sequential
-7-unit, and 21/20-unit regressions exercise the local boundaries; compiled
-mutations remove lookup, clause-literal, and materialization charges. Unifier
-application/comparison, replay construction/comparison and other DAG helper calls
+comparisons and copied replacement nodes, avoid-set scans, injectivity checks,
+and freshened-clause materialization. The preflight meter also covers unifier
+domain validation, substitution application and term comparison. Exact 4/3,
+sequential 7-unit, 21/20-unit and 11/10-unit regressions exercise these boundaries;
+compiled mutations remove lookup, clause-literal, materialization and unifier
+comparison charges. Replay construction/comparison and other DAG helper calls
 still lack one cumulative meter.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
