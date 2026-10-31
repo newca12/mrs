@@ -59,12 +59,12 @@ subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
 tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
-forward parents, and nonempty-root acceptance. Nine compiled-runtime mutations
+forward parents, and nonempty-root acceptance. Ten compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
 duplicate-ID rejection, decimal-token guard, or target-parent freshening avoid
 set, freshening lookup-work charge, clause-collection literal charge, or
-freshening materialization term charge, or unifier term-comparison charge; each
-must fail its corresponding regression. The mutation runner enforces
+freshening materialization term charge, unifier term-comparison charge, or replay
+parent-substitution meter; each must fail its corresponding regression. The mutation runner enforces
 the expected counts, so deleting a gate cannot silently shrink the inventory.
 The
 source tree is not modified by these negative checks.
@@ -83,7 +83,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `471 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `473 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -118,7 +118,8 @@ comparisons) remains an explicit limitation. Superposition preflight and replay
 now share local meters across clause-variable collection, coverage/membership,
 freshening validation, avoid-set construction and freshened-clause materialization;
 the preflight counter also covers unifier-domain validation, substitution
-application and term comparison. Exact 4/3, sequential 7, 21/20 and 11/10 unit
+application and term comparison. The replay counter extends through substitution
+of both freshened parents. Exact 4/3, sequential 7, 21/20, 11/10 and 12/11 unit
 regressions plus compiled charge-removal mutants exercise these local boundaries.
 Replay replacement/conclusion construction and DAG helper calls remain outside
 one shared meter. DAG input-leaf

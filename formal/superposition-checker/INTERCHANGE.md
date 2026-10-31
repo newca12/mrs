@@ -250,3 +250,5 @@ work and must fail the collection-plus-freshening boundary. A fourth omits the
 freshened-clause materialization charge and must fail the 21-unit/20-unit
 collection-plus-freshening regression. A fifth mutant omits the unifier's
 term-comparison charge and must fail the 11-unit/10-unit unifier work regression.
+A sixth mutant bypasses the source-parent replay substitution meter and must fail
+the 12-unit/11-unit shared parent-instantiation regression.

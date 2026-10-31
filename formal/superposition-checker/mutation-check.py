@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 9
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 10
 
 
 def main() -> int:
@@ -648,7 +648,7 @@ def main() -> int:
         compiled_runtime_mutations += 1
 
         freshening_materialization_charge = (
-            "    // Charge each term node visited by freshening materialization.\n"
+            "    // Charge each term node visited during substitution materialization.\n"
             "    if !consume_work(work, work_limit) { return None; }"
         )
         if source.count(freshening_materialization_charge) != 1:
@@ -698,6 +698,60 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: freshening omits materialization work")
+        compiled_runtime_mutations += 1
+
+        replay_substitution_meter = (
+            "    let Some(instantiated_source) = substitute_clause_exec_with_work(\n"
+            "        source, unifier, work, work_limit,\n"
+            "    ) else { return None; };"
+        )
+        if source.count(replay_substitution_meter) != 1:
+            print("replay substitution mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_replay_substitution_meter.rs"
+        mutated_path.write_text(source.replace(
+            replay_substitution_meter,
+            "    let Some(instantiated_source) = Some(substitute_clause_exec(source, unifier))\n"
+            "    else { return None; };",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-replay-substitution-meter"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "replay substitution mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "replay substitution cumulative work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: replay omits parent substitution work", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "replay substitution mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: replay omits parent substitution work")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

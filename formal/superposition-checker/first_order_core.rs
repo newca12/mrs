@@ -5824,6 +5824,41 @@ fn substitute_clause_exec_with_work(
     Some(result)
 }
 
+fn instantiate_superposition_parents_with_work(
+    source: &ExecClause,
+    target: &ExecClause,
+    unifier: &Vec<ExecBinding>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<(ExecClause, ExecClause)>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        match result {
+            Some((instantiated_source, instantiated_target)) =>
+                view_clause(instantiated_source)
+                    == substitute_clause(view_clause(*source), view_subst(unifier@))
+                && instantiated_source.literals@.len() == source.literals@.len()
+                && forall|j: int| 0 <= j < instantiated_source.literals@.len()
+                    ==> view_literal(instantiated_source.literals@[j])
+                        == substitute_literal(view_clause(*source).literals[j], view_subst(unifier@))
+                && view_clause(instantiated_target)
+                    == substitute_clause(view_clause(*target), view_subst(unifier@))
+                && instantiated_target.literals@.len() == target.literals@.len()
+                && forall|j: int| 0 <= j < instantiated_target.literals@.len()
+                    ==> view_literal(instantiated_target.literals@[j])
+                        == substitute_literal(view_clause(*target).literals[j], view_subst(unifier@)),
+            None => true,
+        }
+{
+    let Some(instantiated_source) = substitute_clause_exec_with_work(
+        source, unifier, work, work_limit,
+    ) else { return None; };
+    let Some(instantiated_target) = substitute_clause_exec_with_work(
+        target, unifier, work, work_limit,
+    ) else { return None; };
+    Some((instantiated_source, instantiated_target))
+}
+
 fn replace_clause_literal_exec(
     clause: &ExecClause,
     literal_index: usize,
@@ -6251,6 +6286,33 @@ fn executable_unifier_work_accounting_example() -> bool
         &left, &right, &bindings, &mut short_work, 10,
     );
     accepted && exact_work == 11 && rejected && short_work == 10
+}
+
+fn executable_replay_substitution_work_accounting_example() -> bool
+{
+    let parent = ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(7))),
+    }] };
+    let unifier = vec![ExecBinding {
+        variable: 7,
+        replacement: ExecTerm::Const(9),
+    }];
+    let mut exact_work: usize = 0;
+    let exact_result = instantiate_superposition_parents_with_work(
+        &parent, &parent, &unifier, &mut exact_work, 12,
+    );
+    let expected_instance = substitute_clause_exec(&parent, &unifier);
+    let exact_ok = match exact_result {
+        Some((source, target)) => same_clause_exact(&source, &expected_instance)
+            && same_clause_exact(&target, &expected_instance),
+        None => false,
+    };
+    let mut short_work: usize = 0;
+    let short_result = instantiate_superposition_parents_with_work(
+        &parent, &parent, &unifier, &mut short_work, 11,
+    );
+    exact_ok && exact_work == 12 && short_result.is_none() && short_work == 11
 }
 
 fn parent_variable_superposition_certificate(
@@ -7337,7 +7399,7 @@ fn apply_exec_with_work(
         result.is_some() ==> view(result.unwrap()) == apply(view(*term), view_subst(bindings@)),
     decreases term
 {
-    // Charge each term node visited by freshening materialization.
+    // Charge each term node visited during substitution materialization.
     if !consume_work(work, work_limit) { return None; }
     match term {
         ExecTerm::Var(v) => {
@@ -10212,8 +10274,12 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
         &mut replay_freshening_work,
         remaining_work,
     ) else { return false; };
-    let instantiated_source = substitute_clause_exec(&fresh_source, &certificate.unifier);
-    let instantiated_target = substitute_clause_exec(&fresh_target, &certificate.unifier);
+    let Some((instantiated_source, instantiated_target)) =
+        instantiate_superposition_parents_with_work(
+            &fresh_source, &fresh_target, &certificate.unifier,
+            &mut replay_freshening_work, remaining_work,
+        )
+    else { return false; };
     if certificate.source_equality_index >= instantiated_source.literals.len()
         || certificate.target_literal_index >= instantiated_target.literals.len()
     {
@@ -15170,6 +15236,7 @@ fn run_examples() -> bool {
     if !executable_freshening_work_accounting_example() { return false; }
     if !executable_clause_freshening_work_accounting_example() { return false; }
     if !executable_unifier_work_accounting_example() { return false; }
+    if !executable_replay_substitution_work_accounting_example() { return false; }
     if !executable_disjoint_parent_freshening_example() { return false; }
     if !executable_parent_variable_freshening_collision_rejected_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
@@ -15230,6 +15297,8 @@ fn regression_main() {
         "clause freshening cumulative work regression failed");
     assert!(executable_unifier_work_accounting_example(),
         "unifier cumulative work regression failed");
+    assert!(executable_replay_substitution_work_accounting_example(),
+        "replay substitution cumulative work regression failed");
     assert!(executable_disjoint_parent_freshening_example(),
         "disjoint superposition freshening regression failed");
     assert!(executable_parent_variable_freshening_collision_rejected_example(),
