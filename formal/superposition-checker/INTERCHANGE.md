@@ -256,3 +256,5 @@ mutants remove the target-replacement, conclusion-build or exact-comparison
 structure charge; each must fail the 23-unit/22-unit output-work regression.
 The path-sequence comparison and selected-term lookup mutants must fail their
 4-unit/3-unit and 5-unit/4-unit preflight regressions.
+A final mutant resets the standalone superposition meter before replay and must
+fail the computed structural-plus-preflight cutoff regression.

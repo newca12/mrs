@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 15
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 16
 
 
 def main() -> int:
@@ -474,10 +474,10 @@ def main() -> int:
 
         target_freshening_anchors = (
             "|| !extend_unique_with_work(\n"
-            "        &mut avoid_target, &fresh_source_variables, &mut freshening_check_work, work_limit,\n"
+            "        &mut avoid_target, &fresh_source_variables, work, work_limit,\n"
             "    )",
             "|| !extend_unique_with_work(\n"
-            "        &mut target_avoid, &fresh_source_variables, &mut replay_freshening_work, remaining_work,\n"
+            "        &mut target_avoid, &fresh_source_variables, work, work_limit,\n"
             "    )",
         )
         mutated_source = source
@@ -914,6 +914,60 @@ def main() -> int:
                 return 1
             print(rejected_message)
             compiled_runtime_mutations += 1
+
+        replay_meter_handoff = (
+            "    // Continue the preflight counter through replay freshening and output.\n"
+            "    let Some(target_variables) = collect_clause_variables_bounded_with_work(\n"
+        )
+        if source.count(replay_meter_handoff) != 1:
+            print("superposition replay-meter handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_before_replay.rs"
+        mutated_path.write_text(source.replace(
+            replay_meter_handoff,
+            "    // Mutant resets the shared counter before replay.\n"
+            "    *work = 0;\n"
+            "    let Some(target_variables) = collect_clause_variables_bounded_with_work(\n",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-before-replay"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "replay meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "superposition preflight/replay shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: replay reset the shared work counter", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "replay meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: replay reset the shared work counter")
+        compiled_runtime_mutations += 1
 
         unifier_term_charge = (
             "    // Charge one unit for each compared term-node pair.\n"

@@ -6426,6 +6426,51 @@ fn executable_selected_term_work_accounting_example() -> bool
     exact_ok && exact_work == 5 && short.is_none() && short_work == 4
 }
 
+fn executable_superposition_preflight_replay_shared_work_example() -> bool
+{
+    let certificate = parent_variable_superposition_certificate(
+        200,
+        vec![
+            ExecBinding { variable: 200, replacement: ExecTerm::Var(100) },
+            ExecBinding { variable: 500, replacement: ExecTerm::Const(9) },
+            ExecBinding { variable: 501, replacement: ExecTerm::Const(9) },
+            ExecBinding { variable: 502, replacement: ExecTerm::Const(9) },
+            ExecBinding { variable: 503, replacement: ExecTerm::Const(9) },
+            ExecBinding { variable: 504, replacement: ExecTerm::Const(9) },
+            ExecBinding { variable: 505, replacement: ExecTerm::Const(9) },
+            ExecBinding { variable: 506, replacement: ExecTerm::Const(9) },
+            ExecBinding { variable: 507, replacement: ExecTerm::Const(9) },
+            ExecBinding { variable: 508, replacement: ExecTerm::Const(9) },
+            ExecBinding { variable: 509, replacement: ExecTerm::Const(9) },
+            ExecBinding { variable: 510, replacement: ExecTerm::Const(9) },
+            ExecBinding { variable: 511, replacement: ExecTerm::Const(9) },
+        ],
+    );
+    let mut structural_work: usize = 0;
+    if !charge_clause_structure(&certificate.source, &mut structural_work, 100000)
+        || !charge_clause_structure(&certificate.target, &mut structural_work, 100000)
+        || !charge_clause_structure(&certificate.conclusion, &mut structural_work, 100000)
+        || !charge_binding_structure(&certificate.source_freshening, &mut structural_work, 100000)
+        || !charge_binding_structure(&certificate.target_freshening, &mut structural_work, 100000)
+        || !charge_binding_structure(&certificate.unifier, &mut structural_work, 100000)
+    {
+        return false;
+    }
+    let mut preflight_work: usize = 0;
+    if !check_superposition_certificate_with_work(
+        &certificate, &mut preflight_work, 100000,
+    ) {
+        return false;
+    }
+    if preflight_work > usize::MAX - structural_work { return false; }
+    let combined_preflight_work = structural_work + preflight_work;
+    let mut total_work: usize = 0;
+    let accepted = check_superposition_and_replay_with_work(
+        &certificate, &mut total_work, combined_preflight_work,
+    );
+    !accepted && total_work == combined_preflight_work
+}
+
 fn parent_variable_superposition_certificate(
     target_image: u64,
     unifier: Vec<ExecBinding>,
@@ -9748,9 +9793,14 @@ spec fn expected_superposition_conclusion(
         + target_instance.literals.update(certificate.target_literal_index as int, target_rewritten)
 }
 
-fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_limit: usize)
-    -> (accepted: bool)
-    ensures accepted ==> replay_semantic_premises(*certificate),
+fn check_superposition_certificate_with_work(
+    certificate: &SuperpositionCertificate,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> replay_semantic_premises(*certificate),
         accepted ==> certificate.target_path@ == certificate.fresh_target_path@
         && accepted ==> certificate.source.literals.len()
             + certificate.target.literals.len()
@@ -9887,13 +9937,12 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
             ==> renames_variables_on(view_subst(certificate.target_freshening@),
                 literal_variables(view_literal(certificate.target.literals@[i])))
 {
-    let mut structural_work: usize = 0;
-    if !charge_clause_structure(&certificate.source, &mut structural_work, work_limit)
-        || !charge_clause_structure(&certificate.target, &mut structural_work, work_limit)
-        || !charge_clause_structure(&certificate.conclusion, &mut structural_work, work_limit)
-        || !charge_binding_structure(&certificate.source_freshening, &mut structural_work, work_limit)
-        || !charge_binding_structure(&certificate.target_freshening, &mut structural_work, work_limit)
-        || !charge_binding_structure(&certificate.unifier, &mut structural_work, work_limit)
+    if !charge_clause_structure(&certificate.source, work, work_limit)
+        || !charge_clause_structure(&certificate.target, work, work_limit)
+        || !charge_clause_structure(&certificate.conclusion, work, work_limit)
+        || !charge_binding_structure(&certificate.source_freshening, work, work_limit)
+        || !charge_binding_structure(&certificate.target_freshening, work, work_limit)
+        || !charge_binding_structure(&certificate.unifier, work, work_limit)
     {
         return false;
     }
@@ -9915,10 +9964,9 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     if certificate.fresh_target_path.len() > remaining_work { return false; }
     remaining_work -= certificate.fresh_target_path.len();
     if certificate.conclusion.literals.len() > remaining_work { return false; }
-    let mut freshening_check_work: usize = 0;
     let Some(paths_match) = same_u64_sequence_with_work(
         &certificate.target_path, &certificate.fresh_target_path,
-        &mut freshening_check_work, work_limit,
+        work, work_limit,
     ) else {
         return false;
     };
@@ -9938,13 +9986,13 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     if let ExecTerm::Var(_) = source_left { return false; }
 
     let left_variables = match collect_clause_variables_bounded_with_work(
-        &certificate.source, &mut freshening_check_work, work_limit,
+        &certificate.source, work, work_limit,
     ) {
         Some(vars) => vars,
         None => return false,
     };
     let right_variables = match collect_clause_variables_bounded_with_work(
-        &certificate.target, &mut freshening_check_work, work_limit,
+        &certificate.target, work, work_limit,
     ) {
         Some(vars) => vars,
         None => return false,
@@ -9955,7 +10003,7 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         &left_variables,
         &right_variables,
         &certificate.source_freshening,
-        &mut freshening_check_work,
+        work,
         work_limit,
     ) {
         Some(clause) => clause,
@@ -9965,16 +10013,16 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         == substitute_clause(view_clause(certificate.source),
             view_subst(certificate.source_freshening@)));
     let fresh_source_variables = match collect_clause_variables_bounded_with_work(
-        &fresh_source, &mut freshening_check_work, work_limit,
+        &fresh_source, work, work_limit,
     ) {
         Some(vars) => vars,
         None => return false,
     };
     let mut avoid_target: Vec<u64> = Vec::new();
     if !extend_unique_with_work(
-        &mut avoid_target, &right_variables, &mut freshening_check_work, work_limit,
+        &mut avoid_target, &right_variables, work, work_limit,
     ) || !extend_unique_with_work(
-        &mut avoid_target, &fresh_source_variables, &mut freshening_check_work, work_limit,
+        &mut avoid_target, &fresh_source_variables, work, work_limit,
     )
     {
         return false;
@@ -9983,7 +10031,7 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         &ExecClause { literals: vec![copy_literal(
             &certificate.target.literals[certificate.target_literal_index],
         )] },
-        &mut freshening_check_work,
+        work,
         work_limit,
     ) {
         Some(vars) => vars,
@@ -9997,7 +10045,7 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         &right_variables,
         &avoid_target,
         &certificate.target_freshening,
-        &mut freshening_check_work,
+        work,
         work_limit,
     ) {
         Some(clause) => clause,
@@ -10016,7 +10064,7 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         &certificate.target.literals[certificate.target_literal_index].atom,
         certificate.target_argument_slot,
         &certificate.target_path,
-        &mut freshening_check_work,
+        work,
         work_limit,
     );
     let Some(target_subterm) = target_subterm_result else { return false; };
@@ -10028,22 +10076,22 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     let target_selected = &fresh_target.literals[certificate.target_literal_index];
     let Some(fresh_target_subterm) = selected_atom_term_exec_with_work(
         &target_selected.atom, certificate.target_argument_slot, &certificate.fresh_target_path,
-        &mut freshening_check_work, work_limit,
+        work, work_limit,
     ) else { return false; };
     let Some(raw_selected_after_freshening) = apply_exec_with_work(
         &target_subterm, &certificate.target_freshening,
-        &mut freshening_check_work, work_limit,
+        work, work_limit,
     ) else { return false; };
     let Some(raw_target_matches) = same_term_with_work(
         &raw_selected_after_freshening, &fresh_target_subterm,
-        &mut freshening_check_work, work_limit,
+        work, work_limit,
     ) else { return false; };
     if !raw_target_matches {
         return false;
     }
     let unifies = check_unifier_with_work(
         fresh_source_left, &fresh_target_subterm, &certificate.unifier,
-        &mut freshening_check_work, work_limit,
+        work, work_limit,
     );
     if !unifies {
         return false;
@@ -10093,11 +10141,11 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     };
     let Some(instantiated_source_left) = apply_exec_with_work(
         fresh_source_left, &certificate.unifier,
-        &mut freshening_check_work, work_limit,
+        work, work_limit,
     ) else { return false; };
     let Some(instantiated_source_right) = apply_exec_with_work(
         source_right, &certificate.unifier,
-        &mut freshening_check_work, work_limit,
+        work, work_limit,
     ) else { return false; };
     assert(view(*source_right)
         == apply(view(source_right_exec(*certificate)),
@@ -10112,22 +10160,22 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     assert(view(instantiated_source_right) == certificate_selected_source_right(*certificate));
     let Some(raw_selected_after_freshening) = apply_exec_with_work(
         &target_subterm, &certificate.target_freshening,
-        &mut freshening_check_work, work_limit,
+        work, work_limit,
     ) else { return false; };
     let Some(raw_target_matches_again) = same_term_with_work(
         &raw_selected_after_freshening, &fresh_target_subterm,
-        &mut freshening_check_work, work_limit,
+        work, work_limit,
     ) else { return false; };
     if !raw_target_matches_again {
         return false;
     }
     let Some(selected_after_unification) = apply_exec_with_work(
         &fresh_target_subterm, &certificate.unifier,
-        &mut freshening_check_work, work_limit,
+        work, work_limit,
     ) else { return false; };
     let Some(selected_terms_match) = same_term_with_work(
         &instantiated_source_left, &selected_after_unification,
-        &mut freshening_check_work, work_limit,
+        work, work_limit,
     ) else { return false; };
     if !selected_terms_match {
         return false;
@@ -10155,6 +10203,14 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         assert(replay_semantic_premises(*certificate));
     }
     true
+}
+
+fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> replay_semantic_premises(*certificate)
+{
+    let mut work: usize = 0;
+    check_superposition_certificate_with_work(certificate, &mut work, work_limit)
 }
 
 fn is_variable_renaming(variables: &Vec<u64>, bindings: &Vec<ExecBinding>) -> (valid: bool)
@@ -10430,9 +10486,14 @@ proof fn accepted_replay_preserves_validity(c: SuperpositionCertificate,
     }
 }
 
-fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_limit: usize)
-    -> (accepted: bool)
-    ensures accepted ==> certificate.source.literals.len()
+fn check_superposition_and_replay_with_work(
+    certificate: &SuperpositionCertificate,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> certificate.source.literals.len()
             + certificate.target.literals.len()
             + certificate.conclusion.literals.len() <= work_limit
         && accepted ==> clause_equal(view_clause(certificate.conclusion),
@@ -10444,17 +10505,16 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
             && clause_valid(view_clause(certificate.target), interp)
             ==> clause_valid(view_clause(certificate.conclusion), interp),
 {
-    let mut structural_work: usize = 0;
-    if !charge_clause_structure(&certificate.source, &mut structural_work, work_limit)
-        || !charge_clause_structure(&certificate.target, &mut structural_work, work_limit)
-        || !charge_clause_structure(&certificate.conclusion, &mut structural_work, work_limit)
-        || !charge_binding_structure(&certificate.source_freshening, &mut structural_work, work_limit)
-        || !charge_binding_structure(&certificate.target_freshening, &mut structural_work, work_limit)
-        || !charge_binding_structure(&certificate.unifier, &mut structural_work, work_limit)
+    if !charge_clause_structure(&certificate.source, work, work_limit)
+        || !charge_clause_structure(&certificate.target, work, work_limit)
+        || !charge_clause_structure(&certificate.conclusion, work, work_limit)
+        || !charge_binding_structure(&certificate.source_freshening, work, work_limit)
+        || !charge_binding_structure(&certificate.target_freshening, work, work_limit)
+        || !charge_binding_structure(&certificate.unifier, work, work_limit)
     {
         return false;
     }
-    assert(structural_work <= work_limit);
+    assert(*work <= work_limit);
     if certificate.source.literals.len() > work_limit
         || certificate.target.literals.len() > work_limit - certificate.source.literals.len()
     {
@@ -10464,8 +10524,7 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
     if certificate.conclusion.literals.len() > work_limit - replay_work {
         return false;
     }
-    let remaining_work = work_limit - structural_work;
-    if !check_superposition_certificate(certificate, remaining_work) {
+    if !check_superposition_certificate_with_work(certificate, work, work_limit) {
         return false;
     }
     if certificate.source_equality_index >= certificate.source.literals.len()
@@ -10473,14 +10532,14 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
     {
         return false;
     }
-    let mut replay_freshening_work: usize = 0;
+    // Continue the preflight counter through replay freshening and output.
     let Some(target_variables) = collect_clause_variables_bounded_with_work(
-        &certificate.target, &mut replay_freshening_work, remaining_work,
+        &certificate.target, work, work_limit,
     ) else {
         return false;
     };
     let Some(source_variables) = collect_clause_variables_bounded_with_work(
-        &certificate.source, &mut replay_freshening_work, remaining_work,
+        &certificate.source, work, work_limit,
     ) else {
         return false;
     };
@@ -10489,19 +10548,19 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
         &source_variables,
         &target_variables,
         &certificate.source_freshening,
-        &mut replay_freshening_work,
-        remaining_work,
+        work,
+        work_limit,
     ) else { return false; };
     let Some(fresh_source_variables) = collect_clause_variables_bounded_with_work(
-        &fresh_source, &mut replay_freshening_work, remaining_work,
+        &fresh_source, work, work_limit,
     ) else {
         return false;
     };
     let mut target_avoid = Vec::new();
     if !extend_unique_with_work(
-        &mut target_avoid, &target_variables, &mut replay_freshening_work, remaining_work,
+        &mut target_avoid, &target_variables, work, work_limit,
     ) || !extend_unique_with_work(
-        &mut target_avoid, &fresh_source_variables, &mut replay_freshening_work, remaining_work,
+        &mut target_avoid, &fresh_source_variables, work, work_limit,
     )
     {
         return false;
@@ -10511,13 +10570,13 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
         &target_variables,
         &target_avoid,
         &certificate.target_freshening,
-        &mut replay_freshening_work,
-        remaining_work,
+        work,
+        work_limit,
     ) else { return false; };
     let Some((instantiated_source, instantiated_target)) =
         instantiate_superposition_parents_with_work(
             &fresh_source, &fresh_target, &certificate.unifier,
-            &mut replay_freshening_work, remaining_work,
+            work, work_limit,
         )
     else { return false; };
     if certificate.source_equality_index >= instantiated_source.literals.len()
@@ -10546,19 +10605,19 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
         certificate.target_argument_slot,
         &certificate.fresh_target_path,
         source_right,
-        &mut replay_freshening_work,
-        remaining_work,
+        work,
+        work_limit,
     ) else { return false; };
 
     let Some(replayed_conclusion) = build_superposition_conclusion_exec_with_work(
         &instantiated_source, certificate.source_equality_index, &rewritten_target,
-        &mut replay_freshening_work, remaining_work,
+        work, work_limit,
     ) else { return false; };
     assert(view_clause(replayed_conclusion).literals
         == expected_superposition_conclusion(*certificate, work_limit as nat));
     let conclusion = &certificate.conclusion;
     let Some(same) = same_clause_exact_with_work(
-        &replayed_conclusion, conclusion, &mut replay_freshening_work, remaining_work,
+        &replayed_conclusion, conclusion, work, work_limit,
     ) else { return false; };
     if !same { return false; }
     assert(clause_equal(view_clause(replayed_conclusion), view_clause(*conclusion)));
@@ -10575,6 +10634,24 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
         accepted_replay_preserves_validity(*certificate, work_limit as nat, interp);
     }
     true
+}
+
+fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> certificate.source.literals.len()
+            + certificate.target.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit
+        && accepted ==> clause_equal(view_clause(certificate.conclusion),
+            Clause { literals: expected_superposition_conclusion(
+                *certificate, work_limit as nat) }),
+        accepted ==> replay_semantic_premises(*certificate),
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.source), interp)
+            && clause_valid(view_clause(certificate.target), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_superposition_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
 /// An executable DAG-step boundary: bind the certificate to the actual two
@@ -15485,6 +15562,7 @@ fn run_examples() -> bool {
     if !executable_replay_output_work_accounting_example() { return false; }
     if !executable_path_sequence_work_accounting_example() { return false; }
     if !executable_selected_term_work_accounting_example() { return false; }
+    if !executable_superposition_preflight_replay_shared_work_example() { return false; }
     if !executable_disjoint_parent_freshening_example() { return false; }
     if !executable_parent_variable_freshening_collision_rejected_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
@@ -15553,6 +15631,8 @@ fn regression_main() {
         "path sequence cumulative work regression failed");
     assert!(executable_selected_term_work_accounting_example(),
         "selected-term cumulative work regression failed");
+    assert!(executable_superposition_preflight_replay_shared_work_example(),
+        "superposition preflight/replay shared work regression failed");
     assert!(executable_disjoint_parent_freshening_example(),
         "disjoint superposition freshening regression failed");
     assert!(executable_parent_variable_freshening_collision_rejected_example(),

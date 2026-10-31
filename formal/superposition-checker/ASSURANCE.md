@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and fifteen
+The mutation inventory is now fifty-eight verifier-negative checks and sixteen
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -98,20 +98,20 @@ source-fresh images from both target avoid sets; the mutant still passes
 `--no-cheating` verification but must fail at the collision-specific runtime
 assertion. This checks the standardized-apart representation policy, not an
 extra premise of the semantic soundness theorem.
-Superposition preflight and replay now share local meters across clause-variable
-collection, coverage/membership scans, domain-uniqueness checks, binding lookup
-comparisons and copied replacement nodes, avoid-set scans, injectivity checks,
-and freshened-clause materialization. The preflight meter also covers unifier
-domain validation, substitution application, term comparison, path equality and
-selected-subterm lookup; the replay
-counter carries on through substitution materialization for both freshened
-parents, target replacement, resolvent construction and exact output comparison.
+The standalone superposition check carries one counter from outer structure
+charges through certificate preflight and replay: clause-variable collection,
+coverage/membership scans, domain uniqueness, binding lookups/copies, avoid scans,
+injectivity, freshened-clause materialization, unifier application/comparison,
+path equality, selected-subterm lookup, both-parent substitution, target
+replacement, resolvent construction and exact output comparison.
 Exact 4/3 freshening/path, sequential 7-unit, 5/4 selected-term, 21/20-unit,
 11/10-unit, 12/11-unit and 23/22-unit regressions exercise these boundaries;
 compiled mutations remove lookup, clause-literal, materialization,
 unifier-comparison, path-comparison, selected-term, replay substitution,
-replacement, build and comparison charges. Preflight and replay still use separate
-counters; other inference families and DAG helper calls lack one cumulative meter.
+replacement, build, comparison and counter-handoff charges. A computed boundary
+funds exactly the standalone structure/preflight work and requires replay to fail
+closed at its first charge. The DAG wrapper and other inference-family helpers
+still use separate counters, so end-to-end DAG accounting remains open.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
