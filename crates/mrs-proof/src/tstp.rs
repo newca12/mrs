@@ -434,6 +434,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 mod tests {
     #[test]
     fn bounded_output_preserves_exact_bytes_and_refuses_truncation() {
+        let _guard = PROBLEM_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let symbols = mrs_core::SymbolTable::new();
         let proof = [Clause::new(
             mrs_core::clause::ClauseId(41),
