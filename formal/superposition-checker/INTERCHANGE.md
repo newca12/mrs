@@ -246,4 +246,6 @@ avoid sets; that mutant must pass Verus verification but fail the dedicated
 superposition parent-variable collision regression. A second runtime mutant
 omits the freshening binding-lookup charge and must fail the 4-unit/3-unit
 freshening work-boundary regression. A third omits clause-literal collection
-work and must fail the 15-unit/14-unit collection-plus-freshening boundary.
+work and must fail the collection-plus-freshening boundary. A fourth omits the
+freshened-clause materialization charge and must fail the 21-unit/20-unit
+collection-plus-freshening regression.

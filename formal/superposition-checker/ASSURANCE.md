@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and seven
+The mutation inventory is now fifty-eight verifier-negative checks and eight
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -101,10 +101,11 @@ extra premise of the semantic soundness theorem.
 Superposition preflight and replay now share a local meter across clause-variable
 collection, coverage/membership scans, domain-uniqueness checks, binding lookup
 comparisons and copied replacement nodes, avoid-set scans, and injectivity checks.
-Exact 4/3, sequential 7-unit, and 15/14-unit regressions exercise the local
-boundaries; compiled mutations remove the lookup and clause-literal charges.
-Substitution materialization, unifier replay, derived clause construction and
-other DAG helper calls still lack one cumulative meter.
+The meter also covers freshened-clause materialization. Exact 4/3, sequential
+7-unit, and 21/20-unit regressions exercise the local boundaries; compiled
+mutations remove lookup, clause-literal, and materialization charges. Unifier
+application/comparison, replay construction/comparison and other DAG helper calls
+still lack one cumulative meter.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
@@ -181,10 +182,11 @@ host and toolchain only.
 The verification gate enforces 58 verifier-negative mutations across inference
 replay, DAG dispatch and wire tokenization. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
-contracts; it is not comprehensive threat-model coverage. Seven compiled-runtime
+contracts; it is not comprehensive threat-model coverage. Eight compiled-runtime
 mutations cover root-ancestor closure, repeated node-clause charging,
 duplicate-ID rejection, decimal-token validation and target-parent freshening
-collision, plus the freshening lookup-work and clause-collection literal charges;
+collision, plus freshening lookup-work, clause-collection literal and
+materialization charges;
 each must fail its corresponding
 runtime regression. The gate also compiles and runs positive and negative DAG
 examples via `runtime-check.py`; the ordinary Rust `main` assertion
@@ -204,8 +206,8 @@ exact 15-unit node budget and rejects at 14. A compiled-runtime mutation that
 removes the repeated node-clause charge must fail this regression. The target
 freshening mutation omits source-parent fresh images from both target avoid sets;
 its compiled program must fail specifically at the parent-variable collision
-assertion. A separate freshening-budget mutant removes the binding-lookup charge
-and must fail the exact local meter regression. The mutation runner enforces the
+assertion. Freshening-budget mutants remove the binding-lookup, collection-literal
+or materialization charge and must fail their exact local meter regressions. The mutation runner enforces the
 expected inventory counts so an accidental removal of either verifier-negative
 or compiled-runtime coverage fails the gate.
 

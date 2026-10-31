@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 7
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 8
 
 
 def main() -> int:
@@ -645,6 +645,59 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: clause collection omits literal work")
+        compiled_runtime_mutations += 1
+
+        freshening_materialization_charge = (
+            "    // Charge each term node visited by freshening materialization.\n"
+            "    if !consume_work(work, work_limit) { return None; }"
+        )
+        if source.count(freshening_materialization_charge) != 1:
+            print("freshening materialization mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_freshening_materialization_charge.rs"
+        mutated_path.write_text(source.replace(
+            freshening_materialization_charge,
+            "    // Mutant omits a term-node materialization charge.\n"
+            "    if false { return None; }",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-freshening-materialization-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "freshening materialization mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "clause freshening cumulative work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: freshening omits materialization work", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "freshening materialization mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: freshening omits materialization work")
         compiled_runtime_mutations += 1
 
         tokenizer_guard = "if byte < 48 || byte > 57 { return None; }"

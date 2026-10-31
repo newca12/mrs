@@ -5300,7 +5300,9 @@ fn freshen_clause_apart_with_work(
             collected_renaming_covers_selected_literal(*clause, variables@, bindings@, i);
         }
     }
-    let fresh = freshen_clause_with_variable_map(clause, variables, bindings);
+    let Some(fresh) = freshen_clause_with_variable_map_with_work(
+        clause, variables, bindings, work, work_limit,
+    ) else { return None; };
     Some(fresh)
 }
 
@@ -5356,6 +5358,36 @@ fn freshen_clause_with_variable_map(
         renaming_images_cover_clause_variables(*clause, variables@, bindings@, v);
     }
     fresh
+}
+
+fn freshen_clause_with_variable_map_with_work(
+    clause: &ExecClause,
+    variables: &Vec<u64>,
+    bindings: &Vec<ExecBinding>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<ExecClause>)
+    requires clause_collection_exact(*clause, variables@),
+        freshening_images_are_variable(bindings@, variables@),
+        *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> view_clause(result.unwrap())
+            == substitute_clause(view_clause(*clause), view_subst(bindings@)),
+        result.is_some() ==> forall|v: u64| term_clause_view_contains(*clause, v)
+            ==> exists|fresh_id: u64|
+                lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id))
+{
+    let Some(fresh) = substitute_clause_exec_with_work(clause, bindings, work, work_limit) else {
+        return None;
+    };
+    assert(view_clause(fresh)
+        == substitute_clause(view_clause(*clause), view_subst(bindings@)));
+    assert forall|v: u64| term_clause_view_contains(*clause, v)
+        implies exists|fresh_id: u64|
+            lookup(view_subst(bindings@), v) == Some(Term::Var(fresh_id)) by {
+        renaming_images_cover_clause_variables(*clause, variables@, bindings@, v);
+    }
+    Some(fresh)
 }
 
 fn freshen_clause_refines_renaming(
@@ -5678,6 +5710,118 @@ fn substitute_clause_exec(clause: &ExecClause, bindings: &Vec<ExecBinding>)
     assert(view_clause(result).literals
         == substitute_clause(view_clause(*clause), view_subst(bindings@)).literals);
     result
+}
+
+fn substitute_atom_exec_with_work(
+    atom: &ExecAtom,
+    bindings: &Vec<ExecBinding>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<ExecAtom>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> view_atom(result.unwrap())
+            == substitute_atom(view_atom(*atom), view_subst(bindings@)),
+    decreases atom
+{
+    if !consume_work(work, work_limit) { return None; }
+    match atom {
+        ExecAtom::Pred0(p) => Some(ExecAtom::Pred0(*p)),
+        ExecAtom::Pred1(p, arg) => {
+            let Some(arg2) = apply_exec_with_work(arg, bindings, work, work_limit) else {
+                return None;
+            };
+            Some(ExecAtom::Pred1(*p, Box::new(arg2)))
+        },
+        ExecAtom::Pred2(p, left, right) => {
+            let Some(left2) = apply_exec_with_work(left, bindings, work, work_limit) else {
+                return None;
+            };
+            let Some(right2) = apply_exec_with_work(right, bindings, work, work_limit) else {
+                return None;
+            };
+            Some(ExecAtom::Pred2(*p, Box::new(left2), Box::new(right2)))
+        },
+        ExecAtom::Eq(left, right) => {
+            let Some(left2) = apply_exec_with_work(left, bindings, work, work_limit) else {
+                return None;
+            };
+            let Some(right2) = apply_exec_with_work(right, bindings, work, work_limit) else {
+                return None;
+            };
+            Some(ExecAtom::Eq(left2, right2))
+        },
+    }
+}
+
+fn substitute_literal_exec_with_work(
+    literal: &ExecLiteral,
+    bindings: &Vec<ExecBinding>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<ExecLiteral>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> view_literal(result.unwrap())
+            == substitute_literal(view_literal(*literal), view_subst(bindings@)),
+{
+    if !consume_work(work, work_limit) { return None; }
+    let Some(atom) = substitute_atom_exec_with_work(
+        &literal.atom, bindings, work, work_limit,
+    ) else { return None; };
+    Some(ExecLiteral { positive: literal.positive, atom })
+}
+
+fn substitute_clause_exec_with_work(
+    clause: &ExecClause,
+    bindings: &Vec<ExecBinding>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<ExecClause>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        match result {
+            Some(substituted) => view_clause(substituted)
+                == substitute_clause(view_clause(*clause), view_subst(bindings@))
+                && substituted.literals@.len() == clause.literals@.len()
+                && forall|j: int| 0 <= j < substituted.literals@.len()
+                    ==> view_literal(substituted.literals@[j])
+                        == substitute_literal(view_clause(*clause).literals[j], view_subst(bindings@)),
+            None => true,
+        }
+{
+    let mut literals: Vec<ExecLiteral> = Vec::new();
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant i <= clause.literals.len(),
+            *work <= work_limit,
+            literals@.len() == i,
+            forall|j: int| 0 <= j < i as int
+                ==> view_literal(literals@[j])
+                    == substitute_literal(view_clause(*clause).literals[j], view_subst(bindings@)),
+        decreases clause.literals.len() - i
+    {
+        if !consume_work(work, work_limit) { return None; }
+        let Some(literal) = substitute_literal_exec_with_work(
+            &clause.literals[i], bindings, work, work_limit,
+        ) else { return None; };
+        assert(view_literal(literal)
+            == substitute_literal(view_literal(clause.literals@[i as int]), view_subst(bindings@)));
+        literals.push(literal);
+        i += 1;
+    }
+    let result = ExecClause { literals };
+    assert(result.literals@.len() == clause.literals@.len());
+    assert forall|j: int| 0 <= j < result.literals@.len()
+        implies view_literal(result.literals@[j])
+            == substitute_literal(view_clause(*clause).literals[j], view_subst(bindings@)) by {
+        assert(j < i as int);
+    }
+    assert(view_clause(result).literals
+        == substitute_clause(view_clause(*clause), view_subst(bindings@)).literals);
+    assert(view_clause(result)
+        == substitute_clause(view_clause(*clause), view_subst(bindings@)));
+    Some(result)
 }
 
 fn replace_clause_literal_exec(
@@ -6074,20 +6218,20 @@ fn executable_clause_freshening_work_accounting_example() -> bool
 
     let mut exact_work: usize = 0;
     let Some(exact_variables) = collect_clause_variables_bounded_with_work(
-        &clause, &mut exact_work, 15,
+        &clause, &mut exact_work, 21,
     ) else { return false; };
     let exact_result = freshen_clause_apart_with_work(
-        &clause, &exact_variables, &avoid, &bindings, &mut exact_work, 15,
+        &clause, &exact_variables, &avoid, &bindings, &mut exact_work, 21,
     );
 
     let mut short_work: usize = 0;
     let Some(short_variables) = collect_clause_variables_bounded_with_work(
-        &clause, &mut short_work, 14,
+        &clause, &mut short_work, 20,
     ) else { return false; };
     let short_result = freshen_clause_apart_with_work(
-        &clause, &short_variables, &avoid, &bindings, &mut short_work, 14,
+        &clause, &short_variables, &avoid, &bindings, &mut short_work, 20,
     );
-    exact_result.is_some() && exact_work == 15 && short_result.is_none() && short_work == 14
+    exact_result.is_some() && exact_work == 21 && short_result.is_none() && short_work == 20
 }
 
 fn parent_variable_superposition_certificate(
@@ -7160,6 +7304,48 @@ fn apply_exec(term: &ExecTerm, bindings: &Vec<ExecBinding>) -> (result: ExecTerm
             Box::new(apply_exec(left, bindings)),
             Box::new(apply_exec(right, bindings)),
         ),
+    }
+}
+
+fn apply_exec_with_work(
+    term: &ExecTerm,
+    bindings: &Vec<ExecBinding>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<ExecTerm>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> view(result.unwrap()) == apply(view(*term), view_subst(bindings@)),
+    decreases term
+{
+    // Charge each term node visited by freshening materialization.
+    if !consume_work(work, work_limit) { return None; }
+    match term {
+        ExecTerm::Var(v) => {
+            let Some(mapped) = lookup_exec_with_work(bindings, *v, work, work_limit) else {
+                return None;
+            };
+            match mapped {
+                Some(replacement) => Some(replacement),
+                None => Some(ExecTerm::Var(*v)),
+            }
+        },
+        ExecTerm::Const(c) => Some(ExecTerm::Const(*c)),
+        ExecTerm::App1(f, child) => {
+            let Some(child2) = apply_exec_with_work(child, bindings, work, work_limit) else {
+                return None;
+            };
+            Some(ExecTerm::App1(*f, Box::new(child2)))
+        },
+        ExecTerm::App2(f, left, right) => {
+            let Some(left2) = apply_exec_with_work(left, bindings, work, work_limit) else {
+                return None;
+            };
+            let Some(right2) = apply_exec_with_work(right, bindings, work, work_limit) else {
+                return None;
+            };
+            Some(ExecTerm::App2(*f, Box::new(left2), Box::new(right2)))
+        },
     }
 }
 
