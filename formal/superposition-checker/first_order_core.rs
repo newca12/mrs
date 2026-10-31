@@ -6471,6 +6471,115 @@ fn executable_superposition_preflight_replay_shared_work_example() -> bool
     !accepted && total_work == combined_preflight_work
 }
 
+fn executable_dag_superposition_shared_work_example() -> bool
+{
+    let certificate = parent_variable_superposition_certificate(
+        200,
+        vec![ExecBinding { variable: 200, replacement: ExecTerm::Var(100) }],
+    );
+    let nodes = vec![
+        ProofNode {
+            id: 1,
+            clause: ExecClause { literals: vec![ExecLiteral {
+                positive: true,
+                atom: ExecAtom::Eq(
+                    ExecTerm::App1(4, Box::new(ExecTerm::Var(0))),
+                    ExecTerm::Var(1),
+                ),
+            }] },
+            kind: ProofNodeKind::Input,
+            parents: Vec::new(),
+            step: None,
+            res_step: None,
+            eq_step: None,
+            fact_step: None,
+            eq_fact_step: None,
+            sub_step: None,
+            weaken_step: None,
+            demod_step: None,
+            inst_step: None,
+            cond_step: None,
+        },
+        ProofNode {
+            id: 2,
+            clause: ExecClause { literals: vec![ExecLiteral {
+                positive: true,
+                atom: ExecAtom::Pred1(8, Box::new(ExecTerm::App1(
+                    4, Box::new(ExecTerm::Var(2)),
+                ))),
+            }] },
+            kind: ProofNodeKind::Input,
+            parents: Vec::new(),
+            step: None,
+            res_step: None,
+            eq_step: None,
+            fact_step: None,
+            eq_fact_step: None,
+            sub_step: None,
+            weaken_step: None,
+            demod_step: None,
+            inst_step: None,
+            cond_step: None,
+        },
+    ];
+    let node = ProofNode {
+        id: 3,
+        clause: ExecClause { literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::Var(101))),
+        }] },
+        kind: ProofNodeKind::Superposition,
+        parents: vec![0usize, 1usize],
+        step: Some(certificate),
+        res_step: None,
+        eq_step: None,
+        fact_step: None,
+        eq_fact_step: None,
+        sub_step: None,
+        weaken_step: None,
+        demod_step: None,
+        inst_step: None,
+        cond_step: None,
+    };
+    let Some(step) = &node.step else { return false; };
+
+    let mut dag_preflight_work: usize = 0;
+    if !charge_certificate_structure(step, &mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&nodes[0].clause, &mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&nodes[1].clause, &mut dag_preflight_work, 100000)
+    {
+        return false;
+    }
+    let Some(source_matches) = same_clause_exact_with_work(
+        &step.source, &nodes[0].clause, &mut dag_preflight_work, 100000,
+    ) else { return false; };
+    let Some(target_matches) = same_clause_exact_with_work(
+        &step.target, &nodes[1].clause, &mut dag_preflight_work, 100000,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, &mut dag_preflight_work, 100000,
+    ) else { return false; };
+    if !source_matches || !target_matches || !conclusion_matches { return false; }
+
+    let mut standalone_work: usize = 0;
+    if !check_superposition_and_replay_with_work(step, &mut standalone_work, 100000) {
+        return false;
+    }
+    if standalone_work > usize::MAX - dag_preflight_work { return false; }
+    let exact_limit = dag_preflight_work + standalone_work;
+    if exact_limit == 0 { return false; }
+    let mut exact_work: usize = 0;
+    let exact_accepted = check_dag_superposition_step_with_work(
+        &node, &nodes, &mut exact_work, exact_limit,
+    );
+    let mut short_work: usize = 0;
+    let short_accepted = check_dag_superposition_step_with_work(
+        &node, &nodes, &mut short_work, exact_limit - 1,
+    );
+    exact_accepted && exact_work == exact_limit && !short_accepted
+}
+
 fn parent_variable_superposition_certificate(
     target_image: u64,
     unifier: Vec<ExecBinding>,
@@ -10656,10 +10765,16 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
 
 /// An executable DAG-step boundary: bind the certificate to the actual two
 /// parent nodes and conclusion, then consume the proved replay postcondition.
-fn check_dag_superposition_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_superposition_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::Superposition || node.parents.len() != 2 {
         return false;
@@ -10669,19 +10784,27 @@ fn check_dag_superposition_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         return false;
     }
     // Bound recursive comparisons before traversing untrusted clause syntax.
-    let mut work: usize = 0;
-    if !charge_certificate_structure(step, &mut work, work_limit)
-        || !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    if !charge_certificate_structure(step, work, work_limit)
+        || !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, work, work_limit)
     {
         return false;
     }
-    let remaining_work = work_limit - work;
-    if !same_clause_exact(&step.source, &nodes[node.parents[0]].clause)
-        || !same_clause_exact(&step.target, &nodes[node.parents[1]].clause)
-        || !same_clause_exact(&step.conclusion, &node.clause)
-        || !check_superposition_and_replay(step, remaining_work)
+    let Some(source_matches) = same_clause_exact_with_work(
+        &step.source, &nodes[node.parents[0]].clause, work, work_limit,
+    ) else { return false; };
+    if !source_matches { return false; }
+    let Some(target_matches) = same_clause_exact_with_work(
+        &step.target, &nodes[node.parents[1]].clause, work, work_limit,
+    ) else { return false; };
+    if !target_matches { return false; }
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, work, work_limit,
+    ) else { return false; };
+    // Keep all DAG structure and parent-comparison charges in local replay.
+    if !conclusion_matches
+        || !check_superposition_and_replay_with_work(step, work, work_limit)
     {
         return false;
     }
@@ -10702,6 +10825,15 @@ fn check_dag_superposition_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         }
     }
     true
+}
+
+fn check_dag_superposition_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_superposition_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_first_order_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -15563,6 +15695,7 @@ fn run_examples() -> bool {
     if !executable_path_sequence_work_accounting_example() { return false; }
     if !executable_selected_term_work_accounting_example() { return false; }
     if !executable_superposition_preflight_replay_shared_work_example() { return false; }
+    if !executable_dag_superposition_shared_work_example() { return false; }
     if !executable_disjoint_parent_freshening_example() { return false; }
     if !executable_parent_variable_freshening_collision_rejected_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
@@ -15633,6 +15766,8 @@ fn regression_main() {
         "selected-term cumulative work regression failed");
     assert!(executable_superposition_preflight_replay_shared_work_example(),
         "superposition preflight/replay shared work regression failed");
+    assert!(executable_dag_superposition_shared_work_example(),
+        "DAG superposition shared work regression failed");
     assert!(executable_disjoint_parent_freshening_example(),
         "disjoint superposition freshening regression failed");
     assert!(executable_parent_variable_freshening_collision_rejected_example(),

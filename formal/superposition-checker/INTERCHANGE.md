@@ -258,3 +258,6 @@ The path-sequence comparison and selected-term lookup mutants must fail their
 4-unit/3-unit and 5-unit/4-unit preflight regressions.
 A final mutant resets the standalone superposition meter before replay and must
 fail the computed structural-plus-preflight cutoff regression.
+A DAG-wrapper mutant gives local replay a fresh counter after charging the
+certificate and cited parents; it must fail the exact composed DAG-superposition
+work regression.

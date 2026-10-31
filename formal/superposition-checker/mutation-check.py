@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 16
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 17
 
 
 def main() -> int:
@@ -62,13 +62,15 @@ def main() -> int:
         ),
         (
             "DAG step skips verified replay",
-            "|| !check_superposition_and_replay(step, remaining_work)",
+            "|| !check_superposition_and_replay_with_work(step, work, work_limit)",
             "|| false",
         ),
         (
             "DAG step ignores cited source parent",
-            "if !same_clause_exact(&step.source, &nodes[node.parents[0]].clause)",
-            "if false",
+            "let Some(source_matches) = same_clause_exact_with_work(\n"
+            "        &step.source, &nodes[node.parents[0]].clause, work, work_limit,\n"
+            "    ) else { return false; };",
+            "let Some(source_matches) = Some(true) else { return false; };",
         ),
         (
             "DAG node validation skips superposition replay",
@@ -967,6 +969,66 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: replay reset the shared work counter")
+        compiled_runtime_mutations += 1
+
+        dag_superposition_handoff = (
+            "    // Keep all DAG structure and parent-comparison charges in local replay.\n"
+            "    if !conclusion_matches\n"
+            "        || !check_superposition_and_replay_with_work(step, work, work_limit)\n"
+            "    {"
+        )
+        if source.count(dag_superposition_handoff) != 1:
+            print("DAG superposition meter handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_superposition.rs"
+        mutated_path.write_text(source.replace(
+            dag_superposition_handoff,
+            "    // Mutant isolates local replay from DAG work.\n"
+            "    let mut isolated_replay_work: usize = 0;\n"
+            "    if !conclusion_matches\n"
+            "        || !check_superposition_and_replay_with_work(\n"
+            "            step, &mut isolated_replay_work, work_limit,\n"
+            "        )\n"
+            "    {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-superposition"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG replay meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG superposition shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG checks were not charged to replay", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG superposition meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG work was reset before local replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (
