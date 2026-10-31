@@ -207,6 +207,8 @@
     "freshening_local_work_meter_exact_cutoff_tested": true,
     "freshening_local_work_meter_compiled_mutation_checked": true,
     "superposition_preflight_shares_freshening_work_meter": true,
+    "clause_collection_freshening_shared_meter_exact_cutoff_tested": true,
+    "clause_collection_freshening_shared_meter_compiled_mutation_checked": true,
     "same_host_runtime_build_hash_reproducibility_checked": true,
     "cross_host_artifact_reproducibility_checked": false,
     "serialized_interchange_version": 1,

@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 6
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 7
 
 
 def main() -> int:
@@ -473,8 +473,12 @@ def main() -> int:
         compiled_runtime_mutations += 1
 
         target_freshening_anchors = (
-            "|| !extend_unique(&mut avoid_target, &fresh_source_variables, work_limit)",
-            "|| !extend_unique(&mut target_avoid, &fresh_source_variables, remaining_work)",
+            "|| !extend_unique_with_work(\n"
+            "        &mut avoid_target, &fresh_source_variables, &mut freshening_check_work, work_limit,\n"
+            "    )",
+            "|| !extend_unique_with_work(\n"
+            "        &mut target_avoid, &fresh_source_variables, &mut replay_freshening_work, remaining_work,\n"
+            "    )",
         )
         mutated_source = source
         for anchor in target_freshening_anchors:
@@ -588,6 +592,59 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: freshening omits lookup work")
+        compiled_runtime_mutations += 1
+
+        clause_collection_charge = (
+            "        // Charge the clause-literal iteration as well as recursive term visits.\n"
+            "        if !consume_work(work, limit) { return false; }"
+        )
+        if source.count(clause_collection_charge) != 1:
+            print("clause-collection work mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_clause_literal_charge.rs"
+        mutated_path.write_text(source.replace(
+            clause_collection_charge,
+            "        // Mutant omits the clause-literal traversal charge.\n"
+            "        if false { return false; }",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-clause-literal-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "clause-collection charge mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "clause freshening cumulative work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: clause collection omits literal work", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "clause-collection work mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: clause collection omits literal work")
         compiled_runtime_mutations += 1
 
         tokenizer_guard = "if byte < 48 || byte > 57 { return None; }"

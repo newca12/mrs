@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and six
+The mutation inventory is now fifty-eight verifier-negative checks and seven
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -98,15 +98,13 @@ source-fresh images from both target avoid sets; the mutant still passes
 `--no-cheating` verification but must fail at the collision-specific runtime
 assertion. This checks the standardized-apart representation policy, not an
 extra premise of the semantic soundness theorem.
-Freshening validation now shares a local work counter across domain-uniqueness
-checks, binding lookup comparisons and copied replacement nodes, avoid-set scans
-and injectivity checks. An exact 4-unit success / 3-unit failure regression and
-a compiled mutation that omits a lookup charge exercise that local meter.
-Superposition preflight shares this counter across validation of both parents;
-a sequential 7-unit regression checks that the second validation cannot reset
-the remaining budget. Work is still not cumulative across clause collection,
-materialization, unifier replay, derived clause construction and other DAG helper
-calls.
+Superposition preflight and replay now share a local meter across clause-variable
+collection, coverage/membership scans, domain-uniqueness checks, binding lookup
+comparisons and copied replacement nodes, avoid-set scans, and injectivity checks.
+Exact 4/3, sequential 7-unit, and 15/14-unit regressions exercise the local
+boundaries; compiled mutations remove the lookup and clause-literal charges.
+Substitution materialization, unifier replay, derived clause construction and
+other DAG helper calls still lack one cumulative meter.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
@@ -183,10 +181,11 @@ host and toolchain only.
 The verification gate enforces 58 verifier-negative mutations across inference
 replay, DAG dispatch and wire tokenization. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
-contracts; it is not comprehensive threat-model coverage. Six compiled-runtime
+contracts; it is not comprehensive threat-model coverage. Seven compiled-runtime
 mutations cover root-ancestor closure, repeated node-clause charging,
 duplicate-ID rejection, decimal-token validation and target-parent freshening
-collision, plus the freshening lookup-work charge; each must fail its corresponding
+collision, plus the freshening lookup-work and clause-collection literal charges;
+each must fail its corresponding
 runtime regression. The gate also compiles and runs positive and negative DAG
 examples via `runtime-check.py`; the ordinary Rust `main` assertion
 is a test oracle outside the verified certification API.

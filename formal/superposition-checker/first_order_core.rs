@@ -4632,6 +4632,118 @@ fn clause_view_contains_variable(clause: &ExecClause, variable: u64) -> (found: 
     false
 }
 
+fn term_contains_variable_with_work(
+    term: &ExecTerm,
+    variable: u64,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> result.unwrap() == exec_term_variables(*term).contains(variable),
+    decreases term
+{
+    if !consume_work(work, work_limit) { return None; }
+    match term {
+        ExecTerm::Var(v) => Some(*v == variable),
+        ExecTerm::Const(_) => Some(false),
+        ExecTerm::App1(_, child) =>
+            term_contains_variable_with_work(child, variable, work, work_limit),
+        ExecTerm::App2(_, left, right) => {
+            let Some(left_contains) = term_contains_variable_with_work(
+                left, variable, work, work_limit,
+            ) else { return None; };
+            if left_contains {
+                Some(true)
+            } else {
+                term_contains_variable_with_work(right, variable, work, work_limit)
+            }
+        },
+    }
+}
+
+fn atom_contains_variable_with_work(
+    atom: &ExecAtom,
+    variable: u64,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> result.unwrap() == exec_atom_variables(*atom).contains(variable),
+    decreases atom
+{
+    if !consume_work(work, work_limit) { return None; }
+    match atom {
+        ExecAtom::Pred0(_) => Some(false),
+        ExecAtom::Pred1(_, arg) =>
+            term_contains_variable_with_work(arg, variable, work, work_limit),
+        ExecAtom::Pred2(_, left, right) => {
+            let Some(left_contains) = term_contains_variable_with_work(
+                left, variable, work, work_limit,
+            ) else { return None; };
+            if left_contains {
+                Some(true)
+            } else {
+                term_contains_variable_with_work(right, variable, work, work_limit)
+            }
+        },
+        ExecAtom::Eq(left, right) => {
+            let Some(left_contains) = term_contains_variable_with_work(
+                left, variable, work, work_limit,
+            ) else { return None; };
+            if left_contains {
+                Some(true)
+            } else {
+                term_contains_variable_with_work(right, variable, work, work_limit)
+            }
+        },
+    }
+}
+
+fn clause_view_contains_variable_with_work(
+    clause: &ExecClause,
+    variable: u64,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> result.unwrap() == term_clause_view_contains(*clause, variable),
+{
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant i <= clause.literals.len(),
+            *work <= work_limit,
+            forall|j: int| 0 <= j < i as int
+                ==> !literal_variables(view_literal(clause.literals@[j])).contains(variable),
+        decreases clause.literals.len() - i
+    {
+        if !consume_work(work, work_limit) { return None; }
+        let current = &clause.literals[i];
+        let Some(found) = atom_contains_variable_with_work(
+            &current.atom, variable, work, work_limit,
+        ) else { return None; };
+        if found {
+            assert(literal_variables(view_literal(*current)).contains(variable)) by {
+                literal_variable_view(*current);
+            }
+            assert(term_clause_view_contains(*clause, variable));
+            return Some(true);
+        }
+        assert(!literal_variables(view_literal(*current)).contains(variable)) by {
+            literal_variable_view(*current);
+        }
+        i += 1;
+    }
+    assert forall|j: int| 0 <= j < clause.literals@.len()
+        implies !literal_variables(view_literal(clause.literals@[j])).contains(variable) by {
+        assert(j < i as int);
+    }
+    assert(!term_clause_view_contains(*clause, variable));
+    Some(false)
+}
+
 fn term_variables_covered(term: &ExecTerm, variables: &Vec<u64>) -> (covered: bool)
     ensures covered == variables_subset(*term, variables@)
     decreases term
@@ -4703,6 +4815,114 @@ fn clause_variables_covered(clause: &ExecClause, variables: &Vec<u64>) -> (cover
     true
 }
 
+fn term_variables_covered_with_work(
+    term: &ExecTerm,
+    variables: &Vec<u64>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> result.unwrap() == variables_subset(*term, variables@),
+    decreases term
+{
+    if !consume_work(work, work_limit) { return None; }
+    match term {
+        ExecTerm::Var(v) => contains_u64_with_work(variables, *v, work, work_limit),
+        ExecTerm::Const(_) => Some(true),
+        ExecTerm::App1(_, child) =>
+            term_variables_covered_with_work(child, variables, work, work_limit),
+        ExecTerm::App2(_, left, right) => {
+            let Some(left_covered) = term_variables_covered_with_work(
+                left, variables, work, work_limit,
+            ) else { return None; };
+            if !left_covered {
+                Some(false)
+            } else {
+                term_variables_covered_with_work(right, variables, work, work_limit)
+            }
+        },
+    }
+}
+
+fn atom_variables_covered_with_work(
+    atom: &ExecAtom,
+    variables: &Vec<u64>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> result.unwrap() == (forall|v: u64|
+            exec_atom_variables(*atom).contains(v) ==> variables@.contains(v)),
+    decreases atom
+{
+    if !consume_work(work, work_limit) { return None; }
+    match atom {
+        ExecAtom::Pred0(_) => Some(true),
+        ExecAtom::Pred1(_, arg) =>
+            term_variables_covered_with_work(arg, variables, work, work_limit),
+        ExecAtom::Pred2(_, left, right) => {
+            let Some(left_covered) = term_variables_covered_with_work(
+                left, variables, work, work_limit,
+            ) else { return None; };
+            if !left_covered {
+                Some(false)
+            } else {
+                term_variables_covered_with_work(right, variables, work, work_limit)
+            }
+        },
+        ExecAtom::Eq(left, right) => {
+            let Some(left_covered) = term_variables_covered_with_work(
+                left, variables, work, work_limit,
+            ) else { return None; };
+            if !left_covered {
+                Some(false)
+            } else {
+                term_variables_covered_with_work(right, variables, work, work_limit)
+            }
+        },
+    }
+}
+
+fn clause_variables_covered_with_work(
+    clause: &ExecClause,
+    variables: &Vec<u64>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() && result.unwrap() ==> forall|v: u64|
+            term_clause_view_contains(*clause, v) ==> variables@.contains(v),
+{
+    let mut i: usize = 0;
+    while i < clause.literals.len()
+        invariant i <= clause.literals.len(),
+            *work <= work_limit,
+            forall|v: u64, j: int| 0 <= j < i as int
+                && #[trigger] exec_atom_variables(clause.literals@[j].atom).contains(v)
+                ==> variables@.contains(v),
+        decreases clause.literals.len() - i
+    {
+        if !consume_work(work, work_limit) { return None; }
+        let Some(covered) = atom_variables_covered_with_work(
+            &clause.literals[i].atom, variables, work, work_limit,
+        ) else { return None; };
+        if !covered { return Some(false); }
+        i += 1;
+    }
+    assert forall|v: u64| term_clause_view_contains(*clause, v)
+        implies variables@.contains(v) by {
+        let literal_index = choose|j: int| 0 <= j < clause.literals@.len()
+            && literal_variables(view_literal(clause.literals@[j])).contains(v);
+        assert(exec_atom_variables(clause.literals@[literal_index].atom).contains(v)) by {
+            literal_variable_view(clause.literals@[literal_index]);
+        }
+    }
+    Some(true)
+}
+
 proof fn selected_literal_variables_are_clause_variables(
     clause: ExecClause,
     literal_index: int,
@@ -4743,10 +4963,11 @@ fn collect_term_variables_exec(
     work: &mut usize,
     limit: usize,
 ) -> (ok: bool)
+    requires *old(work) <= limit,
     ensures ok ==> forall|v: u64| exec_term_variables(*term).contains(v)
             ==> final(variables)@.contains(v),
         ok ==> forall|v: u64| old(variables)@.contains(v) ==> final(variables)@.contains(v),
-        ok ==> *old(work) <= limit && *final(work) <= limit,
+        *final(work) <= limit,
     decreases term
 {
     match term {
@@ -4780,7 +5001,7 @@ fn collect_atom_variables_exec(
             ==> final(variables)@.contains(v),
         ok ==> forall|v: u64| old(variables)@.contains(v)
             ==> final(variables)@.contains(v),
-        ok ==> *old(work) <= limit && *final(work) <= limit,
+        *final(work) <= limit,
     decreases atom
 {
     match atom {
@@ -4809,7 +5030,7 @@ fn collect_clause_variables_exec(
             ==> final(variables)@.contains(v),
         ok ==> forall|v: u64| old(variables)@.contains(v)
             ==> final(variables)@.contains(v),
-        ok ==> *old(work) <= limit && *final(work) <= limit,
+        *final(work) <= limit,
 {
     if !consume_work(work, limit) { return false; }
     let mut literal_index: usize = 0;
@@ -4822,6 +5043,8 @@ fn collect_clause_variables_exec(
             forall|v: u64| old(variables)@.contains(v) ==> variables@.contains(v),
         decreases clause.literals.len() - literal_index
     {
+        // Charge the clause-literal iteration as well as recursive term visits.
+        if !consume_work(work, limit) { return false; }
         if !collect_atom_variables_exec(
             &clause.literals[literal_index].atom, variables, work, limit,
         ) { return false; }
@@ -4834,6 +5057,60 @@ fn collect_clause_variables_exec(
     true
 }
 
+fn collect_clause_variables_bounded_with_work(
+    clause: &ExecClause,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<Vec<u64>>)
+    requires *old(work) <= work_limit,
+    ensures match result {
+        Some(variables) => clause_collection_exact(*clause, variables@),
+        None => true,
+    },
+        *final(work) <= work_limit
+{
+    if work_limit - *work < 8 || clause.literals.len() > 64 { return None; }
+    let mut variables: Vec<u64> = Vec::new();
+    if !collect_clause_variables_exec(clause, &mut variables, work, work_limit) {
+        return None;
+    }
+    let Some(covered) = clause_variables_covered_with_work(
+        clause, &variables, work, work_limit,
+    ) else { return None; };
+    if !covered { return None; }
+    let mut i: usize = 0;
+    while i < variables.len()
+        invariant i <= variables.len(),
+            *work <= work_limit,
+            forall|j: int| 0 <= j < i as int
+                ==> term_clause_view_contains(*clause, variables@[j]),
+        decreases variables.len() - i
+    {
+        if !consume_work(work, work_limit) { return None; }
+        let Some(contains) = clause_view_contains_variable_with_work(
+            clause, variables[i], work, work_limit,
+        ) else { return None; };
+        if !contains { return None; }
+        assert(term_clause_view_contains(*clause, variables@[i as int]));
+        i += 1;
+    }
+    assert forall|v: u64| variables@.contains(v)
+        implies term_clause_view_contains(*clause, v) by {
+        let index = choose|j: int| 0 <= j < variables@.len() && variables@[j] == v;
+        assert(index < i as int);
+    }
+    assert forall|v: u64| term_clause_view_contains(*clause, v)
+        implies variables@.contains(v) by {
+        let literal_index = choose|j: int| 0 <= j < clause.literals@.len()
+            && literal_variables(view_literal(clause.literals@[j])).contains(v);
+        assert(exec_atom_variables(clause.literals@[literal_index].atom).contains(v)) by {
+            literal_variable_view(clause.literals@[literal_index]);
+        }
+        assert(variables@.contains(v));
+    }
+    Some(variables)
+}
+
 fn collect_clause_variables_bounded(
     clause: &ExecClause,
     work_limit: usize,
@@ -4843,44 +5120,8 @@ fn collect_clause_variables_bounded(
         None => true,
     }
 {
-    if work_limit < 8 || clause.literals.len() > 64 { return None; }
-    let mut variables: Vec<u64> = Vec::new();
     let mut work: usize = 0;
-    if collect_clause_variables_exec(clause, &mut variables, &mut work, work_limit) {
-        let covered = clause_variables_covered(clause, &variables);
-        if covered {
-            let mut i: usize = 0;
-            while i < variables.len()
-                invariant i <= variables.len(),
-                    forall|j: int| 0 <= j < i as int
-                        ==> term_clause_view_contains(*clause, variables@[j]),
-                decreases variables.len() - i
-            {
-                if !clause_view_contains_variable(clause, variables[i]) { return None; }
-                assert(term_clause_view_contains(*clause, variables@[i as int]));
-                i += 1;
-            }
-            assert forall|v: u64| variables@.contains(v)
-                implies term_clause_view_contains(*clause, v) by {
-                let index = choose|j: int| 0 <= j < variables@.len() && variables@[j] == v;
-                assert(index < i as int);
-            }
-            assert forall|v: u64| term_clause_view_contains(*clause, v)
-                implies variables@.contains(v) by {
-                let literal_index = choose|j: int| 0 <= j < clause.literals@.len()
-                    && literal_variables(view_literal(clause.literals@[j])).contains(v);
-                assert(exec_atom_variables(clause.literals@[literal_index].atom).contains(v)) by {
-                    literal_variable_view(clause.literals@[literal_index]);
-                }
-                assert(variables@.contains(v));
-            }
-            Some(variables)
-        } else {
-            None
-        }
-    } else {
-        None
-    }
+    collect_clause_variables_bounded_with_work(clause, &mut work, work_limit)
 }
 
 fn check_freshening_with_work(
@@ -5081,10 +5322,12 @@ fn freshen_clause_apart(
             ==> renames_variables_on(view_subst(bindings@),
                 literal_variables(view_literal(clause.literals@[i])))
 {
-    let Some(variables) = collect_clause_variables_bounded(clause, work_limit) else {
+    let mut work: usize = 0;
+    let Some(variables) = collect_clause_variables_bounded_with_work(
+        clause, &mut work, work_limit,
+    ) else {
         return None;
     };
-    let mut work: usize = 0;
     freshen_clause_apart_with_work(
         clause, &variables, avoid, bindings, &mut work, work_limit,
     )
@@ -5816,6 +6059,35 @@ fn executable_freshening_work_accounting_example() -> bool
     );
     accepted && exact_work == 4 && rejected && short_work == 3
         && first_shared && second_shared && shared_work == 7
+}
+
+fn executable_clause_freshening_work_accounting_example() -> bool
+{
+    let clause = ExecClause {
+        literals: vec![ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Var(1))),
+        }],
+    };
+    let avoid = Vec::new();
+    let bindings = vec![ExecBinding { variable: 1, replacement: ExecTerm::Var(10) }];
+
+    let mut exact_work: usize = 0;
+    let Some(exact_variables) = collect_clause_variables_bounded_with_work(
+        &clause, &mut exact_work, 15,
+    ) else { return false; };
+    let exact_result = freshen_clause_apart_with_work(
+        &clause, &exact_variables, &avoid, &bindings, &mut exact_work, 15,
+    );
+
+    let mut short_work: usize = 0;
+    let Some(short_variables) = collect_clause_variables_bounded_with_work(
+        &clause, &mut short_work, 14,
+    ) else { return false; };
+    let short_result = freshen_clause_apart_with_work(
+        &clause, &short_variables, &avoid, &bindings, &mut short_work, 14,
+    );
+    exact_result.is_some() && exact_work == 15 && short_result.is_none() && short_work == 14
 }
 
 fn parent_variable_superposition_certificate(
@@ -9146,16 +9418,20 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     let ExecAtom::Eq(source_left, source_right) = &source_literal.atom else { return false; };
     if let ExecTerm::Var(_) = source_left { return false; }
 
-    let left_variables = match collect_clause_variables_bounded(&certificate.source, work_limit) {
+    let mut freshening_check_work: usize = 0;
+    let left_variables = match collect_clause_variables_bounded_with_work(
+        &certificate.source, &mut freshening_check_work, work_limit,
+    ) {
         Some(vars) => vars,
         None => return false,
     };
-    let right_variables = match collect_clause_variables_bounded(&certificate.target, work_limit) {
+    let right_variables = match collect_clause_variables_bounded_with_work(
+        &certificate.target, &mut freshening_check_work, work_limit,
+    ) {
         Some(vars) => vars,
         None => return false,
     };
     // Both parent freshening validations debit the same local meter.
-    let mut freshening_check_work: usize = 0;
     let fresh_source = match freshen_clause_apart_with_work(
         &certificate.source,
         &left_variables,
@@ -9170,20 +9446,26 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     assert(view_clause(fresh_source)
         == substitute_clause(view_clause(certificate.source),
             view_subst(certificate.source_freshening@)));
-    let fresh_source_variables = match collect_clause_variables_bounded(&fresh_source, work_limit) {
+    let fresh_source_variables = match collect_clause_variables_bounded_with_work(
+        &fresh_source, &mut freshening_check_work, work_limit,
+    ) {
         Some(vars) => vars,
         None => return false,
     };
     let mut avoid_target: Vec<u64> = Vec::new();
-    if !extend_unique(&mut avoid_target, &right_variables, work_limit)
-        || !extend_unique(&mut avoid_target, &fresh_source_variables, work_limit)
+    if !extend_unique_with_work(
+        &mut avoid_target, &right_variables, &mut freshening_check_work, work_limit,
+    ) || !extend_unique_with_work(
+        &mut avoid_target, &fresh_source_variables, &mut freshening_check_work, work_limit,
+    )
     {
         return false;
     }
-    let target_literal_freshening_vars = match collect_clause_variables_bounded(
+    let target_literal_freshening_vars = match collect_clause_variables_bounded_with_work(
         &ExecClause { literals: vec![copy_literal(
             &certificate.target.literals[certificate.target_literal_index],
         )] },
+        &mut freshening_check_work,
         work_limit,
     ) {
         Some(vars) => vars,
@@ -9392,6 +9674,43 @@ fn extend_unique(destination: &mut Vec<u64>, source: &Vec<u64>, work_limit: usiz
     true
 }
 
+fn extend_unique_with_work(
+    destination: &mut Vec<u64>,
+    source: &Vec<u64>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (ok: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        ok ==> forall|i: int| 0 <= i < source@.len()
+            ==> final(destination)@.contains(source@[i]),
+        ok ==> forall|v: u64| old(destination)@.contains(v)
+            ==> final(destination)@.contains(v),
+{
+    let mut i: usize = 0;
+    while i < source.len()
+        invariant i <= source.len(),
+            *work <= work_limit,
+            forall|j: int| 0 <= j < i as int
+                ==> destination@.contains(source@[j]),
+            forall|v: u64| old(destination)@.contains(v)
+                ==> destination@.contains(v),
+        decreases source.len() - i
+    {
+        if !consume_work(work, work_limit) { return false; }
+        let Some(found) = contains_u64_with_work(destination, source[i], work, work_limit) else {
+            return false;
+        };
+        if !found {
+            if !consume_work(work, work_limit) { return false; }
+            add_variable(destination, source[i]);
+        }
+        assert(destination@.contains(source@[i as int]));
+        i += 1;
+    }
+    true
+}
+
 fn same_u64_sequence(left: &Vec<u64>, right: &Vec<u64>) -> (same: bool)
     ensures same == (left@ == right@)
 {
@@ -9586,23 +9905,46 @@ fn check_superposition_and_replay(certificate: &SuperpositionCertificate, work_l
     {
         return false;
     }
-    let Some(target_variables) = collect_clause_variables_bounded(&certificate.target, remaining_work) else {
+    let mut replay_freshening_work: usize = 0;
+    let Some(target_variables) = collect_clause_variables_bounded_with_work(
+        &certificate.target, &mut replay_freshening_work, remaining_work,
+    ) else {
         return false;
     };
-    let Some(fresh_source) = freshen_clause_apart(
-        &certificate.source, &target_variables, &certificate.source_freshening, remaining_work,
+    let Some(source_variables) = collect_clause_variables_bounded_with_work(
+        &certificate.source, &mut replay_freshening_work, remaining_work,
+    ) else {
+        return false;
+    };
+    let Some(fresh_source) = freshen_clause_apart_with_work(
+        &certificate.source,
+        &source_variables,
+        &target_variables,
+        &certificate.source_freshening,
+        &mut replay_freshening_work,
+        remaining_work,
     ) else { return false; };
-    let Some(fresh_source_variables) = collect_clause_variables_bounded(&fresh_source, remaining_work) else {
+    let Some(fresh_source_variables) = collect_clause_variables_bounded_with_work(
+        &fresh_source, &mut replay_freshening_work, remaining_work,
+    ) else {
         return false;
     };
     let mut target_avoid = Vec::new();
-    if !extend_unique(&mut target_avoid, &target_variables, remaining_work)
-        || !extend_unique(&mut target_avoid, &fresh_source_variables, remaining_work)
+    if !extend_unique_with_work(
+        &mut target_avoid, &target_variables, &mut replay_freshening_work, remaining_work,
+    ) || !extend_unique_with_work(
+        &mut target_avoid, &fresh_source_variables, &mut replay_freshening_work, remaining_work,
+    )
     {
         return false;
     }
-    let Some(fresh_target) = freshen_clause_apart(
-        &certificate.target, &target_avoid, &certificate.target_freshening, remaining_work,
+    let Some(fresh_target) = freshen_clause_apart_with_work(
+        &certificate.target,
+        &target_variables,
+        &target_avoid,
+        &certificate.target_freshening,
+        &mut replay_freshening_work,
+        remaining_work,
     ) else { return false; };
     let instantiated_source = substitute_clause_exec(&fresh_source, &certificate.unifier);
     let instantiated_target = substitute_clause_exec(&fresh_target, &certificate.unifier);
@@ -14560,6 +14902,7 @@ fn run_examples() -> bool {
     executable_unifier_certificate_examples();
     if !executable_standardization_apart_example() { return false; }
     if !executable_freshening_work_accounting_example() { return false; }
+    if !executable_clause_freshening_work_accounting_example() { return false; }
     if !executable_disjoint_parent_freshening_example() { return false; }
     if !executable_parent_variable_freshening_collision_rejected_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
@@ -14616,6 +14959,8 @@ fn regression_main() {
         "standardization-apart collision regression failed");
     assert!(executable_freshening_work_accounting_example(),
         "freshening cumulative work regression failed");
+    assert!(executable_clause_freshening_work_accounting_example(),
+        "clause freshening cumulative work regression failed");
     assert!(executable_disjoint_parent_freshening_example(),
         "disjoint superposition freshening regression failed");
     assert!(executable_parent_variable_freshening_collision_rejected_example(),
