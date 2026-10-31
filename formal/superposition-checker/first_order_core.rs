@@ -6396,6 +6396,36 @@ fn executable_replay_output_work_accounting_example() -> bool
     exact_replay && exact_work == 23 && short_result.is_none() && short_work == 22
 }
 
+fn executable_path_sequence_work_accounting_example() -> bool
+{
+    let left = vec![0u64, 1u64];
+    let right = vec![0u64, 1u64];
+    let mut exact_work: usize = 0;
+    let exact = same_u64_sequence_with_work(&left, &right, &mut exact_work, 4);
+    let mut short_work: usize = 0;
+    let short = same_u64_sequence_with_work(&left, &right, &mut short_work, 3);
+    exact == Some(true) && exact_work == 4 && short.is_none() && short_work == 2
+}
+
+fn executable_selected_term_work_accounting_example() -> bool
+{
+    let atom = ExecAtom::Pred1(4, Box::new(ExecTerm::App2(
+        5,
+        Box::new(ExecTerm::Const(6)),
+        Box::new(ExecTerm::Const(7)),
+    )));
+    let path = vec![0u64];
+    let mut exact_work: usize = 0;
+    let exact = selected_atom_term_exec_with_work(&atom, 0, &path, &mut exact_work, 5);
+    let exact_ok = match exact {
+        Some(term) => same_term(&term, &ExecTerm::Const(6)),
+        None => false,
+    };
+    let mut short_work: usize = 0;
+    let short = selected_atom_term_exec_with_work(&atom, 0, &path, &mut short_work, 4);
+    exact_ok && exact_work == 5 && short.is_none() && short_work == 4
+}
+
 fn parent_variable_superposition_certificate(
     target_image: u64,
     unifier: Vec<ExecBinding>,
@@ -9573,6 +9603,24 @@ fn selected_atom_term_exec(
     result
 }
 
+fn selected_atom_term_exec_with_work(
+    atom: &ExecAtom,
+    slot: u64,
+    path: &Vec<u64>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<ExecTerm>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> atom_at_position(view_atom(*atom), slot as nat, view_position(path@))
+            == Some(view(result.unwrap()))
+{
+    // Charge the atom traversal and path before selecting/copying a subterm.
+    if !charge_atom_structure(atom, work, work_limit) { return None; }
+    if !charge_u64_sequence(path, work, work_limit) { return None; }
+    selected_atom_term_exec(atom, slot, path)
+}
+
 proof fn proposed_unifier_certificate_sound(
     left: ExecTerm,
     right: ExecTerm,
@@ -9867,7 +9915,14 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     if certificate.fresh_target_path.len() > remaining_work { return false; }
     remaining_work -= certificate.fresh_target_path.len();
     if certificate.conclusion.literals.len() > remaining_work { return false; }
-    if !same_u64_sequence(&certificate.target_path, &certificate.fresh_target_path) {
+    let mut freshening_check_work: usize = 0;
+    let Some(paths_match) = same_u64_sequence_with_work(
+        &certificate.target_path, &certificate.fresh_target_path,
+        &mut freshening_check_work, work_limit,
+    ) else {
+        return false;
+    };
+    if !paths_match {
         return false;
     }
 
@@ -9882,7 +9937,6 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     let ExecAtom::Eq(source_left, source_right) = &source_literal.atom else { return false; };
     if let ExecTerm::Var(_) = source_left { return false; }
 
-    let mut freshening_check_work: usize = 0;
     let left_variables = match collect_clause_variables_bounded_with_work(
         &certificate.source, &mut freshening_check_work, work_limit,
     ) {
@@ -9958,10 +10012,12 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         return false;
     }
 
-    let target_subterm_result = selected_atom_term_exec(
+    let target_subterm_result = selected_atom_term_exec_with_work(
         &certificate.target.literals[certificate.target_literal_index].atom,
         certificate.target_argument_slot,
         &certificate.target_path,
+        &mut freshening_check_work,
+        work_limit,
     );
     let Some(target_subterm) = target_subterm_result else { return false; };
     let source_eq_fresh = &fresh_source.literals[certificate.source_equality_index];
@@ -9970,11 +10026,19 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         == substitute_literal(view_literal(*source_literal),
             view_subst(certificate.source_freshening@)));
     let target_selected = &fresh_target.literals[certificate.target_literal_index];
-    let Some(fresh_target_subterm) = selected_atom_term_exec(
+    let Some(fresh_target_subterm) = selected_atom_term_exec_with_work(
         &target_selected.atom, certificate.target_argument_slot, &certificate.fresh_target_path,
+        &mut freshening_check_work, work_limit,
     ) else { return false; };
-    let raw_selected_after_freshening = apply_exec(&target_subterm, &certificate.target_freshening);
-    if !same_term(&raw_selected_after_freshening, &fresh_target_subterm) {
+    let Some(raw_selected_after_freshening) = apply_exec_with_work(
+        &target_subterm, &certificate.target_freshening,
+        &mut freshening_check_work, work_limit,
+    ) else { return false; };
+    let Some(raw_target_matches) = same_term_with_work(
+        &raw_selected_after_freshening, &fresh_target_subterm,
+        &mut freshening_check_work, work_limit,
+    ) else { return false; };
+    if !raw_target_matches {
         return false;
     }
     let unifies = check_unifier_with_work(
@@ -10027,8 +10091,14 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
         ExecAtom::Eq(_, right) => right,
         _ => return false,
     };
-    let instantiated_source_left = apply_exec(fresh_source_left, &certificate.unifier);
-    let instantiated_source_right = apply_exec(source_right, &certificate.unifier);
+    let Some(instantiated_source_left) = apply_exec_with_work(
+        fresh_source_left, &certificate.unifier,
+        &mut freshening_check_work, work_limit,
+    ) else { return false; };
+    let Some(instantiated_source_right) = apply_exec_with_work(
+        source_right, &certificate.unifier,
+        &mut freshening_check_work, work_limit,
+    ) else { return false; };
     assert(view(*source_right)
         == apply(view(source_right_exec(*certificate)),
             view_subst(certificate.source_freshening@)));
@@ -10040,12 +10110,26 @@ fn check_superposition_certificate(certificate: &SuperpositionCertificate, work_
     assert(view(instantiated_source_right)
         == apply(view(*source_right), view_subst(certificate.unifier@)));
     assert(view(instantiated_source_right) == certificate_selected_source_right(*certificate));
-    let raw_selected_after_freshening = apply_exec(&target_subterm, &certificate.target_freshening);
-    if !same_term(&raw_selected_after_freshening, &fresh_target_subterm) {
+    let Some(raw_selected_after_freshening) = apply_exec_with_work(
+        &target_subterm, &certificate.target_freshening,
+        &mut freshening_check_work, work_limit,
+    ) else { return false; };
+    let Some(raw_target_matches_again) = same_term_with_work(
+        &raw_selected_after_freshening, &fresh_target_subterm,
+        &mut freshening_check_work, work_limit,
+    ) else { return false; };
+    if !raw_target_matches_again {
         return false;
     }
-    let selected_after_unification = apply_exec(&fresh_target_subterm, &certificate.unifier);
-    if !same_term(&instantiated_source_left, &selected_after_unification) {
+    let Some(selected_after_unification) = apply_exec_with_work(
+        &fresh_target_subterm, &certificate.unifier,
+        &mut freshening_check_work, work_limit,
+    ) else { return false; };
+    let Some(selected_terms_match) = same_term_with_work(
+        &instantiated_source_left, &selected_after_unification,
+        &mut freshening_check_work, work_limit,
+    ) else { return false; };
+    if !selected_terms_match {
         return false;
     }
     // Ensure both oriented source sides were instantiated by the same unifier;
@@ -10197,6 +10281,25 @@ fn same_u64_sequence(left: &Vec<u64>, right: &Vec<u64>) -> (same: bool)
     }
     assert(left@ == right@);
     true
+}
+
+fn same_u64_sequence_with_work(
+    left: &Vec<u64>,
+    right: &Vec<u64>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> result.unwrap() == (left@ == right@)
+{
+    // Charge both path sequences before element-wise comparison.
+    if !charge_u64_sequence(left, work, work_limit)
+        || !charge_u64_sequence(right, work, work_limit)
+    {
+        return None;
+    }
+    Some(same_u64_sequence(left, right))
 }
 
 /// Remove exactly one occurrence; duplicates in either context are preserved.
@@ -15380,6 +15483,8 @@ fn run_examples() -> bool {
     if !executable_unifier_work_accounting_example() { return false; }
     if !executable_replay_substitution_work_accounting_example() { return false; }
     if !executable_replay_output_work_accounting_example() { return false; }
+    if !executable_path_sequence_work_accounting_example() { return false; }
+    if !executable_selected_term_work_accounting_example() { return false; }
     if !executable_disjoint_parent_freshening_example() { return false; }
     if !executable_parent_variable_freshening_collision_rejected_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
@@ -15444,6 +15549,10 @@ fn regression_main() {
         "replay substitution cumulative work regression failed");
     assert!(executable_replay_output_work_accounting_example(),
         "replay output cumulative work regression failed");
+    assert!(executable_path_sequence_work_accounting_example(),
+        "path sequence cumulative work regression failed");
+    assert!(executable_selected_term_work_accounting_example(),
+        "selected-term cumulative work regression failed");
     assert!(executable_disjoint_parent_freshening_example(),
         "disjoint superposition freshening regression failed");
     assert!(executable_parent_variable_freshening_collision_rejected_example(),

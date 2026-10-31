@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 13
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 15
 
 
 def main() -> int:
@@ -833,6 +833,81 @@ def main() -> int:
             if expected_failure not in runtime.stdout:
                 print(
                     "replay output mutation failed for an unexpected reason:\n"
+                    + runtime.stdout,
+                    file=sys.stderr,
+                )
+                return 1
+            print(rejected_message)
+            compiled_runtime_mutations += 1
+
+        superposition_preflight_charges = (
+            (
+                "    // Charge both path sequences before element-wise comparison.\n"
+                "    if !charge_u64_sequence(left, work, work_limit)\n"
+                "        || !charge_u64_sequence(right, work, work_limit)\n"
+                "    {\n"
+                "        return None;\n"
+                "    }",
+                "path-sequence comparison mutation anchor is missing or ambiguous",
+                "first_order_core_without_path_sequence_charge.rs",
+                "first-order-core-without-path-sequence-charge",
+                "runtime accepted mutation: path comparison omits sequence work",
+                "runtime mutation rejected: path comparison omits sequence work",
+                "path sequence cumulative work regression failed",
+            ),
+            (
+                "    // Charge the atom traversal and path before selecting/copying a subterm.\n"
+                "    if !charge_atom_structure(atom, work, work_limit) { return None; }\n"
+                "    if !charge_u64_sequence(path, work, work_limit) { return None; }",
+                "selected-term lookup mutation anchor is missing or ambiguous",
+                "first_order_core_without_selected_term_charge.rs",
+                "first-order-core-without-selected-term-charge",
+                "runtime accepted mutation: selected-term lookup omits structure work",
+                "runtime mutation rejected: selected-term lookup omits structure work",
+                "selected-term cumulative work regression failed",
+            ),
+        )
+        for anchor, missing_message, filename, binary_name, accepted_message, rejected_message, expected_failure in superposition_preflight_charges:
+            if source.count(anchor) != 1:
+                print(missing_message, file=sys.stderr)
+                return 2
+            mutated_path = pathlib.Path(temp_dir) / filename
+            mutated_path.write_text(source.replace(
+                anchor,
+                anchor.splitlines()[0] + "\n    if false { return None; }",
+                1,
+            ))
+            binary = pathlib.Path(temp_dir) / binary_name
+            compile_result = subprocess.run(
+                [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+                 str(mutated_path), "-o", str(binary)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=300,
+            )
+            if compile_result.returncode != 0:
+                print(
+                    "superposition preflight mutant must pass Verus before its runtime test:\n"
+                    + compile_result.stdout,
+                    file=sys.stderr,
+                )
+                return 1
+            runtime = subprocess.run(
+                [str(binary)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=30,
+            )
+            if runtime.returncode == 0:
+                print(accepted_message, file=sys.stderr)
+                return 1
+            if expected_failure not in runtime.stdout:
+                print(
+                    "superposition preflight mutation failed for an unexpected reason:\n"
                     + runtime.stdout,
                     file=sys.stderr,
                 )

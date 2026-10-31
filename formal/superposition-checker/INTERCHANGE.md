@@ -254,3 +254,5 @@ A mutant bypasses the source-parent replay substitution meter and must fail the
 12-unit/11-unit shared parent-instantiation regression. Three replay-output
 mutants remove the target-replacement, conclusion-build or exact-comparison
 structure charge; each must fail the 23-unit/22-unit output-work regression.
+The path-sequence comparison and selected-term lookup mutants must fail their
+4-unit/3-unit and 5-unit/4-unit preflight regressions.
