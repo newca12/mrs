@@ -86,7 +86,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `486 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `487 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -124,10 +124,11 @@ target replacement, resolvent construction and exact output comparison. Exact
 4/3 freshening/path, sequential 7, 5/4 selected term, 21/20, 11/10, 12/11 and
 23/22 unit regressions exercise local boundaries. A computed cutoff that exactly
 funds outer structure plus preflight must fail when replay begins; a compiled
-counter-reset mutant checks that handoff. The DAG superposition wrapper now carries
-its structural and parent-comparison charges into that same local replay meter.
-The outer `validate_dag_node`/`certify_dag` boundary and other inference families
-still use separate counters, so global DAG accounting remains open. DAG input-leaf
+counter-reset mutant checks that handoff. The DAG per-node validator now carries
+parent-index, node-clause and cited-parent comparison charges into that same local
+replay meter. `certify_dag` still divides the overall ceiling into independent
+per-node shares, and other inference families use separate counters, so global DAG
+accounting remains open. DAG input-leaf
 validation charges both the node clause and each candidate input clause for every
 repeated exact membership comparison. A runtime regression checks the exact 15-unit threshold
 for three candidates, and a compiled mutation that removes the repeated node

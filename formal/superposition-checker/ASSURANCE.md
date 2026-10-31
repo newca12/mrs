@@ -111,10 +111,10 @@ unifier-comparison, path-comparison, selected-term, replay substitution,
 replacement, build, comparison, preflight/replay handoff and DAG-superposition
 handoff charges. A computed boundary
 funds exactly the standalone structure/preflight work and requires replay to fail
-closed at its first charge. The DAG superposition wrapper now carries its own
-structure and parent-comparison work into replay. The outer DAG validator/certifier
-and other inference-family helpers still use separate counters, so end-to-end DAG
-accounting remains open.
+closed at its first charge. The DAG per-node validator carries parent-index,
+node-clause and cited-parent comparison work into the superposition replay meter.
+`certify_dag` still allocates independent per-node shares, and other inference
+families use separate counters, so end-to-end DAG accounting remains open.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 

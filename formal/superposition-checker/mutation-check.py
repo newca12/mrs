@@ -74,8 +74,8 @@ def main() -> int:
         ),
         (
             "DAG node validation skips superposition replay",
-            "let checked = check_dag_superposition_step(node, &dag.nodes,\n            work_limit - work);\n        checked",
-            "let checked = true;\n        checked",
+            "check_dag_superposition_step_with_work(node, &dag.nodes, work, work_limit)",
+            "true",
         ),
         (
             "certifier skips node validation",
@@ -411,10 +411,10 @@ def main() -> int:
         compiled_runtime_mutations += 1
 
         input_charge = (
-            "if !charge_clause_structure(&node.clause, &mut work, work_limit) {\n"
+            "if !charge_clause_structure(&node.clause, work, work_limit) {\n"
             "                return false;\n"
             "            }\n"
-            "            if !charge_clause_structure(&dag.input_clauses[k], &mut work, work_limit) {"
+            "            if !charge_clause_structure(&dag.input_clauses[k], work, work_limit) {"
         )
         if source.count(input_charge) != 1:
             print("input comparison budget mutation anchor is missing or ambiguous", file=sys.stderr)
@@ -423,7 +423,7 @@ def main() -> int:
         mutated_path.write_text(source.replace(
             input_charge,
             "if false { return false; }\n"
-            "            if !charge_clause_structure(&dag.input_clauses[k], &mut work, work_limit) {",
+            "            if !charge_clause_structure(&dag.input_clauses[k], work, work_limit) {",
             1,
         ))
         binary = pathlib.Path(temp_dir) / "first-order-core-without-input-compare-charge"

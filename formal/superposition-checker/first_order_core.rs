@@ -6477,85 +6477,93 @@ fn executable_dag_superposition_shared_work_example() -> bool
         200,
         vec![ExecBinding { variable: 200, replacement: ExecTerm::Var(100) }],
     );
-    let nodes = vec![
-        ProofNode {
-            id: 1,
-            clause: ExecClause { literals: vec![ExecLiteral {
-                positive: true,
-                atom: ExecAtom::Eq(
-                    ExecTerm::App1(4, Box::new(ExecTerm::Var(0))),
-                    ExecTerm::Var(1),
-                ),
-            }] },
-            kind: ProofNodeKind::Input,
-            parents: Vec::new(),
-            step: None,
-            res_step: None,
-            eq_step: None,
-            fact_step: None,
-            eq_fact_step: None,
-            sub_step: None,
-            weaken_step: None,
-            demod_step: None,
-            inst_step: None,
-            cond_step: None,
-        },
-        ProofNode {
-            id: 2,
-            clause: ExecClause { literals: vec![ExecLiteral {
-                positive: true,
-                atom: ExecAtom::Pred1(8, Box::new(ExecTerm::App1(
-                    4, Box::new(ExecTerm::Var(2)),
-                ))),
-            }] },
-            kind: ProofNodeKind::Input,
-            parents: Vec::new(),
-            step: None,
-            res_step: None,
-            eq_step: None,
-            fact_step: None,
-            eq_fact_step: None,
-            sub_step: None,
-            weaken_step: None,
-            demod_step: None,
-            inst_step: None,
-            cond_step: None,
-        },
-    ];
-    let node = ProofNode {
-        id: 3,
-        clause: ExecClause { literals: vec![ExecLiteral {
-            positive: true,
-            atom: ExecAtom::Pred1(8, Box::new(ExecTerm::Var(101))),
-        }] },
-        kind: ProofNodeKind::Superposition,
-        parents: vec![0usize, 1usize],
-        step: Some(certificate),
-        res_step: None,
-        eq_step: None,
-        fact_step: None,
-        eq_fact_step: None,
-        sub_step: None,
-        weaken_step: None,
-        demod_step: None,
-        inst_step: None,
-        cond_step: None,
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: ExecClause { literals: vec![ExecLiteral {
+                    positive: true,
+                    atom: ExecAtom::Eq(
+                        ExecTerm::App1(4, Box::new(ExecTerm::Var(0))),
+                        ExecTerm::Var(1),
+                    ),
+                }] },
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: ExecClause { literals: vec![ExecLiteral {
+                    positive: true,
+                    atom: ExecAtom::Pred1(8, Box::new(ExecTerm::App1(
+                        4, Box::new(ExecTerm::Var(2)),
+                    ))),
+                }] },
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 3,
+                clause: ExecClause { literals: vec![ExecLiteral {
+                    positive: true,
+                    atom: ExecAtom::Pred1(8, Box::new(ExecTerm::Var(101))),
+                }] },
+                kind: ProofNodeKind::Superposition,
+                parents: vec![0usize, 1usize],
+                step: Some(certificate),
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 2,
     };
+    let node = &dag.nodes[2];
     let Some(step) = &node.step else { return false; };
 
     let mut dag_preflight_work: usize = 0;
-    if !charge_certificate_structure(step, &mut dag_preflight_work, 100000)
+    if !consume_work(&mut dag_preflight_work, 100000)
+        || !consume_work(&mut dag_preflight_work, 100000)
         || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100000)
-        || !charge_clause_structure(&nodes[0].clause, &mut dag_preflight_work, 100000)
-        || !charge_clause_structure(&nodes[1].clause, &mut dag_preflight_work, 100000)
+        || !charge_certificate_structure(step, &mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&dag.nodes[0].clause, &mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&dag.nodes[1].clause, &mut dag_preflight_work, 100000)
     {
         return false;
     }
     let Some(source_matches) = same_clause_exact_with_work(
-        &step.source, &nodes[0].clause, &mut dag_preflight_work, 100000,
+        &step.source, &dag.nodes[0].clause, &mut dag_preflight_work, 100000,
     ) else { return false; };
     let Some(target_matches) = same_clause_exact_with_work(
-        &step.target, &nodes[1].clause, &mut dag_preflight_work, 100000,
+        &step.target, &dag.nodes[1].clause, &mut dag_preflight_work, 100000,
     ) else { return false; };
     let Some(conclusion_matches) = same_clause_exact_with_work(
         &step.conclusion, &node.clause, &mut dag_preflight_work, 100000,
@@ -6570,12 +6578,12 @@ fn executable_dag_superposition_shared_work_example() -> bool
     let exact_limit = dag_preflight_work + standalone_work;
     if exact_limit == 0 { return false; }
     let mut exact_work: usize = 0;
-    let exact_accepted = check_dag_superposition_step_with_work(
-        &node, &nodes, &mut exact_work, exact_limit,
+    let exact_accepted = validate_dag_node_with_work(
+        &dag, 2, &mut exact_work, exact_limit,
     );
     let mut short_work: usize = 0;
-    let short_accepted = check_dag_superposition_step_with_work(
-        &node, &nodes, &mut short_work, exact_limit - 1,
+    let short_accepted = validate_dag_node_with_work(
+        &dag, 2, &mut short_work, exact_limit - 1,
     );
     exact_accepted && exact_work == exact_limit && !short_accepted
 }
@@ -12001,22 +12009,27 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
 }
 
 /// Check one node with a postcondition that survives loop boundaries.
-fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bool)
-    requires index < dag.nodes.len(),
-    ensures ok ==> validated_dag_node(*dag, index as int),
+fn validate_dag_node_with_work(
+    dag: &ProofDag,
+    index: usize,
+    work: &mut usize,
+    work_limit: usize,
+) -> (ok: bool)
+    requires index < dag.nodes.len(), *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        ok ==> validated_dag_node(*dag, index as int),
 {
     let node = &dag.nodes[index];
-    let mut work: usize = 0;
     let mut parent: usize = 0;
     while parent < node.parents.len()
         invariant parent <= node.parents.len(),
             index < dag.nodes.len(),
-            work <= work_limit,
+            *work <= work_limit,
             forall|j: int| 0 <= j < parent as int ==> node.parents@[j] < index,
         decreases node.parents.len() - parent
     {
-        if work >= work_limit { return false; }
-        work += 1;
+        if *work >= work_limit { return false; }
+        *work += 1;
         if node.parents[parent] >= index { return false; }
         parent += 1;
     }
@@ -12026,21 +12039,21 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         if node.parents.len() != 0 { return false; }
         let mut k: usize = 0;
         while k < dag.input_clauses.len()
-            invariant k <= dag.input_clauses.len(), work <= work_limit,
+            invariant k <= dag.input_clauses.len(), *work <= work_limit,
                 index < dag.nodes.len(), node == &dag.nodes@[index as int],
                 node.kind == ProofNodeKind::Input, node.parents@.len() == 0,
             decreases dag.input_clauses.len() - k
         {
-            if work >= work_limit { return false; }
-            work += 1;
+            if *work >= work_limit { return false; }
+            *work += 1;
             // This leaf may be compared against many supplied inputs, so
             // include both sides of every exact comparison in this node's
             // shared meter. A single upfront charge for the node would let
             // repeated comparisons evade the per-node ceiling.
-            if !charge_clause_structure(&node.clause, &mut work, work_limit) {
+            if !charge_clause_structure(&node.clause, work, work_limit) {
                 return false;
             }
-            if !charge_clause_structure(&dag.input_clauses[k], &mut work, work_limit) {
+            if !charge_clause_structure(&dag.input_clauses[k], work, work_limit) {
                 return false;
             }
             if same_clause_exact(&node.clause, &dag.input_clauses[k]) {
@@ -12053,98 +12066,104 @@ fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bo
         },
         ProofNodeKind::Superposition => {
         if node.parents.len() != 2 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        let checked = check_dag_superposition_step(node, &dag.nodes,
-            work_limit - work);
-        checked
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_superposition_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::Resolution(_, _) => {
         if node.parents.len() != 2 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_resolution_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_resolution_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::ExactResolution(_, _) => {
         if node.parents.len() != 2 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_exact_resolution_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_exact_resolution_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::FirstOrderResolution => {
         if node.parents.len() != 2 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_first_order_resolution_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_first_order_resolution_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::EqualityResolution => {
         if node.parents.len() != 1 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_equality_resolution_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_equality_resolution_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::Factoring => {
         if node.parents.len() != 1 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_factoring_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_factoring_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::EqualityFactoring => {
         if node.parents.len() != 1 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_equality_factoring_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_equality_factoring_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::SubsumptionResolution => {
         if node.parents.len() != 2 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_subsumption_resolution_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_subsumption_resolution_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::Weakening => {
         if node.parents.len() != 1 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_weakening_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_weakening_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::Demodulation => {
         if node.parents.len() != 2 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_demodulation_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_demodulation_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::Instantiation => {
         if node.parents.len() != 1 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_instantiation_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_instantiation_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::Condensation => {
         if node.parents.len() != 1 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_condensation_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_condensation_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::Reflexivity => {
         if node.parents.len() > 1 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_reflexivity_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_reflexivity_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::Transitivity => {
         if node.parents.len() != 2 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_transitivity_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_transitivity_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::Symmetry => {
         if node.parents.len() != 1 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_symmetry_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_symmetry_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::ExcludedMiddle => {
         if node.parents.len() > 1 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_excluded_middle_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_excluded_middle_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::Congruence => {
         if node.parents.len() != 1 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_congruence_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_congruence_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::Tautology => {
         if node.parents.len() > 1 { return false; }
-        if !charge_clause_structure(&node.clause, &mut work, work_limit) { return false; }
-        check_dag_tautology_step(node, &dag.nodes, work_limit - work)
+        if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
+        check_dag_tautology_step(node, &dag.nodes, work_limit - *work)
         },
         ProofNodeKind::Unsupported => false,
     }
+}
+
+fn validate_dag_node(dag: &ProofDag, index: usize, work_limit: usize) -> (ok: bool)
+    requires index < dag.nodes.len(),
+    ensures ok ==> validated_dag_node(*dag, index as int),
+{
+    let mut work: usize = 0;
+    validate_dag_node_with_work(dag, index, &mut work, work_limit)
 }
 
 proof fn validated_dag_has_no_model(dag: ProofDag)
