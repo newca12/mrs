@@ -224,6 +224,8 @@
     "first_order_resolution_shared_local_work_meter": true,
     "first_order_resolution_atom_comparison_exact_cutoff_tested": true,
     "first_order_resolution_atom_comparison_compiled_mutation_checked": true,
+    "dag_node_first_order_resolution_shared_work_meter_exact_cutoff_tested": true,
+    "dag_node_first_order_resolution_counter_reset_compiled_mutation_checked": true,
     "superposition_replay_parent_substitution_shared_meter_exact_cutoff_tested": true,
     "superposition_replay_parent_substitution_meter_compiled_mutation_checked": true,
     "superposition_replay_output_work_meter_exact_cutoff_tested": true,

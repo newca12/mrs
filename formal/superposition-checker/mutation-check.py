@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 18
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 19
 
 
 def main() -> int:
@@ -141,7 +141,7 @@ def main() -> int:
         ),
         (
             "DAG first-order resolution skips rule replay",
-            "|| !check_first_order_resolution_and_replay(step, remaining_work)",
+            "|| !check_first_order_resolution_and_replay_with_work(step, work, work_limit)",
             "|| false",
         ),
         (
@@ -1084,6 +1084,66 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG work was reset before local replay")
+        compiled_runtime_mutations += 1
+
+        dag_first_order_handoff = (
+            "    // Keep DAG node and cited-parent charges in first-order resolution replay.\n"
+            "    if !conclusion_matches\n"
+            "        || !check_first_order_resolution_and_replay_with_work(step, work, work_limit)\n"
+            "    {"
+        )
+        if source.count(dag_first_order_handoff) != 1:
+            print("DAG first-order resolution work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_first_order_resolution.rs"
+        mutated_path.write_text(source.replace(
+            dag_first_order_handoff,
+            "    // Mutant isolates first-order replay from DAG work.\n"
+            "    let mut isolated_resolution_work: usize = 0;\n"
+            "    if !conclusion_matches\n"
+            "        || !check_first_order_resolution_and_replay_with_work(\n"
+            "            step, &mut isolated_resolution_work, work_limit,\n"
+            "        )\n"
+            "    {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-first-order-resolution"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG first-order replay meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG first-order resolution shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG first-order work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG first-order resolution meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG first-order work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

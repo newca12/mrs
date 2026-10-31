@@ -59,14 +59,15 @@ subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
 tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
-forward parents, and nonempty-root acceptance. Eighteen compiled-runtime mutations
+forward parents, and nonempty-root acceptance. Nineteen compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
 duplicate-ID rejection, decimal-token guard, or target-parent freshening avoid
 set, freshening lookup-work charge, clause-collection literal charge, or
 freshening materialization term charge, unifier term-comparison charge, replay
 parent-substitution meter, replay output replacement/build/comparison charge,
 path-sequence comparison charge, selected-term lookup charge, preflight/replay
-counter reset, or DAG-superposition/replay counter reset;
+counter reset, DAG-superposition/replay reset, first-order-resolution atom
+comparison charge, or DAG first-order-resolution/replay reset;
 each must fail its corresponding regression. The mutation runner enforces
 the expected counts, so deleting a gate cannot silently shrink the inventory.
 The
@@ -86,7 +87,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `492 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `494 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -124,15 +125,16 @@ target replacement, resolvent construction and exact output comparison. Exact
 4/3 freshening/path, sequential 7, 5/4 selected term, 21/20, 11/10, 12/11 and
 23/22 unit regressions exercise local boundaries. A computed cutoff that exactly
 funds outer structure plus preflight must fail when replay begins; a compiled
-counter-reset mutant checks that handoff. The DAG per-node validator now carries
-parent-index, node-clause and cited-parent comparison charges into that same local
-replay meter. `certify_dag` still divides the overall ceiling into independent
-per-node shares, and other inference families use separate counters, so global DAG
-accounting remains open. First-order binary-resolution replay now has its own
-shared local meter across collection, freshening, unifier application, pivot
-comparison, resolvent construction and exact conclusion comparison. Its 4/3 atom
-comparison regression and compiled mutant exercise the charge. The first-order
-resolution DAG wrapper has not yet been moved onto that shared meter. DAG input-leaf
+counter-reset mutant checks that handoff. The DAG per-node validator carries
+parent-index, node-clause and cited-parent comparison charges into the local replay
+meter for both superposition and first-order resolution. `certify_dag` still divides
+the overall ceiling into independent per-node shares, and other inference families
+use separate counters, so global DAG accounting remains open. First-order
+binary-resolution replay has its own shared local meter across collection,
+freshening, unifier application, pivot comparison, resolvent construction and exact
+conclusion comparison. Its 4/3 atom comparison regression and compiled mutant
+exercise the charge. The first-order DAG path also has an exact composed node-work
+cutoff and a compiled counter-reset mutant. DAG input-leaf
 validation charges both the node clause and each candidate input clause for every
 repeated exact membership comparison. A runtime regression checks the exact 15-unit threshold
 for three candidates, and a compiled mutation that removes the repeated node

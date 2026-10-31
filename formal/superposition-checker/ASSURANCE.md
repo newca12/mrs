@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and eighteen
+The mutation inventory is now fifty-eight verifier-negative checks and nineteen
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -108,8 +108,8 @@ Exact 4/3 freshening/path, sequential 7-unit, 5/4 selected-term, 21/20-unit,
 11/10-unit, 12/11-unit and 23/22-unit regressions exercise these boundaries;
 compiled mutations remove lookup, clause-literal, materialization,
 unifier-comparison, path-comparison, selected-term, replay substitution,
-replacement, build, comparison, preflight/replay handoff and DAG-superposition
-handoff charges. A computed boundary
+replacement, build, comparison, preflight/replay handoff, DAG-superposition handoff,
+and first-order-resolution DAG handoff charges. A computed boundary
 funds exactly the standalone structure/preflight work and requires replay to fail
 closed at its first charge. The DAG per-node validator carries parent-index,
 node-clause and cited-parent comparison work into the superposition replay meter.
@@ -118,7 +118,9 @@ families use separate counters, so end-to-end DAG accounting remains open.
 First-order binary-resolution replay also has a shared local work counter for
 collection, freshening, unifier application, pivot comparison, resolvent
 construction and conclusion comparison; its pivot atom meter has a 4/3 cutoff
-mutation test. The first-order resolution DAG wrapper still uses a separate share.
+mutation test. The first-order resolution DAG wrapper carries its per-node work
+into this meter; an exact composed node cutoff and reset mutant guard the handoff.
+`certify_dag` still allocates independent per-node shares.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 

@@ -6598,6 +6598,113 @@ fn executable_dag_superposition_shared_work_example() -> bool
     exact_accepted && exact_work == exact_limit && !short_accepted
 }
 
+fn executable_dag_first_order_resolution_shared_work_example() -> bool
+{
+    let certificate = FirstOrderResolutionCertificate {
+        left: res_fo_in1(),
+        right: res_fo_in2(),
+        left_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(10) }],
+        right_freshening: Vec::new(),
+        unifier: vec![ExecBinding { variable: 10, replacement: ExecTerm::Const(1) }],
+        left_pivot: 0,
+        right_pivot: 0,
+        conclusion: res_fo_n4(),
+    };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: res_fo_in1(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: res_fo_in2(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 3,
+                clause: res_fo_n4(),
+                kind: ProofNodeKind::FirstOrderResolution,
+                parents: vec![0usize, 1usize],
+                step: None,
+                res_step: Some(certificate),
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 2,
+    };
+    let node = &dag.nodes[2];
+    let Some(step) = &node.res_step else { return false; };
+
+    let mut dag_preflight_work: usize = 0;
+    if !consume_work(&mut dag_preflight_work, 100000)
+        || !consume_work(&mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100000)
+        || !charge_first_order_resolution_certificate(step, &mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&dag.nodes[0].clause, &mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&dag.nodes[1].clause, &mut dag_preflight_work, 100000)
+    {
+        return false;
+    }
+    let Some(left_matches) = same_clause_exact_with_work(
+        &step.left, &dag.nodes[0].clause, &mut dag_preflight_work, 100000,
+    ) else { return false; };
+    let Some(right_matches) = same_clause_exact_with_work(
+        &step.right, &dag.nodes[1].clause, &mut dag_preflight_work, 100000,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, &mut dag_preflight_work, 100000,
+    ) else { return false; };
+    if !left_matches || !right_matches || !conclusion_matches { return false; }
+
+    let mut standalone_work: usize = 0;
+    if !check_first_order_resolution_and_replay_with_work(
+        step, &mut standalone_work, 100000,
+    ) {
+        return false;
+    }
+    if standalone_work > usize::MAX - dag_preflight_work { return false; }
+    let exact_limit = dag_preflight_work + standalone_work;
+    if exact_limit == 0 { return false; }
+    let mut exact_work: usize = 0;
+    let exact_accepted = validate_dag_node_with_work(&dag, 2, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short_accepted = validate_dag_node_with_work(&dag, 2, &mut short_work, exact_limit - 1);
+    exact_accepted && exact_work == exact_limit && !short_accepted
+}
+
 fn parent_variable_superposition_certificate(
     target_image: u64,
     unifier: Vec<ExecBinding>,
@@ -10956,10 +11063,16 @@ fn check_dag_superposition_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     check_dag_superposition_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_first_order_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_first_order_resolution_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::FirstOrderResolution || node.parents.len() != 2 {
         return false;
@@ -10968,19 +11081,27 @@ fn check_dag_first_order_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode
     if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_first_order_resolution_certificate(step, &mut work, work_limit)
-        || !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    if !charge_first_order_resolution_certificate(step, work, work_limit)
+        || !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, work, work_limit)
     {
         return false;
     }
-    let remaining_work = work_limit - work;
-    if !same_clause_exact(&step.left, &nodes[node.parents[0]].clause)
-        || !same_clause_exact(&step.right, &nodes[node.parents[1]].clause)
-        || !same_clause_exact(&step.conclusion, &node.clause)
-        || !check_first_order_resolution_and_replay(step, remaining_work)
+    let Some(left_matches) = same_clause_exact_with_work(
+        &step.left, &nodes[node.parents[0]].clause, work, work_limit,
+    ) else { return false; };
+    if !left_matches { return false; }
+    let Some(right_matches) = same_clause_exact_with_work(
+        &step.right, &nodes[node.parents[1]].clause, work, work_limit,
+    ) else { return false; };
+    if !right_matches { return false; }
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, work, work_limit,
+    ) else { return false; };
+    // Keep DAG node and cited-parent charges in first-order resolution replay.
+    if !conclusion_matches
+        || !check_first_order_resolution_and_replay_with_work(step, work, work_limit)
     {
         return false;
     }
@@ -11001,6 +11122,15 @@ fn check_dag_first_order_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode
         }
     }
     true
+}
+
+fn check_dag_first_order_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_first_order_resolution_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_equality_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -12194,7 +12324,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::FirstOrderResolution => {
         if node.parents.len() != 2 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_first_order_resolution_step(node, &dag.nodes, work_limit - *work)
+        check_dag_first_order_resolution_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::EqualityResolution => {
         if node.parents.len() != 1 { return false; }
@@ -15828,6 +15958,7 @@ fn run_examples() -> bool {
     if !executable_atom_comparison_work_accounting_example() { return false; }
     if !executable_superposition_preflight_replay_shared_work_example() { return false; }
     if !executable_dag_superposition_shared_work_example() { return false; }
+    if !executable_dag_first_order_resolution_shared_work_example() { return false; }
     if !executable_disjoint_parent_freshening_example() { return false; }
     if !executable_parent_variable_freshening_collision_rejected_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
@@ -15902,6 +16033,8 @@ fn regression_main() {
         "superposition preflight/replay shared work regression failed");
     assert!(executable_dag_superposition_shared_work_example(),
         "DAG superposition shared work regression failed");
+    assert!(executable_dag_first_order_resolution_shared_work_example(),
+        "DAG first-order resolution shared work regression failed");
     assert!(executable_disjoint_parent_freshening_example(),
         "disjoint superposition freshening regression failed");
     assert!(executable_parent_variable_freshening_collision_rejected_example(),
