@@ -6426,6 +6426,16 @@ fn executable_selected_term_work_accounting_example() -> bool
     exact_ok && exact_work == 5 && short.is_none() && short_work == 4
 }
 
+fn executable_atom_comparison_work_accounting_example() -> bool
+{
+    let atom = ExecAtom::Pred1(1, Box::new(ExecTerm::Const(2)));
+    let mut exact_work: usize = 0;
+    let exact = same_atom_with_work(&atom, &atom, &mut exact_work, 4);
+    let mut short_work: usize = 0;
+    let short = same_atom_with_work(&atom, &atom, &mut short_work, 3);
+    exact == Some(true) && exact_work == 4 && short.is_none() && short_work == 3
+}
+
 fn executable_superposition_preflight_replay_shared_work_example() -> bool
 {
     let certificate = parent_variable_superposition_certificate(
@@ -7819,6 +7829,47 @@ fn same_symmetric_equality(left: &ExecAtom, right: &ExecAtom) -> (same: bool)
     }
 }
 
+fn same_atom_with_work(
+    left: &ExecAtom,
+    right: &ExecAtom,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> result.unwrap() == (view_atom(*left) == view_atom(*right))
+{
+    // Charge both operands before the exact recursive atom comparison.
+    if !charge_atom_structure(left, work, work_limit)
+        || !charge_atom_structure(right, work, work_limit)
+    {
+        return None;
+    }
+    Some(same_atom(left, right))
+}
+
+fn same_symmetric_equality_with_work(
+    left: &ExecAtom,
+    right: &ExecAtom,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> result.unwrap() == match (view_atom(*left), view_atom(*right)) {
+            (Atom::Eq(s, t), Atom::Eq(u, v)) => s == v && t == u,
+            _ => false,
+        }
+{
+    // Equality symmetry still compares both complete term structures.
+    if !charge_atom_structure(left, work, work_limit)
+        || !charge_atom_structure(right, work, work_limit)
+    {
+        return None;
+    }
+    Some(same_symmetric_equality(left, right))
+}
+
 fn same_literal(left: &ExecLiteral, right: &ExecLiteral) -> (same: bool)
     ensures same == (view_literal(*left) == view_literal(*right))
 {
@@ -7931,6 +7982,31 @@ fn build_nullary_resolution_conclusion(left: &ExecClause, right: &ExecClause,
     }
     let conclusion = ExecClause { literals };
     conclusion
+}
+
+fn build_nullary_resolution_conclusion_with_work(
+    left: &ExecClause,
+    right: &ExecClause,
+    left_pivot: usize,
+    right_pivot: usize,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<ExecClause>)
+    requires left_pivot < left.literals.len(),
+        right_pivot < right.literals.len(),
+        *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> clause_equal(view_clause(result.unwrap()),
+            resolution_conclusion(view_clause(*left), view_clause(*right),
+                left_pivot as int, right_pivot as int))
+{
+    // Charge both input clauses before copying the resolvent literals.
+    if !charge_clause_structure(left, work, work_limit)
+        || !charge_clause_structure(right, work, work_limit)
+    {
+        return None;
+    }
+    Some(build_nullary_resolution_conclusion(left, right, left_pivot, right_pivot))
 }
 
 fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
@@ -8092,11 +8168,14 @@ fn check_dag_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limi
     true
 }
 
-fn check_first_order_resolution_and_replay(
+fn check_first_order_resolution_and_replay_with_work(
     certificate: &FirstOrderResolutionCertificate,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures
+        *final(work) <= work_limit,
         accepted ==> certificate.left.literals.len()
             + certificate.right.literals.len()
             + certificate.conclusion.literals.len() <= work_limit,
@@ -8105,8 +8184,7 @@ fn check_first_order_resolution_and_replay(
             && clause_valid(view_clause(certificate.right), interp)
             ==> clause_valid(view_clause(certificate.conclusion), interp),
 {
-    let mut structural_work: usize = 0;
-    if !charge_first_order_resolution_certificate(certificate, &mut structural_work, work_limit) {
+    if !charge_first_order_resolution_certificate(certificate, work, work_limit) {
         return false;
     }
     if certificate.left.literals.len() > work_limit
@@ -8118,7 +8196,6 @@ fn check_first_order_resolution_and_replay(
     if certificate.conclusion.literals.len() > work_limit - replay_work {
         return false;
     }
-    let remaining_work = work_limit - structural_work;
     if certificate.left_pivot >= certificate.left.literals.len()
         || certificate.right_pivot >= certificate.right.literals.len()
     {
@@ -8129,53 +8206,71 @@ fn check_first_order_resolution_and_replay(
     {
         return false;
     }
-    let Some(left_variables) = collect_clause_variables_bounded(&certificate.left, remaining_work) else {
+    let Some(left_variables) = collect_clause_variables_bounded_with_work(
+        &certificate.left, work, work_limit,
+    ) else {
         return false;
     };
-    let Some(right_variables) = collect_clause_variables_bounded(&certificate.right, remaining_work) else {
+    let Some(right_variables) = collect_clause_variables_bounded_with_work(
+        &certificate.right, work, work_limit,
+    ) else {
         return false;
     };
-    if !check_freshening(&left_variables, &right_variables, &certificate.left_freshening, remaining_work) {
-        return false;
-    }
-    let Some(fresh_left) = freshen_clause_apart(
-        &certificate.left, &right_variables, &certificate.left_freshening, remaining_work,
+    let Some(fresh_left) = freshen_clause_apart_with_work(
+        &certificate.left, &left_variables, &right_variables,
+        &certificate.left_freshening, work, work_limit,
     ) else { return false; };
-    let Some(fresh_left_variables) = collect_clause_variables_bounded(&fresh_left, remaining_work) else {
+    let Some(fresh_left_variables) = collect_clause_variables_bounded_with_work(
+        &fresh_left, work, work_limit,
+    ) else {
         return false;
     };
     let mut target_avoid = Vec::new();
-    if !extend_unique(&mut target_avoid, &right_variables, remaining_work)
-        || !extend_unique(&mut target_avoid, &fresh_left_variables, remaining_work)
+    if !extend_unique_with_work(&mut target_avoid, &right_variables, work, work_limit)
+        || !extend_unique_with_work(&mut target_avoid, &fresh_left_variables, work, work_limit)
     {
         return false;
     }
-    if !check_freshening(&right_variables, &target_avoid, &certificate.right_freshening, remaining_work) {
-        return false;
-    }
-    let Some(fresh_right) = freshen_clause_apart(
-        &certificate.right, &target_avoid, &certificate.right_freshening, remaining_work,
+    let Some(fresh_right) = freshen_clause_apart_with_work(
+        &certificate.right, &right_variables, &target_avoid,
+        &certificate.right_freshening, work, work_limit,
     ) else { return false; };
 
-    if !check_domain_unique(&certificate.unifier, remaining_work) {
+    if !check_domain_unique_with_work(&certificate.unifier, work, work_limit) {
         return false;
     }
-    let inst_left = substitute_clause_exec(&fresh_left, &certificate.unifier);
-    let inst_right = substitute_clause_exec(&fresh_right, &certificate.unifier);
+    let Some((inst_left, inst_right)) = instantiate_superposition_parents_with_work(
+        &fresh_left, &fresh_right, &certificate.unifier, work, work_limit,
+    ) else { return false; };
     if certificate.left_pivot >= inst_left.literals.len()
         || certificate.right_pivot >= inst_right.literals.len()
     {
         return false;
     }
-    if !same_atom(&inst_left.literals[certificate.left_pivot].atom,
-        &inst_right.literals[certificate.right_pivot].atom)
-        && !same_symmetric_equality(&inst_left.literals[certificate.left_pivot].atom,
-            &inst_right.literals[certificate.right_pivot].atom)
-    {
+    let left_pivot_atom = &inst_left.literals[certificate.left_pivot].atom;
+    let right_pivot_atom = &inst_right.literals[certificate.right_pivot].atom;
+    let Some(exact_atoms_match) = same_atom_with_work(
+        left_pivot_atom, right_pivot_atom, work, work_limit,
+    ) else { return false; };
+    let atoms_match = if exact_atoms_match {
+        true
+    } else {
+        let Some(symmetric_equality_matches) = same_symmetric_equality_with_work(
+            left_pivot_atom, right_pivot_atom, work, work_limit,
+        ) else { return false; };
+        symmetric_equality_matches
+    };
+    if !atoms_match {
         return false;
     }
-    let expected = build_nullary_resolution_conclusion(&inst_left, &inst_right, certificate.left_pivot, certificate.right_pivot);
-    if !same_clause_exact(&expected, &certificate.conclusion) {
+    let Some(expected) = build_nullary_resolution_conclusion_with_work(
+        &inst_left, &inst_right, certificate.left_pivot, certificate.right_pivot,
+        work, work_limit,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &expected, &certificate.conclusion, work, work_limit,
+    ) else { return false; };
+    if !conclusion_matches {
         return false;
     }
     proof {
@@ -8237,6 +8332,23 @@ fn check_first_order_resolution_and_replay(
         }
     }
     true
+}
+
+fn check_first_order_resolution_and_replay(
+    certificate: &FirstOrderResolutionCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.left.literals.len()
+            + certificate.right.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.left), interp)
+            && clause_valid(view_clause(certificate.right), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_first_order_resolution_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
 fn delete_clause_literal_exec(clause: &ExecClause, pivot: usize) -> (result: ExecClause)
@@ -15713,6 +15825,7 @@ fn run_examples() -> bool {
     if !executable_replay_output_work_accounting_example() { return false; }
     if !executable_path_sequence_work_accounting_example() { return false; }
     if !executable_selected_term_work_accounting_example() { return false; }
+    if !executable_atom_comparison_work_accounting_example() { return false; }
     if !executable_superposition_preflight_replay_shared_work_example() { return false; }
     if !executable_dag_superposition_shared_work_example() { return false; }
     if !executable_disjoint_parent_freshening_example() { return false; }
@@ -15783,6 +15896,8 @@ fn regression_main() {
         "path sequence cumulative work regression failed");
     assert!(executable_selected_term_work_accounting_example(),
         "selected-term cumulative work regression failed");
+    assert!(executable_atom_comparison_work_accounting_example(),
+        "atom comparison cumulative work regression failed");
     assert!(executable_superposition_preflight_replay_shared_work_example(),
         "superposition preflight/replay shared work regression failed");
     assert!(executable_dag_superposition_shared_work_example(),

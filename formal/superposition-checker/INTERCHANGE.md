@@ -261,3 +261,5 @@ fail the computed structural-plus-preflight cutoff regression.
 A DAG-node mutant isolates local replay after the per-node parent-index,
 node-clause and cited-parent checks; it must fail the exact composed
 DAG-superposition work regression.
+The first-order-resolution atom comparison charge has its own 4-unit/3-unit
+cutoff regression and compiled charge-removal mutant.

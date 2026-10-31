@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and seventeen
+The mutation inventory is now fifty-eight verifier-negative checks and eighteen
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -115,6 +115,10 @@ closed at its first charge. The DAG per-node validator carries parent-index,
 node-clause and cited-parent comparison work into the superposition replay meter.
 `certify_dag` still allocates independent per-node shares, and other inference
 families use separate counters, so end-to-end DAG accounting remains open.
+First-order binary-resolution replay also has a shared local work counter for
+collection, freshening, unifier application, pivot comparison, resolvent
+construction and conclusion comparison; its pivot atom meter has a 4/3 cutoff
+mutation test. The first-order resolution DAG wrapper still uses a separate share.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 

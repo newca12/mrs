@@ -59,7 +59,7 @@ subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
 tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
-forward parents, and nonempty-root acceptance. Seventeen compiled-runtime mutations
+forward parents, and nonempty-root acceptance. Eighteen compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
 duplicate-ID rejection, decimal-token guard, or target-parent freshening avoid
 set, freshening lookup-work charge, clause-collection literal charge, or
@@ -86,7 +86,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `487 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `492 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -115,8 +115,8 @@ ancestor closure; the bounded closure walk returns `Unknown` on work exhaustion.
 The caller's work ceiling is split across structural preflight, closure checking
 and per-node replay; within a node, the validated parent edges and clause
 structure, plus the cited parents and conclusion, are charged before local
-replay receives the remainder. Nested replay helpers still use distinct
-counters, so exact cumulative operation accounting (including literal
+replay receives the remainder. Other inference families and the DAG-wide path
+still use distinct counters, so exact cumulative operation accounting (including literal
 comparisons) remains an explicit limitation. The standalone superposition checker
 now carries one counter from its structural charge through certificate preflight
 and replay: collection, freshening, unifier checks, both-parent substitution,
@@ -128,7 +128,11 @@ counter-reset mutant checks that handoff. The DAG per-node validator now carries
 parent-index, node-clause and cited-parent comparison charges into that same local
 replay meter. `certify_dag` still divides the overall ceiling into independent
 per-node shares, and other inference families use separate counters, so global DAG
-accounting remains open. DAG input-leaf
+accounting remains open. First-order binary-resolution replay now has its own
+shared local meter across collection, freshening, unifier application, pivot
+comparison, resolvent construction and exact conclusion comparison. Its 4/3 atom
+comparison regression and compiled mutant exercise the charge. The first-order
+resolution DAG wrapper has not yet been moved onto that shared meter. DAG input-leaf
 validation charges both the node clause and each candidate input clause for every
 repeated exact membership comparison. A runtime regression checks the exact 15-unit threshold
 for three candidates, and a compiled mutation that removes the repeated node

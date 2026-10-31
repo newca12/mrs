@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 17
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 18
 
 
 def main() -> int:
@@ -129,12 +129,10 @@ def main() -> int:
         ),
         (
             "first-order resolution ignores unified atom equality",
-            "if !same_atom(&inst_left.literals[certificate.left_pivot].atom,\n"
-            "        &inst_right.literals[certificate.right_pivot].atom)\n"
-            "        && !same_symmetric_equality(&inst_left.literals[certificate.left_pivot].atom,\n"
-            "            &inst_right.literals[certificate.right_pivot].atom)\n"
-            "    {",
-            "if false {",
+            "let Some(exact_atoms_match) = same_atom_with_work(\n"
+            "        left_pivot_atom, right_pivot_atom, work, work_limit,\n"
+            "    ) else { return false; };",
+            "let Some(exact_atoms_match) = Some(true) else { return false; };",
         ),
         (
             "first-order resolution ignores pivot polarity",
@@ -916,6 +914,63 @@ def main() -> int:
                 return 1
             print(rejected_message)
             compiled_runtime_mutations += 1
+
+        atom_comparison_charge = (
+            "    // Charge both operands before the exact recursive atom comparison.\n"
+            "    if !charge_atom_structure(left, work, work_limit)\n"
+            "        || !charge_atom_structure(right, work, work_limit)\n"
+            "    {\n"
+            "        return None;\n"
+            "    }"
+        )
+        if source.count(atom_comparison_charge) != 1:
+            print("atom-comparison work mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_atom_comparison_charge.rs"
+        mutated_path.write_text(source.replace(
+            atom_comparison_charge,
+            "    // Mutant omits recursive atom-comparison charges.\n"
+            "    if false { return None; }",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-atom-comparison-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "atom-comparison mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "atom comparison cumulative work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: atom comparison omitted operand work", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "atom-comparison mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: atom comparison omitted operand work")
+        compiled_runtime_mutations += 1
 
         replay_meter_handoff = (
             "    // Continue the preflight counter through replay freshening and output.\n"
