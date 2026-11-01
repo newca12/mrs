@@ -59,7 +59,7 @@ subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
 tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
-forward parents, and nonempty-root acceptance. Thirty-eight compiled-runtime mutations
+forward parents, and nonempty-root acceptance. Forty compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
 duplicate-ID rejection, decimal-token guard, or target-parent freshening avoid
 set, freshening lookup-work charge, clause-collection literal charge, or
@@ -75,7 +75,8 @@ subsumption/replay reset, DAG weakening/replay reset, DAG instantiation and
 condensation replay resets, DAG demodulation/replay reset, nullary/exact-resolution
 DAG replay resets, reflexivity comparison charge, DAG reflexivity/replay reset,
 transitivity comparison charge, DAG transitivity/replay reset, symmetry comparison
-charge, or DAG symmetry/replay reset;
+charge, DAG symmetry/replay reset, excluded-middle atom charge, or DAG
+excluded-middle/replay reset;
 each must fail its corresponding regression. The mutation runner enforces
 the expected counts, so deleting a gate cannot silently shrink the inventory.
 The
@@ -95,7 +96,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `548 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `553 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -124,7 +125,8 @@ ancestor closure; the bounded closure walk returns `Unknown` on work exhaustion.
 The caller's work ceiling is split across structural preflight, closure checking
 and per-node replay. For superposition, nullary/exact and first-order resolution,
 equality resolution and factoring, subsumption resolution, weakening, instantiation,
-condensation, demodulation, reflexivity, transitivity and symmetry, parent/structure and cited-
+condensation, demodulation, reflexivity, transitivity, symmetry and excluded middle,
+parent/structure and cited-
 clause comparison work flows into the same node replay counter. Other inference families
 and the DAG-wide path still use distinct counters,
 so exact cumulative operation accounting remains an explicit limitation. The standalone superposition checker
@@ -138,7 +140,7 @@ counter-reset mutant checks that handoff. The DAG per-node validator carries
 parent-index, node-clause and cited-parent comparison charges into the local replay
 meter for superposition, nullary/exact and first-order resolution, equality resolution,
 clause/equality factoring, subsumption resolution, weakening, instantiation, condensation,
-demodulation, reflexivity, transitivity and symmetry.
+demodulation, reflexivity, transitivity, symmetry and excluded middle.
 `certify_dag` still divides
 the overall ceiling into independent per-node shares, and other inference families
 use separate counters, so global DAG accounting remains open. First-order
@@ -168,6 +170,8 @@ Transitivity meters its equality-term comparisons at 12 units/11 units; the DAG 
 also carries parent/node work through replay under an exact composed cutoff/reset test.
 Symmetry meters its orientation comparisons at 3 units/2 units; its DAG path carries
 parent/node charges into replay under an exact composed cutoff and reset mutation.
+Excluded middle meters polarity and atom equality at 3 units/2 units; the DAG wrapper
+shares node work through replay under an exact composed cutoff and reset mutation.
 Instantiation and condensation carry shared meters through substitution/inclusion
 checks, parent comparisons and replay; each has an exact composed node cutoff and
 reset mutant. Demodulation meters freshening, term application, selected-position

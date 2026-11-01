@@ -11073,24 +11073,47 @@ fn check_symmetry_and_replay(
     check_symmetry_and_replay_with_work(parent, conclusion, &mut work, work_limit)
 }
 
+fn check_excluded_middle_step_exec_with_work(
+    l1: &ExecLiteral,
+    l2: &ExecLiteral,
+    work: &mut usize,
+    work_limit: usize,
+) -> (valid: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        valid.is_some() ==> valid.unwrap() == valid_excluded_middle_step(
+            view_literal(*l1), view_literal(*l2),
+        )
+{
+    if !consume_work(work, work_limit) { return None; }
+    if l1.positive == l2.positive { return Some(false); }
+    let Some(atoms_match) = same_atom_with_work(&l1.atom, &l2.atom, work, work_limit) else {
+        return None;
+    };
+    Some(atoms_match)
+}
+
 fn check_excluded_middle_step_exec(
     l1: &ExecLiteral,
     l2: &ExecLiteral,
 ) -> (valid: bool)
     ensures valid ==> valid_excluded_middle_step(view_literal(*l1), view_literal(*l2)),
 {
-    l1.positive != l2.positive && same_atom(&l1.atom, &l2.atom)
+    let mut work: usize = 0;
+    check_excluded_middle_step_exec_with_work(l1, l2, &mut work, usize::MAX) == Some(true)
 }
 
-fn check_excluded_middle_and_replay(
+fn check_excluded_middle_and_replay_with_work(
     conclusion: &ExecClause,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
         ==> clause_valid(view_clause(*conclusion), interp),
+        *final(work) <= work_limit,
 {
-    let mut work: usize = 0;
-    if !charge_clause_structure(conclusion, &mut work, work_limit) {
+    if !charge_clause_structure(conclusion, work, work_limit) {
         return false;
     }
     if conclusion.literals.len() != 2 {
@@ -11099,7 +11122,10 @@ fn check_excluded_middle_and_replay(
     let l1 = &conclusion.literals[0];
     let l2 = &conclusion.literals[1];
 
-    if !check_excluded_middle_step_exec(l1, l2) {
+    let Some(step_valid) = check_excluded_middle_step_exec_with_work(
+        l1, l2, work, work_limit,
+    ) else { return false; };
+    if !step_valid {
         return false;
     }
 
@@ -11119,6 +11145,17 @@ fn check_excluded_middle_and_replay(
         };
     }
     true
+}
+
+fn check_excluded_middle_and_replay(
+    conclusion: &ExecClause,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> clause_valid(view_clause(*conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_excluded_middle_and_replay_with_work(conclusion, &mut work, work_limit)
 }
 
 fn same_or_commuted_exec(
@@ -13283,29 +13320,35 @@ fn check_dag_symmetry_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     check_dag_symmetry_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_excluded_middle_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_excluded_middle_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::ExcludedMiddle || node.parents.len() > 1 {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_clause_structure(&node.clause, &mut work, work_limit) {
+    if !charge_clause_structure(&node.clause, work, work_limit) {
         return false;
     }
     if node.parents.len() == 1 {
         if node.parents[0] >= nodes.len()
-            || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+            || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
         {
             return false;
         }
     }
-    let remaining_work = work_limit - work;
-    if !check_excluded_middle_and_replay(
+    // Continue per-node charges through the polarity and atom checks.
+    if !check_excluded_middle_and_replay_with_work(
         &node.clause,
-        remaining_work,
+        work,
+        work_limit,
     ) {
         return false;
     }
@@ -13319,6 +13362,15 @@ fn check_dag_excluded_middle_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         };
     }
     true
+}
+
+fn check_dag_excluded_middle_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_excluded_middle_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_congruence_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -14075,7 +14127,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::ExcludedMiddle => {
         if node.parents.len() > 1 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_excluded_middle_step(node, &dag.nodes, work_limit - *work)
+        check_dag_excluded_middle_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::Congruence => {
         if node.parents.len() != 1 { return false; }
@@ -16595,6 +16647,21 @@ fn executable_excluded_middle_examples() -> bool {
     true
 }
 
+fn executable_excluded_middle_work_meter_example() -> bool
+{
+    let positive = ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) };
+    let negative = ExecLiteral { positive: false, atom: ExecAtom::Pred0(1) };
+    let mut exact_work: usize = 0;
+    let exact = check_excluded_middle_step_exec_with_work(
+        &positive, &negative, &mut exact_work, 3,
+    );
+    let mut short_work: usize = 0;
+    let short = check_excluded_middle_step_exec_with_work(
+        &positive, &negative, &mut short_work, 2,
+    );
+    exact == Some(true) && exact_work == 3 && short.is_none() && short_work == 2
+}
+
 fn em_in1() -> ExecClause {
     ExecClause { literals: vec![
         ExecLiteral { positive: false, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
@@ -16634,6 +16701,51 @@ fn executable_excluded_middle_dag_examples() -> bool {
         root: 4,
     };
     certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn executable_dag_excluded_middle_shared_work_example() -> bool
+{
+    let clause = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred0(1) },
+    ] };
+    let dag = ProofDag {
+        nodes: vec![ProofNode {
+            id: 1,
+            clause,
+            kind: ProofNodeKind::ExcludedMiddle,
+            parents: Vec::new(),
+            step: None,
+            res_step: None,
+            eq_step: None,
+            fact_step: None,
+            eq_fact_step: None,
+            sub_step: None,
+            weaken_step: None,
+            demod_step: None,
+            inst_step: None,
+            cond_step: None,
+        }],
+        input_clauses: Vec::new(),
+        root: 0,
+    };
+    let node = &dag.nodes[0];
+    let mut measured_work: usize = 0;
+    if !charge_clause_structure(&node.clause, &mut measured_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut measured_work, 100_000)
+        || !check_excluded_middle_and_replay_with_work(
+            &node.clause, &mut measured_work, 100_000,
+        )
+    {
+        return false;
+    }
+    if measured_work == 0 { return false; }
+    let exact_limit = measured_work;
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 0, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 0, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
 fn executable_congruence_examples() -> bool {
@@ -17970,7 +18082,9 @@ fn run_examples() -> bool {
     if !executable_symmetry_dag_examples() { return false; }
     if !executable_dag_symmetry_shared_work_example() { return false; }
     if !executable_excluded_middle_examples() { return false; }
+    if !executable_excluded_middle_work_meter_example() { return false; }
     if !executable_excluded_middle_dag_examples() { return false; }
+    if !executable_dag_excluded_middle_shared_work_example() { return false; }
     if !executable_congruence_examples() { return false; }
     if !executable_congruence_dag_examples() { return false; }
     if !executable_tautology_examples() { return false; }
@@ -18110,8 +18224,12 @@ fn regression_main() {
         "DAG symmetry shared work regression failed");
     assert!(executable_excluded_middle_examples(),
         "excluded middle regression failed");
+    assert!(executable_excluded_middle_work_meter_example(),
+        "excluded middle work-meter regression failed");
     assert!(executable_excluded_middle_dag_examples(),
         "excluded middle DAG regression failed");
+    assert!(executable_dag_excluded_middle_shared_work_example(),
+        "DAG excluded middle shared work regression failed");
     assert!(executable_congruence_examples(),
         "congruence regression failed");
     assert!(executable_congruence_dag_examples(),

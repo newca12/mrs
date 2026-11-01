@@ -294,3 +294,5 @@ the replay meter under an exact composed cutoff/reset mutant.
 Symmetry's orientation comparison accepts at 3 units and rejects at 2; a compiled
 mutant removes one term charge. Its DAG work-sharing cutoff is computed independently
 from the wrapper handoff, with a compiled counter-reset mutant.
+Excluded-middle polarity and atom comparison accepts at 3 units and rejects at 2;
+the compiled atom-charge and DAG counter-reset mutants must fail the exact regressions.

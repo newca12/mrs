@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and thirty-eight
+The mutation inventory is now fifty-eight verifier-negative checks and forty
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -82,7 +82,7 @@ multiply one local replay allowance without bound. Some replay helpers still
 use distinct local counters; this is not yet exact cumulative instruction/work
 accounting. For superposition, nullary/exact and first-order resolution, equality
 resolution and factoring, subsumption resolution, weakening, instantiation, condensation,
-demodulation, reflexivity, transitivity and symmetry, per-node parent/structure charges,
+demodulation, reflexivity, transitivity, symmetry and excluded middle, per-node parent/structure charges,
 cited-parent comparisons where applicable, and local replay share a mutable node counter.
 Other rule wrappers still pass scalar remaining-work shares; nested helper
 traversals also remain incomplete, so exact cumulative literal-comparison work
@@ -113,15 +113,16 @@ replacement, build, comparison, preflight/replay handoff, DAG-superposition hand
 first-order-resolution DAG handoff, equality-resolution deletion/DAG,
 clause-factoring DAG, equality-factoring pivot/DAG, subsumption literal/DAG,
 weakening DAG, instantiation/condensation DAG, demodulation DAG, nullary/exact-
-resolution DAG handoffs, reflexivity comparison/DAG charges and transitivity
-comparison/DAG charges.
+resolution DAG handoffs, reflexivity comparison/DAG charges, transitivity
+comparison/DAG charges and excluded-middle atom/DAG charges.
 A computed boundary
 funds exactly the standalone structure/preflight work and requires replay to fail
 closed at its first charge. The DAG per-node validator carries parent-index,
 node-clause and cited-parent comparison work into local replay meters for
 superposition, nullary/exact and first-order resolution, equality resolution,
 clause factoring, equality factoring, subsumption resolution, weakening,
-instantiation, condensation, demodulation, reflexivity, transitivity and symmetry.
+instantiation, condensation, demodulation, reflexivity, transitivity, symmetry and
+excluded middle.
 `certify_dag` still allocates independent per-node shares, and other inference
 families use separate counters, so end-to-end DAG accounting remains open.
 First-order binary-resolution replay also has a shared local work counter for
@@ -163,6 +164,8 @@ are protected by comparison-charge and counter-reset mutations.
 Symmetry shares work across candidate equality orientation and unchanged-literal
 matching. Its 3/2 local comparison cutoff and independently computed DAG cutoff are
 guarded by charge-removal and counter-reset mutations.
+Excluded middle shares work across polarity and atom checks, including the DAG node
+wrapper. A 3/2 local cutoff and exact composed cutoff/reset mutation cover both charges.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 

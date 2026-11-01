@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 38
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 40
 
 
 def main() -> int:
@@ -341,12 +341,21 @@ def main() -> int:
         ),
         (
             "excluded middle ignores opposite polarity or atom agreement",
-            "if !check_excluded_middle_step_exec(l1, l2) {\n        return false;\n    }",
-            "if false {\n        return false;\n    }",
+            "let Some(step_valid) = check_excluded_middle_step_exec_with_work(\n"
+            "        l1, l2, work, work_limit,\n"
+            "    ) else { return false; };",
+            "let Some(step_valid) = Some(true) else { return false; };",
         ),
         (
             "DAG excluded middle skips rule replay",
-            "if !check_excluded_middle_and_replay(\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
+            "    // Continue per-node charges through the polarity and atom checks.\n"
+            "    if !check_excluded_middle_and_replay_with_work(\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }",
             "if false {\n        return false;\n    }",
         ),
         (
@@ -2327,6 +2336,125 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG symmetry work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        excluded_middle_atom_charge = (
+            "    let Some(atoms_match) = same_atom_with_work(&l1.atom, &l2.atom, work, work_limit) else {\n"
+            "        return None;\n"
+            "    };"
+        )
+        if source.count(excluded_middle_atom_charge) != 1:
+            print("excluded-middle atom-comparison mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_excluded_middle_atom_charge.rs"
+        mutated_path.write_text(source.replace(
+            excluded_middle_atom_charge,
+            "    let atoms_match = same_atom(&l1.atom, &l2.atom);",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-excluded-middle-atom-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "excluded-middle comparison mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "excluded middle work-meter regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: excluded-middle atom comparison was not charged", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "excluded-middle comparison mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: excluded-middle atom comparison was unmetered")
+        compiled_runtime_mutations += 1
+
+        dag_excluded_middle_handoff = (
+            "    // Continue per-node charges through the polarity and atom checks.\n"
+            "    if !check_excluded_middle_and_replay_with_work(\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }"
+        )
+        if source.count(dag_excluded_middle_handoff) != 1:
+            print("DAG excluded-middle work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_excluded_middle.rs"
+        mutated_path.write_text(source.replace(
+            dag_excluded_middle_handoff,
+            "    // Mutant isolates excluded-middle replay from DAG work.\n"
+            "    let mut isolated_excluded_middle_work: usize = 0;\n"
+            "    if !check_excluded_middle_and_replay_with_work(\n"
+            "        &node.clause,\n"
+            "        &mut isolated_excluded_middle_work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-excluded-middle"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG excluded-middle meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG excluded middle shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG excluded-middle work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG excluded-middle meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG excluded-middle work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (
