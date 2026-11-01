@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and forty-two
+The mutation inventory is now fifty-eight verifier-negative checks and forty-four
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -115,8 +115,8 @@ first-order-resolution DAG handoff, equality-resolution deletion/DAG,
 clause-factoring DAG, equality-factoring pivot/DAG, subsumption literal/DAG,
 weakening DAG, instantiation/condensation DAG, demodulation DAG, nullary/exact-
 resolution DAG handoffs, reflexivity comparison/DAG charges, transitivity
-comparison/DAG charges, excluded-middle atom/DAG charges and congruence comparison/DAG
-charges.
+comparison/DAG charges, excluded-middle atom/DAG charges, congruence comparison/DAG
+charges and tautology atom/DAG charges.
 A computed boundary
 funds exactly the standalone structure/preflight work and requires replay to fail
 closed at its first charge. The DAG per-node validator carries parent-index,
@@ -124,7 +124,7 @@ node-clause and cited-parent comparison work into local replay meters for
 superposition, nullary/exact and first-order resolution, equality resolution,
 clause factoring, equality factoring, subsumption resolution, weakening,
 instantiation, condensation, demodulation, reflexivity, transitivity, symmetry,
-excluded middle and congruence.
+excluded middle, congruence and tautology.
 `certify_dag` still allocates independent per-node shares, and other inference
 families use separate counters, so end-to-end DAG accounting remains open.
 First-order binary-resolution replay also has a shared local work counter for
@@ -172,6 +172,9 @@ Congruence shares work across recursive orientation checks, unchanged binary sib
 and the clause/DAG wrappers. The 5/4 local cutoff and exact composed node cutoff have
 compiled charge-removal and counter-reset mutations. Verifier-negative mutations that
 remove the unchanged-sibling or nested unary function-symbol check are rejected too.
+Tautology meters reflexive-equality and complementary-literal scans, also in structural
+preflight. Its 4/3 local comparison cutoff and exact DAG cutoff have charge-removal and
+counter-reset mutations.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 

@@ -76,8 +76,8 @@ condensation replay resets, DAG demodulation/replay reset, nullary/exact-resolut
 DAG replay resets, reflexivity comparison charge, DAG reflexivity/replay reset,
 transitivity comparison charge, DAG transitivity/replay reset, symmetry comparison
 charge, DAG symmetry/replay reset, excluded-middle atom charge, or DAG
-excluded-middle/replay reset, congruence term-comparison charge, or DAG
-congruence/replay reset;
+excluded-middle/replay reset, congruence term-comparison charge, DAG
+congruence/replay reset, tautology atom-comparison charge, or DAG tautology/replay reset;
 each must fail its corresponding regression. The mutation runner enforces
 the expected counts, so deleting a gate cannot silently shrink the inventory.
 Two verifier-negative congruence mutations also remove the unchanged binary-sibling
@@ -99,7 +99,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `559 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `563 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -128,7 +128,8 @@ ancestor closure; the bounded closure walk returns `Unknown` on work exhaustion.
 The caller's work ceiling is split across structural preflight, closure checking
 and per-node replay. For superposition, nullary/exact and first-order resolution,
 equality resolution and factoring, subsumption resolution, weakening, instantiation,
-condensation, demodulation, reflexivity, transitivity, symmetry, excluded middle and congruence,
+condensation, demodulation, reflexivity, transitivity, symmetry, excluded middle,
+congruence and tautology,
 parent/structure and cited-
 clause comparison work flows into the same node replay counter. Other inference families
 and the DAG-wide path still use distinct counters,
@@ -143,7 +144,7 @@ counter-reset mutant checks that handoff. The DAG per-node validator carries
 parent-index, node-clause and cited-parent comparison charges into the local replay
 meter for superposition, nullary/exact and first-order resolution, equality resolution,
 clause/equality factoring, subsumption resolution, weakening, instantiation, condensation,
-demodulation, reflexivity, transitivity, symmetry, excluded middle and congruence.
+demodulation, reflexivity, transitivity, symmetry, excluded middle, congruence and tautology.
 `certify_dag` still divides
 the overall ceiling into independent per-node shares, and other inference families
 use separate counters, so global DAG accounting remains open. First-order
@@ -178,6 +179,9 @@ shares node work through replay under an exact composed cutoff and reset mutatio
 Congruence meters recursive unary/binary argument matching and unchanged siblings;
 its local comparison cutoff is 5 units/4 units, and its DAG handoff has an exact
 composed cutoff/reset test.
+Tautology meters reflexive-equality and complementary-literal scans, including the
+structural preflight. Its 4/3 local comparison cutoff and independently computed DAG
+cutoff/reset test guard the replay handoff.
 Instantiation and condensation carry shared meters through substitution/inclusion
 checks, parent comparisons and replay; each has an exact composed node cutoff and
 reset mutant. Demodulation meters freshening, term application, selected-position

@@ -300,3 +300,6 @@ Congruence argument comparison accepts at 5 units and rejects at 4; its compiled
 charge-removal mutant is paired with an independently measured DAG cutoff/reset test.
 Verifier-negative mutations that bypass the unchanged binary sibling or nested unary
 function-symbol check must fail the congruence proof.
+Tautology's complementary-literal comparison accepts at 4 units and rejects at 3;
+a compiled mutant removes the atom charge, while a separate DAG reset mutant checks
+the node-meter handoff. Structural preflight uses the same bounded tautology scan.

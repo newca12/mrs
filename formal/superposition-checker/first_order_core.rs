@@ -11400,17 +11400,27 @@ fn check_congruence_and_replay(
     check_congruence_and_replay_with_work(parent, conclusion, &mut work, work_limit)
 }
 
-fn check_clause_tautology_exec(clause: &ExecClause) -> (valid: bool)
-    ensures valid ==> valid_clause_tautology(view_clause(*clause)),
+fn check_clause_tautology_exec_with_work(
+    clause: &ExecClause,
+    work: &mut usize,
+    work_limit: usize,
+) -> (valid: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        valid == Some(true) ==> valid_clause_tautology(view_clause(*clause)),
 {
     let mut i: usize = 0;
     while i < clause.literals.len()
-        invariant i <= clause.literals.len(),
+        invariant i <= clause.literals.len(), *work <= work_limit,
         decreases clause.literals.len() - i,
     {
+        if !consume_work(work, work_limit) { return None; }
         if clause.literals[i].positive {
             if let ExecAtom::Eq(s, t) = &clause.literals[i].atom {
-                if same_term(s, t) {
+                let Some(reflexive) = same_term_with_work(s, t, work, work_limit) else {
+                    return None;
+                };
+                if reflexive {
                     proof {
                         let idx = i as int;
                         assert(0 <= idx < view_clause(*clause).literals.len());
@@ -11420,7 +11430,7 @@ fn check_clause_tautology_exec(clause: &ExecClause) -> (valid: bool)
                             _ => false,
                         });
                     }
-                    return true;
+                    return Some(true);
                 }
             }
         }
@@ -11429,11 +11439,15 @@ fn check_clause_tautology_exec(clause: &ExecClause) -> (valid: bool)
             invariant
                 i < clause.literals.len(),
                 i < j <= clause.literals.len(),
+                *work <= work_limit,
             decreases clause.literals.len() - j,
         {
-            if clause.literals[i].positive != clause.literals[j].positive
-                && same_atom(&clause.literals[i].atom, &clause.literals[j].atom)
-            {
+            if !consume_work(work, work_limit) { return None; }
+            if clause.literals[i].positive != clause.literals[j].positive {
+                let Some(atoms_match) = same_atom_with_work(
+                    &clause.literals[i].atom, &clause.literals[j].atom, work, work_limit,
+                ) else { return None; };
+                if atoms_match {
                 proof {
                     let idx_i = i as int;
                     let idx_j = j as int;
@@ -11441,27 +11455,33 @@ fn check_clause_tautology_exec(clause: &ExecClause) -> (valid: bool)
                     assert(view_clause(*clause).literals[idx_i].positive != view_clause(*clause).literals[idx_j].positive);
                     assert(view_clause(*clause).literals[idx_i].atom == view_clause(*clause).literals[idx_j].atom);
                 }
-                return true;
+                return Some(true);
+                }
             }
             j += 1;
         }
         i += 1;
     }
-    false
+    Some(false)
 }
 
-fn check_tautology_and_replay(
+fn check_tautology_and_replay_with_work(
     conclusion: &ExecClause,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
         ==> clause_valid(view_clause(*conclusion), interp),
+        *final(work) <= work_limit,
 {
-    let mut work: usize = 0;
-    if !charge_clause_structure(conclusion, &mut work, work_limit) {
+    if !charge_clause_structure(conclusion, work, work_limit) {
         return false;
     }
-    if !check_clause_tautology_exec(conclusion) {
+    let Some(is_tautology) = check_clause_tautology_exec_with_work(
+        conclusion, work, work_limit,
+    ) else { return false; };
+    if !is_tautology {
         return false;
     }
     proof {
@@ -11471,6 +11491,17 @@ fn check_tautology_and_replay(
         };
     }
     true
+}
+
+fn check_tautology_and_replay(
+    conclusion: &ExecClause,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> clause_valid(view_clause(*conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_tautology_and_replay_with_work(conclusion, &mut work, work_limit)
 }
 
 fn replace_literal_position_exec_refines_substitution(
@@ -13530,29 +13561,35 @@ fn check_dag_congruence_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     check_dag_congruence_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_tautology_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_tautology_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::Tautology || node.parents.len() > 1 {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_clause_structure(&node.clause, &mut work, work_limit) {
+    if !charge_clause_structure(&node.clause, work, work_limit) {
         return false;
     }
     if node.parents.len() == 1 {
         if node.parents[0] >= nodes.len()
-            || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+            || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
         {
             return false;
         }
     }
-    let remaining_work = work_limit - work;
-    if !check_tautology_and_replay(
+    // Keep the node counter through the bounded clause scan.
+    if !check_tautology_and_replay_with_work(
         &node.clause,
-        remaining_work,
+        work,
+        work_limit,
     ) {
         return false;
     }
@@ -13566,6 +13603,15 @@ fn check_dag_tautology_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         };
     }
     true
+}
+
+fn check_dag_tautology_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_tautology_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 proof fn replayed_conclusion_has_source_target_context_split(
@@ -14042,7 +14088,10 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             if node.parents.len() == 1 {
                 assert(node.parents[0] < dag.nodes.len());
             }
-            if !check_clause_tautology_exec(&node.clause) {
+            let Some(is_tautology) = check_clause_tautology_exec_with_work(
+                &node.clause, &mut structural_work, literal_limit,
+            ) else { return DagVerdict::Rejected; };
+            if !is_tautology {
                 return DagVerdict::Rejected;
             }
         }
@@ -14257,7 +14306,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::Tautology => {
         if node.parents.len() > 1 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_tautology_step(node, &dag.nodes, work_limit - *work)
+        check_dag_tautology_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::Unsupported => false,
     }
@@ -17208,6 +17257,19 @@ fn executable_tautology_examples() -> bool {
     true
 }
 
+fn executable_tautology_work_meter_example() -> bool
+{
+    let clause = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred0(1) },
+    ] };
+    let mut exact_work: usize = 0;
+    let exact = check_clause_tautology_exec_with_work(&clause, &mut exact_work, 4);
+    let mut short_work: usize = 0;
+    let short = check_clause_tautology_exec_with_work(&clause, &mut short_work, 3);
+    exact == Some(true) && exact_work == 4 && short.is_none() && short_work == 3
+}
+
 fn executable_tautology_dag_examples() -> bool {
     let empty = ExecClause { literals: Vec::new() };
     let tau_concl = ExecClause { literals: vec![
@@ -17235,6 +17297,51 @@ fn executable_tautology_dag_examples() -> bool {
         root: 4,
     };
     certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn executable_dag_tautology_shared_work_example() -> bool
+{
+    let clause = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred0(1) },
+    ] };
+    let dag = ProofDag {
+        nodes: vec![ProofNode {
+            id: 1,
+            clause,
+            kind: ProofNodeKind::Tautology,
+            parents: Vec::new(),
+            step: None,
+            res_step: None,
+            eq_step: None,
+            fact_step: None,
+            eq_fact_step: None,
+            sub_step: None,
+            weaken_step: None,
+            demod_step: None,
+            inst_step: None,
+            cond_step: None,
+        }],
+        input_clauses: Vec::new(),
+        root: 0,
+    };
+    let node = &dag.nodes[0];
+    let mut measured_work: usize = 0;
+    if !charge_clause_structure(&node.clause, &mut measured_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut measured_work, 100_000)
+        || !check_tautology_and_replay_with_work(
+            &node.clause, &mut measured_work, 100_000,
+        )
+    {
+        return false;
+    }
+    if measured_work == 0 { return false; }
+    let exact_limit = measured_work;
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 0, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 0, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
 fn check_dag_with_local_soundness(
@@ -18296,7 +18403,9 @@ fn run_examples() -> bool {
     if !executable_congruence_dag_examples() { return false; }
     if !executable_dag_congruence_shared_work_example() { return false; }
     if !executable_tautology_examples() { return false; }
+    if !executable_tautology_work_meter_example() { return false; }
     if !executable_tautology_dag_examples() { return false; }
+    if !executable_dag_tautology_shared_work_example() { return false; }
     if !executable_resolution_chain_examples() { return false; }
     if !wire_dispatch_regressions() { return false; }
     if !wire_tokenizer_boundary_regression() { return false; }
@@ -18448,8 +18557,12 @@ fn regression_main() {
         "DAG congruence shared work regression failed");
     assert!(executable_tautology_examples(),
         "tautology regression failed");
+    assert!(executable_tautology_work_meter_example(),
+        "tautology work-meter regression failed");
     assert!(executable_tautology_dag_examples(),
         "tautology DAG regression failed");
+    assert!(executable_dag_tautology_shared_work_example(),
+        "DAG tautology shared work regression failed");
     assert!(executable_resolution_chain_examples(), "resolution-chain DAG regression failed");
     assert!(wire_dispatch_regressions(), "verified wire-dispatch regression failed");
     assert!(wire_tokenizer_boundary_regression(), "verified wire-tokenizer boundary failed");

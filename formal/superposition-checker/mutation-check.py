@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 42
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 44
 
 
 def main() -> int:
@@ -399,12 +399,21 @@ def main() -> int:
         ),
         (
             "tautology skips clause validation",
-            "if !check_clause_tautology_exec(conclusion) {\n        return false;\n    }",
-            "if false {\n        return false;\n    }",
+            "let Some(is_tautology) = check_clause_tautology_exec_with_work(\n"
+            "        conclusion, work, work_limit,\n"
+            "    ) else { return false; };",
+            "let Some(is_tautology) = Some(true) else { return false; };",
         ),
         (
             "DAG tautology skips rule replay",
-            "if !check_tautology_and_replay(\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
+            "    // Keep the node counter through the bounded clause scan.\n"
+            "    if !check_tautology_and_replay_with_work(\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }",
             "if false {\n        return false;\n    }",
         ),
     ]
@@ -2593,6 +2602,127 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG congruence work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        tautology_atom_charge = (
+            "                let Some(atoms_match) = same_atom_with_work(\n"
+            "                    &clause.literals[i].atom, &clause.literals[j].atom, work, work_limit,\n"
+            "                ) else { return None; };"
+        )
+        if source.count(tautology_atom_charge) != 1:
+            print("tautology atom-comparison mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_tautology_atom_charge.rs"
+        mutated_path.write_text(source.replace(
+            tautology_atom_charge,
+            "                let atoms_match = same_atom(\n"
+            "                    &clause.literals[i].atom, &clause.literals[j].atom,\n"
+            "                );",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-tautology-atom-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "tautology comparison mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "tautology work-meter regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: tautology atom comparison was not charged", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "tautology comparison mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: tautology atom comparison was unmetered")
+        compiled_runtime_mutations += 1
+
+        dag_tautology_handoff = (
+            "    // Keep the node counter through the bounded clause scan.\n"
+            "    if !check_tautology_and_replay_with_work(\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }"
+        )
+        if source.count(dag_tautology_handoff) != 1:
+            print("DAG tautology work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_tautology.rs"
+        mutated_path.write_text(source.replace(
+            dag_tautology_handoff,
+            "    // Mutant isolates tautology replay from DAG work.\n"
+            "    let mut isolated_tautology_work: usize = 0;\n"
+            "    if !check_tautology_and_replay_with_work(\n"
+            "        &node.clause,\n"
+            "        &mut isolated_tautology_work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-tautology"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG tautology meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG tautology shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG tautology work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG tautology meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG tautology work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (
