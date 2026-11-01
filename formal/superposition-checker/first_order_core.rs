@@ -8856,7 +8856,7 @@ fn same_literal_with_work(
 ) -> (result: Option<bool>)
     requires *old(work) <= work_limit,
     ensures *final(work) <= work_limit,
-        result.is_some() && result.unwrap() ==> view_literal(*left) == view_literal(*right)
+        result.is_some() ==> result.unwrap() == (view_literal(*left) == view_literal(*right))
 {
     // Charge literal polarity and both atom structures before recursive match.
     if !consume_work(work, work_limit)
@@ -10586,6 +10586,66 @@ fn check_reflexivity_and_replay(conclusion: &ExecClause, work_limit: usize) -> (
     check_reflexivity_and_replay_with_work(conclusion, &mut work, work_limit)
 }
 
+fn same_unordered_pair_with_work(
+    left_a: &ExecTerm,
+    left_b: &ExecTerm,
+    right_a: &ExecTerm,
+    right_b: &ExecTerm,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> result.unwrap() == (
+            view(*left_a) == view(*right_a) && view(*left_b) == view(*right_b)
+            || view(*left_a) == view(*right_b) && view(*left_b) == view(*right_a)
+        )
+{
+    let Some(direct_left) = same_term_with_work(left_a, right_a, work, work_limit) else {
+        return None;
+    };
+    if direct_left {
+        return same_term_with_work(left_b, right_b, work, work_limit);
+    }
+    let Some(cross_left) = same_term_with_work(left_a, right_b, work, work_limit) else {
+        return None;
+    };
+    if !cross_left { return Some(false); }
+    same_term_with_work(left_b, right_a, work, work_limit)
+}
+
+fn check_transitivity_step_exec_with_work(
+    s1: &ExecTerm, s2: &ExecTerm,
+    t1: &ExecTerm, t2: &ExecTerm,
+    u1: &ExecTerm, u2: &ExecTerm,
+    work: &mut usize,
+    work_limit: usize,
+) -> (valid: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        valid == Some(true) ==> valid_transitivity_step(
+            view(*s1), view(*s2), view(*t1), view(*t2), view(*u1), view(*u2)),
+{
+    let Some(s2_t1) = same_term_with_work(s2, t1, work, work_limit) else { return None; };
+    let Some(s2_t2) = same_term_with_work(s2, t2, work, work_limit) else { return None; };
+    let Some(s1_t1) = same_term_with_work(s1, t1, work, work_limit) else { return None; };
+    let Some(s1_t2) = same_term_with_work(s1, t2, work, work_limit) else { return None; };
+    let Some(u_s1_t2) = same_unordered_pair_with_work(u1, u2, s1, t2, work, work_limit) else {
+        return None;
+    };
+    let Some(u_s1_t1) = same_unordered_pair_with_work(u1, u2, s1, t1, work, work_limit) else {
+        return None;
+    };
+    let Some(u_s2_t2) = same_unordered_pair_with_work(u1, u2, s2, t2, work, work_limit) else {
+        return None;
+    };
+    let Some(u_s2_t1) = same_unordered_pair_with_work(u1, u2, s2, t1, work, work_limit) else {
+        return None;
+    };
+    Some((s2_t1 && u_s1_t2) || (s2_t2 && u_s1_t1)
+        || (s1_t1 && u_s2_t2) || (s1_t2 && u_s2_t1))
+}
+
 fn check_transitivity_step_exec(
     s1: &ExecTerm, s2: &ExecTerm,
     t1: &ExecTerm, t2: &ExecTerm,
@@ -10593,25 +10653,21 @@ fn check_transitivity_step_exec(
 ) -> (valid: bool)
     ensures valid ==> valid_transitivity_step(view(*s1), view(*s2), view(*t1), view(*t2), view(*u1), view(*u2)),
 {
-    let s2_t1 = same_term(s2, t1);
-    let s2_t2 = same_term(s2, t2);
-    let s1_t1 = same_term(s1, t1);
-    let s1_t2 = same_term(s1, t2);
-
-    let u_s1_t2 = (same_term(u1, s1) && same_term(u2, t2)) || (same_term(u1, t2) && same_term(u2, s1));
-    let u_s1_t1 = (same_term(u1, s1) && same_term(u2, t1)) || (same_term(u1, t1) && same_term(u2, s1));
-    let u_s2_t2 = (same_term(u1, s2) && same_term(u2, t2)) || (same_term(u1, t2) && same_term(u2, s2));
-    let u_s2_t1 = (same_term(u1, s2) && same_term(u2, t1)) || (same_term(u1, t1) && same_term(u2, s2));
-
-    (s2_t1 && u_s1_t2) || (s2_t2 && u_s1_t1) || (s1_t1 && u_s2_t2) || (s1_t2 && u_s2_t1)
+    let mut work: usize = 0;
+    check_transitivity_step_exec_with_work(s1, s2, t1, t2, u1, u2, &mut work, usize::MAX)
+        == Some(true)
 }
 
-fn check_clause_transitivity_exec(
+fn check_clause_transitivity_exec_with_work(
     clause: &ExecClause,
     unit_eq: &ExecClause,
     conclusion: &ExecClause,
+    work: &mut usize,
+    work_limit: usize,
 ) -> (result: Option<usize>)
+    requires *old(work) <= work_limit,
     ensures
+        *final(work) <= work_limit,
         match result {
             Some(k) => valid_clause_transitivity(view_clause(*clause), view_clause(*unit_eq), view_clause(*conclusion), k as int),
             None => true,
@@ -10643,6 +10699,7 @@ fn check_clause_transitivity_exec(
             u_lit.atom == ExecAtom::Eq(*t1, *t2),
             view_clause(*unit_eq).literals[0] == view_literal(*u_lit),
             j <= clause.literals.len(),
+            *work <= work_limit,
             changed <= clause.literals.len(),
             changed == clause.literals.len() ==> forall|m: int|
                 0 <= m < j as int
@@ -10654,7 +10711,10 @@ fn check_clause_transitivity_exec(
                     ==> view_literal(clause.literals@[m]) == view_literal(conclusion.literals@[m]),
         decreases clause.literals.len() - j,
     {
-        if !same_literal(&clause.literals[j], &conclusion.literals[j]) {
+        let Some(literals_match) = same_literal_with_work(
+            &clause.literals[j], &conclusion.literals[j], work, work_limit,
+        ) else { return None; };
+        if !literals_match {
             if changed < clause.literals.len() {
                 return None;
             }
@@ -10673,7 +10733,10 @@ fn check_clause_transitivity_exec(
         let (ExecAtom::Eq(s1, s2), ExecAtom::Eq(u1, u2)) = (&p_lit.atom, &c_lit.atom) else {
             return None;
         };
-        if !check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {
+        let Some(step_valid) = check_transitivity_step_exec_with_work(
+            s1, s2, t1, t2, u1, u2, work, work_limit,
+        ) else { return None; };
+        if !step_valid {
             return None;
         }
         proof {
@@ -10713,6 +10776,7 @@ fn check_clause_transitivity_exec(
             view_clause(*unit_eq).literals[0] == view_literal(*u_lit),
             changed == clause.literals.len(),
             k <= clause.literals.len(),
+            *work <= work_limit,
             forall|m: int| 0 <= m < clause.literals@.len()
                 ==> view_clause(*clause).literals[m] == view_clause(*conclusion).literals[m],
         decreases clause.literals.len() - k,
@@ -10721,7 +10785,10 @@ fn check_clause_transitivity_exec(
         let c_lit = &conclusion.literals[k];
         if p_lit.positive && c_lit.positive {
             if let (ExecAtom::Eq(s1, s2), ExecAtom::Eq(u1, u2)) = (&p_lit.atom, &c_lit.atom) {
-                if check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {
+                let Some(step_valid) = check_transitivity_step_exec_with_work(
+                    s1, s2, t1, t2, u1, u2, work, work_limit,
+                ) else { return None; };
+                if step_valid {
                     assert(view_clause(*clause).literals[k as int] == view_literal(*p_lit));
                     assert(view_clause(*unit_eq).literals[0] == view_literal(*u_lit));
                     assert(view_clause(*conclusion).literals[k as int] == view_literal(*c_lit));
@@ -10734,26 +10801,46 @@ fn check_clause_transitivity_exec(
     None
 }
 
-fn check_transitivity_and_replay(
+fn check_clause_transitivity_exec(
+    clause: &ExecClause,
+    unit_eq: &ExecClause,
+    conclusion: &ExecClause,
+) -> (result: Option<usize>)
+    ensures match result {
+        Some(k) => valid_clause_transitivity(
+            view_clause(*clause), view_clause(*unit_eq), view_clause(*conclusion), k as int,
+        ),
+        None => true,
+    }
+{
+    let mut work: usize = 0;
+    check_clause_transitivity_exec_with_work(clause, unit_eq, conclusion, &mut work, usize::MAX)
+}
+
+fn check_transitivity_and_replay_with_work(
     left: &ExecClause,
     right: &ExecClause,
     conclusion: &ExecClause,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
         && clause_valid(view_clause(*left), interp)
         && clause_valid(view_clause(*right), interp)
         ==> clause_valid(view_clause(*conclusion), interp),
+        *final(work) <= work_limit,
 {
-    let mut work: usize = 0;
-    if !charge_clause_structure(left, &mut work, work_limit)
-        || !charge_clause_structure(right, &mut work, work_limit)
-        || !charge_clause_structure(conclusion, &mut work, work_limit)
+    if !charge_clause_structure(left, work, work_limit)
+        || !charge_clause_structure(right, work, work_limit)
+        || !charge_clause_structure(conclusion, work, work_limit)
     {
         return false;
     }
     if right.literals.len() == 1 {
-        if let Some(k) = check_clause_transitivity_exec(left, right, conclusion) {
+        if let Some(k) = check_clause_transitivity_exec_with_work(
+            left, right, conclusion, work, work_limit,
+        ) {
             proof {
                 assert forall|interp: Interpretation| interpretation_well_formed(interp)
                     && clause_valid(view_clause(*left), interp)
@@ -10772,7 +10859,9 @@ fn check_transitivity_and_replay(
         }
     }
     if left.literals.len() == 1 {
-        if let Some(k) = check_clause_transitivity_exec(right, left, conclusion) {
+        if let Some(k) = check_clause_transitivity_exec_with_work(
+            right, left, conclusion, work, work_limit,
+        ) {
             proof {
                 assert forall|interp: Interpretation| interpretation_well_formed(interp)
                     && clause_valid(view_clause(*left), interp)
@@ -10791,6 +10880,21 @@ fn check_transitivity_and_replay(
         }
     }
     false
+}
+
+fn check_transitivity_and_replay(
+    left: &ExecClause,
+    right: &ExecClause,
+    conclusion: &ExecClause,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        && clause_valid(view_clause(*left), interp)
+        && clause_valid(view_clause(*right), interp)
+        ==> clause_valid(view_clause(*conclusion), interp),
+{
+    let mut work: usize = 0;
+    check_transitivity_and_replay_with_work(left, right, conclusion, &mut work, work_limit)
 }
 
 fn check_symmetry_step_exec(
@@ -12999,10 +13103,16 @@ fn check_dag_reflexivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     check_dag_reflexivity_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_transitivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_transitivity_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::Transitivity || node.parents.len() != 2 {
         return false;
@@ -13010,19 +13120,19 @@ fn check_dag_transitivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    if !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, work, work_limit)
     {
         return false;
     }
-    let remaining_work = work_limit - work;
-    if !check_transitivity_and_replay(
+    // Keep parent structure and all transitivity comparisons on the node meter.
+    if !check_transitivity_and_replay_with_work(
         &nodes[node.parents[0]].clause,
         &nodes[node.parents[1]].clause,
         &node.clause,
-        remaining_work,
+        work,
+        work_limit,
     ) {
         return false;
     }
@@ -13038,6 +13148,15 @@ fn check_dag_transitivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         };
     }
     true
+}
+
+fn check_dag_transitivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_transitivity_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_symmetry_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -13859,7 +13978,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::Transitivity => {
         if node.parents.len() != 2 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_transitivity_step(node, &dag.nodes, work_limit - *work)
+        check_dag_transitivity_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::Symmetry => {
         if node.parents.len() != 1 { return false; }
@@ -15924,6 +16043,25 @@ fn executable_transitivity_examples() -> bool {
     true
 }
 
+fn executable_transitivity_step_work_meter_example() -> bool
+{
+    let s1 = ExecTerm::Const(1);
+    let s2 = ExecTerm::Const(2);
+    let t1 = ExecTerm::Const(2);
+    let t2 = ExecTerm::Const(3);
+    let u1 = ExecTerm::Const(1);
+    let u2 = ExecTerm::Const(3);
+    let mut exact_work: usize = 0;
+    let exact = check_transitivity_step_exec_with_work(
+        &s1, &s2, &t1, &t2, &u1, &u2, &mut exact_work, 12,
+    );
+    let mut short_work: usize = 0;
+    let short = check_transitivity_step_exec_with_work(
+        &s1, &s2, &t1, &t2, &u1, &u2, &mut short_work, 11,
+    );
+    exact == Some(true) && exact_work == 12 && short.is_none() && short_work == 11
+}
+
 fn refl_in1() -> ExecClause {
     ExecClause { literals: vec![
         ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
@@ -16006,6 +16144,86 @@ fn executable_transitivity_dag_examples() -> bool {
         root: 4,
     };
     certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn executable_dag_transitivity_shared_work_example() -> bool
+{
+    let conclusion = ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(3)),
+    }] };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: trans_in1(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: trans_in2(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 3,
+                clause: conclusion,
+                kind: ProofNodeKind::Transitivity,
+                parents: vec![0usize, 1usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 2,
+    };
+    let node = &dag.nodes[2];
+    let mut measured_work: usize = 0;
+    if !consume_work(&mut measured_work, 100_000)
+        || !consume_work(&mut measured_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut measured_work, 100_000)
+        || !check_dag_transitivity_step_with_work(
+            node, &dag.nodes, &mut measured_work, 100_000,
+        )
+    {
+        return false;
+    }
+    if measured_work == 0 { return false; }
+    let exact_limit = measured_work;
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 2, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 2, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
 fn executable_symmetry_examples() -> bool {
@@ -17578,7 +17796,9 @@ fn run_examples() -> bool {
     if !executable_reflexivity_examples() { return false; }
     if !executable_reflexivity_dag_examples() { return false; }
     if !executable_transitivity_examples() { return false; }
+    if !executable_transitivity_step_work_meter_example() { return false; }
     if !executable_transitivity_dag_examples() { return false; }
+    if !executable_dag_transitivity_shared_work_example() { return false; }
     if !executable_symmetry_examples() { return false; }
     if !executable_symmetry_dag_examples() { return false; }
     if !executable_excluded_middle_examples() { return false; }
@@ -17706,8 +17926,12 @@ fn regression_main() {
         "reflexivity DAG regression failed");
     assert!(executable_transitivity_examples(),
         "transitivity regression failed");
+    assert!(executable_transitivity_step_work_meter_example(),
+        "transitivity step work-meter regression failed");
     assert!(executable_transitivity_dag_examples(),
         "transitivity DAG regression failed");
+    assert!(executable_dag_transitivity_shared_work_example(),
+        "DAG transitivity shared work regression failed");
     assert!(executable_symmetry_examples(),
         "symmetry regression failed");
     assert!(executable_symmetry_dag_examples(),

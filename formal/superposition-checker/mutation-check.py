@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 34
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 36
 
 
 def main() -> int:
@@ -302,12 +302,22 @@ def main() -> int:
         ),
         (
             "transitivity ignores valid chained orientation",
-            "if check_transitivity_step_exec(s1, s2, t1, t2, u1, u2) {",
+            "                if step_valid {\n"
+            "                    assert(view_clause(*clause).literals[k as int] == view_literal(*p_lit));",
             "if true {",
         ),
         (
             "DAG transitivity skips rule replay",
-            "if !check_transitivity_and_replay(\n        &nodes[node.parents[0]].clause,\n        &nodes[node.parents[1]].clause,\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
+            "    // Keep parent structure and all transitivity comparisons on the node meter.\n"
+            "    if !check_transitivity_and_replay_with_work(\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        &nodes[node.parents[1]].clause,\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }",
             "if false {\n        return false;\n    }",
         ),
         (
@@ -2064,6 +2074,129 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG reflexivity work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        transitivity_term_charge = (
+            "    let Some(direct_left) = same_term_with_work(left_a, right_a, work, work_limit) else {\n"
+            "        return None;\n"
+            "    };"
+        )
+        if source.count(transitivity_term_charge) != 1:
+            print("transitivity term-comparison mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_transitivity_term_charge.rs"
+        mutated_path.write_text(source.replace(
+            transitivity_term_charge,
+            "    let direct_left = same_term(left_a, right_a);",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-transitivity-term-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "transitivity comparison mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "transitivity step work-meter regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: transitivity term comparison was not charged", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "transitivity comparison mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: transitivity term comparison was unmetered")
+        compiled_runtime_mutations += 1
+
+        dag_transitivity_handoff = (
+            "    // Keep parent structure and all transitivity comparisons on the node meter.\n"
+            "    if !check_transitivity_and_replay_with_work(\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        &nodes[node.parents[1]].clause,\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }"
+        )
+        if source.count(dag_transitivity_handoff) != 1:
+            print("DAG transitivity work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_transitivity.rs"
+        mutated_path.write_text(source.replace(
+            dag_transitivity_handoff,
+            "    // Mutant isolates transitivity replay from DAG work.\n"
+            "    let mut isolated_transitivity_work: usize = 0;\n"
+            "    if !check_transitivity_and_replay_with_work(\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        &nodes[node.parents[1]].clause,\n"
+            "        &node.clause,\n"
+            "        &mut isolated_transitivity_work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-transitivity"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG transitivity meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG transitivity shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG transitivity work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG transitivity meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG transitivity work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

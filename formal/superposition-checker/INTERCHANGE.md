@@ -288,3 +288,6 @@ resolvent construction and conclusion comparison; each has a composed-cutoff res
 mutant.
 Reflexivity accepts at 5 units and rejects at 4; a compiled mutant removes the term
 comparison charge. Its DAG wrapper also has an exact composed cutoff/reset mutant.
+Transitivity's term-comparison helper accepts at 12 units and rejects at 11; a
+compiled mutant removes one comparison charge. Its DAG parent and node work share
+the replay meter under an exact composed cutoff/reset mutant.
