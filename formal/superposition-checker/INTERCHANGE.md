@@ -275,3 +275,6 @@ and replay share one counter, tested by an exact composed cutoff and reset mutan
 Subsumption-resolution literal comparison accepts at 3 units and rejects at 2; a
 compiled mutant removes the literal charge. Its DAG parent comparisons and replay
 also share one counter, guarded by an exact composed cutoff and reset mutant.
+Weakening inclusion matching uses the metered literal comparator; its DAG parent
+and conclusion charges share the replay counter and are covered by an exact composed
+cutoff/reset mutant.

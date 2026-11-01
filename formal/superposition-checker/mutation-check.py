@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 26
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 27
 
 
 def main() -> int:
@@ -221,12 +221,15 @@ def main() -> int:
         ),
         (
             "weakening ignores literal agreement",
-            "if !same_literal(&certificate.parent.literals[i], &certificate.conclusion.literals[target_idx]) {\n            return false;\n        }",
-            "if false {\n            return false;\n        }",
+            "let Some(literal_matches) = same_literal_with_work(\n"
+            "            &certificate.parent.literals[i], &certificate.conclusion.literals[target_idx],\n"
+            "            work, work_limit,\n"
+            "        ) else { return false; };",
+            "let Some(literal_matches) = Some(true) else { return false; };",
         ),
         (
             "DAG weakening skips rule replay",
-            "|| !check_weakening_and_replay(step, remaining_work)",
+            "|| !check_weakening_and_replay_with_work(step, work, work_limit)",
             "|| false",
         ),
         (
@@ -1554,6 +1557,66 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG subsumption work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        dag_weakening_handoff = (
+            "    // Keep parent and conclusion structure comparisons in the weakening meter.\n"
+            "    if !conclusion_matches\n"
+            "        || !check_weakening_and_replay_with_work(step, work, work_limit)\n"
+            "    {"
+        )
+        if source.count(dag_weakening_handoff) != 1:
+            print("DAG weakening work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_weakening.rs"
+        mutated_path.write_text(source.replace(
+            dag_weakening_handoff,
+            "    // Mutant isolates weakening replay from DAG work.\n"
+            "    let mut isolated_weakening_work: usize = 0;\n"
+            "    if !conclusion_matches\n"
+            "        || !check_weakening_and_replay_with_work(\n"
+            "            step, &mut isolated_weakening_work, work_limit,\n"
+            "        )\n"
+            "    {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-weakening"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG weakening meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG weakening shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG weakening work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG weakening meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG weakening work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

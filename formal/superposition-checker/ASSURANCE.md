@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and twenty-six
+The mutation inventory is now fifty-eight verifier-negative checks and twenty-seven
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -80,12 +80,12 @@ The caller's certification budget is partitioned between structural preflight,
 ancestor-closure validation and per-node replay, so the number of nodes cannot
 multiply one local replay allowance without bound. Some replay helpers still
 use distinct local counters; this is not yet exact cumulative instruction/work
-accounting. Within each node, parent-edge validation and clause structure are
-charged before the remaining node share is passed into the local rule checker.
-Superposition and resolution DAG wrappers also charge each cited parent and the
-conclusion before passing the remainder to local replay. Nested helper
-traversals still have separate local budgets, and exact literal-comparison
-operation accounting is not established.
+accounting. For superposition, first-order/equality resolution, factoring,
+subsumption resolution and weakening, the per-node parent/structure charges,
+cited-parent comparisons and local replay share a mutable node counter.
+Other rule wrappers still pass scalar remaining-work shares; nested helper
+traversals also remain incomplete, so exact cumulative literal-comparison work
+is not established.
 Input-leaf validation charges both clause structures for every candidate in its
 repeated exact-membership scan, with a runtime regression for the exact cutoff;
 this closes that specific repeated-comparison undercount, not all comparison
@@ -110,11 +110,14 @@ compiled mutations remove lookup, clause-literal, materialization,
 unifier-comparison, path-comparison, selected-term, replay substitution,
 replacement, build, comparison, preflight/replay handoff, DAG-superposition handoff,
 first-order-resolution DAG handoff, equality-resolution deletion/DAG,
-clause-factoring DAG, equality-factoring pivot comparison and DAG handoff charges.
+clause-factoring DAG, equality-factoring pivot/DAG, subsumption literal/DAG and
+weakening DAG charges.
 A computed boundary
 funds exactly the standalone structure/preflight work and requires replay to fail
 closed at its first charge. The DAG per-node validator carries parent-index,
-node-clause and cited-parent comparison work into the superposition replay meter.
+node-clause and cited-parent comparison work into local replay meters for
+superposition, first-order resolution, equality resolution, clause factoring,
+equality factoring, subsumption resolution and weakening.
 `certify_dag` still allocates independent per-node shares, and other inference
 families use separate counters, so end-to-end DAG accounting remains open.
 First-order binary-resolution replay also has a shared local work counter for
@@ -122,7 +125,6 @@ collection, freshening, unifier application, pivot comparison, resolvent
 construction and conclusion comparison; its pivot atom meter has a 4/3 cutoff
 mutation test. The first-order resolution DAG wrapper carries its per-node work
 into this meter; an exact composed node cutoff and reset mutant guard the handoff.
-`certify_dag` still allocates independent per-node shares.
 Equality-resolution replay also shares its local meter across unification,
 substitution, pivot deletion and conclusion comparison; a 4/3 deletion cutoff
 and compiled mutation test the work charge. Its DAG node path has the exact
@@ -138,10 +140,8 @@ Subsumption-resolution replay shares work across collection, freshening, unifier
 application, pivot and mapped-literal comparisons, deletion and exact comparison.
 Its literal comparator has a 3/2 cutoff mutation test, and the DAG node path carries
 parent comparisons into replay under an exact composed cutoff/reset mutant.
-Subsumption-resolution replay shares work across collection, freshening, unifier
-application, pivot and mapped-literal comparisons, deletion and exact conclusion
-comparison. Its literal comparator has a 3/2 cutoff mutation test, and the DAG
-wrapper carries per-node work through replay with a composed-cutoff reset mutant.
+Weakening replay meters its inclusion-literal matching; the DAG wrapper's shared
+counter is checked by an exact composed cutoff and reset mutation.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 

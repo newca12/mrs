@@ -6987,6 +6987,84 @@ fn executable_dag_subsumption_resolution_shared_work_example() -> bool
     exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
+fn executable_dag_weakening_shared_work_example() -> bool
+{
+    let certificate = WeakeningCertificate {
+        parent: weaken_in1(),
+        inclusions: vec![0],
+        conclusion: weaken_concl(),
+    };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: weaken_in1(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: weaken_concl(),
+                kind: ProofNodeKind::Weakening,
+                parents: vec![0usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: Some(certificate),
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 1,
+    };
+    let node = &dag.nodes[1];
+    let Some(step) = &node.weaken_step else { return false; };
+    let mut dag_preflight_work: usize = 0;
+    if !consume_work(&mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_weakening_certificate(step, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&dag.nodes[0].clause, &mut dag_preflight_work, 100_000)
+    {
+        return false;
+    }
+    let Some(parent_matches) = same_clause_exact_with_work(
+        &step.parent, &dag.nodes[0].clause, &mut dag_preflight_work, 100_000,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, &mut dag_preflight_work, 100_000,
+    ) else { return false; };
+    if !parent_matches || !conclusion_matches { return false; }
+
+    let mut replay_work: usize = 0;
+    if !check_weakening_and_replay_with_work(step, &mut replay_work, 100_000) {
+        return false;
+    }
+    if replay_work > usize::MAX - dag_preflight_work { return false; }
+    let exact_limit = dag_preflight_work + replay_work;
+    if exact_limit == 0 { return false; }
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 1, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 1, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
+}
+
 fn parent_variable_superposition_certificate(
     target_image: u64,
     unifier: Vec<ExecBinding>,
@@ -9407,19 +9485,21 @@ fn check_subsumption_resolution_and_replay(
     check_subsumption_resolution_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
-fn check_weakening_and_replay(
+fn check_weakening_and_replay_with_work(
     certificate: &WeakeningCertificate,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures
+        *final(work) <= work_limit,
         accepted ==> certificate.parent.literals.len()
             + certificate.conclusion.literals.len() <= work_limit,
         accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
             && clause_valid(view_clause(certificate.parent), interp)
             ==> clause_valid(view_clause(certificate.conclusion), interp),
 {
-    let mut structural_work: usize = 0;
-    if !charge_weakening_certificate(certificate, &mut structural_work, work_limit) {
+    if !charge_weakening_certificate(certificate, work, work_limit) {
         return false;
     }
     if certificate.parent.literals.len() > work_limit
@@ -9434,6 +9514,7 @@ fn check_weakening_and_replay(
     while i < certificate.parent.literals.len()
         invariant
             i <= certificate.parent.literals.len(),
+            *work <= work_limit,
             certificate.inclusions@.len() == certificate.parent.literals@.len(),
             forall|k: int| 0 <= k < i as int ==> {
                 &&& certificate.inclusions@[k] < certificate.conclusion.literals@.len()
@@ -9446,7 +9527,11 @@ fn check_weakening_and_replay(
         if target_idx >= certificate.conclusion.literals.len() {
             return false;
         }
-        if !same_literal(&certificate.parent.literals[i], &certificate.conclusion.literals[target_idx]) {
+        let Some(literal_matches) = same_literal_with_work(
+            &certificate.parent.literals[i], &certificate.conclusion.literals[target_idx],
+            work, work_limit,
+        ) else { return false; };
+        if !literal_matches {
             return false;
         }
         i += 1;
@@ -9475,6 +9560,21 @@ fn check_weakening_and_replay(
         };
     }
     true
+}
+
+fn check_weakening_and_replay(
+    certificate: &WeakeningCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.parent.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.parent), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_weakening_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
 fn check_demodulation_and_replay(
@@ -11891,10 +11991,16 @@ fn check_dag_subsumption_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode
     check_dag_subsumption_resolution_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_weakening_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_weakening_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::Weakening || node.parents.len() != 1 {
         return false;
@@ -11903,17 +12009,22 @@ fn check_dag_weakening_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     if node.parents[0] >= nodes.len() {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_weakening_certificate(step, &mut work, work_limit)
-        || !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    if !charge_weakening_certificate(step, work, work_limit)
+        || !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
     {
         return false;
     }
-    let remaining_work = work_limit - work;
-    if !same_clause_exact(&step.parent, &nodes[node.parents[0]].clause)
-        || !same_clause_exact(&step.conclusion, &node.clause)
-        || !check_weakening_and_replay(step, remaining_work)
+    let Some(parent_matches) = same_clause_exact_with_work(
+        &step.parent, &nodes[node.parents[0]].clause, work, work_limit,
+    ) else { return false; };
+    if !parent_matches { return false; }
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, work, work_limit,
+    ) else { return false; };
+    // Keep parent and conclusion structure comparisons in the weakening meter.
+    if !conclusion_matches
+        || !check_weakening_and_replay_with_work(step, work, work_limit)
     {
         return false;
     }
@@ -11931,6 +12042,15 @@ fn check_dag_weakening_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         }
     }
     true
+}
+
+fn check_dag_weakening_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_weakening_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_demodulation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -12934,7 +13054,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::Weakening => {
         if node.parents.len() != 1 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_weakening_step(node, &dag.nodes, work_limit - *work)
+        check_dag_weakening_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::Demodulation => {
         if node.parents.len() != 2 { return false; }
@@ -16657,6 +16777,7 @@ fn run_examples() -> bool {
     if !executable_equality_factoring_pivot_work_meter_example() { return false; }
     if !executable_dag_equality_factoring_shared_work_example() { return false; }
     if !executable_dag_subsumption_resolution_shared_work_example() { return false; }
+    if !executable_dag_weakening_shared_work_example() { return false; }
     if !executable_subsumption_resolution_examples() { return false; }
     if !executable_subsumption_resolution_dag_examples() { return false; }
     if !executable_weakening_examples() { return false; }
@@ -16725,6 +16846,8 @@ fn regression_main() {
         "DAG clause factoring shared work regression failed");
     assert!(executable_dag_subsumption_resolution_shared_work_example(),
         "DAG subsumption resolution shared work regression failed");
+    assert!(executable_dag_weakening_shared_work_example(),
+        "DAG weakening shared work regression failed");
     assert!(executable_equality_factoring_pivot_work_meter_example(),
         "equality factoring pivot work regression failed");
     assert!(executable_dag_equality_factoring_shared_work_example(),
