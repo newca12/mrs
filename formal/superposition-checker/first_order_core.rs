@@ -7328,6 +7328,188 @@ fn executable_dag_demodulation_shared_work_example() -> bool
     exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
+fn executable_dag_nullary_resolution_shared_work_example() -> bool
+{
+    let left = ExecClause { literals: vec![ExecLiteral {
+        positive: true, atom: ExecAtom::Pred0(1),
+    }] };
+    let right = ExecClause { literals: vec![ExecLiteral {
+        positive: false, atom: ExecAtom::Pred0(1),
+    }] };
+    let conclusion = ExecClause { literals: Vec::new() };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: left,
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: right,
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 3,
+                clause: conclusion,
+                kind: ProofNodeKind::Resolution(0, 0),
+                parents: vec![0usize, 1usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 2,
+    };
+    let node = &dag.nodes[2];
+    let mut dag_preflight_work: usize = 0;
+    if !consume_work(&mut dag_preflight_work, 100_000)
+        || !consume_work(&mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&dag.nodes[0].clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&dag.nodes[1].clause, &mut dag_preflight_work, 100_000)
+    {
+        return false;
+    }
+    let mut replay_work: usize = 0;
+    if !check_nullary_resolution_with_work(
+        &dag.nodes[0].clause, &dag.nodes[1].clause, 0, 0, &node.clause,
+        &mut replay_work, 100_000,
+    ) {
+        return false;
+    }
+    if replay_work > usize::MAX - dag_preflight_work { return false; }
+    let exact_limit = dag_preflight_work + replay_work;
+    if exact_limit == 0 { return false; }
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 2, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 2, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
+}
+
+fn executable_dag_exact_resolution_shared_work_example() -> bool
+{
+    let left = ExecClause { literals: vec![ExecLiteral {
+        positive: true, atom: ExecAtom::Pred0(1),
+    }] };
+    let right = ExecClause { literals: vec![ExecLiteral {
+        positive: false, atom: ExecAtom::Pred0(1),
+    }] };
+    let conclusion = ExecClause { literals: Vec::new() };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: left,
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: right,
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 3,
+                clause: conclusion,
+                kind: ProofNodeKind::ExactResolution(0, 0),
+                parents: vec![0usize, 1usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 2,
+    };
+    let node = &dag.nodes[2];
+    let mut dag_preflight_work: usize = 0;
+    if !consume_work(&mut dag_preflight_work, 100_000)
+        || !consume_work(&mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&dag.nodes[0].clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&dag.nodes[1].clause, &mut dag_preflight_work, 100_000)
+    {
+        return false;
+    }
+    let mut replay_work: usize = 0;
+    if !check_exact_resolution_with_work(
+        &dag.nodes[0].clause, &dag.nodes[1].clause, 0, 0, &node.clause,
+        &mut replay_work, 100_000,
+    ) {
+        return false;
+    }
+    if replay_work > usize::MAX - dag_preflight_work { return false; }
+    let exact_limit = dag_preflight_work + replay_work;
+    if exact_limit == 0 { return false; }
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 2, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 2, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
+}
+
 fn parent_variable_superposition_certificate(
     target_image: u64,
     unifier: Vec<ExecBinding>,
@@ -8759,11 +8941,20 @@ fn build_nullary_resolution_conclusion_with_work(
     Some(build_nullary_resolution_conclusion(left, right, left_pivot, right_pivot))
 }
 
-fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
-    left_pivot: usize, right_pivot: usize, conclusion: &ExecClause, work_limit: usize)
+fn check_nullary_resolution_with_work(
+    left: &ExecClause,
+    right: &ExecClause,
+    left_pivot: usize,
+    right_pivot: usize,
+    conclusion: &ExecClause,
+    work: &mut usize,
+    work_limit: usize,
+)
     -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures accepted ==> clause_equal(view_clause(*conclusion), resolution_conclusion(
         view_clause(*left), view_clause(*right), left_pivot as int, right_pivot as int)),
+        *final(work) <= work_limit,
         accepted ==> match left.literals@[left_pivot as int].atom {
             ExecAtom::Pred0(p) => right.literals@[right_pivot as int].atom
                 == ExecAtom::Pred0(p),
@@ -8777,10 +8968,9 @@ fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
             && clause_valid(view_clause(*right), interp)
             ==> clause_valid(view_clause(*conclusion), interp),
 {
-    let mut work: usize = 0;
-    if !charge_clause_structure(left, &mut work, work_limit)
-        || !charge_clause_structure(right, &mut work, work_limit)
-        || !charge_clause_structure(conclusion, &mut work, work_limit)
+    if !charge_clause_structure(left, work, work_limit)
+        || !charge_clause_structure(right, work, work_limit)
+        || !charge_clause_structure(conclusion, work, work_limit)
     { return false; }
     if left_pivot >= left.literals.len() || right_pivot >= right.literals.len() {
         return false;
@@ -8797,8 +8987,12 @@ fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
     }
     assert(right_literal.atom == ExecAtom::Pred0(predicate));
     assert(left.literals@[left_pivot as int].atom == ExecAtom::Pred0(predicate));
-    let expected = build_nullary_resolution_conclusion(left, right, left_pivot, right_pivot);
-    let same = same_clause_exact(&expected, conclusion);
+    let Some(expected) = build_nullary_resolution_conclusion_with_work(
+        left, right, left_pivot, right_pivot, work, work_limit,
+    ) else { return false; };
+    let Some(same) = same_clause_exact_with_work(
+        &expected, conclusion, work, work_limit,
+    ) else { return false; };
     if !same { return false; }
     proof {
         assert forall|interp: Interpretation| interpretation_well_formed(interp)
@@ -8820,23 +9014,69 @@ fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
     true
 }
 
-fn check_exact_resolution(left: &ExecClause, right: &ExecClause,
-    lp: usize, rp: usize, conclusion: &ExecClause, work_limit: usize) -> (accepted: bool)
+fn check_nullary_resolution(left: &ExecClause, right: &ExecClause,
+    left_pivot: usize, right_pivot: usize, conclusion: &ExecClause, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> clause_equal(view_clause(*conclusion), resolution_conclusion(
+        view_clause(*left), view_clause(*right), left_pivot as int, right_pivot as int)),
+        accepted ==> match left.literals@[left_pivot as int].atom {
+            ExecAtom::Pred0(p) => right.literals@[right_pivot as int].atom
+                == ExecAtom::Pred0(p),
+            _ => false,
+        },
+        accepted ==> left.literals@[left_pivot as int].positive
+            && !right.literals@[right_pivot as int].positive,
+        accepted ==> left_pivot < left.literals.len() && right_pivot < right.literals.len(),
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(*left), interp)
+            && clause_valid(view_clause(*right), interp)
+            ==> clause_valid(view_clause(*conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_nullary_resolution_with_work(
+        left, right, left_pivot, right_pivot, conclusion, &mut work, work_limit,
+    )
+}
+
+fn check_exact_resolution_with_work(
+    left: &ExecClause,
+    right: &ExecClause,
+    lp: usize,
+    rp: usize,
+    conclusion: &ExecClause,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
         && clause_valid(view_clause(*left), interp) && clause_valid(view_clause(*right), interp)
         ==> clause_valid(view_clause(*conclusion), interp),
+        *final(work) <= work_limit,
 {
-    let mut work: usize = 0;
-    if !charge_clause_structure(left, &mut work, work_limit)
-        || !charge_clause_structure(right, &mut work, work_limit)
-        || !charge_clause_structure(conclusion, &mut work, work_limit) { return false; }
+    if !charge_clause_structure(left, work, work_limit)
+        || !charge_clause_structure(right, work, work_limit)
+        || !charge_clause_structure(conclusion, work, work_limit) { return false; }
     if lp >= left.literals.len() || rp >= right.literals.len() { return false; }
     if !left.literals[lp].positive || right.literals[rp].positive { return false; }
-    if !same_atom(&left.literals[lp].atom, &right.literals[rp].atom)
-        && !same_symmetric_equality(&left.literals[lp].atom, &right.literals[rp].atom)
-    { return false; }
-    let expected = build_nullary_resolution_conclusion(left, right, lp, rp);
-    if !same_clause_exact(&expected, conclusion) { return false; }
+    let Some(exact_atoms_match) = same_atom_with_work(
+        &left.literals[lp].atom, &right.literals[rp].atom, work, work_limit,
+    ) else { return false; };
+    let atoms_match = if exact_atoms_match {
+        true
+    } else {
+        let Some(symmetric_equality_matches) = same_symmetric_equality_with_work(
+            &left.literals[lp].atom, &right.literals[rp].atom, work, work_limit,
+        ) else { return false; };
+        symmetric_equality_matches
+    };
+    if !atoms_match { return false; }
+    let Some(expected) = build_nullary_resolution_conclusion_with_work(
+        left, right, lp, rp, work, work_limit,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &expected, conclusion, work, work_limit,
+    ) else { return false; };
+    if !conclusion_matches { return false; }
     proof {
         assert forall|interp: Interpretation| interpretation_well_formed(interp)
             && clause_valid(view_clause(*left), interp) && clause_valid(view_clause(*right), interp)
@@ -8860,21 +9100,39 @@ fn check_exact_resolution(left: &ExecClause, right: &ExecClause,
     true
 }
 
-fn check_dag_exact_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limit: usize)
-    -> (accepted: bool)
+fn check_exact_resolution(left: &ExecClause, right: &ExecClause,
+    lp: usize, rp: usize, conclusion: &ExecClause, work_limit: usize) -> (accepted: bool)
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+        && clause_valid(view_clause(*left), interp) && clause_valid(view_clause(*right), interp)
+        ==> clause_valid(view_clause(*conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_exact_resolution_with_work(left, right, lp, rp, conclusion, &mut work, work_limit)
+}
+
+fn check_dag_exact_resolution_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     let ProofNodeKind::ExactResolution(lp, rp) = node.kind else { return false; };
     if node.parents.len() != 2 { return false; }
     if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() { return false; }
-    let mut work: usize = 0;
-    if !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    if !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, work, work_limit)
     { return false; }
-    if !check_exact_resolution(&nodes[node.parents[0]].clause, &nodes[node.parents[1]].clause,
-        lp, rp, &node.clause, work_limit - work) { return false; }
+    // Keep node and cited-parent charges in exact-resolution replay's meter.
+    if !check_exact_resolution_with_work(
+        &nodes[node.parents[0]].clause, &nodes[node.parents[1]].clause,
+        lp, rp, &node.clause, work, work_limit,
+    ) { return false; }
     proof {
         assert forall|interp: Interpretation| interpretation_well_formed(interp)
             implies local_node_entails_from_parents(*node, nodes@, interp) by {
@@ -8888,21 +9146,43 @@ fn check_dag_exact_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, wor
     true
 }
 
-fn check_dag_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limit: usize)
+fn check_dag_exact_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limit: usize)
     -> (accepted: bool)
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
         ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
+    let mut work: usize = 0;
+    check_dag_exact_resolution_step_with_work(node, nodes, &mut work, work_limit)
+}
+
+fn check_dag_resolution_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
     let ProofNodeKind::Resolution(lp, rp) = node.kind else { return false; };
     if node.parents.len() != 2 { return false; }
     if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() { return false; }
-    let mut work: usize = 0;
-    if !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    if !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, work, work_limit)
     { return false; }
-    let checked = check_nullary_resolution(&nodes[node.parents[0]].clause,
-        &nodes[node.parents[1]].clause, lp, rp, &node.clause, work_limit - work);
+    // Keep node and cited-parent charges in nullary-resolution replay's meter.
+    let checked = check_nullary_resolution_with_work(
+        &nodes[node.parents[0]].clause,
+        &nodes[node.parents[1]].clause,
+        lp,
+        rp,
+        &node.clause,
+        work,
+        work_limit,
+    );
     if !checked { return false; }
     proof {
         assert forall|interp: Interpretation| interpretation_well_formed(interp)
@@ -8916,6 +9196,15 @@ fn check_dag_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limi
         }
     }
     true
+}
+
+fn check_dag_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>, work_limit: usize)
+    -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_resolution_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_first_order_resolution_and_replay_with_work(
@@ -13420,12 +13709,12 @@ fn validate_dag_node_with_work(
         ProofNodeKind::Resolution(_, _) => {
         if node.parents.len() != 2 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_resolution_step(node, &dag.nodes, work_limit - *work)
+        check_dag_resolution_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::ExactResolution(_, _) => {
         if node.parents.len() != 2 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_exact_resolution_step(node, &dag.nodes, work_limit - *work)
+        check_dag_exact_resolution_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::FirstOrderResolution => {
         if node.parents.len() != 2 { return false; }
@@ -17182,6 +17471,8 @@ fn run_examples() -> bool {
     if !executable_dag_instantiation_shared_work_example() { return false; }
     if !executable_dag_condensation_shared_work_example() { return false; }
     if !executable_dag_demodulation_shared_work_example() { return false; }
+    if !executable_dag_nullary_resolution_shared_work_example() { return false; }
+    if !executable_dag_exact_resolution_shared_work_example() { return false; }
     if !executable_subsumption_resolution_examples() { return false; }
     if !executable_subsumption_resolution_dag_examples() { return false; }
     if !executable_weakening_examples() { return false; }
@@ -17258,6 +17549,10 @@ fn regression_main() {
         "DAG condensation shared work regression failed");
     assert!(executable_dag_demodulation_shared_work_example(),
         "DAG demodulation shared work regression failed");
+    assert!(executable_dag_nullary_resolution_shared_work_example(),
+        "DAG nullary resolution shared work regression failed");
+    assert!(executable_dag_exact_resolution_shared_work_example(),
+        "DAG exact resolution shared work regression failed");
     assert!(executable_equality_factoring_pivot_work_meter_example(),
         "equality factoring pivot work regression failed");
     assert!(executable_dag_equality_factoring_shared_work_example(),

@@ -283,3 +283,6 @@ replay; exact composed cutoffs and separate counter-reset mutants guard both pat
 Demodulation carries cited target/equality checks into replay and shares the meter
 through freshening, selected-position comparison and replacement; its DAG path has
 an exact composed cutoff and counter-reset mutation.
+Nullary and exact-atom resolution DAG steps carry cited-parent and node charges into
+resolvent construction and conclusion comparison; each has a composed-cutoff reset
+mutant.

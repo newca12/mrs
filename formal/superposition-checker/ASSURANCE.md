@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and thirty
+The mutation inventory is now fifty-eight verifier-negative checks and thirty-two
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -80,7 +80,7 @@ The caller's certification budget is partitioned between structural preflight,
 ancestor-closure validation and per-node replay, so the number of nodes cannot
 multiply one local replay allowance without bound. Some replay helpers still
 use distinct local counters; this is not yet exact cumulative instruction/work
-accounting. For superposition, first-order/equality resolution, factoring,
+accounting. For superposition, nullary/exact and first-order/equality resolution, factoring,
 subsumption resolution, weakening, instantiation, condensation and demodulation,
 the per-node parent/structure charges,
 cited-parent comparisons and local replay share a mutable node counter.
@@ -112,14 +112,15 @@ unifier-comparison, path-comparison, selected-term, replay substitution,
 replacement, build, comparison, preflight/replay handoff, DAG-superposition handoff,
 first-order-resolution DAG handoff, equality-resolution deletion/DAG,
 clause-factoring DAG, equality-factoring pivot/DAG, subsumption literal/DAG,
-weakening DAG, instantiation/condensation DAG and demodulation DAG charges.
+weakening DAG, instantiation/condensation DAG, demodulation DAG and nullary/exact-
+resolution DAG handoff charges.
 A computed boundary
 funds exactly the standalone structure/preflight work and requires replay to fail
 closed at its first charge. The DAG per-node validator carries parent-index,
 node-clause and cited-parent comparison work into local replay meters for
-superposition, first-order resolution, equality resolution, clause factoring,
-equality factoring, subsumption resolution, weakening, instantiation, condensation
-and demodulation.
+superposition, nullary/exact and first-order resolution, equality resolution,
+clause factoring, equality factoring, subsumption resolution, weakening,
+instantiation, condensation and demodulation.
 `certify_dag` still allocates independent per-node shares, and other inference
 families use separate counters, so end-to-end DAG accounting remains open.
 First-order binary-resolution replay also has a shared local work counter for
@@ -150,6 +151,9 @@ counter-reset mutants check each DAG handoff.
 Demodulation shares work across path comparison, target/equality collection and
 freshening, unifier application, selected-term matching, replacement and conclusion
 comparison; its DAG wrapper has an exact composed cutoff and reset mutation.
+Nullary and exact-atom resolution DAG checks share node/parent structure work with
+resolvent construction and conclusion comparison; both handoffs have exact composed
+cutoffs and counter-reset mutations.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 

@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 30
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 32
 
 
 def main() -> int:
@@ -25,10 +25,10 @@ def main() -> int:
     mutations = [
         (
             "exact resolution ignores atom identity",
-            "if !same_atom(&left.literals[lp].atom, &right.literals[rp].atom)\n"
-            "        && !same_symmetric_equality(&left.literals[lp].atom, &right.literals[rp].atom)\n"
-            "    { return false; }",
-            "if false { return false; }",
+            "let Some(exact_atoms_match) = same_atom_with_work(\n"
+            "        &left.literals[lp].atom, &right.literals[rp].atom, work, work_limit,\n"
+            "    ) else { return false; };",
+            "let Some(exact_atoms_match) = Some(true) else { return false; };",
         ),
         (
             "exact resolution ignores pivot polarity",
@@ -99,8 +99,10 @@ def main() -> int:
         ),
         (
             "resolution checker accepts a forged conclusion",
-            "let same = same_clause_exact(&expected, conclusion);",
-            "let same = true;",
+            "let Some(same) = same_clause_exact_with_work(\n"
+            "        &expected, conclusion, work, work_limit,\n"
+            "    ) else { return false; };",
+            "let Some(same) = Some(true) else { return false; };",
         ),
         (
             "resolution checker ignores predicate identity",
@@ -114,13 +116,25 @@ def main() -> int:
         ),
         (
             "DAG resolution skips rule replay",
-            "let checked = check_nullary_resolution(&nodes[node.parents[0]].clause,",
-            "let checked = true || check_nullary_resolution(&nodes[node.parents[0]].clause,",
+            "let checked = check_nullary_resolution_with_work(",
+            "let checked = true || check_nullary_resolution_with_work(",
         ),
         (
             "DAG resolution checks a parent instead of the conclusion",
-            "&nodes[node.parents[1]].clause, lp, rp, &node.clause, work_limit - work);",
-            "&nodes[node.parents[1]].clause, lp, rp, &nodes[node.parents[0]].clause, work_limit);",
+            "        &nodes[node.parents[1]].clause,\n"
+            "        lp,\n"
+            "        rp,\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    );",
+            "        &nodes[node.parents[1]].clause,\n"
+            "        lp,\n"
+            "        rp,\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    );",
         ),
         (
             "tokenizer span correspondence omits inductive decimal append lemma",
@@ -1809,6 +1823,136 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG demodulation work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        dag_exact_resolution_handoff = (
+            "    // Keep node and cited-parent charges in exact-resolution replay's meter.\n"
+            "    if !check_exact_resolution_with_work(\n"
+            "        &nodes[node.parents[0]].clause, &nodes[node.parents[1]].clause,\n"
+            "        lp, rp, &node.clause, work, work_limit,\n"
+            "    ) { return false; }"
+        )
+        if source.count(dag_exact_resolution_handoff) != 1:
+            print("DAG exact-resolution work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_exact_resolution.rs"
+        mutated_path.write_text(source.replace(
+            dag_exact_resolution_handoff,
+            "    // Mutant isolates exact-resolution replay from DAG work.\n"
+            "    let mut isolated_exact_resolution_work: usize = 0;\n"
+            "    if !check_exact_resolution_with_work(\n"
+            "        &nodes[node.parents[0]].clause, &nodes[node.parents[1]].clause,\n"
+            "        lp, rp, &node.clause, &mut isolated_exact_resolution_work, work_limit,\n"
+            "    ) { return false; }",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-exact-resolution"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG exact-resolution meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG exact resolution shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG exact-resolution work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG exact-resolution meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG exact-resolution work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        dag_nullary_resolution_handoff = (
+            "    // Keep node and cited-parent charges in nullary-resolution replay's meter.\n"
+            "    let checked = check_nullary_resolution_with_work(\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        &nodes[node.parents[1]].clause,\n"
+            "        lp,\n"
+            "        rp,\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    );"
+        )
+        if source.count(dag_nullary_resolution_handoff) != 1:
+            print("DAG nullary-resolution work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_nullary_resolution.rs"
+        mutated_path.write_text(source.replace(
+            dag_nullary_resolution_handoff,
+            "    // Mutant isolates nullary-resolution replay from DAG work.\n"
+            "    let mut isolated_nullary_resolution_work: usize = 0;\n"
+            "    let checked = check_nullary_resolution_with_work(\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        &nodes[node.parents[1]].clause,\n"
+            "        lp,\n"
+            "        rp,\n"
+            "        &node.clause,\n"
+            "        &mut isolated_nullary_resolution_work,\n"
+            "        work_limit,\n"
+            "    );",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-nullary-resolution"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG nullary-resolution meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG nullary resolution shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG nullary-resolution work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG nullary-resolution meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG nullary-resolution work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (
