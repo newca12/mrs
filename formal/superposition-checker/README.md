@@ -87,7 +87,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `494 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `499 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -127,14 +127,17 @@ target replacement, resolvent construction and exact output comparison. Exact
 funds outer structure plus preflight must fail when replay begins; a compiled
 counter-reset mutant checks that handoff. The DAG per-node validator carries
 parent-index, node-clause and cited-parent comparison charges into the local replay
-meter for both superposition and first-order resolution. `certify_dag` still divides
+meter for superposition, first-order resolution and equality resolution.
+`certify_dag` still divides
 the overall ceiling into independent per-node shares, and other inference families
 use separate counters, so global DAG accounting remains open. First-order
 binary-resolution replay has its own shared local meter across collection,
 freshening, unifier application, pivot comparison, resolvent construction and exact
 conclusion comparison. Its 4/3 atom comparison regression and compiled mutant
 exercise the charge. The first-order DAG path also has an exact composed node-work
-cutoff and a compiled counter-reset mutant. DAG input-leaf
+cutoff and a compiled counter-reset mutant. Equality-resolution replay meters
+unification, clause substitution, pivot deletion and conclusion comparison; its
+DAG path has the same composed-cutoff/reset-mutant coverage. DAG input-leaf
 validation charges both the node clause and each candidate input clause for every
 repeated exact membership comparison. A runtime regression checks the exact 15-unit threshold
 for three candidates, and a compiled mutation that removes the repeated node

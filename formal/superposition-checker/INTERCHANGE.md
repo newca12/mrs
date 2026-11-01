@@ -265,3 +265,5 @@ The first-order-resolution atom comparison charge has its own 4-unit/3-unit
 cutoff regression and compiled charge-removal mutant.
 The first-order-resolution DAG handoff mutant isolates replay after node and
 cited-parent charges; it must fail the exact composed node-work regression.
+Equality-resolution clause deletion is tested at 4 units/3 units, with a compiled
+charge-removal mutant. Its DAG handoff also has a composed-cutoff reset mutant.

@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 19
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 21
 
 
 def main() -> int:
@@ -151,12 +151,12 @@ def main() -> int:
         ),
         (
             "equality resolution ignores unified terms equality",
-            "if !same_term(&left_inst, &right_inst) {\n        return false;\n    }",
+            "if !pivot_terms_match {\n        return false;\n    }",
             "if false {\n        return false;\n    }",
         ),
         (
             "DAG equality resolution skips rule replay",
-            "|| !check_equality_resolution_and_replay(step, remaining_work)",
+            "|| !check_equality_resolution_and_replay_with_work(step, work, work_limit)",
             "|| false",
         ),
         (
@@ -972,6 +972,59 @@ def main() -> int:
         print("runtime mutation rejected: atom comparison omitted operand work")
         compiled_runtime_mutations += 1
 
+        clause_deletion_charge = (
+            "    // Charge the clause before copying the retained literal context.\n"
+            "    if !charge_clause_structure(clause, work, work_limit) { return None; }"
+        )
+        if source.count(clause_deletion_charge) != 1:
+            print("clause-deletion work mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_clause_deletion_charge.rs"
+        mutated_path.write_text(source.replace(
+            clause_deletion_charge,
+            "    // Mutant omits the retained-context structure charge.\n"
+            "    if false { return None; }",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-clause-deletion-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "clause-deletion mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "clause deletion cumulative work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: clause deletion omitted structure work", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "clause-deletion mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: clause deletion omitted structure work")
+        compiled_runtime_mutations += 1
+
         replay_meter_handoff = (
             "    // Continue the preflight counter through replay freshening and output.\n"
             "    let Some(target_variables) = collect_clause_variables_bounded_with_work(\n"
@@ -1144,6 +1197,66 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG first-order work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        dag_equality_resolution_handoff = (
+            "    // Keep DAG node and cited-parent charges in equality-resolution replay.\n"
+            "    if !conclusion_matches\n"
+            "        || !check_equality_resolution_and_replay_with_work(step, work, work_limit)\n"
+            "    {"
+        )
+        if source.count(dag_equality_resolution_handoff) != 1:
+            print("DAG equality-resolution work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_equality_resolution.rs"
+        mutated_path.write_text(source.replace(
+            dag_equality_resolution_handoff,
+            "    // Mutant isolates equality-resolution replay from DAG work.\n"
+            "    let mut isolated_equality_work: usize = 0;\n"
+            "    if !conclusion_matches\n"
+            "        || !check_equality_resolution_and_replay_with_work(\n"
+            "            step, &mut isolated_equality_work, work_limit,\n"
+            "        )\n"
+            "    {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-equality-resolution"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG equality-resolution meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG equality resolution shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG equality-resolution work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG equality-resolution meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG equality-resolution work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

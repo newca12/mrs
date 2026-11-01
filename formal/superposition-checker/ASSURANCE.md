@@ -121,6 +121,10 @@ construction and conclusion comparison; its pivot atom meter has a 4/3 cutoff
 mutation test. The first-order resolution DAG wrapper carries its per-node work
 into this meter; an exact composed node cutoff and reset mutant guard the handoff.
 `certify_dag` still allocates independent per-node shares.
+Equality-resolution replay also shares its local meter across unification,
+substitution, pivot deletion and conclusion comparison; a 4/3 deletion cutoff
+and compiled mutation test the work charge. Its DAG node path has the exact
+composed-cutoff and counter-reset mutation checks.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
