@@ -6810,6 +6810,87 @@ fn executable_dag_equality_resolution_shared_work_example() -> bool
     exact_accepted && exact_work == exact_limit && !short_accepted
 }
 
+fn executable_dag_clause_factoring_shared_work_example() -> bool
+{
+    let certificate = ClauseFactoringCertificate {
+        clause: fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(1) }],
+        conclusion: fact_n2(),
+    };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: fact_in1(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: fact_n2(),
+                kind: ProofNodeKind::Factoring,
+                parents: vec![0usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: Some(certificate),
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 1,
+    };
+    let node = &dag.nodes[1];
+    let Some(step) = &node.fact_step else { return false; };
+
+    let mut dag_preflight_work: usize = 0;
+    if !consume_work(&mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100000)
+        || !charge_clause_factoring_certificate(step, &mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100000)
+        || !charge_clause_structure(&dag.nodes[0].clause, &mut dag_preflight_work, 100000)
+    {
+        return false;
+    }
+    let Some(parent_matches) = same_clause_exact_with_work(
+        &step.clause, &dag.nodes[0].clause, &mut dag_preflight_work, 100000,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, &mut dag_preflight_work, 100000,
+    ) else { return false; };
+    if !parent_matches || !conclusion_matches { return false; }
+
+    let mut standalone_work: usize = 0;
+    if !check_clause_factoring_and_replay_with_work(step, &mut standalone_work, 100000) {
+        return false;
+    }
+    if standalone_work > usize::MAX - dag_preflight_work { return false; }
+    let exact_limit = dag_preflight_work + standalone_work;
+    if exact_limit == 0 { return false; }
+    let mut exact_work: usize = 0;
+    let exact_accepted = validate_dag_node_with_work(&dag, 1, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short_accepted = validate_dag_node_with_work(&dag, 1, &mut short_work, exact_limit - 1);
+    exact_accepted && exact_work == exact_limit && !short_accepted
+}
+
 fn parent_variable_superposition_certificate(
     target_image: u64,
     unifier: Vec<ExecBinding>,
@@ -8708,19 +8789,21 @@ fn check_equality_resolution_and_replay(
     check_equality_resolution_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
-fn check_clause_factoring_and_replay(
+fn check_clause_factoring_and_replay_with_work(
     certificate: &ClauseFactoringCertificate,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures
+        *final(work) <= work_limit,
         accepted ==> certificate.clause.literals.len()
             + certificate.conclusion.literals.len() <= work_limit,
         accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
             && clause_valid(view_clause(certificate.clause), interp)
             ==> clause_valid(view_clause(certificate.conclusion), interp),
 {
-    let mut structural_work: usize = 0;
-    if !charge_clause_factoring_certificate(certificate, &mut structural_work, work_limit) {
+    if !charge_clause_factoring_certificate(certificate, work, work_limit) {
         return false;
     }
     if certificate.clause.literals.len() > work_limit
@@ -8728,7 +8811,6 @@ fn check_clause_factoring_and_replay(
     {
         return false;
     }
-    let remaining_work = work_limit - structural_work;
     if certificate.first >= certificate.second || certificate.second >= certificate.clause.literals.len() {
         return false;
     }
@@ -8737,18 +8819,31 @@ fn check_clause_factoring_and_replay(
     if first_lit.positive != second_lit.positive {
         return false;
     }
-    if !check_domain_unique(&certificate.unifier, remaining_work) {
+    if !check_domain_unique_with_work(&certificate.unifier, work, work_limit) {
         return false;
     }
-    let inst_clause = substitute_clause_exec(&certificate.clause, &certificate.unifier);
+    let Some(inst_clause) = substitute_clause_exec_with_work(
+        &certificate.clause, &certificate.unifier, work, work_limit,
+    ) else { return false; };
     if certificate.second >= inst_clause.literals.len() {
         return false;
     }
-    if !same_atom(&inst_clause.literals[certificate.first].atom, &inst_clause.literals[certificate.second].atom) {
+    let Some(factored_atoms_match) = same_atom_with_work(
+        &inst_clause.literals[certificate.first].atom,
+        &inst_clause.literals[certificate.second].atom,
+        work,
+        work_limit,
+    ) else { return false; };
+    if !factored_atoms_match {
         return false;
     }
-    let expected = delete_clause_literal_exec(&inst_clause, certificate.second);
-    if !same_clause_exact(&expected, &certificate.conclusion) {
+    let Some(expected) = delete_clause_literal_exec_with_work(
+        &inst_clause, certificate.second, work, work_limit,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &expected, &certificate.conclusion, work, work_limit,
+    ) else { return false; };
+    if !conclusion_matches {
         return false;
     }
     proof {
@@ -8776,6 +8871,21 @@ fn check_clause_factoring_and_replay(
         }
     }
     true
+}
+
+fn check_clause_factoring_and_replay(
+    certificate: &ClauseFactoringCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.clause.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.clause), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_clause_factoring_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
 fn build_equality_factoring_conclusion_exec(
@@ -11350,10 +11460,16 @@ fn check_dag_equality_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     check_dag_equality_resolution_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_factoring_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::Factoring || node.parents.len() != 1 {
         return false;
@@ -11362,17 +11478,22 @@ fn check_dag_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     if node.parents[0] >= nodes.len() {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_clause_factoring_certificate(step, &mut work, work_limit)
-        || !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    if !charge_clause_factoring_certificate(step, work, work_limit)
+        || !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
     {
         return false;
     }
-    let remaining_work = work_limit - work;
-    if !same_clause_exact(&step.clause, &nodes[node.parents[0]].clause)
-        || !same_clause_exact(&step.conclusion, &node.clause)
-        || !check_clause_factoring_and_replay(step, remaining_work)
+    let Some(parent_matches) = same_clause_exact_with_work(
+        &step.clause, &nodes[node.parents[0]].clause, work, work_limit,
+    ) else { return false; };
+    if !parent_matches { return false; }
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, work, work_limit,
+    ) else { return false; };
+    // Keep DAG node and cited-parent charges in clause factoring replay.
+    if !conclusion_matches
+        || !check_clause_factoring_and_replay_with_work(step, work, work_limit)
     {
         return false;
     }
@@ -11390,6 +11511,15 @@ fn check_dag_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         }
     }
     true
+}
+
+fn check_dag_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_factoring_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_equality_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -12509,7 +12639,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::Factoring => {
         if node.parents.len() != 1 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_factoring_step(node, &dag.nodes, work_limit - *work)
+        check_dag_factoring_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::EqualityFactoring => {
         if node.parents.len() != 1 { return false; }
@@ -16136,6 +16266,7 @@ fn run_examples() -> bool {
     if !executable_dag_superposition_shared_work_example() { return false; }
     if !executable_dag_first_order_resolution_shared_work_example() { return false; }
     if !executable_dag_equality_resolution_shared_work_example() { return false; }
+    if !executable_dag_clause_factoring_shared_work_example() { return false; }
     if !executable_disjoint_parent_freshening_example() { return false; }
     if !executable_parent_variable_freshening_collision_rejected_example() { return false; }
     if !executable_superposition_certificate_example() { return false; }
@@ -16216,6 +16347,8 @@ fn regression_main() {
         "DAG first-order resolution shared work regression failed");
     assert!(executable_dag_equality_resolution_shared_work_example(),
         "DAG equality resolution shared work regression failed");
+    assert!(executable_dag_clause_factoring_shared_work_example(),
+        "DAG clause factoring shared work regression failed");
     assert!(executable_disjoint_parent_freshening_example(),
         "disjoint superposition freshening regression failed");
     assert!(executable_parent_variable_freshening_collision_rejected_example(),

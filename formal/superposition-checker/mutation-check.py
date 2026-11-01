@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 21
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 22
 
 
 def main() -> int:
@@ -166,12 +166,17 @@ def main() -> int:
         ),
         (
             "clause factoring ignores unified atom equality",
-            "if !same_atom(&inst_clause.literals[certificate.first].atom, &inst_clause.literals[certificate.second].atom) {\n        return false;\n    }",
-            "if false {\n        return false;\n    }",
+            "let Some(factored_atoms_match) = same_atom_with_work(\n"
+            "        &inst_clause.literals[certificate.first].atom,\n"
+            "        &inst_clause.literals[certificate.second].atom,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    ) else { return false; };",
+            "let Some(factored_atoms_match) = Some(true) else { return false; };",
         ),
         (
             "DAG clause factoring skips rule replay",
-            "|| !check_clause_factoring_and_replay(step, remaining_work)",
+            "|| !check_clause_factoring_and_replay_with_work(step, work, work_limit)",
             "|| false",
         ),
         (
@@ -1257,6 +1262,66 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG equality-resolution work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        dag_factoring_handoff = (
+            "    // Keep DAG node and cited-parent charges in clause factoring replay.\n"
+            "    if !conclusion_matches\n"
+            "        || !check_clause_factoring_and_replay_with_work(step, work, work_limit)\n"
+            "    {"
+        )
+        if source.count(dag_factoring_handoff) != 1:
+            print("DAG factoring work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_factoring.rs"
+        mutated_path.write_text(source.replace(
+            dag_factoring_handoff,
+            "    // Mutant isolates clause factoring from DAG work.\n"
+            "    let mut isolated_factoring_work: usize = 0;\n"
+            "    if !conclusion_matches\n"
+            "        || !check_clause_factoring_and_replay_with_work(\n"
+            "            step, &mut isolated_factoring_work, work_limit,\n"
+            "        )\n"
+            "    {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-factoring"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG factoring meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG clause factoring shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG clause factoring work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG clause factoring meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG clause factoring work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

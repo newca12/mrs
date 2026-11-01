@@ -267,3 +267,5 @@ The first-order-resolution DAG handoff mutant isolates replay after node and
 cited-parent charges; it must fail the exact composed node-work regression.
 Equality-resolution clause deletion is tested at 4 units/3 units, with a compiled
 charge-removal mutant. Its DAG handoff also has a composed-cutoff reset mutant.
+Clause factoring now shares work through substitution, pivot comparison, deletion
+and exact conclusion matching; its DAG path has a composed-cutoff reset mutant too.
