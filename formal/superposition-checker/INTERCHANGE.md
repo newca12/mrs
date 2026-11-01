@@ -269,3 +269,6 @@ Equality-resolution clause deletion is tested at 4 units/3 units, with a compile
 charge-removal mutant. Its DAG handoff also has a composed-cutoff reset mutant.
 Clause factoring now shares work through substitution, pivot comparison, deletion
 and exact conclusion matching; its DAG path has a composed-cutoff reset mutant too.
+Equality factoring's selected left-term unification accepts at 5 units and rejects
+at 4; a compiled mutant removes only the comparison charge. Its DAG parent checks
+and replay share one counter, tested by an exact composed cutoff and reset mutant.

@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 22
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 24
 
 
 def main() -> int:
@@ -186,12 +186,12 @@ def main() -> int:
         ),
         (
             "equality factoring ignores unified term equality",
-            "if !same_term(&s_inst, &u_inst) {\n        return false;\n    }",
-            "if false {\n        return false;\n    }",
+            "if !equal { return None; }",
+            "if false { return None; }",
         ),
         (
             "DAG equality factoring skips rule replay",
-            "|| !check_equality_factoring_and_replay(step, remaining_work)",
+            "|| !check_equality_factoring_and_replay_with_work(step, work, work_limit)",
             "|| false",
         ),
         (
@@ -1322,6 +1322,118 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG clause factoring work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        equality_factoring_pivot_charge = (
+            "    let Some(equal) = same_term_with_work(&left_instance, &right_instance, work, work_limit)\n"
+            "    else { return None; };"
+        )
+        if source.count(equality_factoring_pivot_charge) != 1:
+            print("equality-factoring pivot comparison mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_equality_factoring_pivot_charge.rs"
+        mutated_path.write_text(source.replace(
+            equality_factoring_pivot_charge,
+            "    let equal = same_term(&left_instance, &right_instance);",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-equality-factoring-pivot-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "equality-factoring pivot mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "equality factoring pivot work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: equality-factoring pivot comparison was not charged", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "equality-factoring pivot mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: equality-factoring pivot comparison was unmetered")
+        compiled_runtime_mutations += 1
+
+        dag_equality_factoring_handoff = (
+            "    // Keep DAG node and cited-parent charges in equality factoring replay.\n"
+            "    if !conclusion_matches\n"
+            "        || !check_equality_factoring_and_replay_with_work(step, work, work_limit)\n"
+            "    {"
+        )
+        if source.count(dag_equality_factoring_handoff) != 1:
+            print("DAG equality-factoring work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_equality_factoring.rs"
+        mutated_path.write_text(source.replace(
+            dag_equality_factoring_handoff,
+            "    // Mutant isolates equality factoring from DAG work.\n"
+            "    let mut isolated_equality_factoring_work: usize = 0;\n"
+            "    if !conclusion_matches\n"
+            "        || !check_equality_factoring_and_replay_with_work(\n"
+            "            step, &mut isolated_equality_factoring_work, work_limit,\n"
+            "        )\n"
+            "    {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-equality-factoring"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG equality-factoring meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG equality factoring shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG equality factoring work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG equality-factoring meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG equality-factoring work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

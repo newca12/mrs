@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and twenty-two
+The mutation inventory is now fifty-eight verifier-negative checks and twenty-four
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -109,8 +109,9 @@ Exact 4/3 freshening/path, sequential 7-unit, 5/4 selected-term, 21/20-unit,
 compiled mutations remove lookup, clause-literal, materialization,
 unifier-comparison, path-comparison, selected-term, replay substitution,
 replacement, build, comparison, preflight/replay handoff, DAG-superposition handoff,
-first-order-resolution DAG handoff, equality-resolution deletion/DAG, and
-clause-factoring DAG charges. A computed boundary
+first-order-resolution DAG handoff, equality-resolution deletion/DAG,
+clause-factoring DAG, equality-factoring pivot comparison and DAG handoff charges.
+A computed boundary
 funds exactly the standalone structure/preflight work and requires replay to fail
 closed at its first charge. The DAG per-node validator carries parent-index,
 node-clause and cited-parent comparison work into the superposition replay meter.
@@ -129,6 +130,10 @@ composed-cutoff and counter-reset mutation checks.
 Clause factoring replay shares work across domain validation, substitution,
 pivot comparison, deletion and exact conclusion comparison; the DAG node path
 has a composed-cutoff/reset-mutant test as well.
+Equality factoring replay shares a meter across unifier application and left-pivot
+comparison, substitution of the clause, resolvent construction and exact comparison.
+The 5/4 pivot cutoff and its compiled charge-removal mutant exercise that meter; the
+DAG node path also has an exact composed cutoff and reset mutation.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 

@@ -8960,19 +8960,83 @@ fn build_equality_factoring_conclusion_exec(
     res
 }
 
-fn check_equality_factoring_and_replay(
+fn build_equality_factoring_conclusion_exec_with_work(
+    clause: &ExecClause,
+    first: usize,
+    second: usize,
+    right: &ExecTerm,
+    other_right: &ExecTerm,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<ExecClause>)
+    requires first < second < clause.literals.len(),
+        *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> clause_equal(
+            view_clause(result.unwrap()),
+            equality_factoring_conclusion(
+                view_clause(*clause), first as int, second as int,
+                view(*right), view(*other_right),
+            ),
+        )
+{
+    // Two literal deletions and resolvent assembly each traverse/copy clause
+    // structure; the new negative equality copies both instantiated RHS terms.
+    if !charge_clause_structure(clause, work, work_limit)
+        || !charge_clause_structure(clause, work, work_limit)
+        || !charge_clause_structure(clause, work, work_limit)
+        || !charge_term_structure(right, work, work_limit)
+        || !charge_term_structure(other_right, work, work_limit)
+    {
+        return None;
+    }
+    Some(build_equality_factoring_conclusion_exec(
+        clause, first, second, right, other_right,
+    ))
+}
+
+fn equality_factoring_left_unifier_with_work(
+    left: &ExecTerm,
+    right: &ExecTerm,
+    unifier: &Vec<ExecBinding>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<(ExecTerm, ExecTerm)>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() ==> view(result.unwrap().0)
+            == apply(view(*left), view_subst(unifier@)),
+        result.is_some() ==> view(result.unwrap().1)
+            == apply(view(*right), view_subst(unifier@)),
+        result.is_some() ==> view(result.unwrap().0) == view(result.unwrap().1)
+{
+    let Some(left_instance) = apply_exec_with_work(left, unifier, work, work_limit) else {
+        return None;
+    };
+    let Some(right_instance) = apply_exec_with_work(right, unifier, work, work_limit) else {
+        return None;
+    };
+    let Some(equal) = same_term_with_work(&left_instance, &right_instance, work, work_limit)
+    else { return None; };
+    if !equal { return None; }
+    Some((left_instance, right_instance))
+}
+
+fn check_equality_factoring_and_replay_with_work(
     certificate: &EqualityFactoringCertificate,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures
+        *final(work) <= work_limit,
         accepted ==> certificate.clause.literals.len()
             + certificate.conclusion.literals.len() <= work_limit,
         accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
             && clause_valid(view_clause(certificate.clause), interp)
             ==> clause_valid(view_clause(certificate.conclusion), interp),
 {
-    let mut structural_work: usize = 0;
-    if !charge_equality_factoring_certificate(certificate, &mut structural_work, work_limit) {
+    if !charge_equality_factoring_certificate(certificate, work, work_limit) {
         return false;
     }
     if certificate.clause.literals.len() > work_limit
@@ -8980,7 +9044,6 @@ fn check_equality_factoring_and_replay(
     {
         return false;
     }
-    let remaining_work = work_limit - structural_work;
     if certificate.first >= certificate.second || certificate.second >= certificate.clause.literals.len() {
         return false;
     }
@@ -8991,24 +9054,32 @@ fn check_equality_factoring_and_replay(
     }
     let ExecAtom::Eq(s, t) = &first_lit.atom else { return false; };
     let ExecAtom::Eq(u, v) = &second_lit.atom else { return false; };
-    if !check_domain_unique(&certificate.unifier, remaining_work) {
+    if !check_domain_unique_with_work(&certificate.unifier, work, work_limit) {
         return false;
     }
-    let s_inst = apply_exec(s, &certificate.unifier);
-    let u_inst = apply_exec(u, &certificate.unifier);
-    if !same_term(&s_inst, &u_inst) {
+    let Some((s_inst, u_inst)) = equality_factoring_left_unifier_with_work(
+        s, u, &certificate.unifier, work, work_limit,
+    ) else { return false; };
+    let Some(t_inst) = apply_exec_with_work(t, &certificate.unifier, work, work_limit) else {
         return false;
-    }
-    let t_inst = apply_exec(t, &certificate.unifier);
-    let v_inst = apply_exec(v, &certificate.unifier);
-    let inst_clause = substitute_clause_exec(&certificate.clause, &certificate.unifier);
+    };
+    let Some(v_inst) = apply_exec_with_work(v, &certificate.unifier, work, work_limit) else {
+        return false;
+    };
+    let Some(inst_clause) = substitute_clause_exec_with_work(
+        &certificate.clause, &certificate.unifier, work, work_limit,
+    ) else { return false; };
     if certificate.second >= inst_clause.literals.len() {
         return false;
     }
-    let expected = build_equality_factoring_conclusion_exec(
+    let Some(expected) = build_equality_factoring_conclusion_exec_with_work(
         &inst_clause, certificate.first, certificate.second, &t_inst, &v_inst,
-    );
-    if !same_clause_exact(&expected, &certificate.conclusion) {
+        work, work_limit,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &expected, &certificate.conclusion, work, work_limit,
+    ) else { return false; };
+    if !conclusion_matches {
         return false;
     }
     proof {
@@ -9036,6 +9107,21 @@ fn check_equality_factoring_and_replay(
         }
     }
     true
+}
+
+fn check_equality_factoring_and_replay(
+    certificate: &EqualityFactoringCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.clause.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.clause), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_equality_factoring_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
 fn check_subsumption_resolution_and_replay(
@@ -11522,10 +11608,16 @@ fn check_dag_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     check_dag_factoring_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_equality_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_equality_factoring_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::EqualityFactoring || node.parents.len() != 1 {
         return false;
@@ -11534,17 +11626,22 @@ fn check_dag_equality_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     if node.parents[0] >= nodes.len() {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_equality_factoring_certificate(step, &mut work, work_limit)
-        || !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    if !charge_equality_factoring_certificate(step, work, work_limit)
+        || !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
     {
         return false;
     }
-    let remaining_work = work_limit - work;
-    if !same_clause_exact(&step.clause, &nodes[node.parents[0]].clause)
-        || !same_clause_exact(&step.conclusion, &node.clause)
-        || !check_equality_factoring_and_replay(step, remaining_work)
+    let Some(parent_matches) = same_clause_exact_with_work(
+        &step.clause, &nodes[node.parents[0]].clause, work, work_limit,
+    ) else { return false; };
+    if !parent_matches { return false; }
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, work, work_limit,
+    ) else { return false; };
+    // Keep DAG node and cited-parent charges in equality factoring replay.
+    if !conclusion_matches
+        || !check_equality_factoring_and_replay_with_work(step, work, work_limit)
     {
         return false;
     }
@@ -11562,6 +11659,15 @@ fn check_dag_equality_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         }
     }
     true
+}
+
+fn check_dag_equality_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_equality_factoring_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_subsumption_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -12644,7 +12750,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::EqualityFactoring => {
         if node.parents.len() != 1 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_equality_factoring_step(node, &dag.nodes, work_limit - *work)
+        check_dag_equality_factoring_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::SubsumptionResolution => {
         if node.parents.len() != 2 { return false; }
@@ -13620,6 +13726,28 @@ fn eq_fact_n2() -> ExecClause {
     ] }
 }
 
+fn executable_equality_factoring_pivot_work_meter_example() -> bool
+{
+    let left = ExecTerm::Var(7);
+    let right = ExecTerm::Const(2);
+    let unifier = vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(2) }];
+    let mut exact_work: usize = 0;
+    let exact = equality_factoring_left_unifier_with_work(
+        &left, &right, &unifier, &mut exact_work, 5,
+    );
+    let exact_ok = match exact {
+        Some((left_instance, right_instance)) =>
+            same_term(&left_instance, &ExecTerm::Const(2))
+                && same_term(&right_instance, &ExecTerm::Const(2)),
+        None => false,
+    };
+    let mut short_work: usize = 0;
+    let short = equality_factoring_left_unifier_with_work(
+        &left, &right, &unifier, &mut short_work, 4,
+    );
+    exact_ok && exact_work == 5 && short.is_none() && short_work == 4
+}
+
 fn executable_equality_factoring_examples() -> bool {
     let cert = EqualityFactoringCertificate {
         clause: eq_fact_in1(),
@@ -13776,6 +13904,72 @@ fn executable_equality_factoring_dag_examples() -> bool {
         root: 7,
     };
     certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn executable_dag_equality_factoring_shared_work_example() -> bool
+{
+    let certificate = EqualityFactoringCertificate {
+        clause: eq_fact_in1(),
+        first: 0,
+        second: 1,
+        unifier: vec![ExecBinding { variable: 7, replacement: ExecTerm::Const(2) }],
+        conclusion: eq_fact_n2(),
+    };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: eq_fact_in1(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: eq_fact_n2(),
+                kind: ProofNodeKind::EqualityFactoring,
+                parents: vec![0usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: Some(certificate),
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 1,
+    };
+    let node = &dag.nodes[1];
+    let mut measured_work: usize = 0;
+    if !consume_work(&mut measured_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut measured_work, 100_000)
+        || !check_dag_equality_factoring_step_with_work(
+            node, &dag.nodes, &mut measured_work, 100_000,
+        )
+    {
+        return false;
+    }
+    if measured_work == 0 { return false; }
+    let exact_limit = measured_work;
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 1, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 1, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
 fn sub_res_in1() -> ExecClause {
@@ -16285,6 +16479,8 @@ fn run_examples() -> bool {
     if !executable_equality_resolution_dag_examples() { return false; }
     if !executable_clause_factoring_dag_examples() { return false; }
     if !executable_equality_factoring_dag_examples() { return false; }
+    if !executable_equality_factoring_pivot_work_meter_example() { return false; }
+    if !executable_dag_equality_factoring_shared_work_example() { return false; }
     if !executable_subsumption_resolution_examples() { return false; }
     if !executable_subsumption_resolution_dag_examples() { return false; }
     if !executable_weakening_examples() { return false; }
@@ -16349,6 +16545,10 @@ fn regression_main() {
         "DAG equality resolution shared work regression failed");
     assert!(executable_dag_clause_factoring_shared_work_example(),
         "DAG clause factoring shared work regression failed");
+    assert!(executable_equality_factoring_pivot_work_meter_example(),
+        "equality factoring pivot work regression failed");
+    assert!(executable_dag_equality_factoring_shared_work_example(),
+        "DAG equality factoring shared work regression failed");
     assert!(executable_disjoint_parent_freshening_example(),
         "disjoint superposition freshening regression failed");
     assert!(executable_parent_variable_freshening_collision_rejected_example(),
