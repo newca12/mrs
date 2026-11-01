@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and twenty-four
+The mutation inventory is now fifty-eight verifier-negative checks and twenty-six
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -134,6 +134,14 @@ Equality factoring replay shares a meter across unifier application and left-piv
 comparison, substitution of the clause, resolvent construction and exact comparison.
 The 5/4 pivot cutoff and its compiled charge-removal mutant exercise that meter; the
 DAG node path also has an exact composed cutoff and reset mutation.
+Subsumption-resolution replay shares work across collection, freshening, unifier
+application, pivot and mapped-literal comparisons, deletion and exact comparison.
+Its literal comparator has a 3/2 cutoff mutation test, and the DAG node path carries
+parent comparisons into replay under an exact composed cutoff/reset mutant.
+Subsumption-resolution replay shares work across collection, freshening, unifier
+application, pivot and mapped-literal comparisons, deletion and exact conclusion
+comparison. Its literal comparator has a 3/2 cutoff mutation test, and the DAG
+wrapper carries per-node work through replay with a composed-cutoff reset mutant.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 

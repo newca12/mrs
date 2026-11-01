@@ -272,3 +272,6 @@ and exact conclusion matching; its DAG path has a composed-cutoff reset mutant t
 Equality factoring's selected left-term unification accepts at 5 units and rejects
 at 4; a compiled mutant removes only the comparison charge. Its DAG parent checks
 and replay share one counter, tested by an exact composed cutoff and reset mutant.
+Subsumption-resolution literal comparison accepts at 3 units and rejects at 2; a
+compiled mutant removes the literal charge. Its DAG parent comparisons and replay
+also share one counter, guarded by an exact composed cutoff and reset mutant.

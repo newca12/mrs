@@ -6436,6 +6436,16 @@ fn executable_atom_comparison_work_accounting_example() -> bool
     exact == Some(true) && exact_work == 4 && short.is_none() && short_work == 3
 }
 
+fn executable_subsumption_literal_comparison_work_example() -> bool
+{
+    let literal = ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) };
+    let mut exact_work: usize = 0;
+    let exact = same_literal_with_work(&literal, &literal, &mut exact_work, 3);
+    let mut short_work: usize = 0;
+    let short = same_literal_with_work(&literal, &literal, &mut short_work, 2);
+    exact == Some(true) && exact_work == 3 && short.is_none() && short_work == 2
+}
+
 fn executable_clause_deletion_work_accounting_example() -> bool
 {
     let clause = ExecClause { literals: vec![
@@ -6889,6 +6899,92 @@ fn executable_dag_clause_factoring_shared_work_example() -> bool
     let mut short_work: usize = 0;
     let short_accepted = validate_dag_node_with_work(&dag, 1, &mut short_work, exact_limit - 1);
     exact_accepted && exact_work == exact_limit && !short_accepted
+}
+
+fn executable_dag_subsumption_resolution_shared_work_example() -> bool
+{
+    let certificate = SubsumptionResolutionCertificate {
+        target: sub_res_in1(),
+        active: sub_res_in2(),
+        target_pivot: 0,
+        active_pivot: 0,
+        active_freshening: vec![ExecBinding { variable: 7, replacement: ExecTerm::Var(77) }],
+        unifier: vec![ExecBinding { variable: 77, replacement: ExecTerm::Const(1) }],
+        matches: vec![0, 1],
+        conclusion: sub_res_concl(),
+    };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: sub_res_in1(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: sub_res_in2(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 3,
+                clause: sub_res_concl(),
+                kind: ProofNodeKind::SubsumptionResolution,
+                parents: vec![0usize, 1usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: Some(certificate),
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 2,
+    };
+    let node = &dag.nodes[2];
+    let mut measured_work: usize = 0;
+    if !consume_work(&mut measured_work, 100_000)
+        || !consume_work(&mut measured_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut measured_work, 100_000)
+        || !check_dag_subsumption_resolution_step_with_work(
+            node, &dag.nodes, &mut measured_work, 100_000,
+        )
+    {
+        return false;
+    }
+    if measured_work == 0 { return false; }
+    let exact_limit = measured_work;
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 2, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 2, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
 fn parent_variable_superposition_certificate(
@@ -8169,6 +8265,26 @@ fn same_literal(left: &ExecLiteral, right: &ExecLiteral) -> (same: bool)
     left.positive == right.positive && same_atom(&left.atom, &right.atom)
 }
 
+fn same_literal_with_work(
+    left: &ExecLiteral,
+    right: &ExecLiteral,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() && result.unwrap() ==> view_literal(*left) == view_literal(*right)
+{
+    // Charge literal polarity and both atom structures before recursive match.
+    if !consume_work(work, work_limit)
+        || !charge_atom_structure(&left.atom, work, work_limit)
+        || !charge_atom_structure(&right.atom, work, work_limit)
+    {
+        return None;
+    }
+    Some(same_literal(left, right))
+}
+
 fn same_clause(left: &ExecClause, right: &ExecClause) -> (same: bool)
     ensures same ==> clause_equal(view_clause(*left), view_clause(*right))
 {
@@ -9124,11 +9240,14 @@ fn check_equality_factoring_and_replay(
     check_equality_factoring_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
-fn check_subsumption_resolution_and_replay(
+fn check_subsumption_resolution_and_replay_with_work(
     certificate: &SubsumptionResolutionCertificate,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures
+        *final(work) <= work_limit,
         accepted ==> certificate.target.literals.len()
             + certificate.active.literals.len()
             + certificate.conclusion.literals.len() <= work_limit,
@@ -9137,8 +9256,7 @@ fn check_subsumption_resolution_and_replay(
             && clause_valid(view_clause(certificate.active), interp)
             ==> clause_valid(view_clause(certificate.conclusion), interp),
 {
-    let mut structural_work: usize = 0;
-    if !charge_subsumption_resolution_certificate(certificate, &mut structural_work, work_limit) {
+    if !charge_subsumption_resolution_certificate(certificate, work, work_limit) {
         return false;
     }
     if certificate.target.literals.len() > work_limit
@@ -9147,29 +9265,32 @@ fn check_subsumption_resolution_and_replay(
     {
         return false;
     }
-    let remaining_work = work_limit - structural_work;
     if certificate.target_pivot >= certificate.target.literals.len()
         || certificate.active_pivot >= certificate.active.literals.len()
         || certificate.matches.len() != certificate.active.literals.len()
     {
         return false;
     }
-    let Some(target_variables) = collect_clause_variables_bounded(&certificate.target, remaining_work) else {
+    let Some(target_variables) = collect_clause_variables_bounded_with_work(
+        &certificate.target, work, work_limit,
+    ) else {
         return false;
     };
-    let Some(active_variables) = collect_clause_variables_bounded(&certificate.active, remaining_work) else {
+    let Some(active_variables) = collect_clause_variables_bounded_with_work(
+        &certificate.active, work, work_limit,
+    ) else {
         return false;
     };
-    if !check_freshening(&active_variables, &target_variables, &certificate.active_freshening, remaining_work) {
-        return false;
-    }
-    let Some(fresh_active) = freshen_clause_apart(
-        &certificate.active, &target_variables, &certificate.active_freshening, remaining_work,
+    let Some(fresh_active) = freshen_clause_apart_with_work(
+        &certificate.active, &active_variables, &target_variables,
+        &certificate.active_freshening, work, work_limit,
     ) else { return false; };
-    if !check_domain_unique(&certificate.unifier, remaining_work) {
+    if !check_domain_unique_with_work(&certificate.unifier, work, work_limit) {
         return false;
     }
-    let inst_active = substitute_clause_exec(&fresh_active, &certificate.unifier);
+    let Some(inst_active) = substitute_clause_exec_with_work(
+        &fresh_active, &certificate.unifier, work, work_limit,
+    ) else { return false; };
     if inst_active.literals.len() != certificate.active.literals.len() {
         return false;
     }
@@ -9179,7 +9300,10 @@ fn check_subsumption_resolution_and_replay(
     if target_pivot_lit.positive == active_pivot_lit.positive {
         return false;
     }
-    if !same_atom(&target_pivot_lit.atom, &active_pivot_lit.atom) {
+    let Some(pivot_atoms_match) = same_atom_with_work(
+        &target_pivot_lit.atom, &active_pivot_lit.atom, work, work_limit,
+    ) else { return false; };
+    if !pivot_atoms_match {
         return false;
     }
 
@@ -9187,6 +9311,7 @@ fn check_subsumption_resolution_and_replay(
     while j < inst_active.literals.len()
         invariant
             j <= inst_active.literals.len(),
+            *work <= work_limit,
             inst_active.literals@.len() == certificate.active.literals@.len(),
             certificate.matches@.len() == certificate.active.literals@.len(),
             certificate.target_pivot < certificate.target.literals@.len(),
@@ -9203,15 +9328,24 @@ fn check_subsumption_resolution_and_replay(
             if target_idx >= certificate.target.literals.len() || target_idx == certificate.target_pivot {
                 return false;
             }
-            if !same_literal(&inst_active.literals[j], &certificate.target.literals[target_idx]) {
+            let Some(literals_match) = same_literal_with_work(
+                &inst_active.literals[j], &certificate.target.literals[target_idx],
+                work, work_limit,
+            ) else { return false; };
+            if !literals_match {
                 return false;
             }
         }
         j += 1;
     }
 
-    let expected = delete_clause_literal_exec(&certificate.target, certificate.target_pivot);
-    if !same_clause_exact(&expected, &certificate.conclusion) {
+    let Some(expected) = delete_clause_literal_exec_with_work(
+        &certificate.target, certificate.target_pivot, work, work_limit,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &expected, &certificate.conclusion, work, work_limit,
+    ) else { return false; };
+    if !conclusion_matches {
         return false;
     }
 
@@ -9254,6 +9388,23 @@ fn check_subsumption_resolution_and_replay(
         };
     }
     true
+}
+
+fn check_subsumption_resolution_and_replay(
+    certificate: &SubsumptionResolutionCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.target.literals.len()
+            + certificate.active.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.target), interp)
+            && clause_valid(view_clause(certificate.active), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_subsumption_resolution_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
 fn check_weakening_and_replay(
@@ -11670,10 +11821,16 @@ fn check_dag_equality_factoring_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     check_dag_equality_factoring_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_subsumption_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_subsumption_resolution_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::SubsumptionResolution || node.parents.len() != 2 {
         return false;
@@ -11682,19 +11839,27 @@ fn check_dag_subsumption_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode
     if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_subsumption_resolution_certificate(step, &mut work, work_limit)
-        || !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    if !charge_subsumption_resolution_certificate(step, work, work_limit)
+        || !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, work, work_limit)
     {
         return false;
     }
-    let remaining_work = work_limit - work;
-    if !same_clause_exact(&step.target, &nodes[node.parents[0]].clause)
-        || !same_clause_exact(&step.active, &nodes[node.parents[1]].clause)
-        || !same_clause_exact(&step.conclusion, &node.clause)
-        || !check_subsumption_resolution_and_replay(step, remaining_work)
+    let Some(target_matches) = same_clause_exact_with_work(
+        &step.target, &nodes[node.parents[0]].clause, work, work_limit,
+    ) else { return false; };
+    if !target_matches { return false; }
+    let Some(active_matches) = same_clause_exact_with_work(
+        &step.active, &nodes[node.parents[1]].clause, work, work_limit,
+    ) else { return false; };
+    if !active_matches { return false; }
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, work, work_limit,
+    ) else { return false; };
+    // Keep cited-parent comparisons in subsumption-resolution replay's meter.
+    if !conclusion_matches
+        || !check_subsumption_resolution_and_replay_with_work(step, work, work_limit)
     {
         return false;
     }
@@ -11715,6 +11880,15 @@ fn check_dag_subsumption_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode
         }
     }
     true
+}
+
+fn check_dag_subsumption_resolution_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_subsumption_resolution_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_weakening_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -12755,7 +12929,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::SubsumptionResolution => {
         if node.parents.len() != 2 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_subsumption_resolution_step(node, &dag.nodes, work_limit - *work)
+        check_dag_subsumption_resolution_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::Weakening => {
         if node.parents.len() != 1 { return false; }
@@ -16455,6 +16629,7 @@ fn run_examples() -> bool {
     if !executable_path_sequence_work_accounting_example() { return false; }
     if !executable_selected_term_work_accounting_example() { return false; }
     if !executable_atom_comparison_work_accounting_example() { return false; }
+    if !executable_subsumption_literal_comparison_work_example() { return false; }
     if !executable_clause_deletion_work_accounting_example() { return false; }
     if !executable_superposition_preflight_replay_shared_work_example() { return false; }
     if !executable_dag_superposition_shared_work_example() { return false; }
@@ -16481,6 +16656,7 @@ fn run_examples() -> bool {
     if !executable_equality_factoring_dag_examples() { return false; }
     if !executable_equality_factoring_pivot_work_meter_example() { return false; }
     if !executable_dag_equality_factoring_shared_work_example() { return false; }
+    if !executable_dag_subsumption_resolution_shared_work_example() { return false; }
     if !executable_subsumption_resolution_examples() { return false; }
     if !executable_subsumption_resolution_dag_examples() { return false; }
     if !executable_weakening_examples() { return false; }
@@ -16533,6 +16709,8 @@ fn regression_main() {
         "selected-term cumulative work regression failed");
     assert!(executable_atom_comparison_work_accounting_example(),
         "atom comparison cumulative work regression failed");
+    assert!(executable_subsumption_literal_comparison_work_example(),
+        "subsumption literal comparison work regression failed");
     assert!(executable_clause_deletion_work_accounting_example(),
         "clause deletion cumulative work regression failed");
     assert!(executable_superposition_preflight_replay_shared_work_example(),
@@ -16545,6 +16723,8 @@ fn regression_main() {
         "DAG equality resolution shared work regression failed");
     assert!(executable_dag_clause_factoring_shared_work_example(),
         "DAG clause factoring shared work regression failed");
+    assert!(executable_dag_subsumption_resolution_shared_work_example(),
+        "DAG subsumption resolution shared work regression failed");
     assert!(executable_equality_factoring_pivot_work_meter_example(),
         "equality factoring pivot work regression failed");
     assert!(executable_dag_equality_factoring_shared_work_example(),

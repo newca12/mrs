@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 24
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 26
 
 
 def main() -> int:
@@ -201,17 +201,22 @@ def main() -> int:
         ),
         (
             "subsumption resolution ignores pivot atom equality",
-            "if !same_atom(&target_pivot_lit.atom, &active_pivot_lit.atom) {\n        return false;\n    }",
-            "if false {\n        return false;\n    }",
+            "let Some(pivot_atoms_match) = same_atom_with_work(\n"
+            "        &target_pivot_lit.atom, &active_pivot_lit.atom, work, work_limit,\n"
+            "    ) else { return false; };",
+            "let Some(pivot_atoms_match) = Some(true) else { return false; };",
         ),
         (
             "subsumption resolution ignores non-pivot literal match",
-            "if !same_literal(&inst_active.literals[j], &certificate.target.literals[target_idx]) {\n                return false;\n            }",
-            "if false {\n                return false;\n            }",
+            "let Some(literals_match) = same_literal_with_work(\n"
+            "                &inst_active.literals[j], &certificate.target.literals[target_idx],\n"
+            "                work, work_limit,\n"
+            "            ) else { return false; };",
+            "let Some(literals_match) = Some(true) else { return false; };",
         ),
         (
             "DAG subsumption resolution skips rule replay",
-            "|| !check_subsumption_resolution_and_replay(step, remaining_work)",
+            "|| !check_subsumption_resolution_and_replay_with_work(step, work, work_limit)",
             "|| false",
         ),
         (
@@ -1434,6 +1439,121 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG equality-factoring work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        subsumption_literal_charge = (
+            "    // Charge literal polarity and both atom structures before recursive match.\n"
+            "    if !consume_work(work, work_limit)\n"
+            "        || !charge_atom_structure(&left.atom, work, work_limit)"
+        )
+        if source.count(subsumption_literal_charge) != 1:
+            print("subsumption literal-comparison mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_subsumption_literal_charge.rs"
+        mutated_path.write_text(source.replace(
+            subsumption_literal_charge,
+            "    // Mutant omits literal-polarity comparison work.\n"
+            "    if false { return None; }\n"
+            "    if !charge_atom_structure(&left.atom, work, work_limit)",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-subsumption-literal-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "subsumption literal mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "subsumption literal comparison work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: subsumption literal comparison was not charged", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "subsumption literal-comparison mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: subsumption literal comparison was unmetered")
+        compiled_runtime_mutations += 1
+
+        dag_subsumption_handoff = (
+            "    // Keep cited-parent comparisons in subsumption-resolution replay's meter.\n"
+            "    if !conclusion_matches\n"
+            "        || !check_subsumption_resolution_and_replay_with_work(step, work, work_limit)\n"
+            "    {"
+        )
+        if source.count(dag_subsumption_handoff) != 1:
+            print("DAG subsumption work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_subsumption.rs"
+        mutated_path.write_text(source.replace(
+            dag_subsumption_handoff,
+            "    // Mutant isolates subsumption replay from DAG work.\n"
+            "    let mut isolated_subsumption_work: usize = 0;\n"
+            "    if !conclusion_matches\n"
+            "        || !check_subsumption_resolution_and_replay_with_work(\n"
+            "            step, &mut isolated_subsumption_work, work_limit,\n"
+            "        )\n"
+            "    {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-subsumption"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG subsumption meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG subsumption resolution shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG subsumption work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG subsumption meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG subsumption work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (
