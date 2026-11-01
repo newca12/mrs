@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 29
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 30
 
 
 def main() -> int:
@@ -239,12 +239,14 @@ def main() -> int:
         ),
         (
             "demodulation ignores unified term equality",
-            "if !same_term(&from_inst, &selected_subterm) {\n        return false;\n    }",
-            "if false {\n        return false;\n    }",
+            "let Some(selected_term_matches) = same_term_with_work(\n"
+            "        &from_inst, &selected_subterm, work, work_limit,\n"
+            "    ) else { return false; };",
+            "let Some(selected_term_matches) = Some(true) else { return false; };",
         ),
         (
             "DAG demodulation skips rule replay",
-            "|| !check_demodulation_and_replay(step, remaining_work)",
+            "|| !check_demodulation_and_replay_with_work(step, work, work_limit)",
             "|| false",
         ),
         (
@@ -1747,6 +1749,66 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG condensation work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        dag_demodulation_handoff = (
+            "    // Keep parent and conclusion structure comparisons in the demodulation meter.\n"
+            "    if !conclusion_matches\n"
+            "        || !check_demodulation_and_replay_with_work(step, work, work_limit)\n"
+            "    {"
+        )
+        if source.count(dag_demodulation_handoff) != 1:
+            print("DAG demodulation work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_demodulation.rs"
+        mutated_path.write_text(source.replace(
+            dag_demodulation_handoff,
+            "    // Mutant isolates demodulation replay from DAG work.\n"
+            "    let mut isolated_demodulation_work: usize = 0;\n"
+            "    if !conclusion_matches\n"
+            "        || !check_demodulation_and_replay_with_work(\n"
+            "            step, &mut isolated_demodulation_work, work_limit,\n"
+            "        )\n"
+            "    {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-demodulation"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG demodulation meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG demodulation shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG demodulation work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG demodulation meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG demodulation work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

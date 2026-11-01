@@ -7223,6 +7223,111 @@ fn executable_dag_condensation_shared_work_example() -> bool
     exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
+fn executable_dag_demodulation_shared_work_example() -> bool
+{
+    let certificate = DemodulationCertificate {
+        target: demod_in_target(),
+        equality: demod_in_eq(),
+        equality_freshening: Vec::new(),
+        unifier: Vec::new(),
+        target_literal_index: 0,
+        target_argument_slot: 0,
+        raw_target_path: vec![0],
+        fresh_target_path: vec![0],
+        reversed: false,
+        conclusion: demod_concl(),
+    };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: demod_in_target(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: demod_in_eq(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 3,
+                clause: demod_concl(),
+                kind: ProofNodeKind::Demodulation,
+                parents: vec![0usize, 1usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: Some(certificate),
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 2,
+    };
+    let node = &dag.nodes[2];
+    let Some(step) = &node.demod_step else { return false; };
+    let mut dag_preflight_work: usize = 0;
+    if !consume_work(&mut dag_preflight_work, 100_000)
+        || !consume_work(&mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_demodulation_certificate(step, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&dag.nodes[0].clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&dag.nodes[1].clause, &mut dag_preflight_work, 100_000)
+    {
+        return false;
+    }
+    let Some(target_matches) = same_clause_exact_with_work(
+        &step.target, &dag.nodes[0].clause, &mut dag_preflight_work, 100_000,
+    ) else { return false; };
+    let Some(equality_matches) = same_clause_exact_with_work(
+        &step.equality, &dag.nodes[1].clause, &mut dag_preflight_work, 100_000,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, &mut dag_preflight_work, 100_000,
+    ) else { return false; };
+    if !target_matches || !equality_matches || !conclusion_matches { return false; }
+    let mut replay_work: usize = 0;
+    if !check_demodulation_and_replay_with_work(step, &mut replay_work, 100_000) {
+        return false;
+    }
+    if replay_work > usize::MAX - dag_preflight_work { return false; }
+    let exact_limit = dag_preflight_work + replay_work;
+    if exact_limit == 0 { return false; }
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 2, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 2, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
+}
+
 fn parent_variable_superposition_certificate(
     target_image: u64,
     unifier: Vec<ExecBinding>,
@@ -9735,11 +9840,14 @@ fn check_weakening_and_replay(
     check_weakening_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
-fn check_demodulation_and_replay(
+fn check_demodulation_and_replay_with_work(
     certificate: &DemodulationCertificate,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures
+        *final(work) <= work_limit,
         accepted ==> certificate.target.literals.len()
             + certificate.conclusion.literals.len() <= work_limit,
         accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
@@ -9747,8 +9855,7 @@ fn check_demodulation_and_replay(
             && clause_valid(view_clause(certificate.equality), interp)
             ==> clause_valid(view_clause(certificate.conclusion), interp),
 {
-    let mut structural_work: usize = 0;
-    if !charge_demodulation_certificate(certificate, &mut structural_work, work_limit) {
+    if !charge_demodulation_certificate(certificate, work, work_limit) {
         return false;
     }
     if certificate.target.literals.len() > work_limit
@@ -9756,7 +9863,6 @@ fn check_demodulation_and_replay(
     {
         return false;
     }
-    let remaining_work = work_limit - structural_work;
     if certificate.equality.literals.len() != 1 {
         return false;
     }
@@ -9768,20 +9874,25 @@ fn check_demodulation_and_replay(
     if certificate.target_literal_index >= certificate.target.literals.len() {
         return false;
     }
-    if !same_u64_sequence(&certificate.raw_target_path, &certificate.fresh_target_path) {
+    let Some(paths_match) = same_u64_sequence_with_work(
+        &certificate.raw_target_path, &certificate.fresh_target_path, work, work_limit,
+    ) else { return false; };
+    if !paths_match {
         return false;
     }
-    let Some(target_variables) = collect_clause_variables_bounded(&certificate.target, remaining_work) else {
+    let Some(target_variables) = collect_clause_variables_bounded_with_work(
+        &certificate.target, work, work_limit,
+    ) else {
         return false;
     };
-    let Some(eq_variables) = collect_clause_variables_bounded(&certificate.equality, remaining_work) else {
+    let Some(eq_variables) = collect_clause_variables_bounded_with_work(
+        &certificate.equality, work, work_limit,
+    ) else {
         return false;
     };
-    if !check_freshening(&eq_variables, &target_variables, &certificate.equality_freshening, remaining_work) {
-        return false;
-    }
-    let Some(fresh_eq) = freshen_clause_apart(
-        &certificate.equality, &target_variables, &certificate.equality_freshening, remaining_work,
+    let Some(fresh_eq) = freshen_clause_apart_with_work(
+        &certificate.equality, &eq_variables, &target_variables,
+        &certificate.equality_freshening, work, work_limit,
     ) else { return false; };
     if fresh_eq.literals.len() != 1 {
         return false;
@@ -9789,7 +9900,7 @@ fn check_demodulation_and_replay(
     let fresh_eq_lit = &fresh_eq.literals[0];
     let ExecAtom::Eq(fresh_s, fresh_t) = &fresh_eq_lit.atom else { return false; };
 
-    if !check_domain_unique(&certificate.unifier, remaining_work) {
+    if !check_domain_unique_with_work(&certificate.unifier, work, work_limit) {
         return false;
     }
 
@@ -9798,31 +9909,44 @@ fn check_demodulation_and_replay(
     } else {
         (fresh_t, fresh_s)
     };
-    let from_inst = apply_exec(from_uninst, &certificate.unifier);
-    let to_inst = apply_exec(to_uninst, &certificate.unifier);
+    let Some(from_inst) = apply_exec_with_work(
+        from_uninst, &certificate.unifier, work, work_limit,
+    ) else { return false; };
+    let Some(to_inst) = apply_exec_with_work(
+        to_uninst, &certificate.unifier, work, work_limit,
+    ) else { return false; };
 
     let target_lit = &certificate.target.literals[certificate.target_literal_index];
-    let Some(selected_subterm) = selected_atom_term_exec(
+    let Some(selected_subterm) = selected_atom_term_exec_with_work(
         &target_lit.atom, certificate.target_argument_slot, &certificate.raw_target_path,
+        work, work_limit,
     ) else {
         return false;
     };
 
-    if !same_term(&from_inst, &selected_subterm) {
+    let Some(selected_term_matches) = same_term_with_work(
+        &from_inst, &selected_subterm, work, work_limit,
+    ) else { return false; };
+    if !selected_term_matches {
         return false;
     }
 
-    let Some(expected) = replace_clause_literal_exec(
+    let Some(expected) = replace_clause_literal_exec_with_work(
         &certificate.target,
         certificate.target_literal_index,
         certificate.target_argument_slot,
         &certificate.raw_target_path,
         &to_inst,
+        work,
+        work_limit,
     ) else {
         return false;
     };
 
-    if !same_clause_exact(&expected, &certificate.conclusion) {
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &expected, &certificate.conclusion, work, work_limit,
+    ) else { return false; };
+    if !conclusion_matches {
         return false;
     }
 
@@ -9883,6 +10007,22 @@ fn check_demodulation_and_replay(
         };
     }
     true
+}
+
+fn check_demodulation_and_replay(
+    certificate: &DemodulationCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.target.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.target), interp)
+            && clause_valid(view_clause(certificate.equality), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_demodulation_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
 fn check_instantiation_and_replay_with_work(
@@ -12251,10 +12391,16 @@ fn check_dag_weakening_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     check_dag_weakening_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_demodulation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_demodulation_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::Demodulation || node.parents.len() != 2 {
         return false;
@@ -12263,19 +12409,27 @@ fn check_dag_demodulation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     if node.parents[0] >= nodes.len() || node.parents[1] >= nodes.len() {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_demodulation_certificate(step, &mut work, work_limit)
-        || !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[1]].clause, &mut work, work_limit)
+    if !charge_demodulation_certificate(step, work, work_limit)
+        || !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[1]].clause, work, work_limit)
     {
         return false;
     }
-    let remaining_work = work_limit - work;
-    if !same_clause_exact(&step.target, &nodes[node.parents[0]].clause)
-        || !same_clause_exact(&step.equality, &nodes[node.parents[1]].clause)
-        || !same_clause_exact(&step.conclusion, &node.clause)
-        || !check_demodulation_and_replay(step, remaining_work)
+    let Some(target_matches) = same_clause_exact_with_work(
+        &step.target, &nodes[node.parents[0]].clause, work, work_limit,
+    ) else { return false; };
+    if !target_matches { return false; }
+    let Some(equality_matches) = same_clause_exact_with_work(
+        &step.equality, &nodes[node.parents[1]].clause, work, work_limit,
+    ) else { return false; };
+    if !equality_matches { return false; }
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, work, work_limit,
+    ) else { return false; };
+    // Keep parent and conclusion structure comparisons in the demodulation meter.
+    if !conclusion_matches
+        || !check_demodulation_and_replay_with_work(step, work, work_limit)
     {
         return false;
     }
@@ -12296,6 +12450,15 @@ fn check_dag_demodulation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         }
     }
     true
+}
+
+fn check_dag_demodulation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_demodulation_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_instantiation_step_with_work(
@@ -13297,7 +13460,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::Demodulation => {
         if node.parents.len() != 2 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_demodulation_step(node, &dag.nodes, work_limit - *work)
+        check_dag_demodulation_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::Instantiation => {
         if node.parents.len() != 1 { return false; }
@@ -17018,6 +17181,7 @@ fn run_examples() -> bool {
     if !executable_dag_weakening_shared_work_example() { return false; }
     if !executable_dag_instantiation_shared_work_example() { return false; }
     if !executable_dag_condensation_shared_work_example() { return false; }
+    if !executable_dag_demodulation_shared_work_example() { return false; }
     if !executable_subsumption_resolution_examples() { return false; }
     if !executable_subsumption_resolution_dag_examples() { return false; }
     if !executable_weakening_examples() { return false; }
@@ -17092,6 +17256,8 @@ fn regression_main() {
         "DAG instantiation shared work regression failed");
     assert!(executable_dag_condensation_shared_work_example(),
         "DAG condensation shared work regression failed");
+    assert!(executable_dag_demodulation_shared_work_example(),
+        "DAG demodulation shared work regression failed");
     assert!(executable_equality_factoring_pivot_work_meter_example(),
         "equality factoring pivot work regression failed");
     assert!(executable_dag_equality_factoring_shared_work_example(),

@@ -280,3 +280,6 @@ and conclusion charges share the replay counter and are covered by an exact comp
 cutoff/reset mutant.
 Instantiation and condensation each carry their DAG parent/conclusion charges into
 replay; exact composed cutoffs and separate counter-reset mutants guard both paths.
+Demodulation carries cited target/equality checks into replay and shares the meter
+through freshening, selected-position comparison and replacement; its DAG path has
+an exact composed cutoff and counter-reset mutation.
