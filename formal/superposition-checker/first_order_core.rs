@@ -6436,6 +6436,19 @@ fn executable_atom_comparison_work_accounting_example() -> bool
     exact == Some(true) && exact_work == 4 && short.is_none() && short_work == 3
 }
 
+fn executable_reflexivity_work_meter_example() -> bool
+{
+    let clause = ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(1)),
+    }] };
+    let mut exact_work: usize = 0;
+    let exact = check_reflexivity_and_replay_with_work(&clause, &mut exact_work, 5);
+    let mut short_work: usize = 0;
+    let short = check_reflexivity_and_replay_with_work(&clause, &mut short_work, 4);
+    exact && exact_work == 5 && !short && short_work == 4
+}
+
 fn executable_subsumption_literal_comparison_work_example() -> bool
 {
     let literal = ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) };
@@ -7325,6 +7338,53 @@ fn executable_dag_demodulation_shared_work_example() -> bool
     let exact = validate_dag_node_with_work(&dag, 2, &mut exact_work, exact_limit);
     let mut short_work: usize = 0;
     let short = validate_dag_node_with_work(&dag, 2, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
+}
+
+fn executable_dag_reflexivity_shared_work_example() -> bool
+{
+    let clause = ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(1)),
+    }] };
+    let dag = ProofDag {
+        nodes: vec![ProofNode {
+            id: 1,
+            clause,
+            kind: ProofNodeKind::Reflexivity,
+            parents: Vec::new(),
+            step: None,
+            res_step: None,
+            eq_step: None,
+            fact_step: None,
+            eq_fact_step: None,
+            sub_step: None,
+            weaken_step: None,
+            demod_step: None,
+            inst_step: None,
+            cond_step: None,
+        }],
+        input_clauses: Vec::new(),
+        root: 0,
+    };
+    let node = &dag.nodes[0];
+    let mut dag_preflight_work: usize = 0;
+    if !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+    {
+        return false;
+    }
+    let mut replay_work: usize = 0;
+    if !check_reflexivity_and_replay_with_work(&node.clause, &mut replay_work, 100_000) {
+        return false;
+    }
+    if replay_work > usize::MAX - dag_preflight_work { return false; }
+    let exact_limit = dag_preflight_work + replay_work;
+    if exact_limit == 0 { return false; }
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 0, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 0, &mut short_work, exact_limit - 1);
     exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
@@ -10482,17 +10542,25 @@ fn check_condensation_and_replay(
     check_condensation_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
-fn check_reflexivity_and_replay(conclusion: &ExecClause, work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> clause_valid(view_clause(*conclusion), interp),
+fn check_reflexivity_and_replay_with_work(
+    conclusion: &ExecClause,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> clause_valid(view_clause(*conclusion), interp),
 {
-    let mut work: usize = 0;
-    if !charge_clause_structure(conclusion, &mut work, work_limit) { return false; }
+    if !charge_clause_structure(conclusion, work, work_limit) { return false; }
     if conclusion.literals.len() != 1 { return false; }
     let lit = &conclusion.literals[0];
     if !lit.positive { return false; }
     let ExecAtom::Eq(s, t) = &lit.atom else { return false; };
-    if !same_term(s, t) { return false; }
+    let Some(terms_match) = same_term_with_work(s, t, work, work_limit) else {
+        return false;
+    };
+    if !terms_match { return false; }
     proof {
         assert forall|interp: Interpretation| interpretation_well_formed(interp)
             implies clause_valid(view_clause(*conclusion), interp) by {
@@ -10508,6 +10576,14 @@ fn check_reflexivity_and_replay(conclusion: &ExecClause, work_limit: usize) -> (
         };
     }
     true
+}
+
+fn check_reflexivity_and_replay(conclusion: &ExecClause, work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> clause_valid(view_clause(*conclusion), interp),
+{
+    let mut work: usize = 0;
+    check_reflexivity_and_replay_with_work(conclusion, &mut work, work_limit)
 }
 
 fn check_transitivity_step_exec(
@@ -12874,27 +12950,32 @@ fn check_dag_condensation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     check_dag_condensation_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_reflexivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_reflexivity_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::Reflexivity || node.parents.len() > 1 {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_clause_structure(&node.clause, &mut work, work_limit) {
+    if !charge_clause_structure(&node.clause, work, work_limit) {
         return false;
     }
     if node.parents.len() == 1 {
         if node.parents[0] >= nodes.len()
-            || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+            || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
         {
             return false;
         }
     }
-    let remaining_work = work_limit - work;
-    if !check_reflexivity_and_replay(&node.clause, remaining_work) {
+    // Continue per-node work through reflexivity's equality comparison.
+    if !check_reflexivity_and_replay_with_work(&node.clause, work, work_limit) {
         return false;
     }
     proof {
@@ -12907,6 +12988,15 @@ fn check_dag_reflexivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         };
     }
     true
+}
+
+fn check_dag_reflexivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_reflexivity_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_transitivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -13764,7 +13854,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::Reflexivity => {
         if node.parents.len() > 1 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_reflexivity_step(node, &dag.nodes, work_limit - *work)
+        check_dag_reflexivity_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::Transitivity => {
         if node.parents.len() != 2 { return false; }
@@ -17471,6 +17561,8 @@ fn run_examples() -> bool {
     if !executable_dag_instantiation_shared_work_example() { return false; }
     if !executable_dag_condensation_shared_work_example() { return false; }
     if !executable_dag_demodulation_shared_work_example() { return false; }
+    if !executable_reflexivity_work_meter_example() { return false; }
+    if !executable_dag_reflexivity_shared_work_example() { return false; }
     if !executable_dag_nullary_resolution_shared_work_example() { return false; }
     if !executable_dag_exact_resolution_shared_work_example() { return false; }
     if !executable_subsumption_resolution_examples() { return false; }
@@ -17549,6 +17641,10 @@ fn regression_main() {
         "DAG condensation shared work regression failed");
     assert!(executable_dag_demodulation_shared_work_example(),
         "DAG demodulation shared work regression failed");
+    assert!(executable_reflexivity_work_meter_example(),
+        "reflexivity work-meter regression failed");
+    assert!(executable_dag_reflexivity_shared_work_example(),
+        "DAG reflexivity shared work regression failed");
     assert!(executable_dag_nullary_resolution_shared_work_example(),
         "DAG nullary resolution shared work regression failed");
     assert!(executable_dag_exact_resolution_shared_work_example(),

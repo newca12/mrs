@@ -286,3 +286,5 @@ an exact composed cutoff and counter-reset mutation.
 Nullary and exact-atom resolution DAG steps carry cited-parent and node charges into
 resolvent construction and conclusion comparison; each has a composed-cutoff reset
 mutant.
+Reflexivity accepts at 5 units and rejects at 4; a compiled mutant removes the term
+comparison charge. Its DAG wrapper also has an exact composed cutoff/reset mutant.

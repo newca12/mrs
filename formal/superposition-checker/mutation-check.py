@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 32
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 34
 
 
 def main() -> int:
@@ -295,8 +295,10 @@ def main() -> int:
         ),
         (
             "reflexivity ignores identical terms",
-            "if !same_term(s, t) { return false; }",
-            "if false { return false; }",
+            "let Some(terms_match) = same_term_with_work(s, t, work, work_limit) else {\n"
+            "        return false;\n"
+            "    };",
+            "let Some(terms_match) = Some(true) else { return false; };",
         ),
         (
             "transitivity ignores valid chained orientation",
@@ -1953,6 +1955,115 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG nullary-resolution work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        reflexivity_term_charge = (
+            "    let Some(terms_match) = same_term_with_work(s, t, work, work_limit) else {\n"
+            "        return false;\n"
+            "    };"
+        )
+        if source.count(reflexivity_term_charge) != 1:
+            print("reflexivity term-comparison mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_reflexivity_term_charge.rs"
+        mutated_path.write_text(source.replace(
+            reflexivity_term_charge,
+            "    let terms_match = same_term(s, t);",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-reflexivity-term-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "reflexivity term-meter mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "reflexivity work-meter regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: reflexivity comparison work was not charged", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "reflexivity term-meter mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: reflexivity comparison work was unmetered")
+        compiled_runtime_mutations += 1
+
+        dag_reflexivity_handoff = (
+            "    // Continue per-node work through reflexivity's equality comparison.\n"
+            "    if !check_reflexivity_and_replay_with_work(&node.clause, work, work_limit) {"
+        )
+        if source.count(dag_reflexivity_handoff) != 1:
+            print("DAG reflexivity work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_reflexivity.rs"
+        mutated_path.write_text(source.replace(
+            dag_reflexivity_handoff,
+            "    // Mutant isolates reflexivity replay from DAG work.\n"
+            "    let mut isolated_reflexivity_work: usize = 0;\n"
+            "    if !check_reflexivity_and_replay_with_work(\n"
+            "        &node.clause, &mut isolated_reflexivity_work, work_limit,\n"
+            "    ) {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-reflexivity"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG reflexivity meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG reflexivity shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG reflexivity work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG reflexivity meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG reflexivity work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

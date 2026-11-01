@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and thirty-two
+The mutation inventory is now fifty-eight verifier-negative checks and thirty-four
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -112,8 +112,8 @@ unifier-comparison, path-comparison, selected-term, replay substitution,
 replacement, build, comparison, preflight/replay handoff, DAG-superposition handoff,
 first-order-resolution DAG handoff, equality-resolution deletion/DAG,
 clause-factoring DAG, equality-factoring pivot/DAG, subsumption literal/DAG,
-weakening DAG, instantiation/condensation DAG, demodulation DAG and nullary/exact-
-resolution DAG handoff charges.
+weakening DAG, instantiation/condensation DAG, demodulation DAG, nullary/exact-
+resolution DAG handoffs and reflexivity comparison/DAG charges.
 A computed boundary
 funds exactly the standalone structure/preflight work and requires replay to fail
 closed at its first charge. The DAG per-node validator carries parent-index,
@@ -154,6 +154,8 @@ comparison; its DAG wrapper has an exact composed cutoff and reset mutation.
 Nullary and exact-atom resolution DAG checks share node/parent structure work with
 resolvent construction and conclusion comparison; both handoffs have exact composed
 cutoffs and counter-reset mutations.
+Reflexivity meters its term-equality comparison and carries the node counter through
+its DAG wrapper; a 5/4 local cutoff and compiled reset mutant test the boundary.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 

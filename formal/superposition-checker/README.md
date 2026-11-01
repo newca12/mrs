@@ -59,7 +59,7 @@ subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
 tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
-forward parents, and nonempty-root acceptance. Thirty-two compiled-runtime mutations
+forward parents, and nonempty-root acceptance. Thirty-four compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
 duplicate-ID rejection, decimal-token guard, or target-parent freshening avoid
 set, freshening lookup-work charge, clause-collection literal charge, or
@@ -72,8 +72,8 @@ clause-deletion charge, DAG equality-resolution/replay reset, clause-factoring
 DAG/replay reset, equality-factoring pivot-comparison charge, DAG
 equality-factoring/replay reset, subsumption literal-comparison charge, DAG
 subsumption/replay reset, DAG weakening/replay reset, DAG instantiation and
-condensation replay resets, DAG demodulation/replay reset, or nullary/exact-resolution
-DAG replay resets;
+condensation replay resets, DAG demodulation/replay reset, nullary/exact-resolution
+DAG replay resets, reflexivity comparison charge, or DAG reflexivity/replay reset;
 each must fail its corresponding regression. The mutation runner enforces
 the expected counts, so deleting a gate cannot silently shrink the inventory.
 The
@@ -93,7 +93,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `531 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `535 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -159,6 +159,8 @@ also has an exact composed node cutoff and reset mutation.
 Weakening replay meters inclusion-literal matching and its DAG path shares the
 per-node work counter through parent/conclusion comparisons; an exact composed node
 cutoff and reset mutant guard that handoff.
+Reflexivity meters its equality comparison at a 5-unit/4-unit cutoff; its DAG path
+also carries the node work through the check under an exact cutoff/reset mutation.
 Instantiation and condensation carry shared meters through substitution/inclusion
 checks, parent comparisons and replay; each has an exact composed node cutoff and
 reset mutant. Demodulation meters freshening, term application, selected-position
