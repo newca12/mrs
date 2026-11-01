@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 27
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 29
 
 
 def main() -> int:
@@ -249,22 +249,32 @@ def main() -> int:
         ),
         (
             "instantiation ignores conclusion agreement",
-            "let expected = substitute_clause_exec(&certificate.parent, &certificate.substitution);\n    if !same_clause_exact(&expected, &certificate.conclusion) {\n        return false;\n    }",
-            "let expected = substitute_clause_exec(&certificate.parent, &certificate.substitution);\n    if false {\n        return false;\n    }",
+            "let Some(expected) = substitute_clause_exec_with_work(\n"
+            "        &certificate.parent, &certificate.substitution, work, work_limit,\n"
+            "    ) else { return false; };\n"
+            "    let Some(conclusion_matches) = same_clause_exact_with_work(\n"
+            "        &expected, &certificate.conclusion, work, work_limit,\n"
+            "    ) else { return false; };",
+            "let Some(expected) = substitute_clause_exec_with_work(\n"
+            "        &certificate.parent, &certificate.substitution, work, work_limit,\n"
+            "    ) else { return false; };\n"
+            "    let Some(conclusion_matches) = Some(true) else { return false; };",
         ),
         (
             "DAG instantiation skips rule replay",
-            "|| !check_instantiation_and_replay(step, remaining_work)",
+            "|| !check_instantiation_and_replay_with_work(step, work, work_limit)",
             "|| false",
         ),
         (
             "condensation ignores literal agreement",
-            "if !same_literal(&instantiated, &certificate.conclusion.literals[target_idx]) {\n            return false;\n        }",
-            "if false {\n            return false;\n        }",
+            "let Some(literal_matches) = same_literal_with_work(\n"
+            "            &instantiated, &certificate.conclusion.literals[target_idx], work, work_limit,\n"
+            "        ) else { return false; };",
+            "let Some(literal_matches) = Some(true) else { return false; };",
         ),
         (
             "DAG condensation skips rule replay",
-            "|| !check_condensation_and_replay(step, remaining_work)",
+            "|| !check_condensation_and_replay_with_work(step, work, work_limit)",
             "|| false",
         ),
         (
@@ -1617,6 +1627,126 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG weakening work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        dag_instantiation_handoff = (
+            "    // Keep parent and conclusion structure comparisons in instantiation's meter.\n"
+            "    if !conclusion_matches\n"
+            "        || !check_instantiation_and_replay_with_work(step, work, work_limit)\n"
+            "    {"
+        )
+        if source.count(dag_instantiation_handoff) != 1:
+            print("DAG instantiation work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_instantiation.rs"
+        mutated_path.write_text(source.replace(
+            dag_instantiation_handoff,
+            "    // Mutant isolates instantiation replay from DAG work.\n"
+            "    let mut isolated_instantiation_work: usize = 0;\n"
+            "    if !conclusion_matches\n"
+            "        || !check_instantiation_and_replay_with_work(\n"
+            "            step, &mut isolated_instantiation_work, work_limit,\n"
+            "        )\n"
+            "    {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-instantiation"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG instantiation meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG instantiation shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG instantiation work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG instantiation meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG instantiation work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        dag_condensation_handoff = (
+            "    // Keep parent and conclusion structure comparisons in condensation's meter.\n"
+            "    if !conclusion_matches\n"
+            "        || !check_condensation_and_replay_with_work(step, work, work_limit)\n"
+            "    {"
+        )
+        if source.count(dag_condensation_handoff) != 1:
+            print("DAG condensation work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_condensation.rs"
+        mutated_path.write_text(source.replace(
+            dag_condensation_handoff,
+            "    // Mutant isolates condensation replay from DAG work.\n"
+            "    let mut isolated_condensation_work: usize = 0;\n"
+            "    if !conclusion_matches\n"
+            "        || !check_condensation_and_replay_with_work(\n"
+            "            step, &mut isolated_condensation_work, work_limit,\n"
+            "        )\n"
+            "    {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-condensation"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG condensation meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG condensation shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG condensation work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG condensation meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG condensation work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

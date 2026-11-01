@@ -278,3 +278,5 @@ also share one counter, guarded by an exact composed cutoff and reset mutant.
 Weakening inclusion matching uses the metered literal comparator; its DAG parent
 and conclusion charges share the replay counter and are covered by an exact composed
 cutoff/reset mutant.
+Instantiation and condensation each carry their DAG parent/conclusion charges into
+replay; exact composed cutoffs and separate counter-reset mutants guard both paths.

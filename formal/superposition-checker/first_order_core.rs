@@ -7065,6 +7065,164 @@ fn executable_dag_weakening_shared_work_example() -> bool
     exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
+fn executable_dag_instantiation_shared_work_example() -> bool
+{
+    let certificate = InstantiationCertificate {
+        parent: inst_in1(),
+        substitution: vec![
+            ExecBinding { variable: 1, replacement: ExecTerm::Const(1) },
+            ExecBinding { variable: 2, replacement: ExecTerm::Const(2) },
+        ],
+        conclusion: inst_concl(),
+    };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: inst_in1(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: inst_concl(),
+                kind: ProofNodeKind::Instantiation,
+                parents: vec![0usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: Some(certificate),
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 1,
+    };
+    let node = &dag.nodes[1];
+    let Some(step) = &node.inst_step else { return false; };
+    let mut dag_preflight_work: usize = 0;
+    if !consume_work(&mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_instantiation_certificate(step, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&dag.nodes[0].clause, &mut dag_preflight_work, 100_000)
+    {
+        return false;
+    }
+    let Some(parent_matches) = same_clause_exact_with_work(
+        &step.parent, &dag.nodes[0].clause, &mut dag_preflight_work, 100_000,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, &mut dag_preflight_work, 100_000,
+    ) else { return false; };
+    if !parent_matches || !conclusion_matches { return false; }
+    let mut replay_work: usize = 0;
+    if !check_instantiation_and_replay_with_work(step, &mut replay_work, 100_000) {
+        return false;
+    }
+    if replay_work > usize::MAX - dag_preflight_work { return false; }
+    let exact_limit = dag_preflight_work + replay_work;
+    if exact_limit == 0 { return false; }
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 1, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 1, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
+}
+
+fn executable_dag_condensation_shared_work_example() -> bool
+{
+    let certificate = CondensationCertificate {
+        parent: cond_in1(),
+        substitution: vec![ExecBinding { variable: 2, replacement: ExecTerm::Var(1) }],
+        inclusions: vec![0, 1, 0],
+        conclusion: cond_concl(),
+    };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: cond_in1(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: cond_concl(),
+                kind: ProofNodeKind::Condensation,
+                parents: vec![0usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: Some(certificate),
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 1,
+    };
+    let node = &dag.nodes[1];
+    let Some(step) = &node.cond_step else { return false; };
+    let mut dag_preflight_work: usize = 0;
+    if !consume_work(&mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_condensation_certificate(step, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut dag_preflight_work, 100_000)
+        || !charge_clause_structure(&dag.nodes[0].clause, &mut dag_preflight_work, 100_000)
+    {
+        return false;
+    }
+    let Some(parent_matches) = same_clause_exact_with_work(
+        &step.parent, &dag.nodes[0].clause, &mut dag_preflight_work, 100_000,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, &mut dag_preflight_work, 100_000,
+    ) else { return false; };
+    if !parent_matches || !conclusion_matches { return false; }
+    let mut replay_work: usize = 0;
+    if !check_condensation_and_replay_with_work(step, &mut replay_work, 100_000) {
+        return false;
+    }
+    if replay_work > usize::MAX - dag_preflight_work { return false; }
+    let exact_limit = dag_preflight_work + replay_work;
+    if exact_limit == 0 { return false; }
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 1, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 1, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
+}
+
 fn parent_variable_superposition_certificate(
     target_image: u64,
     unifier: Vec<ExecBinding>,
@@ -9727,19 +9885,21 @@ fn check_demodulation_and_replay(
     true
 }
 
-fn check_instantiation_and_replay(
+fn check_instantiation_and_replay_with_work(
     certificate: &InstantiationCertificate,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures
+        *final(work) <= work_limit,
         accepted ==> certificate.parent.literals.len()
             + certificate.conclusion.literals.len() <= work_limit,
         accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
             && clause_valid(view_clause(certificate.parent), interp)
             ==> clause_valid(view_clause(certificate.conclusion), interp),
 {
-    let mut structural_work: usize = 0;
-    if !charge_instantiation_certificate(certificate, &mut structural_work, work_limit) {
+    if !charge_instantiation_certificate(certificate, work, work_limit) {
         return false;
     }
     if certificate.parent.literals.len() > work_limit
@@ -9747,12 +9907,16 @@ fn check_instantiation_and_replay(
     {
         return false;
     }
-    let remaining_work = work_limit - structural_work;
-    if !check_domain_unique(&certificate.substitution, remaining_work) {
+    if !check_domain_unique_with_work(&certificate.substitution, work, work_limit) {
         return false;
     }
-    let expected = substitute_clause_exec(&certificate.parent, &certificate.substitution);
-    if !same_clause_exact(&expected, &certificate.conclusion) {
+    let Some(expected) = substitute_clause_exec_with_work(
+        &certificate.parent, &certificate.substitution, work, work_limit,
+    ) else { return false; };
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &expected, &certificate.conclusion, work, work_limit,
+    ) else { return false; };
+    if !conclusion_matches {
         return false;
     }
     proof {
@@ -9773,8 +9937,8 @@ fn check_instantiation_and_replay(
     true
 }
 
-fn check_condensation_and_replay(
-    certificate: &CondensationCertificate,
+fn check_instantiation_and_replay(
+    certificate: &InstantiationCertificate,
     work_limit: usize,
 ) -> (accepted: bool)
     ensures
@@ -9782,10 +9946,27 @@ fn check_condensation_and_replay(
             + certificate.conclusion.literals.len() <= work_limit,
         accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
             && clause_valid(view_clause(certificate.parent), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_instantiation_and_replay_with_work(certificate, &mut work, work_limit)
+}
+
+fn check_condensation_and_replay_with_work(
+    certificate: &CondensationCertificate,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures
+        *final(work) <= work_limit,
+        accepted ==> certificate.parent.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.parent), interp)
             ==> clause_valid(view_clause(certificate.conclusion), interp),
 {
-    let mut structural_work: usize = 0;
-    if !charge_condensation_certificate(certificate, &mut structural_work, work_limit) {
+    if !charge_condensation_certificate(certificate, work, work_limit) {
         return false;
     }
     if certificate.parent.literals.len() > work_limit
@@ -9793,8 +9974,7 @@ fn check_condensation_and_replay(
     {
         return false;
     }
-    let remaining_work = work_limit - structural_work;
-    if !check_domain_unique(&certificate.substitution, remaining_work) {
+    if !check_domain_unique_with_work(&certificate.substitution, work, work_limit) {
         return false;
     }
     if certificate.inclusions.len() != certificate.parent.literals.len() {
@@ -9804,6 +9984,7 @@ fn check_condensation_and_replay(
     while i < certificate.parent.literals.len()
         invariant
             i <= certificate.parent.literals.len(),
+            *work <= work_limit,
             certificate.inclusions@.len() == certificate.parent.literals@.len(),
             forall|k: int| 0 <= k < i as int ==> {
                 &&& certificate.inclusions@[k] < certificate.conclusion.literals@.len()
@@ -9818,11 +9999,13 @@ fn check_condensation_and_replay(
         if target_idx >= certificate.conclusion.literals.len() {
             return false;
         }
-        let instantiated = substitute_literal_exec(
-            &certificate.parent.literals[i],
-            &certificate.substitution,
-        );
-        if !same_literal(&instantiated, &certificate.conclusion.literals[target_idx]) {
+        let Some(instantiated) = substitute_literal_exec_with_work(
+            &certificate.parent.literals[i], &certificate.substitution, work, work_limit,
+        ) else { return false; };
+        let Some(literal_matches) = same_literal_with_work(
+            &instantiated, &certificate.conclusion.literals[target_idx], work, work_limit,
+        ) else { return false; };
+        if !literal_matches {
             return false;
         }
         assert(view_clause(certificate.parent).literals[i as int] == view_literal(certificate.parent.literals@[i as int]));
@@ -9853,6 +10036,21 @@ fn check_condensation_and_replay(
         };
     }
     true
+}
+
+fn check_condensation_and_replay(
+    certificate: &CondensationCertificate,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures
+        accepted ==> certificate.parent.literals.len()
+            + certificate.conclusion.literals.len() <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            && clause_valid(view_clause(certificate.parent), interp)
+            ==> clause_valid(view_clause(certificate.conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_condensation_and_replay_with_work(certificate, &mut work, work_limit)
 }
 
 fn check_reflexivity_and_replay(conclusion: &ExecClause, work_limit: usize) -> (accepted: bool)
@@ -12100,10 +12298,16 @@ fn check_dag_demodulation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     true
 }
 
-fn check_dag_instantiation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_instantiation_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::Instantiation || node.parents.len() != 1 {
         return false;
@@ -12112,17 +12316,84 @@ fn check_dag_instantiation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     if node.parents[0] >= nodes.len() {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_instantiation_certificate(step, &mut work, work_limit)
-        || !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    if !charge_instantiation_certificate(step, work, work_limit)
+        || !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
     {
         return false;
     }
-    let remaining_work = work_limit - work;
-    if !same_clause_exact(&step.parent, &nodes[node.parents[0]].clause)
-        || !same_clause_exact(&step.conclusion, &node.clause)
-        || !check_instantiation_and_replay(step, remaining_work)
+    let Some(parent_matches) = same_clause_exact_with_work(
+        &step.parent, &nodes[node.parents[0]].clause, work, work_limit,
+    ) else { return false; };
+    if !parent_matches { return false; }
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, work, work_limit,
+    ) else { return false; };
+    // Keep parent and conclusion structure comparisons in instantiation's meter.
+    if !conclusion_matches
+        || !check_instantiation_and_replay_with_work(step, work, work_limit)
+    {
+        return false;
+    }
+    proof {
+        assert(view_clause(step.parent).literals
+            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
+        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
+        assert forall|interp: Interpretation| interpretation_well_formed(interp)
+            implies local_node_entails_from_parents(*node, nodes@, interp) by {
+            if forall|j: int| 0 <= j < node.parents@.len()
+                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
+                assert(clause_valid(view_clause(step.parent), interp));
+                assert(clause_valid(view_clause(step.conclusion), interp));
+            }
+        }
+    }
+    true
+}
+
+fn check_dag_instantiation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_instantiation_step_with_work(node, nodes, &mut work, work_limit)
+}
+
+fn check_dag_condensation_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    if node.kind != ProofNodeKind::Condensation || node.parents.len() != 1 {
+        return false;
+    }
+    let Some(step) = &node.cond_step else { return false; };
+    if node.parents[0] >= nodes.len() {
+        return false;
+    }
+    if !charge_condensation_certificate(step, work, work_limit)
+        || !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
+    {
+        return false;
+    }
+    let Some(parent_matches) = same_clause_exact_with_work(
+        &step.parent, &nodes[node.parents[0]].clause, work, work_limit,
+    ) else { return false; };
+    if !parent_matches { return false; }
+    let Some(conclusion_matches) = same_clause_exact_with_work(
+        &step.conclusion, &node.clause, work, work_limit,
+    ) else { return false; };
+    // Keep parent and conclusion structure comparisons in condensation's meter.
+    if !conclusion_matches
+        || !check_condensation_and_replay_with_work(step, work, work_limit)
     {
         return false;
     }
@@ -12147,41 +12418,8 @@ fn check_dag_condensation_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
         ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
-    if node.kind != ProofNodeKind::Condensation || node.parents.len() != 1 {
-        return false;
-    }
-    let Some(step) = &node.cond_step else { return false; };
-    if node.parents[0] >= nodes.len() {
-        return false;
-    }
     let mut work: usize = 0;
-    if !charge_condensation_certificate(step, &mut work, work_limit)
-        || !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
-    {
-        return false;
-    }
-    let remaining_work = work_limit - work;
-    if !same_clause_exact(&step.parent, &nodes[node.parents[0]].clause)
-        || !same_clause_exact(&step.conclusion, &node.clause)
-        || !check_condensation_and_replay(step, remaining_work)
-    {
-        return false;
-    }
-    proof {
-        assert(view_clause(step.parent).literals
-            =~= view_clause(nodes@[node.parents@[0] as int].clause).literals);
-        assert(view_clause(step.conclusion).literals =~= view_clause(node.clause).literals);
-        assert forall|interp: Interpretation| interpretation_well_formed(interp)
-            implies local_node_entails_from_parents(*node, nodes@, interp) by {
-            if forall|j: int| 0 <= j < node.parents@.len()
-                ==> clause_valid(view_clause(nodes@[node.parents@[j] as int].clause), interp) {
-                assert(clause_valid(view_clause(step.parent), interp));
-                assert(clause_valid(view_clause(step.conclusion), interp));
-            }
-        }
-    }
-    true
+    check_dag_condensation_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_reflexivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -13064,12 +13302,12 @@ fn validate_dag_node_with_work(
         ProofNodeKind::Instantiation => {
         if node.parents.len() != 1 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_instantiation_step(node, &dag.nodes, work_limit - *work)
+        check_dag_instantiation_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::Condensation => {
         if node.parents.len() != 1 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_condensation_step(node, &dag.nodes, work_limit - *work)
+        check_dag_condensation_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::Reflexivity => {
         if node.parents.len() > 1 { return false; }
@@ -16778,6 +17016,8 @@ fn run_examples() -> bool {
     if !executable_dag_equality_factoring_shared_work_example() { return false; }
     if !executable_dag_subsumption_resolution_shared_work_example() { return false; }
     if !executable_dag_weakening_shared_work_example() { return false; }
+    if !executable_dag_instantiation_shared_work_example() { return false; }
+    if !executable_dag_condensation_shared_work_example() { return false; }
     if !executable_subsumption_resolution_examples() { return false; }
     if !executable_subsumption_resolution_dag_examples() { return false; }
     if !executable_weakening_examples() { return false; }
@@ -16848,6 +17088,10 @@ fn regression_main() {
         "DAG subsumption resolution shared work regression failed");
     assert!(executable_dag_weakening_shared_work_example(),
         "DAG weakening shared work regression failed");
+    assert!(executable_dag_instantiation_shared_work_example(),
+        "DAG instantiation shared work regression failed");
+    assert!(executable_dag_condensation_shared_work_example(),
+        "DAG condensation shared work regression failed");
     assert!(executable_equality_factoring_pivot_work_meter_example(),
         "equality factoring pivot work regression failed");
     assert!(executable_dag_equality_factoring_shared_work_example(),

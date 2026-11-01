@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and twenty-seven
+The mutation inventory is now fifty-eight verifier-negative checks and twenty-nine
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -110,8 +110,8 @@ compiled mutations remove lookup, clause-literal, materialization,
 unifier-comparison, path-comparison, selected-term, replay substitution,
 replacement, build, comparison, preflight/replay handoff, DAG-superposition handoff,
 first-order-resolution DAG handoff, equality-resolution deletion/DAG,
-clause-factoring DAG, equality-factoring pivot/DAG, subsumption literal/DAG and
-weakening DAG charges.
+clause-factoring DAG, equality-factoring pivot/DAG, subsumption literal/DAG,
+weakening DAG, instantiation DAG and condensation DAG charges.
 A computed boundary
 funds exactly the standalone structure/preflight work and requires replay to fail
 closed at its first charge. The DAG per-node validator carries parent-index,
@@ -142,6 +142,9 @@ Its literal comparator has a 3/2 cutoff mutation test, and the DAG node path car
 parent comparisons into replay under an exact composed cutoff/reset mutant.
 Weakening replay meters its inclusion-literal matching; the DAG wrapper's shared
 counter is checked by an exact composed cutoff and reset mutation.
+Instantiation and condensation also share work across local substitution/inclusion
+checks, cited-parent comparisons and replay. Their per-node exact cutoffs and
+counter-reset mutants check each DAG handoff.
 Budget division that would leave a node with a zero share returns inconclusive
 before any node can be certified.
 
