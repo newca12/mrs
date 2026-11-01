@@ -59,7 +59,7 @@ subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
 tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
-forward parents, and nonempty-root acceptance. Nineteen compiled-runtime mutations
+forward parents, and nonempty-root acceptance. Twenty-one compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
 duplicate-ID rejection, decimal-token guard, or target-parent freshening avoid
 set, freshening lookup-work charge, clause-collection literal charge, or
@@ -67,7 +67,8 @@ freshening materialization term charge, unifier term-comparison charge, replay
 parent-substitution meter, replay output replacement/build/comparison charge,
 path-sequence comparison charge, selected-term lookup charge, preflight/replay
 counter reset, DAG-superposition/replay reset, first-order-resolution atom
-comparison charge, or DAG first-order-resolution/replay reset;
+comparison charge, DAG first-order-resolution/replay reset, equality-resolution
+clause-deletion charge, or DAG equality-resolution/replay reset;
 each must fail its corresponding regression. The mutation runner enforces
 the expected counts, so deleting a gate cannot silently shrink the inventory.
 The
