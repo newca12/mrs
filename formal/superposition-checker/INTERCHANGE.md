@@ -291,3 +291,6 @@ comparison charge. Its DAG wrapper also has an exact composed cutoff/reset mutan
 Transitivity's term-comparison helper accepts at 12 units and rejects at 11; a
 compiled mutant removes one comparison charge. Its DAG parent and node work share
 the replay meter under an exact composed cutoff/reset mutant.
+Symmetry's orientation comparison accepts at 3 units and rejects at 2; a compiled
+mutant removes one term charge. Its DAG work-sharing cutoff is computed independently
+from the wrapper handoff, with a compiled counter-reset mutant.

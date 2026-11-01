@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 36
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 38
 
 
 def main() -> int:
@@ -322,12 +322,21 @@ def main() -> int:
         ),
         (
             "symmetry ignores valid commuted orientation",
-            "if check_symmetry_step_exec(s, t, u, v) {",
+            "                if step_valid {\n"
+            "                    let mut all_others_match = true;",
             "if true {",
         ),
         (
             "DAG symmetry skips rule replay",
-            "if !check_symmetry_and_replay(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
+            "    // Keep parent structure and all symmetry comparisons on the node meter.\n"
+            "    if !check_symmetry_and_replay_with_work(\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }",
             "if false {\n        return false;\n    }",
         ),
         (
@@ -2197,6 +2206,127 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG transitivity work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        symmetry_term_charge = (
+            "    let Some(direct_left) = same_term_with_work(u, s, work, work_limit) else {\n"
+            "        return None;\n"
+            "    };"
+        )
+        if source.count(symmetry_term_charge) != 1:
+            print("symmetry term-comparison mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_symmetry_term_charge.rs"
+        mutated_path.write_text(source.replace(
+            symmetry_term_charge,
+            "    let direct_left = same_term(u, s);",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-symmetry-term-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "symmetry comparison mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "symmetry step work-meter regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: symmetry term comparison was not charged", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "symmetry comparison mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: symmetry term comparison was unmetered")
+        compiled_runtime_mutations += 1
+
+        dag_symmetry_handoff = (
+            "    // Keep parent structure and all symmetry comparisons on the node meter.\n"
+            "    if !check_symmetry_and_replay_with_work(\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }"
+        )
+        if source.count(dag_symmetry_handoff) != 1:
+            print("DAG symmetry work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_symmetry.rs"
+        mutated_path.write_text(source.replace(
+            dag_symmetry_handoff,
+            "    // Mutant isolates symmetry replay from DAG work.\n"
+            "    let mut isolated_symmetry_work: usize = 0;\n"
+            "    if !check_symmetry_and_replay_with_work(\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        &node.clause,\n"
+            "        &mut isolated_symmetry_work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-symmetry"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG symmetry meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG symmetry shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG symmetry work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG symmetry meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG symmetry work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

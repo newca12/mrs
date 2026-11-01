@@ -10897,20 +10897,51 @@ fn check_transitivity_and_replay(
     check_transitivity_and_replay_with_work(left, right, conclusion, &mut work, work_limit)
 }
 
+fn check_symmetry_step_exec_with_work(
+    s: &ExecTerm, t: &ExecTerm,
+    u: &ExecTerm, v: &ExecTerm,
+    work: &mut usize,
+    work_limit: usize,
+) -> (valid: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        valid.is_some() ==> valid.unwrap() == (
+            view(*u) == view(*t) && view(*v) == view(*s)
+            || view(*u) == view(*s) && view(*v) == view(*t)
+        )
+{
+    let Some(reverse_left) = same_term_with_work(u, t, work, work_limit) else {
+        return None;
+    };
+    if reverse_left {
+        return same_term_with_work(v, s, work, work_limit);
+    }
+    let Some(direct_left) = same_term_with_work(u, s, work, work_limit) else {
+        return None;
+    };
+    if !direct_left { return Some(false); }
+    same_term_with_work(v, t, work, work_limit)
+}
+
 fn check_symmetry_step_exec(
     s: &ExecTerm, t: &ExecTerm,
     u: &ExecTerm, v: &ExecTerm,
 ) -> (valid: bool)
     ensures valid ==> valid_symmetry_step(view(*s), view(*t), view(*u), view(*v)),
 {
-    (same_term(u, t) && same_term(v, s)) || (same_term(u, s) && same_term(v, t))
+    let mut work: usize = 0;
+    check_symmetry_step_exec_with_work(s, t, u, v, &mut work, usize::MAX) == Some(true)
 }
 
-fn check_clause_symmetry_exec(
+fn check_clause_symmetry_exec_with_work(
     parent: &ExecClause,
     conclusion: &ExecClause,
+    work: &mut usize,
+    work_limit: usize,
 ) -> (result: Option<usize>)
+    requires *old(work) <= work_limit,
     ensures
+        *final(work) <= work_limit,
         match result {
             Some(k) => valid_clause_symmetry(view_clause(*parent), view_clause(*conclusion), k as int),
             None => true,
@@ -10924,13 +10955,18 @@ fn check_clause_symmetry_exec(
         invariant
             parent.literals.len() == conclusion.literals.len(),
             k <= parent.literals.len(),
+            *work <= work_limit,
         decreases parent.literals.len() - k,
     {
+        if !consume_work(work, work_limit) { return None; }
         let p_lit = &parent.literals[k];
         let c_lit = &conclusion.literals[k];
         if p_lit.positive == c_lit.positive {
             if let (ExecAtom::Eq(s, t), ExecAtom::Eq(u, v)) = (&p_lit.atom, &c_lit.atom) {
-                if check_symmetry_step_exec(s, t, u, v) {
+                let Some(step_valid) = check_symmetry_step_exec_with_work(
+                    s, t, u, v, work, work_limit,
+                ) else { return None; };
+                if step_valid {
                     let mut all_others_match = true;
                     let mut j: usize = 0;
                     while j < parent.literals.len()
@@ -10938,12 +10974,17 @@ fn check_clause_symmetry_exec(
                             parent.literals.len() == conclusion.literals.len(),
                             k < parent.literals.len(),
                             j <= parent.literals.len(),
+                            *work <= work_limit,
                             all_others_match ==> forall|m: int| 0 <= m < j as int && m != k as int
                                 ==> view_literal(parent.literals@[m]) == view_literal(conclusion.literals@[m]),
                         decreases parent.literals.len() - j,
                     {
-                        if j != k && !same_literal(&parent.literals[j], &conclusion.literals[j]) {
-                            all_others_match = false;
+                        if !consume_work(work, work_limit) { return None; }
+                        if j != k {
+                            let Some(literals_match) = same_literal_with_work(
+                                &parent.literals[j], &conclusion.literals[j], work, work_limit,
+                            ) else { return None; };
+                            if !literals_match { all_others_match = false; }
                         }
                         j += 1;
                     }
@@ -10967,22 +11008,40 @@ fn check_clause_symmetry_exec(
     None
 }
 
-fn check_symmetry_and_replay(
+fn check_clause_symmetry_exec(
     parent: &ExecClause,
     conclusion: &ExecClause,
+) -> (result: Option<usize>)
+    ensures
+        match result {
+            Some(k) => valid_clause_symmetry(view_clause(*parent), view_clause(*conclusion), k as int),
+            None => true,
+        },
+{
+    let mut work: usize = 0;
+    check_clause_symmetry_exec_with_work(parent, conclusion, &mut work, usize::MAX)
+}
+
+fn check_symmetry_and_replay_with_work(
+    parent: &ExecClause,
+    conclusion: &ExecClause,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
         && clause_valid(view_clause(*parent), interp)
         ==> clause_valid(view_clause(*conclusion), interp),
+        *final(work) <= work_limit,
 {
-    let mut work: usize = 0;
-    if !charge_clause_structure(parent, &mut work, work_limit)
-        || !charge_clause_structure(conclusion, &mut work, work_limit)
+    if !charge_clause_structure(parent, work, work_limit)
+        || !charge_clause_structure(conclusion, work, work_limit)
     {
         return false;
     }
-    let Some(k) = check_clause_symmetry_exec(parent, conclusion) else {
+    let Some(k) = check_clause_symmetry_exec_with_work(
+        parent, conclusion, work, work_limit,
+    ) else {
         return false;
     };
 
@@ -10999,6 +11058,19 @@ fn check_symmetry_and_replay(
         };
     }
     true
+}
+
+fn check_symmetry_and_replay(
+    parent: &ExecClause,
+    conclusion: &ExecClause,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        && clause_valid(view_clause(*parent), interp)
+        ==> clause_valid(view_clause(*conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_symmetry_and_replay_with_work(parent, conclusion, &mut work, work_limit)
 }
 
 fn check_excluded_middle_step_exec(
@@ -13159,10 +13231,16 @@ fn check_dag_transitivity_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     check_dag_transitivity_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_symmetry_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_symmetry_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::Symmetry || node.parents.len() != 1 {
         return false;
@@ -13170,17 +13248,17 @@ fn check_dag_symmetry_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     if node.parents[0] >= nodes.len() {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    if !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
     {
         return false;
     }
-    let remaining_work = work_limit - work;
-    if !check_symmetry_and_replay(
+    // Keep parent structure and all symmetry comparisons on the node meter.
+    if !check_symmetry_and_replay_with_work(
         &nodes[node.parents[0]].clause,
         &node.clause,
-        remaining_work,
+        work,
+        work_limit,
     ) {
         return false;
     }
@@ -13194,6 +13272,15 @@ fn check_dag_symmetry_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         };
     }
     true
+}
+
+fn check_dag_symmetry_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_symmetry_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_excluded_middle_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -13983,7 +14070,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::Symmetry => {
         if node.parents.len() != 1 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_symmetry_step(node, &dag.nodes, work_limit - *work)
+        check_dag_symmetry_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::ExcludedMiddle => {
         if node.parents.len() > 1 { return false; }
@@ -16328,6 +16415,19 @@ fn executable_symmetry_examples() -> bool {
     true
 }
 
+fn executable_symmetry_step_work_meter_example() -> bool
+{
+    let s = ExecTerm::Const(1);
+    let t = ExecTerm::Const(2);
+    let u = ExecTerm::Const(1);
+    let v = ExecTerm::Const(2);
+    let mut exact_work: usize = 0;
+    let exact = check_symmetry_step_exec_with_work(&s, &t, &u, &v, &mut exact_work, 3);
+    let mut short_work: usize = 0;
+    let short = check_symmetry_step_exec_with_work(&s, &t, &u, &v, &mut short_work, 2);
+    exact == Some(true) && exact_work == 3 && short.is_none() && short_work == 2
+}
+
 fn symm_in1() -> ExecClause {
     ExecClause { literals: vec![
         ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
@@ -16361,6 +16461,72 @@ fn executable_symmetry_dag_examples() -> bool {
         root: 3,
     };
     certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn executable_dag_symmetry_shared_work_example() -> bool
+{
+    let conclusion = ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Eq(ExecTerm::Const(2), ExecTerm::Const(1)),
+    }] };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: symm_in1(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: conclusion,
+                kind: ProofNodeKind::Symmetry,
+                parents: vec![0usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 1,
+    };
+    let node = &dag.nodes[1];
+    let parent = &dag.nodes[0].clause;
+    let mut measured_work: usize = 0;
+    if !consume_work(&mut measured_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut measured_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut measured_work, 100_000)
+        || !charge_clause_structure(parent, &mut measured_work, 100_000)
+        || !check_symmetry_and_replay_with_work(
+            parent, &node.clause, &mut measured_work, 100_000,
+        )
+    {
+        return false;
+    }
+    if measured_work == 0 { return false; }
+    let exact_limit = measured_work;
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 1, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 1, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
 fn executable_excluded_middle_examples() -> bool {
@@ -17800,7 +17966,9 @@ fn run_examples() -> bool {
     if !executable_transitivity_dag_examples() { return false; }
     if !executable_dag_transitivity_shared_work_example() { return false; }
     if !executable_symmetry_examples() { return false; }
+    if !executable_symmetry_step_work_meter_example() { return false; }
     if !executable_symmetry_dag_examples() { return false; }
+    if !executable_dag_symmetry_shared_work_example() { return false; }
     if !executable_excluded_middle_examples() { return false; }
     if !executable_excluded_middle_dag_examples() { return false; }
     if !executable_congruence_examples() { return false; }
@@ -17934,8 +18102,12 @@ fn regression_main() {
         "DAG transitivity shared work regression failed");
     assert!(executable_symmetry_examples(),
         "symmetry regression failed");
+    assert!(executable_symmetry_step_work_meter_example(),
+        "symmetry step work-meter regression failed");
     assert!(executable_symmetry_dag_examples(),
         "symmetry DAG regression failed");
+    assert!(executable_dag_symmetry_shared_work_example(),
+        "DAG symmetry shared work regression failed");
     assert!(executable_excluded_middle_examples(),
         "excluded middle regression failed");
     assert!(executable_excluded_middle_dag_examples(),
