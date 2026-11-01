@@ -296,3 +296,7 @@ mutant removes one term charge. Its DAG work-sharing cutoff is computed independ
 from the wrapper handoff, with a compiled counter-reset mutant.
 Excluded-middle polarity and atom comparison accepts at 3 units and rejects at 2;
 the compiled atom-charge and DAG counter-reset mutants must fail the exact regressions.
+Congruence argument comparison accepts at 5 units and rejects at 4; its compiled
+charge-removal mutant is paired with an independently measured DAG cutoff/reset test.
+Verifier-negative mutations that bypass the unchanged binary sibling or nested unary
+function-symbol check must fail the congruence proof.

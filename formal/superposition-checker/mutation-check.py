@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 40
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 42
 
 
 def main() -> int:
@@ -322,9 +322,12 @@ def main() -> int:
         ),
         (
             "symmetry ignores valid commuted orientation",
-            "                if step_valid {\n"
-            "                    let mut all_others_match = true;",
-            "if true {",
+            "let Some(step_valid) = check_symmetry_step_exec_with_work(\n"
+            "                    s, t, u, v, work, work_limit,\n"
+            "                ) else { return None; };\n"
+            "                if step_valid {",
+            "let Some(step_valid) = Some(true) else { return None; };\n"
+            "                if step_valid {",
         ),
         (
             "DAG symmetry skips rule replay",
@@ -360,22 +363,38 @@ def main() -> int:
         ),
         (
             "congruence ignores function symbol or argument agreement",
-            "if check_congruence_step_exec(s, t, u, v) {",
-            "if true {",
+            "let Some(step_valid) = check_congruence_step_exec_with_work(\n"
+            "                    s, t, u, v, work, work_limit,\n"
+            "                ) else { return None; };\n"
+            "                if step_valid {",
+            "let Some(step_valid) = Some(true) else { return None; };\n"
+            "                if step_valid {",
         ),
         (
             "nested congruence ignores unchanged binary sibling",
-            "&& same_term(b1, b2))\n                || (same_term(a1, a2) && (same_or_commuted_exec",
-            "&& true)\n                || (same_term(a1, a2) && (same_or_commuted_exec",
+            "let Some(sibling_same) = same_term_with_work(b1, b2, work, work_limit) else {\n"
+            "                    return None;\n"
+            "                };",
+            "let sibling_same = true;",
         ),
         (
             "nested congruence ignores inner unary function symbol",
-            "*f1 == *f2 && (same_or_commuted_exec(s, t, a1, a2)",
-            "true && (same_or_commuted_exec(s, t, a1, a2)",
+            "(ExecTerm::App1(f1, a1), ExecTerm::App1(f2, a2)) => {\n"
+            "            if *f1 != *f2 { return Some(false); }",
+            "(ExecTerm::App1(f1, a1), ExecTerm::App1(f2, a2)) => {\n"
+            "            if false { return Some(false); }",
         ),
         (
             "DAG congruence skips rule replay",
-            "if !check_congruence_and_replay(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        remaining_work,\n    ) {\n        return false;\n    }",
+            "    // Keep parent structure and recursive term comparisons on the node meter.\n"
+            "    if !check_congruence_and_replay_with_work(\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }",
             "if false {\n        return false;\n    }",
         ),
         (
@@ -2455,6 +2474,125 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG excluded-middle work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        congruence_term_charge = (
+            "    let Some(direct_left) = same_term_with_work(a, s, work, work_limit) else { return None; };"
+        )
+        if source.count(congruence_term_charge) != 1:
+            print("congruence term-comparison mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_without_congruence_term_charge.rs"
+        mutated_path.write_text(source.replace(
+            congruence_term_charge,
+            "    let direct_left = same_term(a, s);",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-without-congruence-term-charge"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "congruence comparison mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "congruence step work-meter regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: congruence term comparison was not charged", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "congruence comparison mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: congruence term comparison was unmetered")
+        compiled_runtime_mutations += 1
+
+        dag_congruence_handoff = (
+            "    // Keep parent structure and recursive term comparisons on the node meter.\n"
+            "    if !check_congruence_and_replay_with_work(\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        &node.clause,\n"
+            "        work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }"
+        )
+        if source.count(dag_congruence_handoff) != 1:
+            print("DAG congruence work-handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_at_dag_congruence.rs"
+        mutated_path.write_text(source.replace(
+            dag_congruence_handoff,
+            "    // Mutant isolates congruence replay from DAG work.\n"
+            "    let mut isolated_congruence_work: usize = 0;\n"
+            "    if !check_congruence_and_replay_with_work(\n"
+            "        &nodes[node.parents[0]].clause,\n"
+            "        &node.clause,\n"
+            "        &mut isolated_congruence_work,\n"
+            "        work_limit,\n"
+            "    ) {\n"
+            "        return false;\n"
+            "    }",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-at-dag-congruence"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG congruence meter-reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG congruence shared work regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG congruence work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG congruence meter-reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG congruence work was reset before replay")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

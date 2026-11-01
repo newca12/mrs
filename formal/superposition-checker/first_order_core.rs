@@ -11158,37 +11158,96 @@ fn check_excluded_middle_and_replay(
     check_excluded_middle_and_replay_with_work(conclusion, &mut work, work_limit)
 }
 
-fn same_or_commuted_exec(
+fn same_or_commuted_exec_with_work(
     s: &ExecTerm, t: &ExecTerm,
     a: &ExecTerm, b: &ExecTerm,
-) -> (valid: bool)
-    ensures valid ==> same_or_commuted_terms(view(*s), view(*t), view(*a), view(*b)),
+    work: &mut usize,
+    work_limit: usize,
+) -> (valid: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        valid.is_some() ==> valid.unwrap() == same_or_commuted_terms(
+            view(*s), view(*t), view(*a), view(*b),
+        )
 {
-    (same_term(a, s) && same_term(b, t)) || (same_term(a, t) && same_term(b, s))
+    let Some(direct_left) = same_term_with_work(a, s, work, work_limit) else { return None; };
+    let Some(direct_right) = same_term_with_work(b, t, work, work_limit) else { return None; };
+    let Some(cross_left) = same_term_with_work(a, t, work, work_limit) else { return None; };
+    let Some(cross_right) = same_term_with_work(b, s, work, work_limit) else { return None; };
+    Some((direct_left && direct_right) || (cross_left && cross_right))
 }
 
-fn check_oriented_congruence_exec(
+fn check_oriented_congruence_exec_with_work(
     s: &ExecTerm, t: &ExecTerm,
     u: &ExecTerm, v: &ExecTerm,
-) -> (valid: bool)
-    ensures valid ==> valid_oriented_congruence(view(*s), view(*t), view(*u), view(*v)),
+    work: &mut usize,
+    work_limit: usize,
+) -> (valid: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        valid == Some(true) ==> valid_oriented_congruence(
+            view(*s), view(*t), view(*u), view(*v),
+        ),
     decreases u,
 {
+    if !consume_work(work, work_limit) { return None; }
     match (u, v) {
         (ExecTerm::App1(f1, a1), ExecTerm::App1(f2, a2)) => {
-            *f1 == *f2 && (same_or_commuted_exec(s, t, a1, a2)
-                || check_oriented_congruence_exec(s, t, a1, a2))
+            if *f1 != *f2 { return Some(false); }
+            let Some(commuted) = same_or_commuted_exec_with_work(
+                s, t, a1, a2, work, work_limit,
+            ) else { return None; };
+            if commuted { return Some(true); }
+            check_oriented_congruence_exec_with_work(s, t, a1, a2, work, work_limit)
         },
         (ExecTerm::App2(f1, a1, b1), ExecTerm::App2(f2, a2, b2)) => {
-            *f1 == *f2 && (
-                ((same_or_commuted_exec(s, t, a1, a2)
-                    || check_oriented_congruence_exec(s, t, a1, a2)) && same_term(b1, b2))
-                || (same_term(a1, a2) && (same_or_commuted_exec(s, t, b1, b2)
-                    || check_oriented_congruence_exec(s, t, b1, b2)))
-            )
+            if *f1 != *f2 { return Some(false); }
+            let Some(left_commuted) = same_or_commuted_exec_with_work(
+                s, t, a1, a2, work, work_limit,
+            ) else { return None; };
+            let left_related = if left_commuted {
+                Some(true)
+            } else {
+                check_oriented_congruence_exec_with_work(s, t, a1, a2, work, work_limit)
+            };
+            let Some(left_related) = left_related else { return None; };
+            if left_related {
+                let Some(sibling_same) = same_term_with_work(b1, b2, work, work_limit) else {
+                    return None;
+                };
+                if sibling_same { return Some(true); }
+            }
+            let Some(first_same) = same_term_with_work(a1, a2, work, work_limit) else {
+                return None;
+            };
+            if !first_same { return Some(false); }
+            let Some(right_commuted) = same_or_commuted_exec_with_work(
+                s, t, b1, b2, work, work_limit,
+            ) else { return None; };
+            if right_commuted { return Some(true); }
+            check_oriented_congruence_exec_with_work(s, t, b1, b2, work, work_limit)
         },
-        _ => false,
+        _ => Some(false),
     }
+}
+
+fn check_congruence_step_exec_with_work(
+    s: &ExecTerm, t: &ExecTerm,
+    u: &ExecTerm, v: &ExecTerm,
+    work: &mut usize,
+    work_limit: usize,
+) -> (valid: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        valid == Some(true) ==> valid_congruence_step(
+            view(*s), view(*t), view(*u), view(*v),
+        ),
+{
+    let Some(first_orientation) = check_oriented_congruence_exec_with_work(
+        s, t, u, v, work, work_limit,
+    ) else { return None; };
+    if first_orientation { return Some(true); }
+    check_oriented_congruence_exec_with_work(s, t, v, u, work, work_limit)
 }
 
 fn check_congruence_step_exec(
@@ -11197,14 +11256,19 @@ fn check_congruence_step_exec(
 ) -> (valid: bool)
     ensures valid ==> valid_congruence_step(view(*s), view(*t), view(*u), view(*v)),
 {
-    check_oriented_congruence_exec(s, t, u, v) || check_oriented_congruence_exec(s, t, v, u)
+    let mut work: usize = 0;
+    check_congruence_step_exec_with_work(s, t, u, v, &mut work, usize::MAX) == Some(true)
 }
 
-fn check_clause_congruence_exec(
+fn check_clause_congruence_exec_with_work(
     parent: &ExecClause,
     conclusion: &ExecClause,
+    work: &mut usize,
+    work_limit: usize,
 ) -> (result: Option<usize>)
+    requires *old(work) <= work_limit,
     ensures
+        *final(work) <= work_limit,
         match result {
             Some(k) => valid_clause_congruence(view_clause(*parent), view_clause(*conclusion), k as int),
             None => true,
@@ -11218,13 +11282,18 @@ fn check_clause_congruence_exec(
         invariant
             parent.literals.len() == conclusion.literals.len(),
             k <= parent.literals.len(),
+            *work <= work_limit,
         decreases parent.literals.len() - k,
     {
+        if !consume_work(work, work_limit) { return None; }
         let p_lit = &parent.literals[k];
         let c_lit = &conclusion.literals[k];
         if p_lit.positive && c_lit.positive {
             if let (ExecAtom::Eq(s, t), ExecAtom::Eq(u, v)) = (&p_lit.atom, &c_lit.atom) {
-                if check_congruence_step_exec(s, t, u, v) {
+                let Some(step_valid) = check_congruence_step_exec_with_work(
+                    s, t, u, v, work, work_limit,
+                ) else { return None; };
+                if step_valid {
                     let mut all_others_match = true;
                     let mut j: usize = 0;
                     while j < parent.literals.len()
@@ -11232,12 +11301,17 @@ fn check_clause_congruence_exec(
                             parent.literals.len() == conclusion.literals.len(),
                             k < parent.literals.len(),
                             j <= parent.literals.len(),
+                            *work <= work_limit,
                             all_others_match ==> forall|m: int| 0 <= m < j as int && m != k as int
                                 ==> view_literal(parent.literals@[m]) == view_literal(conclusion.literals@[m]),
                         decreases parent.literals.len() - j,
                     {
-                        if j != k && !same_literal(&parent.literals[j], &conclusion.literals[j]) {
-                            all_others_match = false;
+                        if !consume_work(work, work_limit) { return None; }
+                        if j != k {
+                            let Some(literals_match) = same_literal_with_work(
+                                &parent.literals[j], &conclusion.literals[j], work, work_limit,
+                            ) else { return None; };
+                            if !literals_match { all_others_match = false; }
                         }
                         j += 1;
                     }
@@ -11261,22 +11335,40 @@ fn check_clause_congruence_exec(
     None
 }
 
-fn check_congruence_and_replay(
+fn check_clause_congruence_exec(
     parent: &ExecClause,
     conclusion: &ExecClause,
+) -> (result: Option<usize>)
+    ensures
+        match result {
+            Some(k) => valid_clause_congruence(view_clause(*parent), view_clause(*conclusion), k as int),
+            None => true,
+        },
+{
+    let mut work: usize = 0;
+    check_clause_congruence_exec_with_work(parent, conclusion, &mut work, usize::MAX)
+}
+
+fn check_congruence_and_replay_with_work(
+    parent: &ExecClause,
+    conclusion: &ExecClause,
+    work: &mut usize,
     work_limit: usize,
 ) -> (accepted: bool)
+    requires *old(work) <= work_limit,
     ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
         && clause_valid(view_clause(*parent), interp)
         ==> clause_valid(view_clause(*conclusion), interp),
+        *final(work) <= work_limit,
 {
-    let mut work: usize = 0;
-    if !charge_clause_structure(parent, &mut work, work_limit)
-        || !charge_clause_structure(conclusion, &mut work, work_limit)
+    if !charge_clause_structure(parent, work, work_limit)
+        || !charge_clause_structure(conclusion, work, work_limit)
     {
         return false;
     }
-    let Some(k) = check_clause_congruence_exec(parent, conclusion) else {
+    let Some(k) = check_clause_congruence_exec_with_work(
+        parent, conclusion, work, work_limit,
+    ) else {
         return false;
     };
 
@@ -11293,6 +11385,19 @@ fn check_congruence_and_replay(
         };
     }
     true
+}
+
+fn check_congruence_and_replay(
+    parent: &ExecClause,
+    conclusion: &ExecClause,
+    work_limit: usize,
+) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        && clause_valid(view_clause(*parent), interp)
+        ==> clause_valid(view_clause(*conclusion), interp)
+{
+    let mut work: usize = 0;
+    check_congruence_and_replay_with_work(parent, conclusion, &mut work, work_limit)
 }
 
 fn check_clause_tautology_exec(clause: &ExecClause) -> (valid: bool)
@@ -13373,10 +13478,16 @@ fn check_dag_excluded_middle_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     check_dag_excluded_middle_step_with_work(node, nodes, &mut work, work_limit)
 }
 
-fn check_dag_congruence_step(node: &ProofNode, nodes: &Vec<ProofNode>,
-    work_limit: usize) -> (accepted: bool)
-    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
-        ==> local_node_entails_from_parents(*node, nodes@, interp),
+fn check_dag_congruence_step_with_work(
+    node: &ProofNode,
+    nodes: &Vec<ProofNode>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (accepted: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+            ==> local_node_entails_from_parents(*node, nodes@, interp),
 {
     if node.kind != ProofNodeKind::Congruence || node.parents.len() != 1 {
         return false;
@@ -13384,17 +13495,17 @@ fn check_dag_congruence_step(node: &ProofNode, nodes: &Vec<ProofNode>,
     if node.parents[0] >= nodes.len() {
         return false;
     }
-    let mut work: usize = 0;
-    if !charge_clause_structure(&node.clause, &mut work, work_limit)
-        || !charge_clause_structure(&nodes[node.parents[0]].clause, &mut work, work_limit)
+    if !charge_clause_structure(&node.clause, work, work_limit)
+        || !charge_clause_structure(&nodes[node.parents[0]].clause, work, work_limit)
     {
         return false;
     }
-    let remaining_work = work_limit - work;
-    if !check_congruence_and_replay(
+    // Keep parent structure and recursive term comparisons on the node meter.
+    if !check_congruence_and_replay_with_work(
         &nodes[node.parents[0]].clause,
         &node.clause,
-        remaining_work,
+        work,
+        work_limit,
     ) {
         return false;
     }
@@ -13408,6 +13519,15 @@ fn check_dag_congruence_step(node: &ProofNode, nodes: &Vec<ProofNode>,
         };
     }
     true
+}
+
+fn check_dag_congruence_step(node: &ProofNode, nodes: &Vec<ProofNode>,
+    work_limit: usize) -> (accepted: bool)
+    ensures accepted ==> forall|interp: Interpretation| interpretation_well_formed(interp)
+        ==> local_node_entails_from_parents(*node, nodes@, interp),
+{
+    let mut work: usize = 0;
+    check_dag_congruence_step_with_work(node, nodes, &mut work, work_limit)
 }
 
 fn check_dag_tautology_step(node: &ProofNode, nodes: &Vec<ProofNode>,
@@ -14132,7 +14252,7 @@ fn validate_dag_node_with_work(
         ProofNodeKind::Congruence => {
         if node.parents.len() != 1 { return false; }
         if !charge_clause_structure(&node.clause, work, work_limit) { return false; }
-        check_dag_congruence_step(node, &dag.nodes, work_limit - *work)
+        check_dag_congruence_step_with_work(node, &dag.nodes, work, work_limit)
         },
         ProofNodeKind::Tautology => {
         if node.parents.len() > 1 { return false; }
@@ -16880,6 +17000,23 @@ fn executable_congruence_examples() -> bool {
     true
 }
 
+fn executable_congruence_step_work_meter_example() -> bool
+{
+    let s = ExecTerm::Const(1);
+    let t = ExecTerm::Const(2);
+    let u = ExecTerm::App1(10, Box::new(ExecTerm::Const(1)));
+    let v = ExecTerm::App1(10, Box::new(ExecTerm::Const(2)));
+    let mut exact_work: usize = 0;
+    let exact = check_congruence_step_exec_with_work(
+        &s, &t, &u, &v, &mut exact_work, 5,
+    );
+    let mut short_work: usize = 0;
+    let short = check_congruence_step_exec_with_work(
+        &s, &t, &u, &v, &mut short_work, 4,
+    );
+    exact == Some(true) && exact_work == 5 && short.is_none() && short_work == 4
+}
+
 fn cong_in1() -> ExecClause {
     ExecClause { literals: vec![
         ExecLiteral { positive: true, atom: ExecAtom::Eq(ExecTerm::Const(1), ExecTerm::Const(2)) },
@@ -16926,6 +17063,75 @@ fn executable_congruence_dag_examples() -> bool {
         root: 3,
     };
     certify_dag(&dag, 10, 10000) == DagVerdict::Certified
+}
+
+fn executable_dag_congruence_shared_work_example() -> bool
+{
+    let conclusion = ExecClause { literals: vec![ExecLiteral {
+        positive: true,
+        atom: ExecAtom::Eq(
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(1))),
+            ExecTerm::App1(10, Box::new(ExecTerm::Const(2))),
+        ),
+    }] };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: cong_in1(),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: conclusion,
+                kind: ProofNodeKind::Congruence,
+                parents: vec![0usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: Vec::new(),
+        root: 1,
+    };
+    let node = &dag.nodes[1];
+    let parent = &dag.nodes[0].clause;
+    let mut measured_work: usize = 0;
+    if !consume_work(&mut measured_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut measured_work, 100_000)
+        || !charge_clause_structure(&node.clause, &mut measured_work, 100_000)
+        || !charge_clause_structure(parent, &mut measured_work, 100_000)
+        || !check_congruence_and_replay_with_work(
+            parent, &node.clause, &mut measured_work, 100_000,
+        )
+    {
+        return false;
+    }
+    if measured_work == 0 { return false; }
+    let exact_limit = measured_work;
+    let mut exact_work: usize = 0;
+    let exact = validate_dag_node_with_work(&dag, 1, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = validate_dag_node_with_work(&dag, 1, &mut short_work, exact_limit - 1);
+    exact && exact_work == exact_limit && !short && short_work == exact_limit - 1
 }
 
 fn executable_tautology_examples() -> bool {
@@ -18086,7 +18292,9 @@ fn run_examples() -> bool {
     if !executable_excluded_middle_dag_examples() { return false; }
     if !executable_dag_excluded_middle_shared_work_example() { return false; }
     if !executable_congruence_examples() { return false; }
+    if !executable_congruence_step_work_meter_example() { return false; }
     if !executable_congruence_dag_examples() { return false; }
+    if !executable_dag_congruence_shared_work_example() { return false; }
     if !executable_tautology_examples() { return false; }
     if !executable_tautology_dag_examples() { return false; }
     if !executable_resolution_chain_examples() { return false; }
@@ -18232,8 +18440,12 @@ fn regression_main() {
         "DAG excluded middle shared work regression failed");
     assert!(executable_congruence_examples(),
         "congruence regression failed");
+    assert!(executable_congruence_step_work_meter_example(),
+        "congruence step work-meter regression failed");
     assert!(executable_congruence_dag_examples(),
         "congruence DAG regression failed");
+    assert!(executable_dag_congruence_shared_work_example(),
+        "DAG congruence shared work regression failed");
     assert!(executable_tautology_examples(),
         "tautology regression failed");
     assert!(executable_tautology_dag_examples(),
