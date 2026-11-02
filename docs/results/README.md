@@ -433,10 +433,12 @@ dedicated 8-physical-core host `mtsdev01`. It generated **356 solves**:
 - **EPS:** 44 / 100 `Satisfiable`, **40 Certified Models** (4 inconclusive evaluation limit)
 - **ICU:** 2 / 32 `Theorem`, **both 2 `VerifiedGood` (100.0%)**
 
-Strict audit certified **307 (now 308) `VerifiedGood` refutations + 40 certified models** (348 certified solutions),
-with **0 `VerifiedBad`** and **0 `no_proof`** across all 1,032 problems.
-Re-audit with the rigid pattern variable fix in `mrs-proof-kernel` strictly certifies
-`KLE071+1` (node `c11506`). Zero memory resource-outs occurred across 45.7 hours of search.
+The archived strict audit certified **307 `VerifiedGood` refutations + 40
+certified models (347 solutions)**. Re-audit with the rigid pattern-variable
+fix in `mrs-proof-kernel` certifies **308 `VerifiedGood` refutations + 40
+certified models (348 solutions)**, with **0 `VerifiedBad`** and **0 `no_proof`**
+across all 1,032 problems. It resolves `KLE071+1` (node `c11506`). Zero memory
+resource-outs occurred across 45.7 hours of search.
 See the [campaign report](../reports/benchmarks/cert-30-2026-10-30.md).
 
 ---
