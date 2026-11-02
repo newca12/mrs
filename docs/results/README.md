@@ -396,6 +396,29 @@ were not CPU-pinned to an eight-core simulation. See the [full report](../report
 
 ---
 
+## Canonical full CASC-J13 certification campaign (2026-10-30)
+
+`~/crates/mrs-bench/results/campaign-casc-j13-full-W8CASCHJ1-01-20261030`
+covered the complete 800-problem CASC-J13 corpus (FEQ, FNE, and UEQ) under
+canonical competition constraints: eight workers, `MRS_HARDWARE=casc`,
+sequential `jobs=1`, and official 180 s limits on the dedicated 8-physical-core
+host `mtsdev02`. It generated **249 raw refutations**:
+- **FEQ:** 70 / 300 `Theorem`
+- **FNE:** 38 / 100 `Theorem`
+- **UEQ:** 141 / 400 `Unsatisfiable`
+
+Archived strict audit certified **248 `VerifiedGood`, 0 `VerifiedBad`, 1 `Unknown`,
+0 `no_proof`, 0 `proof_omitted`**. All 70 FEQ and 38 FNE refutations certified
+cleanly (100.0%). UEQ achieved **140 `VerifiedGood`** (+27 over the October 16
+combined baseline of 113). Re-audit with the AC multiset operand absorption fix
+in `mrs-proof-kernel` strictly certifies the remaining `Unknown` (`LAT142-1`),
+achieving **249/249 strictly certified (100.0%)** with zero `VerifiedBad`.
+Zero `no_proof` rows occurred across the 800 problems, and `REL045-2` derived a
+complete 25.8 KB proof and certified `VerifiedGood` (confirming UI-12 under live
+campaign conditions). See the [campaign report](../reports/benchmarks/cert-j13-2026-10-30.md).
+
+---
+
 ## Cooperative FNE candidate portfolio campaigns (2026-10-21 and 2026-10-22)
 
 Following solo strategy sweeps and greedy set-cover analysis, the candidate 8-strategy
@@ -448,15 +471,16 @@ proof-size count does not apply.
 |:---|:---|:---|---:|---:|
 | CASC-J13 | FEQ | `~/crates/mrs-bench/results/campaign-casc-j13-W8C8J1-20261016` | 70,108 MB (`CSR025+5`) | 7 |
 | CASC-J13 | FEQ | `~/crates/mrs-bench/results/campaign-casc-j13-03-feq-CASCHJ1-20261021` | 64,650 MB (`CSR036+5`) | 3 (+ 1 omitted >32 MB) |
+| CASC-J13 | FEQ | `~/crates/mrs-bench/results/campaign-casc-j13-full-W8CASCHJ1-01-20261030` | 75,511 MB (`CSR066+5`) | 6 |
 | CASC-J13 | FNE | `~/crates/mrs-bench/results/campaign-casc-j13-W8C8J1-20261016` | 66,771 MB (`NLP261+1`) | 3 |
 | CASC-J13 | FNE | `~/crates/mrs-bench/results/casc-j13/coop-fne-candidate-03-20261022` | 58,864 MB (`NLP261+1`) | 3 (+ 1 omitted >32 MB) |
 | CASC-J13 | FNE | `~/crates/mrs-bench/results/cooperative-fne-j13-04-mq-hybrid-no-sharing` | 61,461 MB (`NLP260+1`) | 3 |
+| CASC-J13 | FNE | `~/crates/mrs-bench/results/campaign-casc-j13-full-W8CASCHJ1-01-20261030` | 89,262 MB (`NLP261+1`) | 3 |
 | CASC-J13 | UEQ | `~/crates/mrs-bench/results/campaign-casc-j13-W8C8J1-20261016` | 73,685 MB (`ROB015-10`) | 0 |
 | CASC-J13 | UEQ | `~/crates/mrs-bench/results/campaign-casc-j13-04-ueq-CASCHJ1-20261021` | 57,732 MB (`ROB015-10`) | 0 |
+| CASC-J13 | UEQ | `~/crates/mrs-bench/results/campaign-casc-j13-full-W8CASCHJ1-01-20261030` | 77,830 MB (`GRP181-1`) | 0 |
 | CASC-30 | FEQ | `~/crates/mrs-bench/results/campaign-casc30-feq-W8CASCHJ1-01-20261020` | 64,651 MB (`CSR037+5`) | 5 |
 | CASC-30 | FEQ | `~/crates/mrs-bench/results/campaign-casc30-feq-W8CASCHJ1-01-20261021` | 64,651 MB (`CSR037+5`) | 5 (+ 2 omitted >32 MB) |
-| CASC-30 | FEQ | `~/crates/mrs-bench/results/campaign-casc30-feq-02-20261029-123324` | 79,607 MB virtual (`CSR037+5`; RSS 65,174 MB) | 5 (+ 1 omitted >32 MB) |
-| CASC-30 | FEQ | `~/crates/mrs-bench/results/campaign-casc30-feq-02-20261029-123324` | 79,607 MB virtual (`CSR037+5`; RSS 65,174 MB) | 5 (+ 1 omitted >32 MB) |
 | CASC-30 | FEQ | `~/crates/mrs-bench/results/campaign-casc30-feq-02-20261029-123324` | 79,607 MB virtual (`CSR037+5`; RSS 65,174 MB) | 5 (+ 1 omitted >32 MB) |
 | CASC-30 | UEQ | `~/crates/mrs-bench/results/campaign-casc30-ueq-W8CASCHJ1-02-20261020` | 63,428 MB (`ROB005-1`) | 0 |
 | CASC-30 | UEQ | `~/crates/mrs-bench/results/campaign-casc30-ueq-W8CASCHJ1-02-20261021` | 67,525 MB (`ROB005-1`) | 0 |

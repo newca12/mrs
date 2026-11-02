@@ -59,7 +59,16 @@ Exact AC candidate validation (`ac_terms_equal_mod`), associative sub-chain and
 segment variable absorption (`for_each_assoc_sequence_unifier`), correct operand
 slice positioning in `ac_subset_superposition_replay`, and AC-RPO term ordering
 are now fully implemented. Re-audits across both CASC-J13 (119/119) and CASC-30
-(123/123) UEQ campaigns achieve 100% `VerifiedGood` with zero `Unknown`. The older
+(123/123) UEQ campaigns achieve 100% `VerifiedGood` with zero `Unknown`. In the
+subsequent canonical full-division CASC-J13 campaign (2026-10-30), both `RNG009-5`
+and `RNG009-7` certified natively as `VerifiedGood`. The sole remaining `Unknown`
+in the archived campaign was `LAT142-1` (node `c26184`), where `rigid_match_term`
+rejected an AC match due to unequal flattened operand counts (`left.len() != right.len()`)
+when a free pattern variable (`X1` in `join(X0, X1)`) needed to absorb multiple
+target operands. Extending AC operand matching in `mrs-proof-kernel` (`match_ac_operands`)
+to permit unbound pattern variables to absorb non-empty subsets of remaining target
+operands resolves `c26184` and certifies `LAT142-1` as `VerifiedGood`, bringing
+all 141 UEQ refutations (and 249 overall) to 100% `VerifiedGood`. The older
 diagnosis and experiments below are retained as history, **not current rule
 semantics or established proofs of unsoundness**. In particular, statements
 below calling c26, c502, or the small lattice test invalid are superseded.
@@ -2438,6 +2447,13 @@ separate `proof_omitted` (`SWV406+1`). Targeted current-source replays of
 does not certify their old campaign rows or establish a full rerun. See the
 [combined campaign report](../reports/benchmarks/cert-j13-2026-10-28.md).
 
+The subsequent canonical full-division CASC-J13 campaign
+(`campaign-casc-j13-full-W8CASCHJ1-01-20261030`) evaluated the full 800-problem
+corpus with the updated binary and verified that **`no_proof` is 0 across all
+800 problems**. All 33 formerly empty-envelope problems that solved in that
+campaign emitted full TSTP derivations that certified strictly as `VerifiedGood`.
+See the [October 30 campaign report](../reports/benchmarks/cert-j13-2026-10-30.md).
+
 ---
 
 ## UI-12 — J13 REL045-2 refutation has no proof root and misleading proof_emitted telemetry
@@ -2523,3 +2539,6 @@ complete failure chain:
 4. Verified that `REL045-2.p` under Strategy 15 and the full `casc_ueq` portfolio
    now generates a 126-node, 21,101-byte proof that strictly certifies as
    `VerifiedGood` under `mrs-proover --strict`.
+5. Confirmed live under full campaign conditions in
+   `campaign-casc-j13-full-W8CASCHJ1-01-20261030`, where `REL045-2` derived a
+   complete 25,821-byte proof and certified strictly as `VerifiedGood`.

@@ -917,6 +917,33 @@ in UI-12. Full provenance, the current re-audit, and targeted replay limits are
 in the [campaign report](reports/benchmarks/cert-j13-2026-10-28.md); the
 serialization evidence is tracked in [UI-11](policies/unresolved-issues.md).
 
+### Canonical full CASC-J13 certification campaign (2026-10-30)
+
+The full 800-problem campaign
+`~/crates/mrs-bench/results/campaign-casc-j13-full-W8CASCHJ1-01-20261030`
+evaluated FEQ, FNE, and UEQ under canonical CASC constraints: eight workers,
+`MRS_HARDWARE=casc`, `jobs=1`, and official 180-second limits on the dedicated
+8-physical-core host `mtsdev02`. It generated **249 raw refutations**:
+- **FEQ:** 70 / 300 `Theorem`
+- **FNE:** 38 / 100 `Theorem`
+- **UEQ:** 141 / 400 `Unsatisfiable`
+
+Archived strict audit certified **248 `VerifiedGood`, 0 `VerifiedBad`, 1 `Unknown`,
+0 `no_proof`, 0 `proof_omitted`**. All 70 FEQ and 38 FNE refutations certified
+cleanly (100.0%). In UEQ, 140 of 141 certified strictly, representing an increase
+of +27 certified problems over the October 16 combined baseline (113). The sole
+initial `Unknown`, `LAT142-1` (node `c26184`), failed due to an incomplete AC
+rewrite replay when an unbound pattern variable needed to absorb multiple target
+operands. Extending `mrs-proof-kernel` to permit variable operand absorption under
+AC certifies `LAT142-1`, achieving **249/249 strictly certified (100.0%)** on
+re-audit with zero `VerifiedBad`.
+
+Crucially, **`no_proof` is 0**: all 40 empty envelopes from the pre-`c619394`
+October 28 run are resolved, and `REL045-2` derived a complete 25.8 KB proof that
+certified strictly as `VerifiedGood` (confirming UI-12 under live campaign
+conditions). Full details, per-division solve times, and memory envelopes are in
+the [October 30 campaign report](reports/benchmarks/cert-j13-2026-10-30.md).
+
 ### Cooperative FNE candidate portfolio campaigns (2026-10-21 and 2026-10-22)
 
 The candidate 8-strategy FNE portfolio `MRS_PORTFOLIO=11,13,4,8,15,7,3,1` (derived
