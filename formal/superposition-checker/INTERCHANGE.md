@@ -303,3 +303,8 @@ function-symbol check must fail the congruence proof.
 Tautology's complementary-literal comparison accepts at 4 units and rejects at 3;
 a compiled mutant removes the atom charge, while a separate DAG reset mutant checks
 the node-meter handoff. Structural preflight uses the same bounded tautology scan.
+`certify_dag` uses one mutable work counter across shape preflight, root closure and
+the topological node loop. A three-node refutation tests the exact composed cutoff;
+compiled mutants that reset the counter at each of those three handoffs must fail.
+This is bounded work-unit composition, not an instruction-count refinement; the
+global exact-accounting manifest flag remains false pending the full audit.

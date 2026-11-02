@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 EXPECTED_VERIFIER_NEGATIVE_MUTATIONS = 58
-EXPECTED_COMPILED_RUNTIME_MUTATIONS = 44
+EXPECTED_COMPILED_RUNTIME_MUTATIONS = 47
 
 
 def main() -> int:
@@ -79,7 +79,9 @@ def main() -> int:
         ),
         (
             "certifier skips node validation",
-            "if !validate_dag_node(dag, i, per_node_budget) { return DagVerdict::Unknown; }",
+            "        if !validate_dag_node_with_work(dag, i, work, work_limit) {\n"
+            "            return DagVerdict::Unknown;\n"
+            "        }",
             "if false { return DagVerdict::Unknown; }",
         ),
         (
@@ -478,7 +480,7 @@ def main() -> int:
                 print(msg, flush=True)
 
         closure_guard = (
-            "match check_root_ancestor_closure(dag, closure_budget) {\n"
+            "match check_root_ancestor_closure_with_work(dag, work, work_limit) {\n"
             "        Some(true) => {},\n"
             "        Some(false) => return DagVerdict::Rejected,\n"
             "        None => return DagVerdict::Unknown,\n"
@@ -2723,6 +2725,164 @@ def main() -> int:
             )
             return 1
         print("runtime mutation rejected: DAG tautology work was reset before replay")
+        compiled_runtime_mutations += 1
+
+        dag_structural_work_handoff = (
+            "    match check_dag_structure_with_work(dag, node_limit, work_limit, work, work_limit) {"
+        )
+        if source.count(dag_structural_work_handoff) != 1:
+            print("DAG structural-work handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_after_dag_structure.rs"
+        mutated_path.write_text(source.replace(
+            dag_structural_work_handoff,
+            "    let mut isolated_structural_work: usize = 0;\n"
+            "    match check_dag_structure_with_work(\n"
+            "        dag, node_limit, work_limit, &mut isolated_structural_work, work_limit,\n"
+            "    ) {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-after-dag-structure"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG structural-work reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        expected_failure = "DAG cumulative work composition regression failed"
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG structural work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG structural-work reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG structural work was reset before closure")
+        compiled_runtime_mutations += 1
+
+        dag_closure_work_handoff = (
+            "    match check_root_ancestor_closure_with_work(dag, work, work_limit) {"
+        )
+        if source.count(dag_closure_work_handoff) != 1:
+            print("DAG closure-work handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_after_dag_closure.rs"
+        mutated_path.write_text(source.replace(
+            dag_closure_work_handoff,
+            "    let mut isolated_closure_work: usize = 0;\n"
+            "    match check_root_ancestor_closure_with_work(\n"
+            "        dag, &mut isolated_closure_work, work_limit,\n"
+            "    ) {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-after-dag-closure"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG closure-work reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG closure work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG closure-work reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG closure work was reset before node replay")
+        compiled_runtime_mutations += 1
+
+        dag_node_work_handoff = (
+            "        if !validate_dag_node_with_work(dag, i, work, work_limit) {"
+        )
+        if source.count(dag_node_work_handoff) != 1:
+            print("DAG node-work handoff mutation anchor is missing or ambiguous", file=sys.stderr)
+            return 2
+        mutated_path = pathlib.Path(temp_dir) / "first_order_core_resets_work_for_dag_nodes.rs"
+        mutated_path.write_text(source.replace(
+            dag_node_work_handoff,
+            "        let mut isolated_node_work: usize = 0;\n"
+            "        if !validate_dag_node_with_work(dag, i, &mut isolated_node_work, work_limit) {",
+            1,
+        ))
+        binary = pathlib.Path(temp_dir) / "first-order-core-resets-work-for-dag-nodes"
+        compile_result = subprocess.run(
+            [str(verus), "--no-cheating", "--triggers-mode", "silent", "--compile",
+             str(mutated_path), "-o", str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=300,
+        )
+        if compile_result.returncode != 0:
+            print(
+                "DAG node-work reset mutant must pass Verus before its runtime test:\n"
+                + compile_result.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        runtime = subprocess.run(
+            [str(binary)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        if runtime.returncode == 0:
+            print("runtime accepted mutation: DAG node replay work was not shared", file=sys.stderr)
+            return 1
+        if expected_failure not in runtime.stdout:
+            print(
+                "DAG node-work reset mutation failed for an unexpected reason:\n"
+                + runtime.stdout,
+                file=sys.stderr,
+            )
+            return 1
+        print("runtime mutation rejected: DAG node work was reset between nodes")
         compiled_runtime_mutations += 1
 
         unifier_term_charge = (

@@ -13659,9 +13659,21 @@ proof fn replayed_conclusion_has_source_target_context_split(
         == source_context.literals.len() + target_context.literals.len() + 1);
 }
 
-fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
+fn check_dag_structure_with_work(
+    dag: &ProofDag,
+    node_limit: usize,
+    literal_limit: usize,
+    work: &mut usize,
+    work_limit: usize,
+)
     -> (verdict: DagVerdict)
-    ensures (verdict == DagVerdict::Unknown || verdict == DagVerdict::Rejected)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        verdict == DagVerdict::Unknown || verdict == DagVerdict::Rejected,
+        (dag.nodes.len() == 0 || dag.nodes.len() > node_limit
+            || dag.input_clauses.len() > node_limit || dag.root >= dag.nodes.len())
+            ==> verdict == DagVerdict::Rejected,
+        (verdict == DagVerdict::Unknown || verdict == DagVerdict::Rejected)
         && (dag.nodes.len() == 0 || dag.nodes.len() > node_limit
             || dag.input_clauses.len() > node_limit || dag.root >= dag.nodes.len())
             ==> verdict == DagVerdict::Rejected
@@ -13821,7 +13833,6 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
     }
     let mut total_literals: usize = 0;
     let mut total_parents: usize = 0;
-    let mut structural_work: usize = 0;
     let mut i: usize = 0;
     while i < dag.nodes.len()
         invariant
@@ -13829,10 +13840,11 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             dag.nodes.len() <= node_limit,
             total_literals <= literal_limit,
             total_parents <= node_limit,
-            structural_work <= literal_limit,
+            *work <= work_limit,
             decreases dag.nodes.len() - i
     {
         let node = &dag.nodes[i];
+        if !consume_work(work, work_limit) { return DagVerdict::Rejected; }
         if node.kind == ProofNodeKind::Superposition && node.parents.len() != 2 {
             return DagVerdict::Rejected;
         }
@@ -13841,17 +13853,16 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             invariant
                 prior <= i,
                 i <= dag.nodes.len(),
-                structural_work <= literal_limit,
+                *work <= work_limit,
                 total_parents <= node_limit,
                 total_literals <= literal_limit,
                 forall|j: int| 0 <= j < prior as int
                     ==> dag.nodes[j].id != node.id,
             decreases i - prior
         {
-            if structural_work >= literal_limit {
+            if !consume_work(work, work_limit) {
                 return DagVerdict::Rejected;
             }
-            structural_work += 1;
             if dag.nodes[prior].id == node.id {
                 return DagVerdict::Rejected;
             }
@@ -13870,7 +13881,7 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
         }
         if node.kind == ProofNodeKind::Superposition {
             let Some(step) = &node.step else { return DagVerdict::Rejected; };
-            if !charge_certificate_structure(step, &mut structural_work, literal_limit) {
+            if !charge_certificate_structure(step, work, work_limit) {
                 return DagVerdict::Rejected;
             }
             let mut step_parents: usize = 0;
@@ -13878,8 +13889,10 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 invariant
                     step_parents <= node.parents.len(),
                     total_parents <= node_limit,
+                    *work <= work_limit,
                 decreases node.parents.len() - step_parents
             {
+                if !consume_work(work, work_limit) { return DagVerdict::Rejected; }
                 if step_parents >= 2 || step_parents >= node_limit - total_parents {
                     return DagVerdict::Rejected;
                 }
@@ -13895,7 +13908,7 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             }
             total_parents += node.parents.len();
         }
-        if !charge_clause_structure(&node.clause, &mut structural_work, literal_limit) {
+        if !charge_clause_structure(&node.clause, work, work_limit) {
             return DagVerdict::Rejected;
         }
         let mut parent_index: usize = 0;
@@ -13903,10 +13916,12 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             invariant
                 parent_index <= node.parents.len(),
                 total_parents <= node_limit,
+                *work <= work_limit,
                 forall|j: int| 0 <= j < parent_index as int
                     ==> node.parents@[j] < dag.nodes.len() && node.parents@[j] < i,
             decreases node.parents.len() - parent_index
         {
+            if !consume_work(work, work_limit) { return DagVerdict::Rejected; }
             if node.parents[parent_index] >= dag.nodes.len()
                 || node.parents[parent_index] >= i
             {
@@ -14037,7 +14052,10 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             let ExecAtom::Eq(s, t) = &node.clause.literals[0].atom else {
                 return DagVerdict::Rejected;
             };
-            if !same_term(s, t) {
+            let Some(reflexive) = same_term_with_work(s, t, work, work_limit) else {
+                return DagVerdict::Rejected;
+            };
+            if !reflexive {
                 return DagVerdict::Rejected;
             }
         }
@@ -14047,8 +14065,17 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             assert(node.parents[1] < dag.nodes.len());
             let p1 = &dag.nodes[node.parents[0]].clause;
             let p2 = &dag.nodes[node.parents[1]].clause;
-            let valid = (p2.literals.len() == 1 && check_clause_transitivity_exec(p1, p2, &node.clause).is_some())
-                || (p1.literals.len() == 1 && check_clause_transitivity_exec(p2, p1, &node.clause).is_some());
+            let mut valid = false;
+            if p2.literals.len() == 1 {
+                valid = check_clause_transitivity_exec_with_work(
+                    p1, p2, &node.clause, work, work_limit,
+                ).is_some();
+            }
+            if !valid && p1.literals.len() == 1 {
+                valid = check_clause_transitivity_exec_with_work(
+                    p2, p1, &node.clause, work, work_limit,
+                ).is_some();
+            }
             if !valid {
                 return DagVerdict::Rejected;
             }
@@ -14057,7 +14084,9 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             if node.parents.len() != 1 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
             let p = &dag.nodes[node.parents[0]].clause;
-            if check_clause_symmetry_exec(p, &node.clause).is_none() {
+            if check_clause_symmetry_exec_with_work(
+                p, &node.clause, work, work_limit,
+            ).is_none() {
                 return DagVerdict::Rejected;
             }
         }
@@ -14071,7 +14100,10 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             }
             let l1 = &node.clause.literals[0];
             let l2 = &node.clause.literals[1];
-            if !check_excluded_middle_step_exec(l1, l2) {
+            let Some(step_valid) = check_excluded_middle_step_exec_with_work(
+                l1, l2, work, work_limit,
+            ) else { return DagVerdict::Rejected; };
+            if !step_valid {
                 return DagVerdict::Rejected;
             }
         }
@@ -14079,7 +14111,9 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             if node.parents.len() != 1 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
             let p = &dag.nodes[node.parents[0]].clause;
-            if check_clause_congruence_exec(p, &node.clause).is_none() {
+            if check_clause_congruence_exec_with_work(
+                p, &node.clause, work, work_limit,
+            ).is_none() {
                 return DagVerdict::Rejected;
             }
         }
@@ -14089,7 +14123,7 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
                 assert(node.parents[0] < dag.nodes.len());
             }
             let Some(is_tautology) = check_clause_tautology_exec_with_work(
-                &node.clause, &mut structural_work, literal_limit,
+                &node.clause, work, work_limit,
             ) else { return DagVerdict::Rejected; };
             if !is_tautology {
                 return DagVerdict::Rejected;
@@ -14102,15 +14136,16 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
         invariant
             input_index <= dag.input_clauses.len(),
             total_literals <= literal_limit,
-            structural_work <= literal_limit,
+            *work <= work_limit,
         decreases dag.input_clauses.len() - input_index
     {
+        if !consume_work(work, work_limit) { return DagVerdict::Rejected; }
         let input_clause = &dag.input_clauses[input_index];
         if input_clause.literals.len() > literal_limit - total_literals {
             return DagVerdict::Rejected;
         }
         total_literals += input_clause.literals.len();
-        if !charge_clause_structure(input_clause, &mut structural_work, literal_limit) {
+        if !charge_clause_structure(input_clause, work, work_limit) {
             return DagVerdict::Rejected;
         }
         input_index += 1;
@@ -14121,9 +14156,10 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             node_index <= dag.nodes.len(),
             dag.nodes.len() <= node_limit,
             input_index == dag.input_clauses.len(),
-            structural_work <= literal_limit,
+            *work <= work_limit,
         decreases dag.nodes.len() - node_index
     {
+        if !consume_work(work, work_limit) { return DagVerdict::Rejected; }
         let node = &dag.nodes[node_index];
         if node.kind == ProofNodeKind::Input {
             let mut found: bool = false;
@@ -14131,20 +14167,18 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
             while candidate < dag.input_clauses.len()
                 invariant
                     candidate <= dag.input_clauses.len(),
-                    structural_work <= literal_limit,
+                    *work <= work_limit,
                 decreases dag.input_clauses.len() - candidate
             {
-                if structural_work >= literal_limit { return DagVerdict::Rejected; }
-                structural_work += 1;
+                if !consume_work(work, work_limit) { return DagVerdict::Rejected; }
                 // Exact clause comparison traverses both clauses. The
                 // candidate is charged below; charge the node again for
                 // each candidate rather than treating its one-time global
                 // shape charge as payment for repeated comparisons.
-                if !charge_clause_structure(&node.clause, &mut structural_work, literal_limit) {
+                if !charge_clause_structure(&node.clause, work, work_limit) {
                     return DagVerdict::Rejected;
                 }
-                if !charge_clause_structure(&dag.input_clauses[candidate],
-                    &mut structural_work, literal_limit) {
+                if !charge_clause_structure(&dag.input_clauses[candidate], work, work_limit) {
                     return DagVerdict::Rejected;
                 }
                 if same_clause_exact(&node.clause, &dag.input_clauses[candidate]) {
@@ -14160,6 +14194,21 @@ fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
     let root = &dag.nodes[dag.root];
     if root.clause.literals.len() != 0 { return DagVerdict::Rejected; }
     DagVerdict::Unknown
+}
+
+fn check_dag_structure(dag: &ProofDag, node_limit: usize, literal_limit: usize)
+    -> (verdict: DagVerdict)
+    ensures verdict == DagVerdict::Unknown || verdict == DagVerdict::Rejected,
+        (dag.nodes.len() == 0 || dag.nodes.len() > node_limit
+            || dag.input_clauses.len() > node_limit || dag.root >= dag.nodes.len())
+            ==> verdict == DagVerdict::Rejected,
+        (verdict == DagVerdict::Unknown || verdict == DagVerdict::Rejected)
+        && (dag.nodes.len() == 0 || dag.nodes.len() > node_limit
+            || dag.input_clauses.len() > node_limit || dag.root >= dag.nodes.len())
+            ==> verdict == DagVerdict::Rejected
+{
+    let mut work: usize = 0;
+    check_dag_structure_with_work(dag, node_limit, literal_limit, &mut work, literal_limit)
 }
 
 /// Check one node with a postcondition that survives loop boundaries.
@@ -14358,29 +14407,32 @@ proof fn validated_dag_has_no_model(dag: ProofDag)
 
 /// Certification is relative to the supplied finite input clause set. No
 /// interpretation or semantic validity decision is an executable argument.
-fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict: DagVerdict)
-    ensures verdict == DagVerdict::Certified ==> dag_inputs_unsatisfiable(*dag),
+fn certify_dag_with_work(
+    dag: &ProofDag,
+    node_limit: usize,
+    work: &mut usize,
+    work_limit: usize,
+) -> (verdict: DagVerdict)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        verdict == DagVerdict::Certified ==> dag_inputs_unsatisfiable(*dag),
 {
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
     if dag.nodes.len() > node_limit || dag.input_clauses.len() > node_limit {
         return DagVerdict::Rejected;
     }
-    // Divide the caller's work ceiling among the global shape pass, root
-    // closure traversal, and local node replay. Every validation receives a
-    // disjoint per-node share, so one expensive node cannot borrow the budget
-    // reserved for the remaining proof nodes.
-    let structural_budget = work_limit / 3;
-    let closure_budget = work_limit / 3;
-    let node_validation_budget = work_limit - structural_budget - closure_budget;
-    let per_node_budget = node_validation_budget / dag.nodes.len();
-    if per_node_budget == 0 { return DagVerdict::Unknown; }
-    match check_dag_structure(dag, node_limit, structural_budget) {
+    // One caller-owned meter spans structural preflight, root closure, and
+    // every topological node validation. A phase cannot replenish work used by
+    // an earlier phase or by a preceding node.
+    if !consume_work(work, work_limit) { return DagVerdict::Unknown; }
+    match check_dag_structure_with_work(dag, node_limit, work_limit, work, work_limit) {
         DagVerdict::Rejected => return DagVerdict::Rejected,
         DagVerdict::Unknown | DagVerdict::Inconclusive | DagVerdict::Certified => {},
     }
     if dag.nodes.len() == 0 || dag.root >= dag.nodes.len() { return DagVerdict::Rejected; }
+    if !consume_work(work, work_limit) { return DagVerdict::Unknown; }
     if dag.nodes[dag.root].clause.literals.len() != 0 { return DagVerdict::Rejected; }
-    match check_root_ancestor_closure(dag, closure_budget) {
+    match check_root_ancestor_closure_with_work(dag, work, work_limit) {
         Some(true) => {},
         Some(false) => return DagVerdict::Rejected,
         None => return DagVerdict::Unknown,
@@ -14388,14 +14440,25 @@ fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict
     let mut i: usize = 0;
     while i < dag.nodes.len()
         invariant i <= dag.nodes.len(), dag_proves_empty(*dag),
+            *work <= work_limit,
             forall|j: int| 0 <= j < i as int ==> validated_dag_node(*dag, j),
         decreases dag.nodes.len() - i
     {
-        if !validate_dag_node(dag, i, per_node_budget) { return DagVerdict::Unknown; }
+        if !consume_work(work, work_limit) { return DagVerdict::Unknown; }
+        if !validate_dag_node_with_work(dag, i, work, work_limit) {
+            return DagVerdict::Unknown;
+        }
         i += 1;
     }
     proof { validated_dag_has_no_model(*dag); }
     DagVerdict::Certified
+}
+
+fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict: DagVerdict)
+    ensures verdict == DagVerdict::Certified ==> dag_inputs_unsatisfiable(*dag),
+{
+    let mut work: usize = 0;
+    certify_dag_with_work(dag, node_limit, &mut work, work_limit)
 }
 
 /// Require the proof to contain exactly the root's backward dependency closure.
@@ -14403,21 +14466,23 @@ fn certify_dag(dag: &ProofDag, node_limit: usize, work_limit: usize) -> (verdict
 /// traversal budget was exhausted. Parent order was checked by the structural
 /// preflight, so a reverse topological walk visits every newly discovered parent
 /// only after its children have been processed.
-fn check_root_ancestor_closure(dag: &ProofDag, work_limit: usize) -> (closed: Option<bool>)
-    requires dag.nodes.len() > 0, dag.root < dag.nodes.len(),
+fn check_root_ancestor_closure_with_work(
+    dag: &ProofDag,
+    work: &mut usize,
+    work_limit: usize,
+) -> (closed: Option<bool>)
+    requires dag.nodes.len() > 0, dag.root < dag.nodes.len(), *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
 {
     let mut reachable: Vec<bool> = Vec::new();
-    let mut work: usize = 0;
     let mut initialized: usize = 0;
     while initialized < dag.nodes.len()
         invariant initialized <= dag.nodes.len(),
             reachable@.len() == initialized as int,
-            work <= work_limit,
-            work == initialized,
+            *work <= work_limit,
         decreases dag.nodes.len() - initialized
     {
-        if work >= work_limit { return None; }
-        work += 1;
+        if !consume_work(work, work_limit) { return None; }
         reachable.push(false);
         initialized += 1;
     }
@@ -14428,12 +14493,11 @@ fn check_root_ancestor_closure(dag: &ProofDag, work_limit: usize) -> (closed: Op
         invariant cursor <= dag.root + 1,
             dag.root < dag.nodes.len(),
             reachable@.len() == dag.nodes.len(),
-            work <= work_limit,
+            *work <= work_limit,
         decreases cursor
     {
         cursor -= 1;
-        if work >= work_limit { return None; }
-        work += 1;
+        if !consume_work(work, work_limit) { return None; }
         if reachable[cursor] {
             let node = &dag.nodes[cursor];
             let mut parent_index: usize = 0;
@@ -14441,11 +14505,10 @@ fn check_root_ancestor_closure(dag: &ProofDag, work_limit: usize) -> (closed: Op
                 invariant parent_index <= node.parents.len(),
                     cursor < dag.nodes.len(),
                     reachable@.len() == dag.nodes.len(),
-                    work <= work_limit,
+                    *work <= work_limit,
                 decreases node.parents.len() - parent_index
             {
-                if work >= work_limit { return None; }
-                work += 1;
+                if !consume_work(work, work_limit) { return None; }
                 let parent = node.parents[parent_index];
                 if parent >= cursor { return Some(false); }
                 reachable[parent] = true;
@@ -14458,16 +14521,22 @@ fn check_root_ancestor_closure(dag: &ProofDag, work_limit: usize) -> (closed: Op
     while i < dag.nodes.len()
         invariant i <= dag.nodes.len(),
             reachable@.len() == dag.nodes.len(),
-            work <= work_limit,
+            *work <= work_limit,
             forall|j: int| 0 <= j < i as int ==> reachable@[j],
         decreases dag.nodes.len() - i
     {
-        if work >= work_limit { return None; }
-        work += 1;
+        if !consume_work(work, work_limit) { return None; }
         if !reachable[i] { return Some(false); }
         i += 1;
     }
     Some(true)
+}
+
+fn check_root_ancestor_closure(dag: &ProofDag, work_limit: usize) -> (closed: Option<bool>)
+    requires dag.nodes.len() > 0, dag.root < dag.nodes.len(),
+{
+    let mut work: usize = 0;
+    check_root_ancestor_closure_with_work(dag, &mut work, work_limit)
 }
 
 fn executable_dag_certification_examples() -> bool {
@@ -14548,6 +14617,108 @@ fn executable_dag_certification_examples() -> bool {
         return false;
     }
     true
+}
+
+fn executable_dag_global_work_budget_example() -> bool
+{
+    let positive = resolution_unit(17, true);
+    let negative = resolution_unit(17, false);
+    let empty = ExecClause { literals: Vec::new() };
+    let dag = ProofDag {
+        nodes: vec![
+            ProofNode {
+                id: 1,
+                clause: resolution_unit(17, true),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 2,
+                clause: resolution_unit(17, false),
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+            ProofNode {
+                id: 3,
+                clause: empty,
+                kind: ProofNodeKind::Resolution(0, 0),
+                parents: vec![0usize, 1usize],
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
+        ],
+        input_clauses: vec![positive, negative],
+        root: 2,
+    };
+    let mut measured_work: usize = 0;
+    if !consume_work(&mut measured_work, 100_000) {
+        return false;
+    }
+    match check_dag_structure_with_work(
+        &dag, 10, 100_000, &mut measured_work, 100_000,
+    ) {
+        DagVerdict::Rejected => return false,
+        DagVerdict::Unknown | DagVerdict::Inconclusive | DagVerdict::Certified => {},
+    }
+    if !consume_work(&mut measured_work, 100_000)
+        || dag.nodes[dag.root].clause.literals.len() != 0
+    {
+        return false;
+    }
+    match check_root_ancestor_closure_with_work(&dag, &mut measured_work, 100_000) {
+        Some(true) => {},
+        Some(false) | None => return false,
+    }
+    let mut index: usize = 0;
+    while index < dag.nodes.len()
+        invariant index <= dag.nodes.len(), measured_work <= 100_000,
+        decreases dag.nodes.len() - index,
+    {
+        if !consume_work(&mut measured_work, 100_000)
+            || !validate_dag_node_with_work(&dag, index, &mut measured_work, 100_000)
+        {
+            return false;
+        }
+        index += 1;
+    }
+    if measured_work == 0 { return false; }
+    let exact_limit = measured_work;
+    let mut exact_work: usize = 0;
+    let exact = certify_dag_with_work(&dag, 10, &mut exact_work, exact_limit);
+    let mut short_work: usize = 0;
+    let short = certify_dag_with_work(&dag, 10, &mut short_work, exact_limit - 1);
+    exact == DagVerdict::Certified
+        && exact_work == exact_limit
+        && short != DagVerdict::Certified
+        && short_work == exact_limit - 1
 }
 
 fn executable_input_leaf_comparison_budget_example() -> bool {
@@ -18352,6 +18523,7 @@ fn run_examples() -> bool {
     // Supplied unifier certificate binding target-side variable 42 to
     // constant 9. Domain validity and simultaneous application are checked.
     if !executable_dag_certification_examples() { return false; }
+    if !executable_dag_global_work_budget_example() { return false; }
     if !executable_input_leaf_comparison_budget_example() { return false; }
     if !executable_nullary_resolution_examples() { return false; }
     if !executable_first_order_resolution_examples() { return false; }
@@ -18479,6 +18651,8 @@ fn regression_main() {
     assert!(executable_superposition_certificate_example(),
         "superposition path regression failed");
     assert!(executable_dag_certification_examples(), "base DAG certification regression failed");
+    assert!(executable_dag_global_work_budget_example(),
+        "DAG cumulative work composition regression failed");
     assert!(executable_input_leaf_comparison_budget_example(),
         "input leaf comparison budget regression failed");
     assert!(executable_nullary_resolution_examples(), "nullary resolution regression failed");

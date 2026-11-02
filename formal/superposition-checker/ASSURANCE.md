@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and forty-four
+The mutation inventory is now fifty-eight verifier-negative checks and forty-seven
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -76,18 +76,15 @@ or semantic-validity arguments. The legacy structural entry point still returns
 that every supplied node is in the root's ancestor closure. The reverse
 topological traversal shares a bounded work counter across initialization,
 parent processing and coverage validation; exhaustion cannot certify.
-The caller's certification budget is partitioned between structural preflight,
-ancestor-closure validation and per-node replay, so the number of nodes cannot
-multiply one local replay allowance without bound. Some replay helpers still
-use distinct local counters; this is not yet exact cumulative instruction/work
-accounting. For superposition, nullary/exact and first-order resolution, equality
-resolution and factoring, subsumption resolution, weakening, instantiation, condensation,
-demodulation, reflexivity, transitivity, symmetry, excluded middle and congruence,
-per-node parent/structure charges,
-cited-parent comparisons where applicable, and local replay share a mutable node counter.
-Other rule wrappers still pass scalar remaining-work shares; nested helper
-traversals also remain incomplete, so exact cumulative literal-comparison work
-is not established.
+`certify_dag` now threads one mutable counter through structural preflight,
+root-ancestor closure and every node validation; no phase or node replenishes the
+caller’s ceiling. Supported inference branches pass that same counter through
+parent/structure charges and local replay. A multi-node exact-cutoff regression
+and compiled resets at the structural, closure and node-validation handoffs test
+the composition. This establishes cumulative budget enforcement in the checker’s
+bounded work units, not an instruction-level cost model. The manifest keeps
+`dag_exact_cumulative_replay_work` false pending a complete audit of every primitive
+and auxiliary operation.
 Input-leaf validation charges both clause structures for every candidate in its
 repeated exact-membership scan, with a runtime regression for the exact cutoff;
 this closes that specific repeated-comparison undercount, not all comparison
@@ -116,7 +113,7 @@ clause-factoring DAG, equality-factoring pivot/DAG, subsumption literal/DAG,
 weakening DAG, instantiation/condensation DAG, demodulation DAG, nullary/exact-
 resolution DAG handoffs, reflexivity comparison/DAG charges, transitivity
 comparison/DAG charges, excluded-middle atom/DAG charges, congruence comparison/DAG
-charges and tautology atom/DAG charges.
+charges, tautology atom/DAG charges, and resets at the three outer DAG handoffs.
 A computed boundary
 funds exactly the standalone structure/preflight work and requires replay to fail
 closed at its first charge. The DAG per-node validator carries parent-index,
@@ -125,8 +122,8 @@ superposition, nullary/exact and first-order resolution, equality resolution,
 clause factoring, equality factoring, subsumption resolution, weakening,
 instantiation, condensation, demodulation, reflexivity, transitivity, symmetry,
 excluded middle, congruence and tautology.
-`certify_dag` still allocates independent per-node shares, and other inference
-families use separate counters, so end-to-end DAG accounting remains open.
+The global meter now covers the outer DAG phases and supported rule paths, while
+the exact meaning and completeness of each charged work unit remain under audit.
 First-order binary-resolution replay also has a shared local work counter for
 collection, freshening, unifier application, pivot comparison, resolvent
 construction and conclusion comparison; its pivot atom meter has a 4/3 cutoff
@@ -175,8 +172,8 @@ remove the unchanged-sibling or nested unary function-symbol check are rejected 
 Tautology meters reflexive-equality and complementary-literal scans, also in structural
 preflight. Its 4/3 local comparison cutoff and exact DAG cutoff have charge-removal and
 counter-reset mutations.
-Budget division that would leave a node with a zero share returns inconclusive
-before any node can be certified.
+Exhaustion of the shared global counter in any phase or node fails closed; no
+phase or node receives a replenished budget share.
 
 This certifies the supplied wire-decoded IR input clauses, not a parsed TPTP
 problem. Wire-v1 structural decoding and decimal tokenization are verified; the

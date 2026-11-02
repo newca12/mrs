@@ -59,7 +59,7 @@ subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
 tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
-forward parents, and nonempty-root acceptance. Forty-four compiled-runtime mutations
+forward parents, and nonempty-root acceptance. Forty-seven compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
 duplicate-ID rejection, decimal-token guard, or target-parent freshening avoid
 set, freshening lookup-work charge, clause-collection literal charge, or
@@ -78,7 +78,9 @@ transitivity comparison charge, DAG transitivity/replay reset, symmetry comparis
 charge, DAG symmetry/replay reset, excluded-middle atom charge, or DAG
 excluded-middle/replay reset, congruence term-comparison charge, DAG
 congruence/replay reset, tautology atom-comparison charge, or DAG tautology/replay reset;
-each must fail its corresponding regression. The mutation runner enforces
+the structural-to-closure, closure-to-node, and between-node global-counter resets
+are checked by the composed multi-node regression as well. Each mutation must fail
+its corresponding regression. The mutation runner enforces
 the expected counts, so deleting a gate cannot silently shrink the inventory.
 Two verifier-negative congruence mutations also remove the unchanged binary-sibling
 and nested unary function-symbol checks; Verus must reject both.
@@ -99,7 +101,7 @@ This release declares Rust `1.99.1` in
 [`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `563 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `568 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 
@@ -125,36 +127,30 @@ input clauses under universal closure. `validate_dag_node` checks exact input
 membership, earlier parents and local replay, exposing `validated_dag_node`.
 Before node validation, certification rejects nodes outside the empty root's
 ancestor closure; the bounded closure walk returns `Unknown` on work exhaustion.
-The caller's work ceiling is split across structural preflight, closure checking
-and per-node replay. For superposition, nullary/exact and first-order resolution,
-equality resolution and factoring, subsumption resolution, weakening, instantiation,
-condensation, demodulation, reflexivity, transitivity, symmetry, excluded middle,
-congruence and tautology,
-parent/structure and cited-
-clause comparison work flows into the same node replay counter. Other inference families
-and the DAG-wide path still use distinct counters,
-so exact cumulative operation accounting remains an explicit limitation. The standalone superposition checker
+`certify_dag` carries one caller-owned work counter through structural preflight,
+root-ancestor closure, and every node validation; phases and nodes cannot replenish
+the budget. Supported rule paths carry parent/structure and replay charges into this
+same counter. A multi-node refutation regression checks the exact whole-DAG cutoff,
+and compiled mutants reset the counter at each phase/node handoff. This establishes
+composition in the checker's bounded work units, not an instruction-level cost model;
+`dag_exact_cumulative_replay_work` remains false until that model is fully audited.
+The standalone superposition checker
 now carries one counter from its structural charge through certificate preflight
 and replay: collection, freshening, unifier checks, both-parent substitution,
 target replacement, resolvent construction and exact output comparison. Exact
 4/3 freshening/path, sequential 7, 5/4 selected term, 21/20, 11/10, 12/11 and
 23/22 unit regressions exercise local boundaries. A computed cutoff that exactly
 funds outer structure plus preflight must fail when replay begins; a compiled
-counter-reset mutant checks that handoff. The DAG per-node validator carries
-parent-index, node-clause and cited-parent comparison charges into the local replay
-meter for superposition, nullary/exact and first-order resolution, equality resolution,
-clause/equality factoring, subsumption resolution, weakening, instantiation, condensation,
-demodulation, reflexivity, transitivity, symmetry, excluded middle, congruence and tautology.
-`certify_dag` still divides
-the overall ceiling into independent per-node shares, and other inference families
-use separate counters, so global DAG accounting remains open. First-order
-binary-resolution replay has its own shared local meter across collection,
-freshening, unifier application, pivot comparison, resolvent construction and exact
-conclusion comparison. Its 4/3 atom comparison regression and compiled mutant
-exercise the charge. The first-order DAG path also has an exact composed node-work
-cutoff and a compiled counter-reset mutant. Equality-resolution replay meters
-unification, clause substitution, pivot deletion and conclusion comparison; its
-DAG path has the same composed-cutoff/reset-mutant coverage.
+counter-reset mutant checks that handoff. The per-node validator carries the shared
+counter through parent/index checks and local replay for superposition, nullary/exact
+and first-order resolution, equality resolution, factoring, subsumption resolution,
+weakening, instantiation, condensation, demodulation, reflexivity, transitivity,
+symmetry, excluded middle, congruence and tautology. First-order binary-resolution
+replay meters collection, freshening, unifier application, pivot comparison,
+resolvent construction and exact conclusion comparison; its 4/3 atom cutoff and DAG
+reset mutant test that handoff. Equality-resolution replay meters unification, clause
+substitution, pivot deletion and conclusion comparison; its DAG path also has a
+composed-cutoff/reset test.
 Clause factoring replay meters substitution, pivot comparison, deletion and exact
 conclusion comparison; its DAG path also has composed-cutoff/reset-mutant coverage.
 Equality factoring replay meters both sides' unifier application/comparison, clause
@@ -190,8 +186,8 @@ DAG input-leaf
 validation charges both the node clause and each candidate input clause for every
 repeated exact membership comparison. A runtime regression checks the exact 15-unit threshold
 for three candidates, and a compiled mutation that removes the repeated node
-charge must fail. If integer division would
-leave any node with a zero validation share, certification returns `Unknown`.
+charge must fail. The shared global work counter is checked across structural
+preflight, closure and every node; reaching its ceiling cannot certify.
 Runtime adversarial cases also reject standardized variable-ID collisions,
 malformed/deep positions, mismatched raw/fresh paths, invalid argument slots and
 forged conclusions. A target-parent collision fixture has a disjoint positive
