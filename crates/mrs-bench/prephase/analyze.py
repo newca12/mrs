@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import sys
 from collections import Counter, defaultdict
 
@@ -434,13 +433,12 @@ NAMED_ORDERS = {
 
 
 def coverage_of_order(problems, solved, order, workers):
-    """Coverage of a portfolio that runs the first `workers` entries of `order`.
+    """Solo-matrix simulation for the first `workers` entries of `order`.
 
-    Portfolio workers run concurrently, so each receives the whole wall clock: a
-    solo run at the full budget is exactly what one slot gets. The union of the
-    selected configurations' solved sets is therefore the portfolio's coverage,
-    with no further measurement needed. That equivalence is what makes a solo
-    sweep sufficient to evaluate a portfolio.
+    This unions the selected strategies' solo solved sets. It is a useful
+    candidate-generation estimate, not an exact measurement of a concurrent
+    portfolio: CPU/memory contention, timing-sensitive pruning, and clause
+    sharing can change the outcomes. Validate candidates with cooperative runs.
     """
     chosen = set(order[:workers])
     return {
@@ -451,21 +449,26 @@ def coverage_of_order(problems, solved, order, workers):
 
 
 def best_fixed_portfolio(problems, solved, strategies, workers):
-    chosen, trace, remaining = greedy_set_cover(problems, {s: solved[s] for s in strategies})
-    coverage = len(problems) - len(remaining)
-    return chosen[:workers], coverage, trace, remaining
+    """Prefix of the greedy fixed-order candidate and its solo-matrix coverage."""
+    universe = set(problems)
+    chosen, trace, _ = greedy_set_cover(
+        universe, {s: solved[s] & universe for s in strategies}
+    )
+    selected = chosen[:workers]
+    covered = set().union(*(solved[s] & universe for s in selected)) if selected else set()
+    return selected, len(covered), trace[:workers], universe - covered
 
 
 def simulate_portfolios(features, labels, problems, strategies, solved, routed_orders):
-    """Fixed per-division portfolio versus a routed portfolio, at each width."""
-    print("\nportfolio simulation (coverage = problems solved by any selected slot):")
-    print(f"{'workers':>7} {'oracle':>7} {'best fixed':>11} {'routed':>7} "
-          f"{'casc':>6} {'casc_div':>9} {'delta':>6}")
+    """Solo-matrix simulation of fixed schedules and a full-sample fitted route."""
+    print("\nsolo-matrix portfolio simulation (union of selected strategy outcomes):")
+    print(f"{'slots':>7} {'oracle':>7} {'greedy fixed':>12} {'fit/in-sample':>13} "
+          f"{'casc':>6} {'casc_div':>9} {'fit-div':>7}")
 
     union_all = set().union(*solved.values())
     n = len(problems)
     for workers in (1, 2, 4, 8, 12, 15):
-        fixed_chosen, fixed_cov, _, _ = best_fixed_portfolio(problems, solved, strategies, workers)
+        _, fixed_cov, _, _ = best_fixed_portfolio(problems, solved, strategies, workers)
         # Routed: each problem is covered if one of its own top-`workers` entries
         # solves it.
         routed_cov = 0
@@ -482,12 +485,14 @@ def simulate_portfolios(features, labels, problems, strategies, solved, routed_o
             if any(problem in solved[s] for s in order[:workers]):
                 div_cov += 1
         delta = routed_cov - div_cov
-        print(f"{workers:>7} {len(union_all):>7} {fixed_cov:>11} {routed_cov:>7} "
-              f"{casc_cov:>6} {div_cov:>9} {delta:>+6}")
-    print(f"  (n={n}; oracle = union over all {len(strategies)} configurations)")
+        print(f"{workers:>7} {len(union_all):>7} {fixed_cov:>12} {routed_cov:>13} "
+              f"{casc_cov:>6} {div_cov:>9} {delta:>+7}")
+    print(f"  (n={n}; oracle = union over all {len(strategies)} configurations; "
+          "not a concurrent portfolio measurement)")
 
-    # Significance of the routed-vs-per-division difference at 8 slots.
-    print("\npaired significance at 8 slots (routed vs the division's own order):")
+    # This route was fit on the full sample, so comparing it with the fixed
+    # schedules on the same labels is descriptive only, not a significance test.
+    print("\nin-sample fit diagnostics at 8 slots (not held out):")
     routed_cover = {p for p in problems if any(p in solved[s] for s in routed_orders.get(p, [])[:8])}
     div_cover = set()
     for problem in problems:
@@ -495,41 +500,10 @@ def simulate_portfolios(features, labels, problems, strategies, solved, routed_o
         order = NAMED_ORDERS.get(f"casc_{division}", NAMED_ORDERS["casc"])
         if any(problem in solved[s] for s in order[:8]):
             div_cover.add(problem)
-    paired_comparison(problems, routed_cover, div_cover, "routed", "division")
-    best_cover = set()
-    for problem in problems:
-        if any(problem in solved[s] for s in best_fixed_portfolio(problems, solved, strategies, 8)[0]):
-            best_cover.add(problem)
-    paired_comparison(problems, routed_cover, best_cover, "routed", "best-fixed")
-
-
-def mcnemar(pairs):
-    """Two-sided exact sign test on the discordant pairs.
-
-    `pairs` is a list of `(a_solved, b_solved)` booleans. Only the pairs where the
-    two arms disagree carry information, and a routing table that adds three
-    problems out of six hundred has not been shown to do anything: with 6
-    discordant pairs and all 6 one-sided, the two-sided p-value is 2 * 0.5^6 =
-    0.03, which is the smallest evidence this sample size can produce. Reporting
-    the count without the count of discordant pairs invites reading noise as a
-    result.
-    """
-    discordant = sum(1 for a, b in pairs if a != b)
-    wins = sum(1 for a, b in pairs if a and not b)
-    if discordant == 0:
-        return wins, 0, 1.0
-    # Two-sided exact binomial test under p=0.5.
-    tail = sum(math.comb(discordant, k) for k in range(0, min(wins, discordant - wins) + 1))
-    p_value = min(1.0, 2.0 * tail / (2.0 ** discordant))
-    return wins, discordant, p_value
-
-
-def paired_comparison(problems, covered_a, covered_b, label_a, label_b):
-    pairs = [(p in covered_a, p in covered_b) for p in problems]
-    wins, discordant, p_value = mcnemar(pairs)
-    print(f"  {label_a} vs {label_b}: {label_a}+only={wins} "
-          f"{label_b}+only={discordant - wins} discordant={discordant} "
-          f"two-sided p={p_value:.4f}")
+    routed_only = len(routed_cover - div_cover)
+    division_only = len(div_cover - routed_cover)
+    print(f"  routed-only={routed_only} division-only={division_only} "
+          f"discordant={routed_only + division_only}; use held-out results below")
 
 
 def cross_validate(features, labels, problems, strategies, solved, folds=2):
@@ -543,21 +517,32 @@ def cross_validate(features, labels, problems, strategies, solved, folds=2):
     """
     ordered = sorted(problems)
     half = len(ordered) // folds
-    print(f"\ncross-validation ({folds} folds, {half} problems each):")
+    print(f"\ncross-validation ({folds} deterministic alternating-name folds, "
+          f"about {half} problems each):")
     held_out_total = 0
     baseline_total = 0
+    fold_results = []
     for fold in range(folds):
         fit = [p for i, p in enumerate(ordered) if i % folds == fold]
         test = [p for i, p in enumerate(ordered) if i % folds != fold]
         orders = fit_orders(features, fit, strategies, solved)
+        routed_fold = 0
+        baseline_fold = 0
         for problem in test:
             order = orders.get(features[problem]["label"], list(strategies))
             if any(problem in solved[s] for s in order[:8]):
                 held_out_total += 1
+                routed_fold += 1
             division = division_of(features[problem]["path"]).lower()
             named = NAMED_ORDERS.get(f"casc_{division}", NAMED_ORDERS["casc"])
             if any(problem in solved[s] for s in named[:8]):
                 baseline_total += 1
+                baseline_fold += 1
+        fold_results.append((fold, len(test), routed_fold, baseline_fold))
+    for fold, test_size, routed_fold, baseline_fold in fold_results:
+        print(f"  fold {fold + 1}: routed {routed_fold}/{test_size}, "
+              f"per-division {baseline_fold}/{test_size}, "
+              f"delta {routed_fold - baseline_fold:+d}")
     print(f"  held-out coverage at 8 slots: routed {held_out_total}/{len(problems)} "
           f"({100*held_out_total/max(1,len(problems)):.1f}%)")
     print(f"  held-out coverage at 8 slots: per-division baseline "
@@ -566,7 +551,7 @@ def cross_validate(features, labels, problems, strategies, solved, folds=2):
 
 
 def fit_orders(features, fit_problems, strategies, solved):
-    """Per label, the priority order maximizing greedy coverage on `fit_problems`."""
+    """Per-label priority order maximizing greedy coverage on `fit_problems`."""
     by_label = defaultdict(list)
     for problem in fit_problems:
         by_label[features[problem]["label"]].append(problem)
@@ -575,7 +560,10 @@ def fit_orders(features, fit_problems, strategies, solved):
         members = set(members)
         local = {s: solved[s] & members for s in strategies}
         chosen, _, _ = greedy_set_cover(list(members), local)
-        orders[label] = [s for s in strategies if s not in chosen] + chosen
+        # A priority order is consumed from the front by the portfolio
+        # simulator. Put the greedy-selected strategies first; appending them
+        # after the unselected strategies silently reverses the intended route.
+        orders[label] = chosen + [s for s in strategies if s not in chosen]
     return orders
 
 

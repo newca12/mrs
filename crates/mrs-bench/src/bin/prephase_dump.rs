@@ -255,25 +255,18 @@ fn main() {
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
     for (_, row) in &rows {
         *counts.entry(row.status.clone()).or_default() += 1;
-        let csv = row.csv.clone().unwrap_or_else(empty_row);
-        let empty_probe = ",".repeat(
-            mrs_search::prephase::probe_columns()
-                .len()
-                .saturating_sub(1),
+        let csv = append_probe_columns(
+            &row.csv.clone().unwrap_or_else(empty_row),
+            row.probe.as_deref(),
+            with_probe,
         );
-        let probe = if with_probe {
-            row.probe.as_deref().unwrap_or(&empty_probe)
-        } else {
-            ""
-        };
         let _ = writeln!(
             file,
-            "{},{},{},{}{}",
+            "{},{},{},{}",
             csv_field(&row.path),
             csv_field(&row.status),
             csv_field(&row.detail),
-            csv,
-            probe
+            csv
         );
     }
     eprintln!("[dump] wrote {} rows to {}", rows.len(), out.display());
@@ -512,4 +505,43 @@ fn probe_columns_row(probe: &mrs_search::prephase::Probe) -> String {
         probe.redundancy_rate(),
         probe.throughput_per_ms(),
     )
+}
+
+fn append_probe_columns(csv: &str, probe: Option<&str>, enabled: bool) -> String {
+    if !enabled {
+        return csv.to_string();
+    }
+    let empty_probe = ",".repeat(
+        mrs_search::prephase::probe_columns()
+            .len()
+            .saturating_sub(1),
+    );
+    format!("{csv},{}", probe.unwrap_or(&empty_probe))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_probe_columns;
+    use mrs_search::prephase::probe_columns;
+
+    #[test]
+    fn probe_columns_are_separated_from_the_analysis_label() {
+        let csv = append_probe_columns("problem,label", Some("1,2,3,4,5,6,7,8,9,10"), true);
+        let fields: Vec<_> = csv.split(',').collect();
+
+        assert_eq!(fields.len(), 2 + probe_columns().len());
+        assert_eq!(fields[1], "label");
+        assert_eq!(fields[2], "1");
+        assert_eq!(fields.last(), Some(&"10"));
+    }
+
+    #[test]
+    fn missing_probe_keeps_the_declared_columns_empty() {
+        let csv = append_probe_columns("problem,label", None, true);
+        let fields: Vec<_> = csv.split(',').collect();
+
+        assert_eq!(fields.len(), 2 + probe_columns().len());
+        assert_eq!(fields[1], "label");
+        assert!(fields[2..].iter().all(|field| field.is_empty()));
+    }
 }

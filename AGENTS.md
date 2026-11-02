@@ -524,7 +524,7 @@ routing plan. It is **off by default** and every routing rule is marked
 |------|------|
 | `prephase_dump` | one CSV row of features per `.p` file. `--rlimit-mb` isolates each file under an `RLIMIT_AS` ceiling, so a problem too large for the host is recorded as `resource_limit` instead of taking the run out with the OOM killer. `--probe` appends the probe's ten columns |
 | `prephase_sweep` | the label: configuration × problem outcome matrix with time-to-solution and the engine's own telemetry. Stratified sampling, resumable |
-| `analyze.py` | joins the two; coverage, greedy set cover, per-bucket conditional coverage, behavioural taxonomy, portfolio simulation, cross-validation, exact sign tests. `--features-only` runs the label-free corpus taxonomy |
+| `analyze.py` | joins the two; coverage, greedy set cover, per-bucket conditional coverage, behavioural taxonomy, solo-matrix portfolio simulation, and deterministic alternating-name cross-validation. `--features-only` runs the label-free corpus taxonomy |
 | `ab.sh` | cooperative A/B of the pre-phase against the shipped per-division portfolio |
 
 ```bash
@@ -537,13 +537,22 @@ TPTP=crates/mrs-bench/problems/casc-30 ./target/release/prephase_sweep \
 python3 crates/mrs-bench/prephase/analyze.py features.csv labels.csv
 ```
 
-**Results.** `docs/reports/prephase/2026-10-prephase-study.md`. The headline is a
-negative one and should be read before any routing work: on CASC-30 at 3 s and on
-the hard tail at 30 s, routing on static structure is *worse* than the shipped
-per-division orders, which are within three problems of the greedy optimum at
-every portfolio width. Feasibility prediction works (5x spread); routing does not.
-Do not add a routing rule without a measurement showing it wins on the subset it
-fires on.
+**Results.** Read `docs/reports/prephase/2026-10-prephase-study.md` and the
+corrected 240 s follow-up at `docs/reports/prephase/2026-11-prephase-240s-sweep.md`.
+An order inversion in `analyze.py` invalidated the earlier 3 s routed-coverage
+count and p-value; the archived probed feature CSVs also had a missing separator
+that shifted their probe columns and appended a probe counter to `label`. The
+dump writer is fixed, and `repair_probe_columns.py` restores the archived rows.
+The raw 3 s/30 s label matrices are not present for a rerun. With the corrected
+analyzer and repaired 240 s features, one deterministic two-fold **solo-matrix
+simulation** gives 246/991 vs 239/991 on CASC-30 (+7, with EPU censored at 120 s)
+and 230/796 vs 236/796 on CASC-J13 (−6). This is a mixed, single-split result—not
+a reliable route advantage. These are not actual concurrent 8-worker results
+and do not evaluate the shipped `mrs_prephase::plan::rules`. The solo union is
+candidate-generation evidence only; before changing a schedule or routing rule,
+measure the intended configuration with paired cooperative campaigns under §11.
+Feasibility prediction remains the pre-phase study's strongest supported result
+(5x spread).
 
 ---
 

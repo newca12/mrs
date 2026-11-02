@@ -144,6 +144,18 @@ dominate by count.
 python3 crates/mrs-bench/prephase/analyze.py \
     results/prephase/casc30_features.csv \
     results/prephase/casc30_sweep_t3.csv
+
+python3 -m unittest discover \
+    -s crates/mrs-bench/prephase -p 'test_*.py'
+```
+
+Older feature dumps made with `prephase_dump --probe` may have the probe
+columns shifted because the writer omitted the separator before the probe row.
+Repair such an archived CSV before analyzing it:
+
+```bash
+python3 crates/mrs-bench/prephase/repair_probe_columns.py broken_features.csv \
+    > repaired_features.csv
 ```
 
 ## Honest limits of the primary measurement
@@ -157,10 +169,15 @@ python3 crates/mrs-bench/prephase/analyze.py \
   Divisions with few problems are represented proportionally to their size, which
   is the right choice for estimating a *portfolio's* behaviour and the wrong one
   for estimating a *division's* coverage.
-* **Host.** The measurements come from a 2-physical-core development host. The
-  wall-clock figures scale with the host; the coverage and ordering figures do
-  not depend on it, but the time-to-solution values do, and a configuration's
-  advantage can come from finishing inside 3 s on a slow host while finishing
-  comfortably inside 240 s on a fast one. This is the single biggest caveat on
-  the study and it is why the routing table records *coverage* evidence rather
-  than timing evidence.
+* **Host.** The original measurements came from a 2-physical-core development
+  host. Because `prephase_sweep` uses a wall-clock budget, both time-to-solution
+  and coverage can depend on the host: a configuration may cross the cutoff on
+  one machine but not another. Record the host and binary, and do not treat a
+  coverage matrix as host-independent evidence.
+* **Concurrent portfolios.** The portfolio simulator unions the solved sets
+  from solo, one-worker runs. This is a candidate-generation estimate, not an
+  exact prediction of concurrent coverage: CPU/memory contention and
+  timing-sensitive search decisions can change outcomes, and clause sharing
+  changes the inference inputs. Validate any candidate against the shipped
+  portfolio with paired, repeated cooperative runs on the intended 8-core
+  configuration before promoting it.

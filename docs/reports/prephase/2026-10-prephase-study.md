@@ -17,7 +17,7 @@ measures.
 | `mrs-prephase` | `crates/mrs-prephase/` | ~80 structural features over the clausified problem, a five-axis class taxonomy, and a declarative routing table |
 | `prephase_dump` | `crates/mrs-bench/src/bin/prephase_dump.rs` | one CSV row of features per TPTP file, with per-file process isolation |
 | `prephase_sweep` | `crates/mrs-bench/src/bin/prephase_sweep.rs` | the label: a configuration × problem outcome matrix with time-to-solution |
-| `analyze.py` | `crates/mrs-bench/prephase/analyze.py` | joins the two; coverage, set cover, conditional coverage, portfolio simulation, cross-validation, exact sign tests |
+| `analyze.py` | `crates/mrs-bench/prephase/analyze.py` | joins the two; coverage, set cover, conditional coverage, solo-matrix portfolio simulation, deterministic alternating-name cross-validation |
 | `ab.sh` | `crates/mrs-bench/prephase/ab.sh` | cooperative A/B of the pre-phase against the shipped per-division portfolio |
 | `mrs-search::prephase` | `crates/mrs-search/src/prephase.rs` | plan → `SearchConfig`, plus the bounded search-behaviour probe |
 | `--pre-phase`, `--list-rules` | `src/main.rs` | the in-binary wiring, off by default |
@@ -54,17 +54,15 @@ across 7 configurations at 30 s (889 runs).
    `SYN` is 54% EPR and 31% FNE. A router keyed on the clausified class is not
    making a mistake — it is answering a different question than CASC's taxonomy.
 
-4. **Routing on the syntactic class loses to the fixed per-division portfolio,
-   decisively, at both budgets measured.** At 8 slots on the 600-problem 3 s
-   sample, the per-division baseline covers 41 and a routing table fitted on one
-   half and evaluated on the other covers 29. Every one of the 14 problems the
-   baseline wins is one routing does not, and routing wins none: 0 vs 14
-   discordant, two-sided p = 0.0001. Re-measured at 30 s on the hard tail (§6),
-   the per-division order stays within 3 problems of the greedy optimum at every
-   portfolio width, and every hand-written structural rule the measurement
-   supports is *negative* on the subset it fires on.
+4. **The original routed-coverage comparison is superseded.** A priority-order
+   inversion in `analyze.py` was found during the November 240 s review: the
+   greedy-selected strategies were placed after the unselected strategies, even
+   though the simulator consumes the order from the front. The 3 s cross-validated
+   routed count and its p-value below are therefore withdrawn. The 30 s hard-tail
+   set-cover measurements in §6 remain descriptive of their solo matrix; they do
+   not measure a concurrent routed portfolio. See the [corrected 240 s follow-up](2026-11-prephase-240s-sweep.md).
 
-5. **The reason routing loses is visible in the label distribution.** Of 600
+5. **The 3 s label distribution is dominated by unsolved problems.** Of 600
    problems, 557 (92.8%) are solved by *no* configuration at 3 s and 13 (2.2%)
    are solved by *all fifteen*. Only 21 problems (3.5%) are in the regime where
    choosing between configurations matters at all. A router fitted on that data
@@ -146,7 +144,7 @@ establish the coverage of a real portfolio. Routing conclusions in this report
 apply to that matrix and the evaluated budgets; promotion requires paired,
 repeated concurrent experiments on the intended eight-core configuration.
 
-## 5. Why routing loses, in detail
+## 5. What the 3 s label distribution says
 
 ### Coverage is too thin at 3 s
 
@@ -166,11 +164,11 @@ predicts the unsolved class and is free to choose any order within it. That is
 what the fitted table does, and it is why it lands on configurations that are
 good at the trivial 13 and bad at everything else.
 
-The cross-validation number is the honest one: **29/600 held out, against 41/600
-for the per-division baseline**. The fitted-on-everything number (34/600 at 12
-slots) is not much better, which is itself diagnostic: the fit is not
-over-parameterised enough for overfitting to be the whole story. The table is
-simply being fitted to a target that does not vary.
+The previously reported cross-validation number (**29/600 versus 41/600**) used
+the inverted fit order described in §2 and is withdrawn. The retained artifact
+bundle does not include the 3 s label matrix, so this figure cannot be recomputed
+from the available inputs. Do not use the historical routed count or p-value as
+evidence until that sweep is rerun with the corrected analyzer.
 
 ### The per-division orders are already good, and greedily so
 
@@ -409,23 +407,28 @@ person from re-deriving the same hope. What it now carries is:
 * a `calibrated` / `prior` flag on every row, so a reader can tell which is
   which.
 
-The honest summary of the study's verdict on routing: **at both budgets
-measured, on this corpus, routing on static structure is a losing move.** The table stays in
-because the two things it *is* good for — reporting the analysis, and reporting
-a problem the front end cannot represent — are worth having, and because a
-re-measurement at a competition budget (which this host cannot run) is the
-experiment that would settle it.
+The original routing verdict needs qualification. **The cross-validated route
+counts in this report are withdrawn** because `analyze.py` inverted the fitted
+priority order by placing selected strategies last. The 30 s set-cover results
+remain descriptions of a solo matrix, not measurements of concurrent routed
+portfolios.
 
-*(Update 2026-11-02: The full 240 s competition-budget sweep has now been
-performed across all refutation problems in both CASC-30 and CASC-J13. It
-definitively confirms this verdict: dynamic syntactic routing loses by 97–100
-problems against static per-division portfolios at 8 workers. See
-`2026-11-prephase-240s-sweep.md`.)*
+*(Update 2026-11-02: The 240 s solo matrices have now been reviewed. Alongside
+the `analyze.py` order inversion, a missing CSV delimiter in `prephase_dump`
+concatenated a probe counter onto the structural label; the writer is fixed and
+the archived feature rows were repaired before analysis. On one deterministic
+two-fold holdout, the fitted route covers 246/991 CASC-30 instances versus 239
+for the per-division order, and 230/796 CASC-J13 instances versus 236. CASC-30
+EPU is capped at its 120 s competition limit in these comparisons. This still
+does not measure concurrent 8-worker behavior or the production `--pre-phase`
+rules; see the [follow-up report](2026-11-prephase-240s-sweep.md). The old 3 s
+label matrix was not retained in the available artifact bundles, so its
+corrected routed count is unknown.)*
 
 ## 9. Negative results, recorded
 
-* **Routing on `logic` class is not better than the fixed per-division order.**
-  See §5.
+* **The historical 3 s routed-coverage comparison is withdrawn** because of the
+  fit-order bug described in §2; the corresponding raw matrix was not retained.
 * **Routing is neutral end to end.** 10 vs 10 on FNE and 8 vs 8 on UEQ, at 3 s
   with 2 workers. Not a small win, not a loss: nothing.
 * **The syntactic label is almost uninformative about behaviour once "solved by
@@ -474,11 +477,10 @@ observation about front-end cost, but one that means the 3 s measurement is a
 * **Sample.** A stratified 600-problem sample of CASC-30, round-robin over parent
   directories. Proportional to division size, which is right for estimating a
   portfolio's behaviour and wrong for estimating a division's coverage.
-* **Host.** 2 physical cores, 15 GB RAM. Wall-clock figures scale with the host;
-  coverage and ordering figures do not, but a configuration's advantage can come
-  from finishing inside 3 s on a slow host while finishing comfortably inside
-  240 s on a fast one. This is why §6 changes nothing on the strength of a
-  3-second measurement.
+* **Host.** The original study used 2 physical cores and 15 GB RAM. Since its
+  sweeps use wall-clock cutoffs, both timing and coverage can depend on the host:
+  a strategy can cross the cutoff on one machine but not another. This is why
+  §6 makes no production change on the strength of a 3-second measurement.
 * **One corpus for labels.** CASC-30 only. A 9,259-problem ProoVer-2026 corpus
   (`~/proover-corpus-vampire`) with a different domain mix and no division
   structure is present on this host and is the obvious held-out set for a

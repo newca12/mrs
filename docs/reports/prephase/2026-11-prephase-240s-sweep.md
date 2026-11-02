@@ -1,194 +1,237 @@
-# The mrs pre-phase at competition budget: 240-second strategy sweeps on CASC-30 and CASC-J13
+# Pre-phase at a 240-second per-strategy budget: solo sweeps on CASC-30 and CASC-J13
 
-*Date: 2026-11-02. Follow-up to `2026-10-prephase-study.md`.*
-*Artifacts: `/home/hack/results/prephase/` (`casc30_sweep_t240.csv`, `cascj13_sweep_t240.csv`, `casc30_features_probed.csv`, `cascj13_features_probed.csv`).*
+*Analysis date: 2026-11-02. Follow-up to `2026-10-prephase-study.md`.*
+*Data bundles: `/home/hack/prephase_casc30.tar.bz2` and `/home/hack/prephase_cascj13.tar.bz2`; extracted CSVs are under `/home/hack/results/prephase/`.*
+
+> **Scope:** `prephase_sweep` ran one base strategy at a time with one worker. The “8-slot” portfolio numbers below are unions of solo results, not measured 8-worker concurrent runs. They are candidate-generation evidence only. The tarballs do not include the producing binary hash, host/run metadata, or the original `.p` files, so this is not a standardized performance baseline.
 
 ## 1. Executive Summary
 
-The initial pre-phase study (`2026-10-prephase-study.md`) investigated whether pre-search syntactic analysis could dynamically route problems to specialized strategies better than static per-division portfolios. Evaluated at 3 s (600 problems) and 30 s (127 hard-tail problems), the initial study concluded that syntactic routing underperformed fixed portfolios, but noted that a re-measurement at the full competition budget (240 s) remained necessary to settle whether the gap was an artifact of short time horizons.
+The repaired 240-second solo matrices give a mixed result for a label-fitted route on one deterministic two-fold holdout: it is slightly ahead on CASC-30 and slightly behind on CASC-J13. This is a limited comparison of the saved matrices—not a decisive measurement of concurrent portfolio behavior or of the production `--pre-phase` rules.
 
-This report records the decisive experiment: **full 240-second solo sweeps across all 15 base strategies for every refutation problem in both CASC-30 and CASC-J13** (26,805 solo runs).
+At an 8-slot **simulated** width:
+- **CASC-30:** the current per-division order covers **239/991** instances after applying the official 120 s EPU cutoff; the generic `casc` prefix covers 204. A greedy fixed-order candidate covers 257; the repaired label fit covers 263 in-sample.
+- **CASC-J13:** the current per-division order covers **236/796**, generic `casc` covers 204, a greedy fixed-order candidate covers 239, and the in-sample label fit covers 242.
+- On the corrected two-fold held-out simulation, the fitted route covers **246/991 vs 239/991** for per-division on CASC-30 (+7), and **230/796 vs 236/796** on CASC-J13 (−6). The split is deterministic and alternating by problem name; this is a single exploratory CV, not a significance result.
 
-### Headline Results
+The corrected, edition-specific union contains **1,787 benchmark instances**, of which 510 are solved by at least one base strategy. The best 8-strategy greedy candidate covers 496 in the solo matrix. It must not be promoted from these numbers alone: concurrent interference, search races, and sharing were not measured.
 
-1. **Pre-phase syntactic routing definitively loses at 240 s.**
-   At the canonical 8-worker CASC hardware width:
-   - On **CASC-30**: dynamic syntactic routing solves **140 problems**, compared to **240** for the per-division portfolio (`casc_div`) and **204** for generic `casc` (**-100 deficit vs `casc_div`**, $p = 0.0000$, discordant: 110, routed-only: 5, division-only: 105).
-   - On **CASC-J13**: dynamic syntactic routing solves **139 problems**, compared to **236** for `casc_div` and **204** for generic `casc` (**-97 deficit vs `casc_div`**, $p = 0.0000$, discordant: 99, routed-only: 1, division-only: 98).
-   - Two-fold cross-validation confirms out-of-fold routing generalisation loses 39 to 44 problems relative to static schedules. The open question from §8 of the initial study is settled: dynamic syntactic routing fails to beat fixed portfolios at any budget.
-
-2. **Strategy 12 is the dominant solo engine of MRS at 240 s.**
-   Strategy 12 (`HornHeuristic` + AgeWeight(5) + AllNegative + KBO, no AVATAR, no weight cap) is the single strongest strategy by a wide margin across both benchmarks:
-   - Solves **256 problems solo** across CASC-30 and CASC-J13 (62.0% of all 413 solvable problems).
-   - Carries **38 unique solves** that no other base strategy can solve within 240 s.
-   - Dominates both FEQ (112 solo solves across both corpora) and FNE (34 solo solves).
-
-3. **Immediate portfolio tuning opportunities identified in `named.rs`:**
-   - **Default 8-worker CASC schedule (`DEFAULT_CASC_ORDER`)**: Historically ran `[1, 2, 3, 4, 5, 6, 7, 8]` on 8 cores, leaving out `s12` (slot 12), `s11` (slot 11), and `s15` (slot 15). At 240 s, slots 1–8 of the default schedule solve **329 problems**; a greedy set-cover 8-strategy portfolio (`[12, 6, 11, 1, 8, 15, 2, 13]`) covers **403 problems** (**+74 problems / +22.5%** solo gain).
-   - **FNE schedule (`CASC_FNE_ORDER`)**: Currently places Strategy 12 at slot 10, outside the 8-worker window. In reality, `s12` is the #1 strategy in FNE (34 solo solves). Promoting `s12` into the top 8 raises FNE 8-worker coverage from 45 to **55 solves (+10)**.
-   - **UEQ schedule (`CASC_UEQ_ORDER`)**: Currently places Strategy 6 at slot 11, despite it having 113 solo solves in UEQ. Reordering to prioritize `[1, 11, 8, 12, 2, 6, 15, 3]` increases solo set-cover from 191 to **196 solves (+5)**.
+Review found two defects in `prephase/analyze.py` that produced the initial draft of this follow-up: the fitted strategy order put greedy-selected strategies last, and the “best fixed” column reported the full 15-strategy union at every width. The archived feature CSVs had a third defect: a missing delimiter concatenated `probe_iterations` onto `label` and shifted all probe columns. The serializer is fixed in `prephase_dump.rs`; the legacy CSVs were repaired with `repair_probe_columns.py` before analysis (3,088 C30 and 1,331 J13 feature rows repaired; remaining rows have no probe data). The 3 s cross-validated route count and p-value in `2026-10-prephase-study.md` also used the inverted fitter and are withdrawn; the 3 s/30 s label matrices are not present in the retained artifact bundles for correction.
 
 ---
 
 ## 2. Dataset and Corpus Coverage
 
-The experiment covers all refutation problem files from the CASC-30 and CASC-J13 competition corpora:
+The saved data covers these refutation instances:
 
-| Dataset | Refutation Divisions | Total Problems | Solved by $\ge 1$ Strategy | Solo Runs ($15 \times N$) |
-|---|---|---|---|---|
-| **CASC-30** | EPU (97), FEQ (398), FNE (97), ICU (99), UEQ (300) | 991 | 264 (26.6%) | 16,320* |
-| **CASC-J13** | FEQ (299), FNE (97), UEQ (400) | 796 | 246 (30.9%) | 11,940 |
-| **Combined** | All refutation divisions (1,461 unique problems) | 1,461 | 413 (28.3%) | 26,805 |
+| Dataset | Refutation divisions | Name-keyed edition/problem entries | Solved by at least one strategy | Raw CSV rows | Distinct name-key/strategy cells |
+|---|---|---:|---:|---:|---:|
+| **CASC-30** | EPU (97), FEQ (398), FNE (97), ICU (99), UEQ (300) | 991 | 264 (26.6%) | 16,320 | 14,865 |
+| **CASC-J13** | FEQ (299), FNE (97), UEQ (400) | 796 | 246 (30.9%) | 11,940 | 11,940 |
+| **Combined** | Edition-specific instances; shared names stay distinct | **1,787** | **510 (28.5%)** | **28,260** | **26,805** |
 
-*\* Note: In `casc30_refutation_paths.txt`, 97 EPU problems were listed with two path prefixes (`crates/mrs-bench/problems/casc-30/EPU/` and `.../Problems/EPU/`). `prephase/analyze.py` and the analyses here deduplicate by problem name.*
+In the CASC-30 path list, 97 EPU names occur under both `EPU/` and
+`Problems/EPU/`, adding 1,455 repeated name/strategy rows. The saved verdicts
+agree for those repeated rows, and this analysis uses the direct `EPU/` path as
+the canonical row for coverage and timing. The tarballs contain no `.p` sources;
+`Problems/EPU/` is also absent from the current checkout, so byte identity of
+that path pair cannot be verified. Accordingly, the table is deduplicated by
+problem name, not proven byte-unique input files. Same-named files across the two
+editions are kept separate: among 326 refutation names shared by the corpora,
+289 have different byte content in the checked-out trees (37 are byte-identical).
 
-Both corpora were processed through `prephase_dump` with the bounded search-behaviour probe enabled (`probe_iterations = 2000`), yielding full feature vectors joined to the 240 s sweep outcomes.
+`prephase_dump --probe` caps the reference search at **2,000 processed clauses**
+(`PROBE_CLAUSES`); `probe_iterations` in the CSV is an observed counter, not
+that cap. Within each release, feature and sweep rows join by problem name;
+when pooling releases, edition is part of the instance key.
+The repair verifies every recovered label against the five class columns; all
+valid repaired rows have the declared width and `probe_processed` stays at or
+below 2,000.
+
+The sweep itself gave every run 240 s. CASC-30 EPU's official cap is 120 s, so
+the competition-time-adjusted coverage tables below censor EPU refutations after
+120 s. This removes one late EPU strategy/problem result (`PUZ037-2`, s4 at
+233.391 s) but leaves the 9-problem EPU union unchanged. The producer host,
+binary hash, source commit, and exact jobs count are not present in the archives;
+the data cannot establish canonical hardware performance.
+
+After extracting the tarballs, repair the legacy feature CSVs with:
+
+```bash
+python3 crates/mrs-bench/prephase/repair_probe_columns.py \
+  /home/hack/results/prephase/casc30_features_probed.csv \
+  > /tmp/casc30_features_probed_repaired.csv
+python3 crates/mrs-bench/prephase/repair_probe_columns.py \
+  /home/hack/results/prephase/cascj13_features_probed.csv \
+  > /tmp/cascj13_features_probed_repaired.csv
+```
+
+### Input and repaired-feature hashes
+
+Rows labeled “Repaired” are derived by `repair_probe_columns.py`; they are not
+members of the original tarballs.
+
+| Artifact | SHA-256 |
+|---|---|
+| `casc30_sweep_t240.csv` | `554a5782db4f6b697e421d937aef522de72e7ccb040b0127b8427a9998b0dad3` |
+| `casc30_features_probed.csv` | `8035a583e09b60e1a745ca01c49a40f0ca561d0db3967d7bf17276fbad041b2b` |
+| Repaired CASC-30 feature view | `cfab1b1a26c469ef68d16d259a8dbf8bf932a22fe66136e17a0ee854ecfec046` |
+| `casc30_refutation_paths.txt` | `4713bbecd98578ae495ffa1f17fd4f98a2648c03572743f5a2178e279e68508e` |
+| `cascj13_sweep_t240.csv` | `d777b00bb437d82a518acb0f79c48d8ab027e7283296807c91d0e5c9b0d1235a` |
+| `cascj13_features_probed.csv` | `a0f71ad1562734c5959b261760948863906ff591cae5a625fd720667bf608e05` |
+| Repaired CASC-J13 feature view | `7a0edda249234481620ebe4db6638614fe9100c2995ce20c373f3320494848fc` |
+| `cascj13_refutation_paths.txt` | `5664e0fcc7c70d3b23d88cfe2260026bbe166f8a977e19969a5b55a0ce463023` |
+| `prephase_casc30.tar.bz2` | `6edd6c17f046d82ebdde44e5a7b494554079240fb1cf0e2a292079489d6c8865` |
+| `prephase_cascj13.tar.bz2` | `782c7bd8359af0f7b5a7af535b5112efd44e5107c6e5fb38094d4c547cd65efb` |
 
 ---
 
-## 3. Pre-Phase Routing Performance at 240 s
+## 3. Solo-Matrix Portfolio Simulation at 240 s
 
-Running `crates/mrs-bench/prephase/analyze.py` over the 240 s sweep yields the following simulated portfolio coverage across worker widths:
+The following tables are unions of solo solved sets. “Slots” means the number
+of strategy results unioned; it does **not** mean those strategies were run
+concurrently. “Greedy fixed” is the prefix of a greedy set-cover order, not an
+exact optimization over every fixed portfolio. “Fit route” is trained and
+scored on the same labels, so it is an in-sample upper bound, not a held-out
+result.
 
-### CASC-30 Portfolio Simulation ($N = 991$)
+### CASC-30 (991 edition/problem instances; EPU capped at 120 s)
 
-| Workers | Oracle (All 15) | Best Fixed | Pre-Phase Routed | Default CASC | Per-Division (`casc_div`) | Delta (Routed vs Division) |
-|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 1 | 264 | 264 | 41 | 104 | 127 | **-86** |
-| 2 | 264 | 264 | 63 | 133 | 147 | **-84** |
-| 4 | 264 | 264 | 95 | 148 | 197 | **-102** |
-| **8** | **264** | **264** | **140** | **204** | **240** | **-100** |
-| 12 | 264 | 264 | 172 | 256 | 263 | **-91** |
+| Slots | Oracle (all 15) | Greedy fixed | Fit route (in-sample) | Default `casc` | Current `casc_div` | Fit − division |
+|:---:|---:|---:|---:|---:|---:|---:|
+| 1 | 264 | 159 | 186 | 104 | 127 | +59 |
+| 2 | 264 | 208 | 228 | 133 | 147 | +81 |
+| 4 | 264 | 236 | 252 | 147 | 197 | +55 |
+| **8** | **264** | **257** | **263** | **204** | **239** | **+24** |
+| 12 | 264 | 263 | 264 | 256 | 263 | +1 |
 | 15 | 264 | 264 | 264 | 264 | 264 | 0 |
 
-* **Significance at 8 slots**: Routed+only = 5, Division+only = 105, discordant = 110, two-sided $p = 0.0000$.
-* **2-Fold Cross-Validation (Held-out)**: Routed covers 201/991 (20.3%) vs Per-Division baseline 240/991 (24.2%), delta = **-39**.
+### CASC-J13 (796 edition/problem instances)
 
-### CASC-J13 Portfolio Simulation ($N = 796$)
-
-| Workers | Oracle (All 15) | Best Fixed | Pre-Phase Routed | Default CASC | Per-Division (`casc_div`) | Delta (Routed vs Division) |
-|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 1 | 246 | 246 | 43 | 113 | 109 | **-66** |
-| 2 | 246 | 246 | 61 | 147 | 133 | **-72** |
-| 4 | 246 | 246 | 94 | 163 | 184 | **-90** |
-| **8** | **246** | **246** | **139** | **204** | **236** | **-97** |
-| 12 | 246 | 246 | 177 | 239 | 245 | **-68** |
+| Slots | Oracle (all 15) | Greedy fixed | Fit route (in-sample) | Default `casc` | Current `casc_div` | Fit − division |
+|:---:|---:|---:|---:|---:|---:|---:|
+| 1 | 246 | 141 | 178 | 113 | 109 | +69 |
+| 2 | 246 | 182 | 209 | 147 | 133 | +76 |
+| 4 | 246 | 215 | 228 | 163 | 184 | +44 |
+| **8** | **246** | **239** | **242** | **204** | **236** | **+6** |
+| 12 | 246 | 245 | 246 | 239 | 245 | +1 |
 | 15 | 246 | 246 | 246 | 246 | 246 | 0 |
 
-* **Significance at 8 slots**: Routed+only = 1, Division+only = 98, discordant = 99, two-sided $p = 0.0000$.
-* **2-Fold Cross-Validation (Held-out)**: Routed covers 192/796 (24.1%) vs Per-Division baseline 236/796 (29.6%), delta = **-44**.
+The in-sample fit reaches the oracle at eight slots because it uses the same
+outcomes to choose and score each label's order. It must not be read as
+generalization. The corrected two-fold held-out results are:
 
-### Why Routing Loses at 240 s
+| Dataset | Fold 1: fit / test | Fold 1 routed / division | Fold 2: fit / test | Fold 2 routed / division | Total routed / division | Delta |
+|---|---:|---:|---:|---:|---:|---:|
+| CASC-30 | 496 / 495 | 125 / 122 | 495 / 496 | 121 / 117 | 246 / 239 | **+7** |
+| CASC-J13 | 398 / 398 | 109 / 112 | 398 / 398 | 121 / 124 | 230 / 236 | **−6** |
 
-The failure mechanism observed at 3 s persists and deepens at 240 s:
-1. **High syntactic purity is driven by the unsolved majority.** Across the 991 CASC-30 problems, weighted modal purity is 0.845, but 73.4% (727 problems) are solved by 0 configurations. Conditioned on a problem being solvable, syntactic features do not separate which strategy will succeed.
-2. **Specialization starves diversity.** The per-division portfolios (`casc_feq`, `casc_fne`, `casc_ueq`) allocate slots across diverse heuristic archetypes (Horn heuristic, conjecture symbol boosting, age-weight ratios, KBO/LPO). Pre-phase routing attempts to pick a specialized configuration based on clausified shape (e.g. `HORN`, `TIGHT`, `CONNECTED`). When the routing guess is wrong, all assigned workers run variations of the suboptimal algorithm. In contrast, an 8-worker static portfolio guarantees that the problem is simultaneously attacked by complementary calculi and heuristics.
+This is one deterministic split formed by alternating sorted problem names. It
+is a useful diagnostic, not replicated cross-validation or a statistical
+significance claim. It also measures an outcome-fitted label router, not the
+hand-written `mrs_prephase::plan::rules` and not a concurrent `--pre-phase` run.
 
----
+### Interpretation
 
-## 4. Individual Strategy Characterization at 240 s
-
-Across the combined 1,461 problems (413 solved by any strategy):
-
-| Strategy | Config Key | Solo Solves (Total) | Share of Solved | Unique Solves | Median Time | Mean Time | P90 Time |
-|:---:|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| **s12** | `HornHeuristic` + AgeWeight(5) + AllNeg + KBO | **256** | **62.0%** | **38** | 20.7 s | 44.9 s | 122.5 s |
-| **s6** | AgeWeight(5) + KBO baseline | **221** | **53.5%** | **11** | 13.6 s | 40.1 s | 120.4 s |
-| **s1** | AgeWeight(5) + AllNeg + KBO | **181** | **43.8%** | **11** | 37.2 s | 62.9 s | 164.4 s |
-| **s11** | `ConjSymbolBoost` + AgeWeight(6) + AllNeg + KBO | **153** | **37.0%** | **11** | 13.3 s | 38.8 s | 122.3 s |
-| **s15** | `SymbolWeight` + AgeWeight(4) + AllNeg + KBO | **129** | **31.2%** | **6** | 7.0 s | 40.0 s | 145.1 s |
-| **s2** | SmallestFirst + AllNeg + KBO | **120** | **29.1%** | **6** | 3.8 s | 20.5 s | 67.0 s |
-| **s8** | AgeWeight(10) + AllNeg + KBO | **113** | **27.4%** | **9** | 4.4 s | 24.7 s | 76.7 s |
-| **s4** | AgeWeight(5) + MaxNegOrMaxPos + KBO | **111** | **26.9%** | **1** | 12.8 s | 31.2 s | 94.6 s |
-| **s5** | AgeWeight(5) + All + KBO | **104** | **25.2%** | **2** | 17.1 s | 37.5 s | 117.5 s |
-| **s14** | `ConjSymbolBoost` + SmallestFirst + All + KBO | **104** | **25.2%** | **1** | 2.1 s | 27.3 s | 128.3 s |
-| **s3** | FIFO (pure Age) + AllNeg + KBO | **85** | **20.6%** | **1** | 4.5 s | 31.1 s | 117.8 s |
-| **s7** | AgeWeight(2) + AllNeg + KBO | **85** | **20.6%** | **2** | 11.9 s | 46.4 s | 166.2 s |
-| **s10** | SOS (`sos_depth=100`) + AgeWeight(12) + KBO | **65** | **15.7%** | **1** | 1.1 s | 35.3 s | 130.1 s |
-| **s13** | `FunctionWeightPenalty` + SOS + AgeWeight(5) + KBO | **47** | **11.4%** | **1** | 1.9 s | 29.5 s | 103.8 s |
-| **s9** | AgeWeight(5) + AllNeg + LPO | **46** | **11.1%** | **0** | 0.4 s | 10.1 s | 43.9 s |
-
-### Observations on Individual Strategies
-
-1. **The dominance of Strategy 12:** Strategy 12 solves more than 60% of all refutable problems in the corpus. By combining `HornHeuristic` (which penalizes non-Horn clauses to prioritize horn/goal derivations) without the clause-splitting overhead of AVATAR or weight caps, it prevents passive queue bloat on deep equality proofs.
-2. **Bimodal timing distributions:**
-   - *Fast/shallow filters*: Strategies 9, 10, 13, and 14 have medians below 2.5 s. When they succeed, they find short proofs almost immediately, but fail to scale to deep saturations.
-   - *Saturation drivers*: Strategies 1, 6, 11, and 12 have median times between 13 s and 37 s, and maintain productive saturation out to 240 s.
-3. **LPO underperformance (s9):** Strategy 9 (LPO ordering) has 0 unique solves across all 1,461 problems. Every problem s9 solved was also solved faster by a KBO strategy.
+- The CASC-30 union shows 727/991 problems unsolved by every base strategy. After
+  repairing the probe-column offset, weighted modal feature-label purity is
+  0.730 on CASC-30 and 0.691 on CASC-J13. These descriptive values do not show
+  that a class label identifies the best strategy.
+- The corrected held-out fit is slightly ahead of the per-division order on
+  CASC-30 and slightly behind on CASC-J13. The small, mixed differences from one
+  deterministic split do not establish a routing advantage. The solo-matrix
+  results do not measure concurrent coverage or the production pre-phase route.
 
 ---
 
-## 5. Per-Division Breakdown & Greedy Set Cover
+## 4. Individual Strategy Characterization
 
-### Division FEQ (First-Order with Equality)
-* 634 unique problems across CASC-30 and CASC-J13; 148 solved by any strategy.
-* Solo ranking: s12 (112), s6 (75), s11 (39), s8 (38), s2 (36), s14 (36), s15 (33), s1 (31).
-* **Greedy set cover**:
-  $$\text{s12 } (+112) \to \text{s6 } (+17) \to \text{s8 } (+9) \to \text{s11 } (+4) \to \text{s13 } (+4) \to \text{s15 } (+2) \implies 148/148 \text{ (100\%) in 6 strategies.}$$
-* **Comparison with `CASC_FEQ_ORDER`**:
-  * Current order: `[12, 11, 10, 6, 8, 1, 4, 13]` $\implies$ 146 solves at 8 workers.
-  * Greedy 8: `[12, 6, 8, 11, 13, 15, ...]` $\implies$ 148 solves (+2).
+Counts and timings use edition/problem instances, not bare problem names. A
+“unique” solve is an instance solved by that strategy and by no other. Times are
+the solver's `elapsed_s` for successful runs; P90 uses linear interpolation.
+The CASC-30 EPU observations are censored at its official 120 s limit.
 
-### Division FNE (First-Order Non-Equality)
-* 163 unique problems across CASC-30 and CASC-J13; 55 solved by any strategy.
-* Solo ranking: s12 (34), s15 (28), s6 (26), s2 (23), s11 (23), s4 (18), s1 (14), s8 (14).
-* **Greedy set cover**:
-  $$\text{s12 } (+34) \to \text{s11 } (+10) \to \text{s15 } (+5) \to \text{s14 } (+3) \to \text{s4 } (+2) \to \text{s13 } (+1) \implies 55/55 \text{ (100\%) in 6 strategies.}$$
-* **Comparison with `CASC_FNE_ORDER`**:
-  * Current order: `[11, 13, 4, 8, 15, 7, 3, 1, 10, 12, ...]` (s12 is at slot 10!).
-  * Top 8 in current order solves **45 problems**.
-  * Greedy 8 with s12 in slot 1 solves **55 problems** (**+10 problems, +22.2%**).
+| Strategy | Configuration summary | Solves / 510 | Share | Unique | Median | Mean | P90 |
+|:---:|---|---:|---:|---:|---:|---:|---:|
+| **s12** | `HornHeuristic` + AgeWeight(5) + AllNegative + KBO | **300** | **58.8%** | **46** | 22.0 s | 45.9 s | 123.0 s |
+| **s6** | AgeWeight(5) + KBO baseline | **269** | **52.7%** | **18** | 13.0 s | 40.7 s | 131.5 s |
+| **s1** | AgeWeight(5) + AllNegative + KBO | **216** | **42.4%** | **13** | 42.8 s | 63.9 s | 166.3 s |
+| **s11** | `ConjSymbolBoost` + AgeWeight(6) + AllNegative + KBO | **182** | **35.7%** | **15** | 15.2 s | 40.0 s | 119.7 s |
+| **s15** | `SymbolWeight` + AgeWeight(4) + AllNegative + KBO | **153** | **30.0%** | **9** | 9.6 s | 41.4 s | 143.8 s |
+| **s2** | SmallestFirst + AllNegative + KBO | **144** | **28.2%** | **8** | 5.1 s | 21.3 s | 67.5 s |
+| **s4** | AgeWeight(5) + MaxNegOrMaxPos + KBO | **133** | **26.1%** | **2** | 13.9 s | 29.6 s | 84.8 s |
+| **s8** | AgeWeight(10) + AllNegative + KBO | **133** | **26.1%** | **11** | 5.7 s | 25.7 s | 80.8 s |
+| **s5** | AgeWeight(5) + All + KBO | **124** | **24.3%** | **2** | 17.0 s | 39.2 s | 112.1 s |
+| **s14** | `ConjSymbolBoost` + SmallestFirst + All + KBO | **122** | **23.9%** | **1** | 2.4 s | 28.6 s | 128.3 s |
+| **s3** | FIFO + AllNegative + KBO | **104** | **20.4%** | **1** | 5.7 s | 31.4 s | 134.2 s |
+| **s7** | AgeWeight(2) + AllNegative + KBO | **99** | **19.4%** | **4** | 15.3 s | 49.3 s | 170.0 s |
+| **s10** | SOS (`sos_depth=100`) + AgeWeight(12) + KBO | **75** | **14.7%** | **1** | 1.3 s | 37.3 s | 120.4 s |
+| **s9** | AgeWeight(5) + AllNegative + LPO | **55** | **10.8%** | **0** | 0.6 s | 10.5 s | 23.1 s |
+| **s13** | `FunctionWeightPenalty` + SOS + AgeWeight(5) + KBO | **55** | **10.8%** | **2** | 1.2 s | 31.3 s | 103.9 s |
 
-### Division UEQ (Unit Equality)
-* 468 unique problems across CASC-30 and CASC-J13; 201 solved by any strategy.
-* Solo ranking: s1 (129), s6 (113), s12 (103), s11 (84), s5 (65), s4 (62), s15 (60).
-* **Greedy set cover**:
-  $$\text{s1 } (+129) \to \text{s11 } (+25) \to \text{s8 } (+14) \to \text{s12 } (+10) \to \text{s2 } (+7) \to \text{s6 } (+6) \to \text{s15 } (+3) \to \text{s3 } (+2) \implies 196/201 \text{ in 8 strategies.}$$
-* **Comparison with `CASC_UEQ_ORDER`**:
-  * Current order: `[4, 8, 12, 11, 2, 14, 15, 1, 3, 5, 6, ...]` (s1 is at slot 8, s6 is at slot 11).
-  * Top 8 in current order solves **191 problems**.
-  * Greedy 8 solves **196 problems** (**+5 problems**).
-
-### Division EPU (EPR Unsatisfiable)
-* 97 unique problems in CASC-30; 9 solved by any strategy.
-* Greedy set cover: s5 (+9) covers all 9 solvable problems alone. (s4 and s15 each solve 8).
-
-### Division ICU (Inconsistency with Unit Equality)
-* 99 problems in CASC-30; **0 solved** across all 15 base strategies at 240 s. Indicates that the general superposition path without specialized lemma synthesis or theory reasoning cannot refute these problems.
+Strategy 12 has the highest solo union and the most unique instance solves in
+this matrix. This is a coverage observation; the sweep does not isolate why its
+heuristic succeeds. Strategy 9 has no unique solves, but some LPO runs are as
+fast as or faster than the KBO runs on shared solved instances, so a blanket
+“KBO is always faster” conclusion is not supported.
 
 ---
 
-## 6. Overall Greedy Portfolio vs `DEFAULT_CASC_ORDER`
+## 5. Per-Division Greedy Candidates
 
-Across the entire 1,461-problem corpus (all divisions combined):
+The counts below keep CASC-30 and CASC-J13 instances separate, use the
+competition-time EPU cutoff, and simulate strategy unions from the solo matrix.
+Greedy orders are candidates only.
 
-$$\begin{aligned}
-\text{Oracle (All 15 strategies):} \quad & 413 \text{ problems} \\
-\text{Current Default CASC 1–8: } \quad & 329 \text{ problems (79.7\% of oracle)} \\
-\text{Greedy 8-strategy Portfolio: } \quad & \mathbf{403} \text{ problems (97.6\% of oracle)} \\
-\text{Gain: } \quad & \mathbf{+74} \text{ problems (+22.5\% increase on 8 workers)}
-\end{aligned}$$
+| Division | Instances | Oracle (all 15) | Current `casc_div` prefix 8 | Greedy prefix 8 | Greedy order (useful prefix) |
+|---|---:|---:|---:|---:|---|
+| FEQ | 697 | 162 | 159 | 162 | `[12, 6, 8, 13, 11, 15]` |
+| FNE | 194 | 62 | 51 | 62 | `[12, 11, 15, 4, 14, 13]` |
+| UEQ | 700 | 277 | 258 | 271 | `[1, 12, 8, 6, 11, 2, 7, 15]` |
+| EPU | 97 | 9 | 7 | 9 | `[5]` |
+| ICU | 99 | 0 | 0 | 0 | — |
+| **Total** | **1,787** | **510** | **475** | **504** | — |
 
-The overall greedy 8-strategy priority sequence is:
-1. **s12** (+256 solves, 62.0%)
-2. **s6** (+61 solves, 76.8%)
-3. **s11** (+33 solves, 84.7%)
-4. **s1** (+18 solves, 89.1%)
-5. **s8** (+14 solves, 92.5%)
-6. **s15** (+10 solves, 94.9%)
-7. **s2** (+6 solves, 96.4%)
-8. **s13** (+5 solves, 97.6%)
+The full FEQ/FNE greedy prefixes cover the observed solo union. UEQ's best
+8-strategy prefix leaves six of its 277 solvable instances uncovered. EPU's
+single-strategy s5 coverage is measured after censoring at 120 s; the shipped
+`casc_epu` prefix covers seven of those nine in this solo matrix.
+
+---
+
+## 6. Global Greedy Portfolio Candidate
+
+Across all 1,787 edition/problem instances, treating each release as a distinct
+input:
+
+| Simulated 8-slot set | Coverage | Share of 510-instance oracle |
+|---|---:|---:|
+| Generic default `casc` (s1–s8) | 408 | 80.0% |
+| Current per-division prefixes | 475 | 93.1% |
+| Greedy fixed-order candidate | **496** | **97.3%** |
+| Oracle (all 15) | 510 | 100% |
+
+The greedy candidate is `[12, 6, 11, 8, 1, 15, 2, 13]`, with incremental solo
+coverage gains of `+300, +88, +41, +21, +17, +14, +8, +7`. That is +88 over the
+generic prefix and +21 over current per-division prefixes in this matrix. These
+are not cooperative portfolio gains and are not grounds for editing
+`strategy/named.rs` without the paired validation required by `AGENTS.md` §11.
 
 ---
 
 ## 7. Conclusions and Next Steps
 
-1. **Conclusion on Pre-Phase Routing**:
-   The hypothesis that pre-phase syntactic routing could outperform static portfolios at full scale is rejected. At 240 s on canonical 8-worker hardware, dynamic routing falls ~100 problems behind static division portfolios. Pre-phase infrastructure remains valuable for detecting trivial inputs (`empty_after_lowering`), calculating difficulty/feasibility, and emitting diagnostics, but search configuration should remain governed by static per-division portfolios.
+The corrected, single-split held-out simulation is mixed: the label-fitted route
+is seven instances ahead on CASC-30 and six behind on CASC-J13. That does not
+establish a consistent routing advantage. The full-sample fit reaching nearly
+the oracle is a warning about training-set optimism, not evidence that the
+production router can solve every oracle problem. More importantly, none of
+these union-of-solo-results figures measures actual concurrent 8-worker
+coverage, the shipped `mrs_prephase::plan::rules`, clause sharing, or the effect
+of resource contention.
 
-2. **Next Steps for Portfolio Deployment (per AGENTS.md §11)**:
-   - Solo greedy set-cover generates candidate orders. In accordance with §11 ("Per-Division Portfolio Optimisation"), candidate portfolios must be validated cooperatively:
-     1. Test candidate `casc_fne` (`[12, 11, 15, 14, 4, 13, ...]`) with 8 workers and shared equality pool enabled (`MRS_SHARED_POOL_INTERVAL=500`).
-     2. Test candidate `casc_ueq` (`[1, 11, 8, 12, 2, 6, 15, 3]`).
-     3. Test candidate `default_casc` (`[12, 6, 11, 1, 8, 15, 2, 13]`).
-   - Use `paired_campaign.py --reps 2` to verify that cooperation and resource sharing preserve the solo coverage gains before committing updates to `crates/mrs-search/src/strategy/named.rs`.
+Do not change the default or per-division schedules on this evidence alone. To
+evaluate candidates, follow `AGENTS.md` §11: run paired baseline/candidate
+cooperative campaigns at eight workers, include shared and no-sharing controls,
+use at least two randomized pairs, and hold out families if the candidate was
+selected from these same sweep results. Re-audit proofs from any promoted run.
