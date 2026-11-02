@@ -416,6 +416,12 @@ a problem the front end cannot represent — are worth having, and because a
 re-measurement at a competition budget (which this host cannot run) is the
 experiment that would settle it.
 
+*(Update 2026-11-02: The full 240 s competition-budget sweep has now been
+performed across all refutation problems in both CASC-30 and CASC-J13. It
+definitively confirms this verdict: dynamic syntactic routing loses by 97–100
+problems against static per-division portfolios at 8 workers. See
+`2026-11-prephase-240s-sweep.md`.)*
+
 ## 9. Negative results, recorded
 
 * **Routing on `logic` class is not better than the fixed per-division order.**

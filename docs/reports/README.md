@@ -8,6 +8,7 @@ the current commit and has been rerun under current controls.
 |---|---|
 | `benchmarks/` | Dated division and benchmark summaries. |
 | `audits/` | Soundness and methodology audits. |
+| `prephase/` | Pre-phase studies and competition-budget strategy sweeps. |
 | `proover/` | ProoVer scores, verifier studies, and harness history. |
 | `codex/` | Database/profile analyses. |
 | [`../results/`](../results/) | Raw or summarized result artifacts. |
