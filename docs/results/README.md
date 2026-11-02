@@ -419,6 +419,28 @@ campaign conditions). See the [campaign report](../reports/benchmarks/cert-j13-2
 
 ---
 
+## Canonical full CASC-30 certification campaign (2026-10-30)
+
+`~/crates/mrs-bench/results/campaign-casc30-full-W8CASCHJ1-01-20261030`
+covered all six CASC-30 divisions (FNE, FEQ, EPU, EPS, UEQ, ICU) across 1,032
+problems under canonical competition constraints: eight workers,
+`MRS_HARDWARE=casc`, sequential `jobs=1`, and official wall-clock limits on the
+dedicated 8-physical-core host `mtsdev01`. It generated **356 solves**:
+- **UEQ:** 143 / 300 `Unsatisfiable`, **all 143 `VerifiedGood` (100.0%)** (+19 over October 28 baseline, 0 regressions)
+- **FNE:** 44 / 100 `Theorem`, **all 44 `VerifiedGood` (100.0%)** (+3 over October 19 baseline)
+- **FEQ:** 112 / 400 `Theorem`, **107 (108 re-audited) `VerifiedGood`** (+4 refutations / +5 verified over October 20/21)
+- **EPU:** 11 / 100 `Unsatisfiable`, **all 11 `VerifiedGood` (100.0%)**
+- **EPS:** 44 / 100 `Satisfiable`, **40 Certified Models** (4 inconclusive evaluation limit)
+- **ICU:** 2 / 32 `Theorem`, **both 2 `VerifiedGood` (100.0%)**
+
+Strict audit certified **307 (now 308) `VerifiedGood` refutations + 40 certified models** (348 certified solutions),
+with **0 `VerifiedBad`** and **0 `no_proof`** across all 1,032 problems.
+Re-audit with the rigid pattern variable fix in `mrs-proof-kernel` strictly certifies
+`KLE071+1` (node `c11506`). Zero memory resource-outs occurred across 45.7 hours of search.
+See the [campaign report](../reports/benchmarks/cert-30-2026-10-30.md).
+
+---
+
 ## Cooperative FNE candidate portfolio campaigns (2026-10-21 and 2026-10-22)
 
 Following solo strategy sweeps and greedy set-cover analysis, the candidate 8-strategy
