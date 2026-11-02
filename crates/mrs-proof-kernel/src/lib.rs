@@ -11527,6 +11527,22 @@ fn match_assoc_exact(
         return false;
     };
 
+    if rigid.contains(var) {
+        if !target.is_empty() && *target[0] == Term::Var(*var) {
+            return match_assoc_exact(
+                symbol,
+                &pattern[1..],
+                &target[1..],
+                substitution,
+                rigid,
+                commutative,
+                associative,
+                budget,
+            );
+        }
+        return false;
+    }
+
     // A pattern variable can absorb a non-empty contiguous target sequence.
     let max_length = target.len().saturating_sub(pattern.len() - 1);
     if max_length == 0 {
@@ -11742,6 +11758,23 @@ fn match_assoc_sequence(
     }
     let current = apply_substitution_term(pattern[pattern_index], substitution);
     if let Term::Var(var) = &current {
+        if rigid.contains(var) {
+            if target_index < target.len() && *target[target_index] == Term::Var(*var) {
+                return match_assoc_sequence(
+                    symbol,
+                    pattern,
+                    target,
+                    pattern_index + 1,
+                    target_index + 1,
+                    substitution,
+                    rigid,
+                    commutative,
+                    associative,
+                    budget,
+                );
+            }
+            return false;
+        }
         let max_segment = target.len() - target_index - remaining_pattern;
         for length in 1..=max_segment {
             if !budget.consume() {
@@ -20600,6 +20633,46 @@ mod tests {
         let verdict = verify_ac_superposition(
             &[c72, c26102, c3, c4, c6, c9],
             &c26184,
+            VerificationLimits::default(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(verdict, KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn test_kle071_node_c11506() {
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let problem = parse_tptp(input).expect("formula parses");
+            lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
+                .expect("formula lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let c23 = lower(
+            "cnf(c23, plain, addition(X1, X0) = addition(X0, X1)).",
+            &mut symbols,
+        );
+        let c44 = lower(
+            "cnf(c44, plain, addition(addition(X2, X1), X0) = addition(X2, addition(X1, X0))).",
+            &mut symbols,
+        );
+        let c231 = lower(
+            "cnf(c231, plain, X5 = addition(X5, addition(multiplication(domain(X0), X5), multiplication(domain(X1), X5)))).",
+            &mut symbols,
+        );
+        let c11439 = lower(
+            "cnf(c11439, plain, ~leq(X10, domain(X10)) | X11 = addition(X11, multiplication(X10, X11))).",
+            &mut symbols,
+        );
+        let c11506 = lower(
+            "cnf(c11506, plain, ~leq(domain(X12), domain(domain(X12))) | X17 = addition(multiplication(domain(X13), X17), X17)).",
+            &mut symbols,
+        );
+
+        let verdict = verify_ac_superposition(
+            &[c11439, c231, c23, c44],
+            &c11506,
             VerificationLimits::default(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
