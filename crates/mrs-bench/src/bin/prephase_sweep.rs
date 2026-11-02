@@ -247,13 +247,11 @@ fn main() {
     }
     let mut file = fs::File::create(&out).expect("cannot create output");
     let mut sink = BufWriter::new(&mut file);
-    if !resume {
-        writeln!(
-            sink,
-            "problem,path,strategy,schedule,status,verdict,elapsed_s,wall_s,detail"
-        )
-        .unwrap();
-    }
+    writeln!(
+        sink,
+        "problem,path,strategy,schedule,status,verdict,elapsed_s,wall_s,detail"
+    )
+    .unwrap();
     for row in &rows {
         writeln!(
             sink,
@@ -537,4 +535,31 @@ fn field(detail: &str, key: &str) -> Option<String> {
     let rest = &detail[start..];
     let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
     Some(rest[..end].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_range_single_and_ranges() {
+        assert_eq!(parse_range("1-3,5,8-9"), vec![1, 2, 3, 5, 8, 9]);
+        assert_eq!(parse_range("4"), vec![4]);
+        assert_eq!(parse_range("1,2,2,3"), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn detail_field_extraction() {
+        let detail = "elapsed_ms=123.45 processed=10 status=Theorem";
+        assert_eq!(field(detail, "elapsed_ms"), Some("123.45".to_string()));
+        assert_eq!(field(detail, "processed"), Some("10".to_string()));
+        assert_eq!(field(detail, "missing"), None);
+    }
+
+    #[test]
+    fn szs_status_parsing() {
+        let stdout = "% Some header\n% SZS status Theorem for problem\n% Other lines\n";
+        assert_eq!(parse_status(stdout), Some("Theorem".to_string()));
+        assert_eq!(parse_status("no status"), None);
+    }
 }
