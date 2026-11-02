@@ -11661,12 +11661,18 @@ fn rigid_match_term(
                 let left = flatten_ac_term(&pattern, *left_symbol, associative);
                 let right = flatten_ac_term(&target, *left_symbol, associative);
                 if commutative.contains(left_symbol) {
-                    if left.len() != right.len() {
+                    if left.len() > right.len() {
                         return false;
                     }
+                    let mut pattern_sorted: Vec<&Term> = left.clone();
+                    pattern_sorted.sort_by_key(|t| {
+                        let applied = apply_substitution_term(t, substitution);
+                        matches!(applied, Term::Var(v) if !rigid.contains(&v))
+                    });
                     let mut used = vec![false; right.len()];
-                    return match_exact_operands(
-                        &left,
+                    return match_ac_operands(
+                        *left_symbol,
+                        &pattern_sorted,
                         &right,
                         0,
                         &mut used,
@@ -11801,11 +11807,53 @@ fn match_assoc_sequence(
     }
 }
 
+fn for_each_combination<T: Copy>(
+    items: &[T],
+    k: usize,
+    budget: &AcUnifierBudget,
+    callback: &mut dyn FnMut(&[T]) -> bool,
+) -> bool {
+    fn backtrack<T: Copy>(
+        items: &[T],
+        k: usize,
+        start: usize,
+        current: &mut Vec<T>,
+        budget: &AcUnifierBudget,
+        callback: &mut dyn FnMut(&[T]) -> bool,
+    ) -> bool {
+        if !budget.consume() {
+            return false;
+        }
+        if current.len() == k {
+            return callback(current);
+        }
+        let needed = k - current.len();
+        if items.len() - start < needed {
+            return false;
+        }
+        for i in start..=items.len() - needed {
+            current.push(items[i]);
+            if backtrack(items, k, i + 1, current, budget, callback) {
+                return true;
+            }
+            current.pop();
+            if budget.exhausted.get() {
+                return false;
+            }
+        }
+        false
+    }
+
+    let mut current = Vec::with_capacity(k);
+    backtrack(items, k, 0, &mut current, budget, callback)
+}
+
 #[allow(clippy::too_many_arguments)]
-fn match_exact_operands(
+fn match_ac_operands(
+    symbol: mrs_core::SymbolId,
     pattern: &[&Term],
     target: &[&Term],
-    index: usize,
+    pattern_index: usize,
     used: &mut [bool],
     substitution: &mut HashMap<VarId, Term>,
     rigid: &HashSet<VarId>,
@@ -11816,16 +11864,101 @@ fn match_exact_operands(
     if !budget.consume() {
         return false;
     }
-    if index == pattern.len() {
-        return true;
+    if pattern_index == pattern.len() {
+        return used.iter().all(|&u| u);
     }
+
+    let current = apply_substitution_term(pattern[pattern_index], substitution);
+    if let Term::Var(var) = &current
+        && !rigid.contains(var)
+    {
+        let unused_indices: Vec<usize> = (0..target.len()).filter(|&i| !used[i]).collect();
+        let remaining_pattern = pattern.len() - pattern_index - 1;
+        if unused_indices.len() <= remaining_pattern {
+            return false;
+        }
+        if pattern_index == pattern.len() - 1 {
+            let segment = if unused_indices.len() == 1 {
+                (*target[unused_indices[0]]).clone()
+            } else {
+                rebuild_ac_term(
+                    unused_indices
+                        .iter()
+                        .map(|&i| (*target[i]).clone())
+                        .collect(),
+                    symbol,
+                )
+            };
+            if !segment.free_vars().contains(var) {
+                substitution.insert(*var, segment);
+                for &i in &unused_indices {
+                    used[i] = true;
+                }
+                return true;
+            }
+            return false;
+        }
+
+        let max_k = unused_indices.len() - remaining_pattern;
+        for k in 1..=max_k {
+            if !budget.consume() {
+                return false;
+            }
+            let mut matched = false;
+            for_each_combination(&unused_indices, k, budget, &mut |subset| {
+                let segment = if subset.len() == 1 {
+                    (*target[subset[0]]).clone()
+                } else {
+                    rebuild_ac_term(
+                        subset.iter().map(|&i| (*target[i]).clone()).collect(),
+                        symbol,
+                    )
+                };
+                if !segment.free_vars().contains(var) {
+                    let mut next = substitution.clone();
+                    next.insert(*var, segment);
+                    for &i in subset {
+                        used[i] = true;
+                    }
+                    if match_ac_operands(
+                        symbol,
+                        pattern,
+                        target,
+                        pattern_index + 1,
+                        used,
+                        &mut next,
+                        rigid,
+                        commutative,
+                        associative,
+                        budget,
+                    ) {
+                        *substitution = next;
+                        matched = true;
+                        return true;
+                    }
+                    for &i in subset {
+                        used[i] = false;
+                    }
+                }
+                false
+            });
+            if matched {
+                return true;
+            }
+            if budget.exhausted.get() {
+                return false;
+            }
+        }
+        return false;
+    }
+
     for candidate in 0..target.len() {
         if used[candidate] {
             continue;
         }
         let mut next = substitution.clone();
         if !rigid_match_term(
-            pattern[index],
+            &current,
             target[candidate],
             &mut next,
             rigid,
@@ -11839,10 +11972,11 @@ fn match_exact_operands(
             continue;
         }
         used[candidate] = true;
-        if match_exact_operands(
+        if match_ac_operands(
+            symbol,
             pattern,
             target,
-            index + 1,
+            pattern_index + 1,
             used,
             &mut next,
             rigid,
@@ -20429,6 +20563,48 @@ mod tests {
             verdict,
             KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
         ));
+    }
+
+    #[test]
+    fn test_lat142_node_c26184() {
+        fn lower(input: &str, symbols: &mut SymbolTable) -> Formula {
+            let problem = parse_tptp(input).expect("formula parses");
+            lower_annotated(symbols, &problem.formulas[0], VerificationLimits::default())
+                .expect("formula lowers")
+        }
+
+        let mut symbols = SymbolTable::new();
+        let c72 = lower(
+            "cnf(c72, plain, X0 = meet(X0, join(X0, X1))).",
+            &mut symbols,
+        );
+        let c26102 = lower(
+            "cnf(c26102, plain, goal_d0 = meet(goal_d0, meet(join(goal_d1, X1), join(goal_d0, join(meet(goal_d1, X1), meet(X1, meet(join(goal_d0, meet(goal_d1, X1)), join(goal_d1, meet(goal_d0, meet(X1, meet(join(goal_d1, X1), join(goal_d0, meet(goal_d1, X1))))))))))))).",
+            &mut symbols,
+        );
+        let c3 = lower("cnf(c3, axiom, meet(X0, X1) = meet(X1, X0)).", &mut symbols);
+        let c4 = lower("cnf(c4, axiom, join(X0, X1) = join(X1, X0)).", &mut symbols);
+        let c6 = lower(
+            "cnf(c6, axiom, meet(meet(X0, X1), X2) = meet(X0, meet(X1, X2))).",
+            &mut symbols,
+        );
+        let c9 = lower(
+            "cnf(c9, axiom, join(X0, join(X1, X2)) = join(join(X0, X1), X2)).",
+            &mut symbols,
+        );
+        let c26184 = lower(
+            "cnf(c26184, plain, goal_d0 = meet(join(goal_d1, X3), goal_d0)).",
+            &mut symbols,
+        );
+
+        let verdict = verify_ac_superposition(
+            &[c72, c26102, c3, c4, c6, c9],
+            &c26184,
+            VerificationLimits::default(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(verdict, KernelVerdict::Certified);
     }
 
     #[test]
