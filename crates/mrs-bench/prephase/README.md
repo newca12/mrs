@@ -42,7 +42,8 @@ Question 2 is the one that decides whether the pre-phase earns its place.
 | `crates/mrs-prephase` | the static analysis: ~80 features over the clausified problem, plus the class labels and the routing table |
 | `crates/mrs-bench/src/bin/prephase_dump.rs` | one CSV row of features per `.p` file under a corpus root |
 | `crates/mrs-bench/src/bin/prephase_sweep.rs` | the label: a strategy x problem outcome matrix with time-to-solution and the engine's own telemetry |
-| `analyze.py` (this directory) | joins the two and reports coverage, greedy set cover, per-bucket conditional coverage, and feasibility |
+| `mrs-tools analyze-prephase` | joins the two and reports coverage, greedy set cover, per-bucket conditional coverage, behavioral taxonomy, and feasibility |
+| `mrs-tools exact-solo-bounds` | validates archived solo matrices, applies official time caps, and exactly enumerates fixed-width strategy unions |
 
 ### Feature families
 
@@ -141,20 +142,48 @@ dominate by count.
 ### 3. Join and report
 
 ```bash
-python3 crates/mrs-bench/prephase/analyze.py \
-    results/prephase/casc30_features.csv \
-    results/prephase/casc30_sweep_t3.csv
+nix develop -c cargo build --release -p mrs-bench --bin mrs_tools
 
-python3 -m unittest discover \
-    -s crates/mrs-bench/prephase -p 'test_*.py'
+target/release/mrs_tools analyze-prephase \
+    results/prephase/casc30_features.csv \
+    results/prephase/casc30_sweep_t3.csv \
+    --json-out results/prephase/casc30-analysis.json
+
+cargo test -p mrs-bench
 ```
+
+The join key is the problem basename, matching `prephase_sweep`. If a dump has
+the same problem through multiple corpus path aliases, the last input row wins;
+the report counts those overwritten feature/outcome rows explicitly.
+
+### 4. Exact bounds for the archived solo matrices
+
+The saved strategy sweeps are 240-second measurements. This analysis reapplies
+the official caps (including 180 s for CASC-J13 and 120 s for CASC-30 EPU),
+deduplicates only the known CASC-30 EPU path aliases after checking their
+outcomes, and exhaustively evaluates fixed strategy subsets of widths 1–8.
+It runs in Rust; no solver rerun is needed.
+
+```bash
+target/release/mrs_tools exact-solo-bounds \
+    --casc30 /path/to/casc30_sweep_t240.csv \
+    --cascj13 /path/to/cascj13_sweep_t240.csv \
+    --out-prefix results/prephase/exact-solo-bounds
+```
+
+This writes Markdown and JSON reports. By default it checks the archived input
+hashes and expected corpus sizes; `--allow-different-inputs` is only for
+deliberately analyzing a new matrix. The exact bounds are for the saved solo
+outcomes, not concurrent portfolio coverage or strict proof certification.
+The archived analysis is in
+[`docs/reports/prephase/2026-11-exact-solo-bounds.md`](../../../docs/reports/prephase/2026-11-exact-solo-bounds.md).
 
 Older feature dumps made with `prephase_dump --probe` may have the probe
 columns shifted because the writer omitted the separator before the probe row.
 Repair such an archived CSV before analyzing it:
 
 ```bash
-python3 crates/mrs-bench/prephase/repair_probe_columns.py broken_features.csv \
+target/release/mrs_tools repair-probe-columns broken_features.csv \
     > repaired_features.csv
 ```
 

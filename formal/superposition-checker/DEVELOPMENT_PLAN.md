@@ -81,7 +81,7 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** implemented `check_clause_transitivity_exec` and updated `check_transitivity_and_replay` and
   `check_dag_structure` to support multi-literal clauses when either parent is a unit equality (or both).
 - **DONE:** added multi-literal clause transitivity examples and forged regression cases in `executable_transitivity_examples`.
-- **DONE:** updated `mutation-check.py` covering clause transitivity orientation and DAG replay dispatch.
+- **DONE:** extended the verifier-negative mutation gate to cover clause transitivity orientation and DAG replay dispatch.
 - **DONE:** updated `mrs-proof-kernel::verus` and `mrs-proof-kernel::lib` to recognize and certify
   multi-literal clause transitivity, multi-parent transitivity chains via intermediate DAG step elaboration,
   and zero-parent reflexivity, excluded middle, and tautology inferences.
@@ -98,7 +98,7 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** implemented `check_clause_congruence_exec` and updated `check_congruence_and_replay` and
   `check_dag_structure` to support multi-literal clauses in addition to unit equality clauses.
 - **DONE:** added multi-literal clause congruence examples and forged regression cases in `executable_congruence_examples`.
-- **DONE:** updated `mutation-check.py` covering equality congruence orientation and DAG replay dispatch.
+- **DONE:** extended the verifier-negative mutation gate to cover equality congruence orientation and DAG replay dispatch.
 - **DONE:** updated `mrs-proof-kernel::verus` and `mrs-proof-kernel::lib` to recognize and certify
   multi-literal clause congruence, added pairwise resolution discovery for multi-parent consequence steps,
   multi-inequality reduction in equality resolution via intermediate DAG steps, and cnf_transformation via instantiation.
@@ -114,7 +114,7 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** implemented `check_clause_symmetry_exec` and updated `check_symmetry_and_replay` and
   `check_dag_structure` to support multi-literal clauses in addition to unit equality clauses.
 - **DONE:** added multi-literal clause symmetry examples and forged regression cases in `executable_symmetry_examples`.
-- **DONE:** verified mutations in `mutation-check.py` covering equality symmetry orientation and DAG replay dispatch.
+- **DONE:** added verifier-negative mutations covering equality symmetry orientation and DAG replay dispatch.
 - **DONE:** updated `mrs-proof-kernel::verus` and `mrs-proof-kernel::lib` to recognize and certify
   multi-literal clause symmetry, verified by integration tests in `verus_bridge.rs` through the formal dual-check gate.
 - **Scope:** generalizes equality symmetry to arbitrary multi-literal clauses under M6.
@@ -164,7 +164,7 @@ that no interchange or caller exists are superseded by this update.
   verify positive refutations (including unit reflexive equality, multi-literal reflexive equality,
   binary complementary literals, multi-literal complementary literals) and fail-closed behavior for
   non-tautology clauses, same-polarity literals, and zero budget.
-- **DONE:** 2 verifier-negative mutations in `mutation-check.py` covering clause validation
+- **DONE:** 2 verifier-negative mutations covering clause validation
   and DAG replay dispatch.
 - **DONE:** expanded instantiation rule aliases in `mrs-proof-kernel::verus` covering
   `assume`, `duplicate`, and `alpha`.
@@ -205,7 +205,7 @@ that no interchange or caller exists are superseded by this update.
   `executable_congruence_examples` and `executable_congruence_dag_examples`
   verify positive refutations (including unary, binary arg 1, binary arg 2, commuted parents, commuted conclusions)
   and fail-closed behavior for forged function symbols, forged terms, and negative equalities.
-- **DONE:** 2 verifier-negative mutations in `mutation-check.py` covering function/argument agreement
+- **DONE:** 2 verifier-negative mutations covering function/argument agreement
   and DAG replay dispatch.
 
 ### 2026-10-24 clause excluded middle checkpoint
@@ -224,7 +224,7 @@ that no interchange or caller exists are superseded by this update.
   `executable_excluded_middle_examples` and `executable_excluded_middle_dag_examples`
   verify positive refutations and fail-closed behavior for forged atoms, polarity agreements,
   unit clauses, and non-binary clauses.
-- **DONE:** 2 verifier-negative mutations in `mutation-check.py` covering complementary polarity / atom agreement
+- **DONE:** 2 verifier-negative mutations covering complementary polarity / atom agreement
   and DAG replay dispatch.
 - **DONE:** expanded resolution and paramodulation rule aliases in `mrs-proof-kernel::verus` and `mrs-proof-kernel::lib`
   covering `resolve`, `consequence` (with 2 parents), and `paramodulate`, with integration tests certifying refutation DAGs.
@@ -245,7 +245,7 @@ that no interchange or caller exists are superseded by this update.
   `executable_symmetry_examples` and `executable_symmetry_dag_examples`
   verify positive refutations and fail-closed behavior for forged terms, polarity mismatches,
   and non-equality atoms.
-- **DONE:** 2 verifier-negative mutations in `mutation-check.py` covering symmetry term agreement
+- **DONE:** 2 verifier-negative mutations covering symmetry term agreement
   and DAG replay dispatch.
 - **DONE:** expanded resolution and instantiation rule aliases in `mrs-proof-kernel::verus`
   covering `disjunctive_syllogism`, `copy`, `rename`, `variable_rename`, `rename_variable`,
@@ -270,7 +270,7 @@ that no interchange or caller exists are superseded by this update.
   `executable_reflexivity_examples`, `executable_reflexivity_dag_examples`,
   `executable_transitivity_examples`, and `executable_transitivity_dag_examples`
   verify positive refutations and fail-closed behavior for forged terms and non-matching chains.
-- **DONE:** 2 verifier-negative mutations in `mutation-check.py` covering reflexivity term agreement
+- **DONE:** 2 verifier-negative mutations covering reflexivity term agreement
   and transitivity orientation matching.
 
 ### 2026-10-24 clause condensation checkpoint
@@ -293,7 +293,7 @@ that no interchange or caller exists are superseded by this update.
   `executable_condensation_examples` and `executable_condensation_dag_examples`
   verify positive refutations and fail-closed behavior for forged conclusions,
   out-of-bounds inclusions, mismatched literals, and duplicate substitution domains.
-- **DONE:** 2 verifier-negative mutations in `mutation-check.py` covering literal
+- **DONE:** 2 verifier-negative mutations covering literal
   agreement and DAG replay dispatch.
 
 ### 2026-10-23 clause instantiation checkpoint
@@ -313,7 +313,7 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** executable examples and refutation DAG regressions in
   `executable_instantiation_examples` and `executable_instantiation_dag_examples`
   verify positive refutations and fail-closed behavior for forged conclusions and duplicate domains.
-- **DONE:** 2 verifier-negative mutations in `mutation-check.py` covering conclusion agreement
+- **DONE:** 2 verifier-negative mutations covering conclusion agreement
   and DAG replay dispatch.
 
 ### 2026-10-22 demodulation checkpoint
@@ -337,7 +337,7 @@ that no interchange or caller exists are superseded by this update.
   `executable_demodulation_examples` and `executable_demodulation_dag_examples`
   verify positive refutations (including both orientations) and fail-closed behavior
   for forged conclusions, negative equalities, out-of-bounds indices, and mismatched paths.
-- **DONE:** 3 verifier-negative mutations in `mutation-check.py` covering equality polarity,
+- **DONE:** 3 verifier-negative mutations covering equality polarity,
   unified term agreement, and DAG replay dispatch.
 
 ### 2026-10-21 clause weakening checkpoint
@@ -358,7 +358,7 @@ that no interchange or caller exists are superseded by this update.
   `executable_weakening_examples` and `executable_weakening_dag_examples`
   verify positive refutations and fail-closed behavior for forged conclusions
   and out-of-bounds inclusion indices.
-- **DONE:** 2 verifier-negative mutations in `mutation-check.py` covering literal
+- **DONE:** 2 verifier-negative mutations covering literal
   agreement and DAG replay dispatch.
 
 ### 2026-10-21 subsumption resolution checkpoint
@@ -382,7 +382,7 @@ that no interchange or caller exists are superseded by this update.
   `executable_subsumption_resolution_examples` and `executable_subsumption_resolution_dag_examples`
   verify positive refutations and fail-closed behavior for forged conclusions,
   pivot polarity agreement, pivot atom mismatch, non-pivot literal mismatch, and out-of-order/out-of-bounds indices.
-- **DONE:** 4 verifier-negative mutations in `mutation-check.py` covering pivot polarity,
+- **DONE:** 4 verifier-negative mutations covering pivot polarity,
   pivot atom equality, non-pivot match equality, and DAG replay dispatch.
 
 ### 2026-10-21 equality factoring checkpoint
@@ -619,7 +619,7 @@ charges, clause factoring, equality factoring, subsumption-resolution literal
 comparison, weakening literal matching, instantiation/condensation, demodulation,
 nullary/exact resolution, reflexivity, transitivity, symmetry, excluded middle,
 congruence, tautology, and the structural/closure/node counter handoffs
-(see `mutation-check.py`).
+(see `mrs-tools verus-mutation-check`).
 
 ## Implementation status (historical 2026-10-18 ledger, updated where indicated)
 
@@ -633,7 +633,7 @@ the item itself is explicitly marked `ABANDONED`.
 
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
-| M0 — Verus baseline and environment | **PARTIAL** | Verus release and Linux x86_64 SHA-256 are pinned; the requested Rust toolchain follows the release's `rust-toolchain.toml` (`1.99.1`). The pinned release is `0.2026.10.18.7d82994`; `verify.sh` records both requested and effective toolchains. The installer and verifier scripts read the JSON pin with Python rather than requiring `jq`. The full `verify.sh` run passes. A lexical escape-hatch audit and Verus `--no-cheating` gate cover verifier-recognized cheats, including `assume_specification`. The gate enforces 58 verifier-negative mutations and forty-seven compiled-runtime/boundary mutations. Remaining: broader mutation coverage and auditing intentionally ignored/unverified modules. |
+| M0 — Verus baseline and environment | **PARTIAL** | Verus release and Linux x86_64 SHA-256 are pinned; the requested Rust toolchain follows the release's `rust-toolchain.toml` (`1.99.1`). The pinned release is `0.2026.10.18.7d82994`; `verify.sh` records both requested and effective toolchains. The installer and verifier scripts use the shared Rust `mrs-tools` CLI to read and validate JSON pins. The full `verify.sh` run passes. A lexical escape-hatch audit and Verus `--no-cheating` gate cover verifier-recognized cheats, including `assume_specification`. The gate enforces 58 verifier-negative mutations and forty-seven compiled-runtime/boundary mutations. Remaining: broader mutation coverage and auditing intentionally ignored/unverified modules. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule, whole-parent simultaneous one-step substitution and selected position. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. One standalone superposition counter spans structure, preflight and replay work: clause-variable collection, coverage/membership, domain uniqueness, binding lookups/copies, avoid scans, injectivity, freshened-clause materialization, both-parent substitution, target replacement, conclusion construction/comparison, path equality, selected-term lookup and unifier application/comparison. Nullary/exact-atom and first-order resolution meters include DAG node/parent work, resolvent construction and conclusion comparison. Reflexivity meters its term-equality test; transitivity shares work across changed-literal matching, orientation candidates and equality-term comparisons; symmetry meters candidate orientation and unchanged-literal matching; excluded middle meters polarity and atom equality. Equality resolution and clause factoring share local replay meters through substitution, pivot checks, deletion and conclusion comparison. Equality factoring meters selected-term applications/comparison, clause substitution, conclusion construction and comparison. Subsumption resolution meters collection, active-parent freshening, unifier application, pivot and mapped-literal comparisons, deletion and conclusion comparison. Weakening meters inclusion-literal matching; instantiation and condensation meter substitution/inclusion and exact conclusion checks; demodulation meters freshening, term application, selected-position matching, replacement and exact conclusion comparison; congruence meters recursive orientation checks, sibling comparisons and clause scanning; tautology meters reflexive-equality and complementary-literal scans, also in structural preflight. These inference DAG paths pass per-node checks into local replay meters. The per-node validator's superposition parent checks also flow through its replay meter. Adversarial unifier conflict/match, var-to-var, subterm variable and parent avoid-set cases are verified. Remaining: larger-arity generalization, `certify_dag` global work-unit completeness audit, other inference-family helpers, and other unifier callers. |
 | M3 — Superposition checker | **PARTIAL: general replay soundness proved** | `check_superposition_and_replay` postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Bounded executable certificates accept archived `SWV406+1:c502` and a source-variable binding case, rejecting forged conclusions. The supported CNF adapter and proof-DAG bridge are exercised by integration fixtures; full archived SWV406+1 TSTP translation/proof-DAG replay, broader equivalence modulo literal order/renaming, exact cumulative resource refinement, and independent calculus review remain. |
@@ -1447,7 +1447,7 @@ archived cases, and a versioned support declaration.
 - **DONE, documentation slice:** `ASSURANCE.md` records the current bounded
   claims, trusted computing base, unverified adapter boundary, and re-audit
   triggers. `supported-rules.json` declares current verified slices and limits.
-- **DONE, CI audit slice:** `verify.sh` runs `audit-verus-source.py`, which fails
+- **DONE, CI audit slice:** `verify.sh` runs `mrs-tools audit-verus-source`, which fails
   on unreviewed `assume`, `admit`, `external_body`, and verifier-allow escapes.
 - **DONE, evidence slice:** CI stores the verification log, including source
   commit, Verus binary SHA-256, Rust toolchain, verifier version, and per-module
@@ -1459,7 +1459,7 @@ archived cases, and a versioned support declaration.
   `--no-cheating`, and the mutation gate injects an
   `#[verifier::assume_specification]` probe and requires that strict option to
   reject it. Broader escape-hatch and ignored-module audits remain part of M0.
-- **PARTIAL, reproducibility gate:** `runtime-check.py` compiles the checked
+- **PARTIAL, reproducibility gate:** `mrs-tools verus-runtime-check` compiles the checked
   Verus core twice and requires byte-identical executable hashes before
   running the fixtures. This currently establishes same-host reproducibility,
   not cross-host or release-artifact determinism.

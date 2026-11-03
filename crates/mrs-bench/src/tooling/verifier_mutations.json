@@ -1,0 +1,292 @@
+[
+  [
+    "exact resolution ignores atom identity",
+    "let Some(exact_atoms_match) = same_atom_with_work(\n        &left.literals[lp].atom, &right.literals[rp].atom, work, work_limit,\n    ) else { return false; };",
+    "let Some(exact_atoms_match) = Some(true) else { return false; };"
+  ],
+  [
+    "exact resolution ignores pivot polarity",
+    "if !left.literals[lp].positive || right.literals[rp].positive { return false; }",
+    "if false { return false; }"
+  ],
+  [
+    "freshening ignores forbidden variable images",
+    "if is_forbidden { return false; }",
+    "if false { return false; }"
+  ],
+  [
+    "literal substitution",
+    "atom: substitute_atom_exec(&literal.atom, bindings),",
+    "atom: copy_atom(&literal.atom),"
+  ],
+  [
+    "literal polarity comparison",
+    "left.positive == right.positive && same_atom(&left.atom, &right.atom)",
+    "true && same_atom(&left.atom, &right.atom)"
+  ],
+  [
+    "selected term-position lookup",
+    "let result = subterm_at_exec(&root, path, 0);",
+    "let result = Some(copy_term(&root));"
+  ],
+  [
+    "superposition resolvent drops the target clause",
+    "append_literal_copy(&mut literals, &rewritten_target.literals[j]);",
+    "if j == usize::MAX { append_literal_copy(&mut literals, &rewritten_target.literals[j]); }"
+  ],
+  [
+    "DAG step skips verified replay",
+    "|| !check_superposition_and_replay_with_work(step, work, work_limit)",
+    "|| false"
+  ],
+  [
+    "DAG step ignores cited source parent",
+    "let Some(source_matches) = same_clause_exact_with_work(\n        &step.source, &nodes[node.parents[0]].clause, work, work_limit,\n    ) else { return false; };",
+    "let Some(source_matches) = Some(true) else { return false; };"
+  ],
+  [
+    "DAG node validation skips superposition replay",
+    "check_dag_superposition_step_with_work(node, &dag.nodes, work, work_limit)",
+    "true"
+  ],
+  [
+    "certifier skips node validation",
+    "        if !validate_dag_node_with_work(dag, i, work, work_limit) {\n            return DagVerdict::Unknown;\n        }",
+    "if false { return DagVerdict::Unknown; }"
+  ],
+  [
+    "input validator forges membership",
+    "if same_clause_exact(&node.clause, &dag.input_clauses[k]) {",
+    "if true {"
+  ],
+  [
+    "node validator admits forward parents",
+    "if node.parents[parent] >= index { return false; }",
+    "if false { return false; }"
+  ],
+  [
+    "certifier accepts a nonempty root",
+    "if dag.nodes[dag.root].clause.literals.len() != 0 { return DagVerdict::Rejected; }",
+    "if false { return DagVerdict::Rejected; }"
+  ],
+  [
+    "resolution checker accepts a forged conclusion",
+    "let Some(same) = same_clause_exact_with_work(\n        &expected, conclusion, work, work_limit,\n    ) else { return false; };",
+    "let Some(same) = Some(true) else { return false; };"
+  ],
+  [
+    "resolution checker ignores predicate identity",
+    "if right_predicate != predicate { return false; }",
+    "if false { return false; }"
+  ],
+  [
+    "resolution checker ignores oriented polarity",
+    "if !left.literals[left_pivot].positive || right_literal.positive {",
+    "if false {"
+  ],
+  [
+    "DAG resolution skips rule replay",
+    "let checked = check_nullary_resolution_with_work(",
+    "let checked = true || check_nullary_resolution_with_work("
+  ],
+  [
+    "DAG resolution checks a parent instead of the conclusion",
+    "        &nodes[node.parents[1]].clause,\n        lp,\n        rp,\n        &node.clause,\n        work,\n        work_limit,\n    );",
+    "        &nodes[node.parents[1]].clause,\n        lp,\n        rp,\n        &nodes[node.parents[0]].clause,\n        work,\n        work_limit,\n    );"
+  ],
+  [
+    "tokenizer span correspondence omits inductive decimal append lemma",
+    "lemma_decimal_digits_value_append(\n                        bytes@.subrange(token_start as int, cursor as int), byte);",
+    "// omitted"
+  ],
+  [
+    "first-order resolution ignores unified atom equality",
+    "let Some(exact_atoms_match) = same_atom_with_work(\n        left_pivot_atom, right_pivot_atom, work, work_limit,\n    ) else { return false; };",
+    "let Some(exact_atoms_match) = Some(true) else { return false; };"
+  ],
+  [
+    "first-order resolution ignores pivot polarity",
+    "if !certificate.left.literals[certificate.left_pivot].positive\n        || certificate.right.literals[certificate.right_pivot].positive\n    {",
+    "if false {"
+  ],
+  [
+    "DAG first-order resolution skips rule replay",
+    "|| !check_first_order_resolution_and_replay_with_work(step, work, work_limit)",
+    "|| false"
+  ],
+  [
+    "equality resolution ignores pivot polarity",
+    "if pivot_lit.positive {\n        return false;\n    }",
+    "if false {\n        return false;\n    }"
+  ],
+  [
+    "equality resolution ignores unified terms equality",
+    "if !pivot_terms_match {\n        return false;\n    }",
+    "if false {\n        return false;\n    }"
+  ],
+  [
+    "DAG equality resolution skips rule replay",
+    "|| !check_equality_resolution_and_replay_with_work(step, work, work_limit)",
+    "|| false"
+  ],
+  [
+    "clause factoring ignores polarity agreement",
+    "if first_lit.positive != second_lit.positive {\n        return false;\n    }",
+    "if false {\n        return false;\n    }"
+  ],
+  [
+    "clause factoring ignores unified atom equality",
+    "let Some(factored_atoms_match) = same_atom_with_work(\n        &inst_clause.literals[certificate.first].atom,\n        &inst_clause.literals[certificate.second].atom,\n        work,\n        work_limit,\n    ) else { return false; };",
+    "let Some(factored_atoms_match) = Some(true) else { return false; };"
+  ],
+  [
+    "DAG clause factoring skips rule replay",
+    "|| !check_clause_factoring_and_replay_with_work(step, work, work_limit)",
+    "|| false"
+  ],
+  [
+    "equality factoring ignores premise literal positive polarity",
+    "if !first_lit.positive || !second_lit.positive {\n        return false;\n    }",
+    "if false {\n        return false;\n    }"
+  ],
+  [
+    "equality factoring ignores unified term equality",
+    "if !equal { return None; }",
+    "if false { return None; }"
+  ],
+  [
+    "DAG equality factoring skips rule replay",
+    "|| !check_equality_factoring_and_replay_with_work(step, work, work_limit)",
+    "|| false"
+  ],
+  [
+    "subsumption resolution ignores pivot polarity",
+    "if target_pivot_lit.positive == active_pivot_lit.positive {\n        return false;\n    }",
+    "if false {\n        return false;\n    }"
+  ],
+  [
+    "subsumption resolution ignores pivot atom equality",
+    "let Some(pivot_atoms_match) = same_atom_with_work(\n        &target_pivot_lit.atom, &active_pivot_lit.atom, work, work_limit,\n    ) else { return false; };",
+    "let Some(pivot_atoms_match) = Some(true) else { return false; };"
+  ],
+  [
+    "subsumption resolution ignores non-pivot literal match",
+    "let Some(literals_match) = same_literal_with_work(\n                &inst_active.literals[j], &certificate.target.literals[target_idx],\n                work, work_limit,\n            ) else { return false; };",
+    "let Some(literals_match) = Some(true) else { return false; };"
+  ],
+  [
+    "DAG subsumption resolution skips rule replay",
+    "|| !check_subsumption_resolution_and_replay_with_work(step, work, work_limit)",
+    "|| false"
+  ],
+  [
+    "weakening ignores literal agreement",
+    "let Some(literal_matches) = same_literal_with_work(\n            &certificate.parent.literals[i], &certificate.conclusion.literals[target_idx],\n            work, work_limit,\n        ) else { return false; };",
+    "let Some(literal_matches) = Some(true) else { return false; };"
+  ],
+  [
+    "DAG weakening skips rule replay",
+    "|| !check_weakening_and_replay_with_work(step, work, work_limit)",
+    "|| false"
+  ],
+  [
+    "demodulation ignores equality positive polarity",
+    "if !eq_lit.positive {\n        return false;\n    }",
+    "if false {\n        return false;\n    }"
+  ],
+  [
+    "demodulation ignores unified term equality",
+    "let Some(selected_term_matches) = same_term_with_work(\n        &from_inst, &selected_subterm, work, work_limit,\n    ) else { return false; };",
+    "let Some(selected_term_matches) = Some(true) else { return false; };"
+  ],
+  [
+    "DAG demodulation skips rule replay",
+    "|| !check_demodulation_and_replay_with_work(step, work, work_limit)",
+    "|| false"
+  ],
+  [
+    "instantiation ignores conclusion agreement",
+    "let Some(expected) = substitute_clause_exec_with_work(\n        &certificate.parent, &certificate.substitution, work, work_limit,\n    ) else { return false; };\n    let Some(conclusion_matches) = same_clause_exact_with_work(\n        &expected, &certificate.conclusion, work, work_limit,\n    ) else { return false; };",
+    "let Some(expected) = substitute_clause_exec_with_work(\n        &certificate.parent, &certificate.substitution, work, work_limit,\n    ) else { return false; };\n    let Some(conclusion_matches) = Some(true) else { return false; };"
+  ],
+  [
+    "DAG instantiation skips rule replay",
+    "|| !check_instantiation_and_replay_with_work(step, work, work_limit)",
+    "|| false"
+  ],
+  [
+    "condensation ignores literal agreement",
+    "let Some(literal_matches) = same_literal_with_work(\n            &instantiated, &certificate.conclusion.literals[target_idx], work, work_limit,\n        ) else { return false; };",
+    "let Some(literal_matches) = Some(true) else { return false; };"
+  ],
+  [
+    "DAG condensation skips rule replay",
+    "|| !check_condensation_and_replay_with_work(step, work, work_limit)",
+    "|| false"
+  ],
+  [
+    "reflexivity ignores identical terms",
+    "let Some(terms_match) = same_term_with_work(s, t, work, work_limit) else {\n        return false;\n    };",
+    "let Some(terms_match) = Some(true) else { return false; };"
+  ],
+  [
+    "transitivity ignores valid chained orientation",
+    "                if step_valid {\n                    assert(view_clause(*clause).literals[k as int] == view_literal(*p_lit));",
+    "if true {"
+  ],
+  [
+    "DAG transitivity skips rule replay",
+    "    // Keep parent structure and all transitivity comparisons on the node meter.\n    if !check_transitivity_and_replay_with_work(\n        &nodes[node.parents[0]].clause,\n        &nodes[node.parents[1]].clause,\n        &node.clause,\n        work,\n        work_limit,\n    ) {\n        return false;\n    }",
+    "if false {\n        return false;\n    }"
+  ],
+  [
+    "symmetry ignores valid commuted orientation",
+    "let Some(step_valid) = check_symmetry_step_exec_with_work(\n                    s, t, u, v, work, work_limit,\n                ) else { return None; };\n                if step_valid {",
+    "let Some(step_valid) = Some(true) else { return None; };\n                if step_valid {"
+  ],
+  [
+    "DAG symmetry skips rule replay",
+    "    // Keep parent structure and all symmetry comparisons on the node meter.\n    if !check_symmetry_and_replay_with_work(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        work,\n        work_limit,\n    ) {\n        return false;\n    }",
+    "if false {\n        return false;\n    }"
+  ],
+  [
+    "excluded middle ignores opposite polarity or atom agreement",
+    "let Some(step_valid) = check_excluded_middle_step_exec_with_work(\n        l1, l2, work, work_limit,\n    ) else { return false; };",
+    "let Some(step_valid) = Some(true) else { return false; };"
+  ],
+  [
+    "DAG excluded middle skips rule replay",
+    "    // Continue per-node charges through the polarity and atom checks.\n    if !check_excluded_middle_and_replay_with_work(\n        &node.clause,\n        work,\n        work_limit,\n    ) {\n        return false;\n    }",
+    "if false {\n        return false;\n    }"
+  ],
+  [
+    "congruence ignores function symbol or argument agreement",
+    "let Some(step_valid) = check_congruence_step_exec_with_work(\n                    s, t, u, v, work, work_limit,\n                ) else { return None; };\n                if step_valid {",
+    "let Some(step_valid) = Some(true) else { return None; };\n                if step_valid {"
+  ],
+  [
+    "nested congruence ignores unchanged binary sibling",
+    "let Some(sibling_same) = same_term_with_work(b1, b2, work, work_limit) else {\n                    return None;\n                };",
+    "let sibling_same = true;"
+  ],
+  [
+    "nested congruence ignores inner unary function symbol",
+    "(ExecTerm::App1(f1, a1), ExecTerm::App1(f2, a2)) => {\n            if *f1 != *f2 { return Some(false); }",
+    "(ExecTerm::App1(f1, a1), ExecTerm::App1(f2, a2)) => {\n            if false { return Some(false); }"
+  ],
+  [
+    "DAG congruence skips rule replay",
+    "    // Keep parent structure and recursive term comparisons on the node meter.\n    if !check_congruence_and_replay_with_work(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        work,\n        work_limit,\n    ) {\n        return false;\n    }",
+    "if false {\n        return false;\n    }"
+  ],
+  [
+    "tautology skips clause validation",
+    "let Some(is_tautology) = check_clause_tautology_exec_with_work(\n        conclusion, work, work_limit,\n    ) else { return false; };",
+    "let Some(is_tautology) = Some(true) else { return false; };"
+  ],
+  [
+    "DAG tautology skips rule replay",
+    "    // Keep the node counter through the bounded clause scan.\n    if !check_tautology_and_replay_with_work(\n        &node.clause,\n        work,\n        work_limit,\n    ) {\n        return false;\n    }",
+    "if false {\n        return false;\n    }"
+  ]
+]

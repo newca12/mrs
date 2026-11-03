@@ -8,6 +8,11 @@ Do not use the `explore` or `general` subagents (`subagent_type: "explore"` or
 bounded direct searches and file reads, or another explicitly requested tool,
 instead.
 
+## Rust Module Layout
+Do not add `mod.rs` files. Use `foo.rs` as a module root and `foo/bar.rs` for
+its child modules (for example, `src/tooling.rs` with
+`src/tooling/prephase.rs`).
+
 ## 1. NixOS WSL Development Environment (SOTA)
 The host environment is **NixOS running inside Windows Subsystem for Linux (WSL)**.
 - Traditional FHS assumptions do NOT apply. Files and libraries are versioned under `/nix/store/` instead of `/lib` or `/usr/include`.
@@ -442,10 +447,11 @@ MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
 The cooperative result is the portfolio-selection objective. The difference
 between shared and no-sharing runs measures cooperation gain separately from
 strategy diversity. Use `cooperative_portfolio_search.sh` for one-swap local
-search over candidate portfolios.
+search over candidate portfolios; its Rust implementation owns candidate
+generation, run.csv scoring, caching, and the search loop.
 
 > **Replication policy (updated 2026-10-30).** Two randomized paired blocks are
-> the minimum screen, not proof that variance is low. `paired_campaign.py --reps 2`
+> the minimum screen, not proof that variance is low. `mrs-tools paired-campaign --reps 2`
 > runs two baseline/candidate pairs (four full arms) in randomized order on the
 > same host. Report both pair deltas, per-problem flips, the mean and range, and
 > strict-audit outcomes. A single run remains only an observation.
@@ -471,7 +477,7 @@ search over candidate portfolios.
 > ```
 >
 > `run_variance.sh` measures repeated runs of one configuration; use
-> `paired_campaign.py` for paired baseline/candidate comparisons. Variance is
+> `mrs-tools paired-campaign` for paired baseline/candidate comparisons. Variance is
 > bimodal per problem, not uniform jitter: `KLE152-10` takes ~118 s or
 > ~217 s with nothing between, because concurrent strategies race and contention
 > picks the winner. `run_variance.sh` reports per-problem spread for that reason.
@@ -524,25 +530,25 @@ routing plan. It is **off by default** and every routing rule is marked
 |------|------|
 | `prephase_dump` | one CSV row of features per `.p` file. `--rlimit-mb` isolates each file under an `RLIMIT_AS` ceiling, so a problem too large for the host is recorded as `resource_limit` instead of taking the run out with the OOM killer. `--probe` appends the probe's ten columns |
 | `prephase_sweep` | the label: configuration × problem outcome matrix with time-to-solution and the engine's own telemetry. Stratified sampling, resumable |
-| `analyze.py` | joins the two; coverage, greedy set cover, per-bucket conditional coverage, behavioural taxonomy, solo-matrix portfolio simulation, and deterministic alternating-name cross-validation. `--features-only` runs the label-free corpus taxonomy |
+| `mrs-tools analyze-prephase` | joins the two; coverage, greedy set cover, per-bucket conditional coverage, behavioral taxonomy, solo-matrix portfolio simulation, and deterministic alternating-name cross-validation. `--features-only` runs the label-free corpus taxonomy |
 | `ab.sh` | cooperative A/B of the pre-phase against the shipped per-division portfolio |
 
 ```bash
-nix develop -c cargo build --release -p mrs-bench --bin prephase_dump --bin prephase_sweep
+nix develop -c cargo build --release -p mrs-bench --bin prephase_dump --bin prephase_sweep --bin mrs_tools
 
 TPTP=~/TPTP-v9.3.0 ./target/release/prephase_dump \
     --root ~/TPTP-v9.3.0/Problems --out features.csv --jobs 2 --rlimit-mb 2500
 TPTP=crates/mrs-bench/problems/casc-30 ./target/release/prephase_sweep \
     --features features.csv --sample 600 --time 3 --jobs 2 --out labels.csv
-python3 crates/mrs-bench/prephase/analyze.py features.csv labels.csv
+target/release/mrs_tools analyze-prephase features.csv labels.csv
 ```
 
 **Results.** Read `docs/reports/prephase/2026-10-prephase-study.md` and the
 corrected 240 s follow-up at `docs/reports/prephase/2026-11-prephase-240s-sweep.md`.
-An order inversion in `analyze.py` invalidated the earlier 3 s routed-coverage
+An order inversion in the original offline analyzer invalidated the 3 s routed-coverage
 count and p-value; the archived probed feature CSVs also had a missing separator
 that shifted their probe columns and appended a probe counter to `label`. The
-dump writer is fixed, and `repair_probe_columns.py` restores the archived rows.
+dump writer is fixed; `mrs-tools repair-probe-columns` restores the archived rows.
 The raw 3 s/30 s label matrices are not present for a rerun. With the corrected
 analyzer and repaired 240 s features, one deterministic two-fold **solo-matrix
 simulation** gives 246/991 vs 239/991 on CASC-30 (+7, with EPU censored at 120 s)

@@ -70,8 +70,6 @@
           packages = with pkgs; [
             git
             cargo-nextest
-            python3
-            jq
             curl
             unzip
           ];
@@ -89,6 +87,7 @@
             echo "mrs dev shell — $(rustc --version)"
             echo "  default build:  cargo build --release"
             echo "  proover build:  cargo build --release --features proover --bin mrs"
+            echo "  bench tools:    cargo build --release -p mrs-bench --bin mrs_tools"
             echo "  tests:          cargo test --workspace"
           '';
         };
@@ -99,9 +98,9 @@
         devShells.verus = pkgs.mkShell {
           packages = with pkgs; [
             git
-            jq
             curl
             unzip
+            pkg-config
             rustup
           ];
 

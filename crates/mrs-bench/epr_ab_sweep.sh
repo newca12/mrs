@@ -44,6 +44,7 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${REPO}/crates/mrs-bench/tools.sh"
 CASC="$REPO/crates/mrs-bench/casc.sh"
 AUDIT="$REPO/target/release/audit_casc_proofs"
 PROBLEMS_DIR="${EPU_PROBLEMS_DIR:-$REPO/crates/mrs-bench/problems/casc-30}"
@@ -227,6 +228,7 @@ echo "[epr-sweep] label=$LABEL pre_pass=$PRE_PASS mode=$MODE hardware=$HARDWARE 
 echo "[epr-sweep] shape: $SHAPE_NOTE"
 echo "[epr-sweep] shape: $MEM_NOTE"
 [[ "$SHAPE_OK" -eq 0 ]] && echo "[epr-sweep] shape: WARNING - this run is NOT a CASC-shaped number" >&2
+mrs_tools --help >/dev/null
 echo "[epr-sweep] conditions: $OUT/conditions.txt"
 
 MRS_HARDWARE="$HARDWARE" MRS_EPR_GROUND="$EPR_GROUND" "$CASC" \
@@ -252,7 +254,7 @@ if [[ ! -f "$RUN_META" ]]; then
   echo "[epr-sweep] missing harness provenance: $RUN_META" >&2
   exit 1
 fi
-RUN_BINARY_SHA256="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binary_sha256", "unknown"))' "$RUN_META")"
+RUN_BINARY_SHA256="$(mrs_tools read-binary-hash "$RUN_META")"
 if [[ "$RUN_BINARY_SHA256" != "$MRS_BIN_SHA256" ]]; then
   echo "[epr-sweep] binary hash mismatch: conditions=$MRS_BIN_SHA256 run_meta=$RUN_BINARY_SHA256" >&2
   exit 1
@@ -264,15 +266,7 @@ VERIFIED="n/a"
 if [[ -x "$AUDIT" ]]; then
   "$AUDIT" --run "$OUT/run" --problems-dir "$PROBLEMS_DIR" --checks strict \
     --output "$OUT/certification" >/dev/null 2>&1 \
-    && VERIFIED="$(python3 -c '
-import csv, sys
-good = total = 0
-for r in csv.DictReader(open(sys.argv[1])):
-    if r["generation_status"] in ("Unsatisfiable", "Theorem"):
-        total += 1
-        if r["strict_status"] == "VerifiedGood":
-            good += 1
-print(f"{good}/{total}")' "$OUT/certification/audit.csv")" \
+    && VERIFIED="$(mrs_tools count-verified "$OUT/certification/audit.csv")" \
     || VERIFIED="audit-failed"
 else
   echo "[epr-sweep] WARNING: audit_casc_proofs not built, the proof column is missing." >&2
@@ -283,30 +277,7 @@ fi
 # EPR pre-pass telemetry, joined from the archived stderr that casc.sh kept.
 # This is the diagnostic: it says whether the pre-pass searched, which is a
 # different question from whether it won.
-python3 - "$RUN_CSV" "$OUT" <<'PY' 2>/dev/null || true
-# Joins the EPR pre-pass telemetry out of the archived stderr. "Did the pre-pass
-# search" is a different question from "did it win", and only this answers the
-# first: a run where epr_generated is 0 says the ladder never ran, which is a
-# different defect from one where it ran and lost.
-import csv, os, re, sys
-run_csv, out = sys.argv[1], sys.argv[2]
-keys = ("epr_attempted","epr_route","epr_generated","epr_rounds","epr_falsifying",
-        "epr_full_grounding","epr_clauses","epr_vars","epr_ms","epr_result","epr_fallback")
-rows = list(csv.DictReader(open(run_csv)))
-arch = os.path.join(out, "run", "raw", "mrs", "epu")
-with open(os.path.join(out, "epr_telemetry.csv"), "w") as fh:
-    fh.write("problem,szs_status," + ",".join(keys) + "\n")
-    for r in rows:
-        p = os.path.join(arch, r["problem"] + ".stderr")
-        tele = {}
-        try:
-            for tok in open(p, errors="replace").read().split():
-                m = re.match(r"^(epr_\w+)=(.*)$", tok)
-                if m: tele[m.group(1)] = m.group(2)
-        except OSError:
-            pass
-        fh.write(",".join([r["problem"], r["szs_status"]] + [tele.get(k, "") for k in keys]) + "\n")
-PY
+mrs_tools epr-telemetry "$RUN_CSV" "$OUT" >/dev/null 2>&1 || true
 
 TOTAL=$(awk -F, 'NR>1 && $0 !~ /^#/ {n++} END {print n+0}' "$RUN_CSV")
 SOLVED=$(awk -F, 'NR>1 && $6=="Unsatisfiable" {n++} END {print n+0}' "$RUN_CSV")

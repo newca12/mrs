@@ -17,7 +17,7 @@ measures.
 | `mrs-prephase` | `crates/mrs-prephase/` | ~80 structural features over the clausified problem, a five-axis class taxonomy, and a declarative routing table |
 | `prephase_dump` | `crates/mrs-bench/src/bin/prephase_dump.rs` | one CSV row of features per TPTP file, with per-file process isolation |
 | `prephase_sweep` | `crates/mrs-bench/src/bin/prephase_sweep.rs` | the label: a configuration × problem outcome matrix with time-to-solution |
-| `analyze.py` | `crates/mrs-bench/prephase/analyze.py` | joins the two; coverage, set cover, conditional coverage, solo-matrix portfolio simulation, deterministic alternating-name cross-validation |
+| `mrs-tools analyze-prephase` | Current Rust replacement in `crates/mrs-bench` | joins the two; coverage, set cover, conditional coverage, solo-matrix portfolio simulation, deterministic alternating-name cross-validation |
 | `ab.sh` | `crates/mrs-bench/prephase/ab.sh` | cooperative A/B of the pre-phase against the shipped per-division portfolio |
 | `mrs-search::prephase` | `crates/mrs-search/src/prephase.rs` | plan → `SearchConfig`, plus the bounded search-behaviour probe |
 | `--pre-phase`, `--list-rules` | `src/main.rs` | the in-binary wiring, off by default |
@@ -55,7 +55,7 @@ across 7 configurations at 30 s (889 runs).
    making a mistake — it is answering a different question than CASC's taxonomy.
 
 4. **The original routed-coverage comparison is superseded.** A priority-order
-   inversion in `analyze.py` was found during the November 240 s review: the
+   inversion in the original offline analyzer was found during the November 240 s review: the
    greedy-selected strategies were placed after the unselected strategies, even
    though the simulator consumes the order from the front. The 3 s cross-validated
    routed count and its p-value below are therefore withdrawn. The 30 s hard-tail
@@ -408,13 +408,13 @@ person from re-deriving the same hope. What it now carries is:
   which.
 
 The original routing verdict needs qualification. **The cross-validated route
-counts in this report are withdrawn** because `analyze.py` inverted the fitted
+counts in this report are withdrawn** because the original analyzer inverted the fitted
 priority order by placing selected strategies last. The 30 s set-cover results
 remain descriptions of a solo matrix, not measurements of concurrent routed
 portfolios.
 
 *(Update 2026-11-02: The 240 s solo matrices have now been reviewed. Alongside
-the `analyze.py` order inversion, a missing CSV delimiter in `prephase_dump`
+the analyzer order inversion, a missing CSV delimiter in `prephase_dump`
 concatenated a probe counter onto the structural label; the writer is fixed and
 the archived feature rows were repaired before analysis. On one deterministic
 two-fold holdout, the fitted route covers 246/991 CASC-30 instances versus 239

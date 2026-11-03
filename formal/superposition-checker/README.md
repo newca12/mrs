@@ -29,8 +29,8 @@ nix develop .#verus -c formal/superposition-checker/install-verus.sh  # once per
 nix develop .#verus -c formal/superposition-checker/verify.sh
 ```
 
-On ordinary Linux x86_64 hosts with `rustup`, `curl`, `unzip`, `python3`, and
-`sha256sum`, run the scripts directly (CI uses this path):
+On ordinary Linux x86_64 hosts with the workspace Rust toolchain, Cargo, `rustup`,
+`curl`, `unzip`, and `sha256sum`, run the scripts directly (CI uses this path):
 
 ```sh
 formal/superposition-checker/install-verus.sh  # once per pinned version
@@ -43,8 +43,10 @@ required Rust toolchain selected by `verus-toolchain.json`, and stores Verus und
 `VERUS_INSTALL_DIR=/path/to/install`. The dedicated Nix shell isolates its
 `RUSTUP_HOME` and `CARGO_HOME` under the user cache; override them if needed.
 Set `VERUS=/path/to/verus` to verify with an already installed binary.
+The scripts build the shared `mrs-tools` binary with Cargo when it is not already
+available; set `MRS_TOOLS_BIN` to reuse a prebuilt binary.
 
-The verification script also runs `audit-verus-source.py`; it fails closed if
+The verification script also runs `mrs-tools audit-verus-source`; it fails closed if
 formal Rust sources contain `assume`, `admit`, `external_body`, or verifier
 allow attributes. Each proof module is additionally verified with Verus's
 `--no-cheating` option, which rejects verifier-recognized escape hatches
@@ -53,7 +55,7 @@ including `assume_specification`, even if they evade a lexical audit. See
 [`supported-rules.json`](supported-rules.json) for the current trust boundary
 and machine-readable supported-slice declaration.
 
-It also runs `mutation-check.py`, which mutates replay and DAG-validation
+It also runs `mrs-tools verus-mutation-check`, which mutates replay and DAG-validation
 conditions across superposition, resolution, equality resolution, factoring,
 subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
@@ -86,7 +88,11 @@ Two verifier-negative congruence mutations also remove the unchanged binary-sibl
 and nested unary function-symbol checks; Verus must reject both.
 The
 source tree is not modified by these negative checks.
-`runtime-check.py` compiles the verified core and runs DAG regressions in a
+The mutation inventory is declarative data in
+`crates/mrs-bench/src/tooling/verifier_mutations.json` and
+`runtime_mutations.json`; the Rust runner validates the inventory size and each
+unique source anchor before execution.
+`mrs-tools verus-runtime-check` compiles the verified core and runs DAG regressions in a
 temporary directory. It performs the compile twice and requires byte-identical
 runtime artifacts before executing the regressions; this is a same-host
 determinism check, not a cross-host reproducible-build claim.

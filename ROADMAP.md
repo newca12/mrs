@@ -36,14 +36,14 @@ Owners: benchmark/runtime maintainers. Paths: `crates/mrs-bench/`, `docs/results
   snapshots. Producer `run_meta.json` is now hashed when present as well as the run CSV;
   consolidating a full producer/checker ledger is still open.
 - [ ] Generate the current certification dashboard from records; retain old audits unchanged.
-  `certification_dashboard.py` renders selected immutable snapshots and preserves
+  `mrs-tools certification-dashboard` renders selected immutable snapshots and preserves
   all outcomes. Selecting/re-auditing the authoritative current baseline is open.
 - [x] Separate actual/credited time and RSS/address-space in new harness rows;
   retain signal/status evidence without inferring OOM from SIGKILL alone.
 - [x] Add paired, order-randomized strictly audited baseline/candidate campaigns
-  and paired descriptive outcome analysis (`paired_campaign.py`).
+  and paired descriptive outcome analysis (`mrs-tools paired-campaign`).
 - [ ] Freeze stratified profiling fixtures and family-disjoint development/holdout sets.
-  `freeze_corpus.py` records all file/include hashes and stable family-disjoint
+  `mrs-tools freeze-corpus` records all file/include hashes and stable family-disjoint
   assignments (conservative domain-prefix or explicit reviewed map). Selecting
   representative profiling fixtures and freezing the competition corpus remain open.
 
@@ -131,7 +131,7 @@ Owners: runtime/search maintainers. Paths: `src/pipeline.rs`, `src/coordinator.r
   order, independent of term-interning IDs, and is retained by `repeat_search`.
   It is a selection digest, not a complete inference/pruning trace. Unified
   fixed-work configuration and remaining unstable traversal audits are open.
-  `fixed_work_compare.py` now archives paired arms and refuses elapsed-time
+  `mrs-tools fixed-work-compare` now archives paired arms and refuses elapsed-time
   ratios unless ceiling, selection digest and work counters match.
   Portfolio strategy counters are now forked into worker-local ID namespaces,
   avoiding sibling allocation timing in clause-ID tie-breaking. Imported chains

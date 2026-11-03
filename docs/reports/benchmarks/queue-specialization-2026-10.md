@@ -46,7 +46,8 @@ campaigns remain required before changing the default.
 
 ## Fixed-work driver smoke check
 
-The new `fixed_work_compare.py` driver was exercised at source `bff0749` with
+The predecessor fixed-work comparison driver (now superseded by the Rust
+`mrs-tools fixed-work-compare` command) was exercised at source `bff0749` with
 the then-current debug executable SHA-256
 `76feb0fd28c9a4b61e2cbd086bf49ea305c071b6eda3d3bdb2d6745f458bde6a`
 in both arms. Input `pel43.p` SHA-256:

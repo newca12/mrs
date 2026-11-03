@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(git rev-parse --show-toplevel)"
+source "$ROOT/formal/superposition-checker/tools.sh"
+formal_tools_setup
+
 if [[ -n "${VERUS:-}" ]]; then
   VERUS_BIN="$VERUS"
 else
-  VERUS_VERSION="$(python3 -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text())["verus"])' \
-    "$(dirname "$0")/verus-toolchain.json")"
+  VERUS_VERSION="$(mrs_tools verus-pin-field "$(dirname "$0")/verus-toolchain.json" verus)"
   VERUS_BIN="${VERUS_INSTALL_DIR:-$HOME/.local/opt/mrs-verus}/$VERUS_VERSION/verus"
 fi
 
 TOOLCHAIN_HOME="${RUSTUP_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/mrs-verus/rustup}"
 export RUSTUP_HOME="$TOOLCHAIN_HOME"
-export RUSTUP_TOOLCHAIN="$(python3 -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text())["rust_toolchain"])' \
-  "$(dirname "$0")/verus-toolchain.json")"
+export RUSTUP_TOOLCHAIN="$(mrs_tools verus-pin-field "$(dirname "$0")/verus-toolchain.json" rust_toolchain)"
 
 run_check() {
   if [[ -n "${VERUS_LOG:-}" ]]; then
@@ -29,14 +31,7 @@ requested_rust_toolchain() {
 effective_rust_toolchain() {
   local output
   output="$("$VERUS_BIN" --version 2>&1)"
-  printf '%s\n' "$output" | python3 -c '
-import re, sys
-text = sys.stdin.read()
-match = re.search(r"Toolchain:\s+([^\s]+)", text)
-if not match:
-    raise SystemExit("could not determine Verus effective toolchain")
-print(match.group(1))
-'
+  printf '%s\n' "$output" | mrs_tools verus-effective-toolchain
 }
 
 if [[ -n "${VERUS_LOG:-}" ]]; then
@@ -48,13 +43,13 @@ if [[ -n "${VERUS_LOG:-}" ]]; then
 fi
 
 run_check "$VERUS_BIN" --version
-run_check python3 "$(dirname "$0")/audit-verus-source.py"
-run_check python3 -m json.tool "$(dirname "$0")/supported-rules.json" >/dev/null
+run_check mrs_tools audit-verus-source --source-dir "$(dirname "$0")"
+run_check mrs_tools validate-json "$(dirname "$0")/supported-rules.json"
 run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/target_rigidity.rs"
 run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/first_order_core.rs"
 run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/superposition_checker.rs"
 run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/variable_superposition.rs"
-run_check python3 "$(dirname "$0")/runtime-check.py" "$VERUS_BIN" \
+run_check mrs_tools verus-runtime-check "$VERUS_BIN" \
   "$(dirname "$0")/first_order_core.rs"
-run_check python3 "$(dirname "$0")/mutation-check.py" "$VERUS_BIN" \
+run_check mrs_tools verus-mutation-check "$VERUS_BIN" \
   "$(dirname "$0")/first_order_core.rs"

@@ -2,13 +2,14 @@
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
+source "${ROOT}/formal/superposition-checker/tools.sh"
+formal_tools_setup
 PIN_FILE="$ROOT/formal/superposition-checker/verus-toolchain.json"
 DESTINATION="${VERUS_INSTALL_DIR:-$HOME/.local/opt/mrs-verus}"
 TOOLCHAIN_HOME="${RUSTUP_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/mrs-verus/rustup}"
 
 json_field() {
-  python3 -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text())[sys.argv[2]])' \
-    "$PIN_FILE" "$1"
+  mrs_tools verus-pin-field "$PIN_FILE" "$1"
 }
 
 VERSION="$(json_field verus)"
@@ -26,7 +27,6 @@ command -v curl >/dev/null
 command -v sha256sum >/dev/null
 command -v unzip >/dev/null
 command -v rustup >/dev/null
-command -v python3 >/dev/null
 
 mkdir -p "$DESTINATION"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mrs-verus.XXXXXXXX")"

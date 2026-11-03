@@ -47,7 +47,7 @@ Notes:
 | `perf_probe.sh` | Measure search throughput on this host with a fixed amount of work, then append the result to the bank in `docs/results/perf/` |
 | `throughput_probe.sh` / `throughput_probe_list.txt` | Compare two `mrs` builds on clauses retired out of a fixed per-problem budget; the corpus is a fixed stride over the checked-in editions, and each row records the binary sha |
 | `cooperative_portfolio_sweep.sh` | Measure an explicit multi-worker portfolio; enable shared equality exchange with a positive `MRS_SHARED_POOL_INTERVAL`, or use `0` for a no-sharing control |
-| `cooperative_portfolio_search.sh` | Run one-swap local search over portfolios using cooperative solved-count coverage |
+| `cooperative_portfolio_search.sh` / `mrs-tools cooperative-portfolio-search` | Run one-swap local search over portfolios using Rust CSV scoring and measured cooperative coverage |
 | `setup.sh` | Download and extract the CASC problem and axiom archives from tptp.org |
 | `systems/` | Per-system `invoke.sh` scripts (add a new directory here to register a competitor) |
 | `problems/` | Extracted TPTP problems and axioms (gitignored, populated by `setup.sh`) |
@@ -62,13 +62,23 @@ Notes:
 | `zenodo_benchmark.sh` | Evaluate `mrs-proover` (optionally Nörgler, `--with-norgler`) on the Zenodo benchmark; checks the original→never-VerifiedBad / falsified→never-VerifiedGood invariants |
 | `norgler_compare.sh` | Compare `mrs-proover` vs Nörgler on the committed deterministic corpus |
 | `audit_casc_proofs` | Replay archived CASC prover output through strict, MRS-only, and full-ladder checks without rerunning MRS |
+| `check_canary_drift.sh` / `mrs-tools check-canary-drift` | Audit canary outcomes and telemetry for include-drift contamination |
 | `perf_probe` | The measurement tool behind `perf_probe.sh`: run a fixed-work search and emit a JSON row (`measure`), or append rows to the bank and render a report (`bank`) |
+| `mrs_tools` | Shared Rust library/CLI for corpus manifests, paired and fixed-work analysis, certification summaries, pre-phase analysis, CSV repairs, and the Verus development gates |
+
+Data-oriented tools share the `mrs-bench` library and the `mrs_tools`
+subcommands. Bash scripts keep process and campaign orchestration; their shared
+`tools.sh` launcher uses `MRS_TOOLS_BIN` when set; otherwise it checks/builds
+the release CLI with Cargo when available, falling back to standard target paths
+on cargo-less hosts. Benchmark analysis and reporting are built and tested
+through the workspace's Rust toolchain.
 
 ## Quick start
 
 ```bash
-# 1. Build mrs in release mode
+# 1. Build mrs and the shared Rust tools in release mode
 cargo build --release
+cargo build --release -p mrs-bench --bin mrs_tools
 
 # 2. Download problems and axioms (~500 MB)
 crates/mrs-bench/setup.sh

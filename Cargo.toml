@@ -35,6 +35,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 cc = { version = "1.7.0", features = ["parallel"] }
 clap = { version = "4.6.7", features = ["derive"] }
+csv = "1.4.0"
 crossbeam-channel = "0.5.17"
 libc = "0.2.191"
 mimalloc = { version = "0.1.52", default-features = false }

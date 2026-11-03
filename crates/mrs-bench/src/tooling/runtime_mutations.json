@@ -1,0 +1,794 @@
+[
+  {
+    "name": "first_order_core_accepts_duplicate_node_ids",
+    "source_file": "first_order_core_accepts_duplicate_node_ids.rs",
+    "binary_name": "first-order-core-accepts-duplicate-node-ids",
+    "edits": [
+      {
+        "anchor": "            if dag.nodes[prior].id == node.id {\n",
+        "replacement": "            if false {\n"
+      }
+    ],
+    "expected_failure": null,
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30,
+    "compile_failure_all": [
+      "invariant not satisfied",
+      "dag.nodes[j].id != node.id"
+    ]
+  },
+  {
+    "name": "first_order_core_accepts_nondecimal",
+    "source_file": "first_order_core_accepts_nondecimal.rs",
+    "binary_name": "first-order-core-accepts-nondecimal",
+    "edits": [
+      {
+        "anchor": "            if byte < 48 || byte > 57 { return None; }\n            let digit = (byte - 48) as u64;\n",
+        "replacement": "            if byte < 48 || byte > 57 { if byte != 255 { return None; } }\n            let digit = if byte == 255 { 0u64 } else { (byte - 48) as u64 };\n"
+      }
+    ],
+    "expected_failure": "unifier cumulative work regression failed",
+    "wire": true,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30,
+    "compile_failure_any": [
+      "is_ascii_digit",
+      "precondition not satisfied"
+    ]
+  },
+  {
+    "name": "first_order_core_resets_work_after_dag_closure",
+    "source_file": "first_order_core_resets_work_after_dag_closure.rs",
+    "binary_name": "first-order-core-resets-work-after-dag-closure",
+    "edits": [
+      {
+        "anchor": "    match check_root_ancestor_closure_with_work(dag, work, work_limit) {\n",
+        "replacement": "    let mut isolated_closure_work: usize = 0;\n    match check_root_ancestor_closure_with_work(\n        dag, &mut isolated_closure_work, work_limit,\n    ) {\n"
+      }
+    ],
+    "expected_failure": "DAG cumulative work composition regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_after_dag_structure",
+    "source_file": "first_order_core_resets_work_after_dag_structure.rs",
+    "binary_name": "first-order-core-resets-work-after-dag-structure",
+    "edits": [
+      {
+        "anchor": "    match check_dag_structure_with_work(dag, node_limit, work_limit, work, work_limit) {\n",
+        "replacement": "    let mut isolated_structural_work: usize = 0;\n    match check_dag_structure_with_work(\n        dag, node_limit, work_limit, &mut isolated_structural_work, work_limit,\n    ) {\n"
+      }
+    ],
+    "expected_failure": "DAG cumulative work composition regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_condensation",
+    "source_file": "first_order_core_resets_work_at_dag_condensation.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-condensation",
+    "edits": [
+      {
+        "anchor": "    // Keep parent and conclusion structure comparisons in condensation's meter.\n    if !conclusion_matches\n        || !check_condensation_and_replay_with_work(step, work, work_limit)\n",
+        "replacement": "    // Mutant isolates condensation replay from DAG work.\n    let mut isolated_condensation_work: usize = 0;\n    if !conclusion_matches\n        || !check_condensation_and_replay_with_work(\n            step, &mut isolated_condensation_work, work_limit,\n        )\n"
+      }
+    ],
+    "expected_failure": "DAG condensation shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_congruence",
+    "source_file": "first_order_core_resets_work_at_dag_congruence.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-congruence",
+    "edits": [
+      {
+        "anchor": "    // Keep parent structure and recursive term comparisons on the node meter.\n",
+        "replacement": "    // Mutant isolates congruence replay from DAG work.\n    let mut isolated_congruence_work: usize = 0;\n"
+      },
+      {
+        "anchor": "    if !check_congruence_and_replay_with_work(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        work,\n",
+        "replacement": "    if !check_congruence_and_replay_with_work(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        &mut isolated_congruence_work,\n"
+      }
+    ],
+    "expected_failure": "DAG congruence shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_demodulation",
+    "source_file": "first_order_core_resets_work_at_dag_demodulation.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-demodulation",
+    "edits": [
+      {
+        "anchor": "    // Keep parent and conclusion structure comparisons in the demodulation meter.\n    if !conclusion_matches\n        || !check_demodulation_and_replay_with_work(step, work, work_limit)\n",
+        "replacement": "    // Mutant isolates demodulation replay from DAG work.\n    let mut isolated_demodulation_work: usize = 0;\n    if !conclusion_matches\n        || !check_demodulation_and_replay_with_work(\n            step, &mut isolated_demodulation_work, work_limit,\n        )\n"
+      }
+    ],
+    "expected_failure": "DAG demodulation shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_equality_factoring",
+    "source_file": "first_order_core_resets_work_at_dag_equality_factoring.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-equality-factoring",
+    "edits": [
+      {
+        "anchor": "    // Keep DAG node and cited-parent charges in equality factoring replay.\n    if !conclusion_matches\n        || !check_equality_factoring_and_replay_with_work(step, work, work_limit)\n",
+        "replacement": "    // Mutant isolates equality factoring from DAG work.\n    let mut isolated_equality_factoring_work: usize = 0;\n    if !conclusion_matches\n        || !check_equality_factoring_and_replay_with_work(\n            step, &mut isolated_equality_factoring_work, work_limit,\n        )\n"
+      }
+    ],
+    "expected_failure": "DAG equality factoring shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_equality_resolution",
+    "source_file": "first_order_core_resets_work_at_dag_equality_resolution.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-equality-resolution",
+    "edits": [
+      {
+        "anchor": "    // Keep DAG node and cited-parent charges in equality-resolution replay.\n    if !conclusion_matches\n        || !check_equality_resolution_and_replay_with_work(step, work, work_limit)\n",
+        "replacement": "    // Mutant isolates equality-resolution replay from DAG work.\n    let mut isolated_equality_work: usize = 0;\n    if !conclusion_matches\n        || !check_equality_resolution_and_replay_with_work(\n            step, &mut isolated_equality_work, work_limit,\n        )\n"
+      }
+    ],
+    "expected_failure": "DAG equality resolution shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_exact_resolution",
+    "source_file": "first_order_core_resets_work_at_dag_exact_resolution.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-exact-resolution",
+    "edits": [
+      {
+        "anchor": "    // Keep node and cited-parent charges in exact-resolution replay's meter.\n",
+        "replacement": "    // Mutant isolates exact-resolution replay from DAG work.\n    let mut isolated_exact_resolution_work: usize = 0;\n"
+      },
+      {
+        "anchor": "        lp, rp, &node.clause, work, work_limit,\n",
+        "replacement": "        lp, rp, &node.clause, &mut isolated_exact_resolution_work, work_limit,\n"
+      }
+    ],
+    "expected_failure": "DAG exact resolution shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_excluded_middle",
+    "source_file": "first_order_core_resets_work_at_dag_excluded_middle.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-excluded-middle",
+    "edits": [
+      {
+        "anchor": "    // Continue per-node charges through the polarity and atom checks.\n",
+        "replacement": "    // Mutant isolates excluded-middle replay from DAG work.\n    let mut isolated_excluded_middle_work: usize = 0;\n"
+      },
+      {
+        "anchor": "    if !check_excluded_middle_and_replay_with_work(\n        &node.clause,\n        work,\n",
+        "replacement": "    if !check_excluded_middle_and_replay_with_work(\n        &node.clause,\n        &mut isolated_excluded_middle_work,\n"
+      }
+    ],
+    "expected_failure": "DAG excluded middle shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_factoring",
+    "source_file": "first_order_core_resets_work_at_dag_factoring.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-factoring",
+    "edits": [
+      {
+        "anchor": "    // Keep DAG node and cited-parent charges in clause factoring replay.\n    if !conclusion_matches\n        || !check_clause_factoring_and_replay_with_work(step, work, work_limit)\n",
+        "replacement": "    // Mutant isolates clause factoring from DAG work.\n    let mut isolated_factoring_work: usize = 0;\n    if !conclusion_matches\n        || !check_clause_factoring_and_replay_with_work(\n            step, &mut isolated_factoring_work, work_limit,\n        )\n"
+      }
+    ],
+    "expected_failure": "DAG clause factoring shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_first_order_resolution",
+    "source_file": "first_order_core_resets_work_at_dag_first_order_resolution.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-first-order-resolution",
+    "edits": [
+      {
+        "anchor": "    // Keep DAG node and cited-parent charges in first-order resolution replay.\n    if !conclusion_matches\n        || !check_first_order_resolution_and_replay_with_work(step, work, work_limit)\n",
+        "replacement": "    // Mutant isolates first-order replay from DAG work.\n    let mut isolated_resolution_work: usize = 0;\n    if !conclusion_matches\n        || !check_first_order_resolution_and_replay_with_work(\n            step, &mut isolated_resolution_work, work_limit,\n        )\n"
+      }
+    ],
+    "expected_failure": "DAG first-order resolution shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_instantiation",
+    "source_file": "first_order_core_resets_work_at_dag_instantiation.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-instantiation",
+    "edits": [
+      {
+        "anchor": "    // Keep parent and conclusion structure comparisons in instantiation's meter.\n    if !conclusion_matches\n        || !check_instantiation_and_replay_with_work(step, work, work_limit)\n",
+        "replacement": "    // Mutant isolates instantiation replay from DAG work.\n    let mut isolated_instantiation_work: usize = 0;\n    if !conclusion_matches\n        || !check_instantiation_and_replay_with_work(\n            step, &mut isolated_instantiation_work, work_limit,\n        )\n"
+      }
+    ],
+    "expected_failure": "DAG instantiation shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_nullary_resolution",
+    "source_file": "first_order_core_resets_work_at_dag_nullary_resolution.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-nullary-resolution",
+    "edits": [
+      {
+        "anchor": "    // Keep node and cited-parent charges in nullary-resolution replay's meter.\n",
+        "replacement": "    // Mutant isolates nullary-resolution replay from DAG work.\n    let mut isolated_nullary_resolution_work: usize = 0;\n"
+      },
+      {
+        "anchor": "        rp,\n        &node.clause,\n        work,\n",
+        "replacement": "        rp,\n        &node.clause,\n        &mut isolated_nullary_resolution_work,\n"
+      }
+    ],
+    "expected_failure": "DAG nullary resolution shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_reflexivity",
+    "source_file": "first_order_core_resets_work_at_dag_reflexivity.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-reflexivity",
+    "edits": [
+      {
+        "anchor": "    // Continue per-node work through reflexivity's equality comparison.\n    if !check_reflexivity_and_replay_with_work(&node.clause, work, work_limit) {\n",
+        "replacement": "    // Mutant isolates reflexivity replay from DAG work.\n    let mut isolated_reflexivity_work: usize = 0;\n    if !check_reflexivity_and_replay_with_work(\n        &node.clause, &mut isolated_reflexivity_work, work_limit,\n    ) {\n"
+      }
+    ],
+    "expected_failure": "DAG reflexivity shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_subsumption",
+    "source_file": "first_order_core_resets_work_at_dag_subsumption.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-subsumption",
+    "edits": [
+      {
+        "anchor": "    // Keep cited-parent comparisons in subsumption-resolution replay's meter.\n    if !conclusion_matches\n        || !check_subsumption_resolution_and_replay_with_work(step, work, work_limit)\n",
+        "replacement": "    // Mutant isolates subsumption replay from DAG work.\n    let mut isolated_subsumption_work: usize = 0;\n    if !conclusion_matches\n        || !check_subsumption_resolution_and_replay_with_work(\n            step, &mut isolated_subsumption_work, work_limit,\n        )\n"
+      }
+    ],
+    "expected_failure": "DAG subsumption resolution shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_superposition",
+    "source_file": "first_order_core_resets_work_at_dag_superposition.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-superposition",
+    "edits": [
+      {
+        "anchor": "    // Keep all DAG structure and parent-comparison charges in local replay.\n    if !conclusion_matches\n        || !check_superposition_and_replay_with_work(step, work, work_limit)\n",
+        "replacement": "    // Mutant isolates local replay from DAG work.\n    let mut isolated_replay_work: usize = 0;\n    if !conclusion_matches\n        || !check_superposition_and_replay_with_work(\n            step, &mut isolated_replay_work, work_limit,\n        )\n"
+      }
+    ],
+    "expected_failure": "DAG superposition shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_symmetry",
+    "source_file": "first_order_core_resets_work_at_dag_symmetry.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-symmetry",
+    "edits": [
+      {
+        "anchor": "    // Keep parent structure and all symmetry comparisons on the node meter.\n",
+        "replacement": "    // Mutant isolates symmetry replay from DAG work.\n    let mut isolated_symmetry_work: usize = 0;\n"
+      },
+      {
+        "anchor": "    if !check_symmetry_and_replay_with_work(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        work,\n",
+        "replacement": "    if !check_symmetry_and_replay_with_work(\n        &nodes[node.parents[0]].clause,\n        &node.clause,\n        &mut isolated_symmetry_work,\n"
+      }
+    ],
+    "expected_failure": "DAG symmetry shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_tautology",
+    "source_file": "first_order_core_resets_work_at_dag_tautology.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-tautology",
+    "edits": [
+      {
+        "anchor": "    // Keep the node counter through the bounded clause scan.\n",
+        "replacement": "    // Mutant isolates tautology replay from DAG work.\n    let mut isolated_tautology_work: usize = 0;\n"
+      },
+      {
+        "anchor": "    if !check_tautology_and_replay_with_work(\n        &node.clause,\n        work,\n",
+        "replacement": "    if !check_tautology_and_replay_with_work(\n        &node.clause,\n        &mut isolated_tautology_work,\n"
+      }
+    ],
+    "expected_failure": "DAG tautology shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_transitivity",
+    "source_file": "first_order_core_resets_work_at_dag_transitivity.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-transitivity",
+    "edits": [
+      {
+        "anchor": "    // Keep parent structure and all transitivity comparisons on the node meter.\n",
+        "replacement": "    // Mutant isolates transitivity replay from DAG work.\n    let mut isolated_transitivity_work: usize = 0;\n"
+      },
+      {
+        "anchor": "        &nodes[node.parents[1]].clause,\n        &node.clause,\n        work,\n",
+        "replacement": "        &nodes[node.parents[1]].clause,\n        &node.clause,\n        &mut isolated_transitivity_work,\n"
+      }
+    ],
+    "expected_failure": "DAG transitivity shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_at_dag_weakening",
+    "source_file": "first_order_core_resets_work_at_dag_weakening.rs",
+    "binary_name": "first-order-core-resets-work-at-dag-weakening",
+    "edits": [
+      {
+        "anchor": "    // Keep parent and conclusion structure comparisons in the weakening meter.\n    if !conclusion_matches\n        || !check_weakening_and_replay_with_work(step, work, work_limit)\n",
+        "replacement": "    // Mutant isolates weakening replay from DAG work.\n    let mut isolated_weakening_work: usize = 0;\n    if !conclusion_matches\n        || !check_weakening_and_replay_with_work(\n            step, &mut isolated_weakening_work, work_limit,\n        )\n"
+      }
+    ],
+    "expected_failure": "DAG weakening shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_before_replay",
+    "source_file": "first_order_core_resets_work_before_replay.rs",
+    "binary_name": "first-order-core-resets-work-before-replay",
+    "edits": [
+      {
+        "anchor": "    // Continue the preflight counter through replay freshening and output.\n",
+        "replacement": "    // Mutant resets the shared counter before replay.\n    *work = 0;\n"
+      }
+    ],
+    "expected_failure": "superposition preflight/replay shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_resets_work_for_dag_nodes",
+    "source_file": "first_order_core_resets_work_for_dag_nodes.rs",
+    "binary_name": "first-order-core-resets-work-for-dag-nodes",
+    "edits": [
+      {
+        "anchor": "        if !validate_dag_node_with_work(dag, i, work, work_limit) {\n",
+        "replacement": "        let mut isolated_node_work: usize = 0;\n        if !validate_dag_node_with_work(dag, i, &mut isolated_node_work, work_limit) {\n"
+      }
+    ],
+    "expected_failure": "DAG cumulative work composition regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_atom_comparison_charge",
+    "source_file": "first_order_core_without_atom_comparison_charge.rs",
+    "binary_name": "first-order-core-without-atom-comparison-charge",
+    "edits": [
+      {
+        "anchor": "    // Charge both operands before the exact recursive atom comparison.\n    if !charge_atom_structure(left, work, work_limit)\n        || !charge_atom_structure(right, work, work_limit)\n    {\n        return None;\n    }\n",
+        "replacement": "    // Mutant omits recursive atom-comparison charges.\n    if false { return None; }\n"
+      }
+    ],
+    "expected_failure": "atom comparison cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_clause_deletion_charge",
+    "source_file": "first_order_core_without_clause_deletion_charge.rs",
+    "binary_name": "first-order-core-without-clause-deletion-charge",
+    "edits": [
+      {
+        "anchor": "    // Charge the clause before copying the retained literal context.\n    if !charge_clause_structure(clause, work, work_limit) { return None; }\n",
+        "replacement": "    // Mutant omits the retained-context structure charge.\n    if false { return None; }\n"
+      }
+    ],
+    "expected_failure": "clause deletion cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_clause_literal_charge",
+    "source_file": "first_order_core_without_clause_literal_charge.rs",
+    "binary_name": "first-order-core-without-clause-literal-charge",
+    "edits": [
+      {
+        "anchor": "        // Charge the clause-literal iteration as well as recursive term visits.\n        if !consume_work(work, limit) { return false; }\n",
+        "replacement": "        // Mutant omits the clause-literal traversal charge.\n        if false { return false; }\n"
+      }
+    ],
+    "expected_failure": "clause freshening cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_congruence_term_charge",
+    "source_file": "first_order_core_without_congruence_term_charge.rs",
+    "binary_name": "first-order-core-without-congruence-term-charge",
+    "edits": [
+      {
+        "anchor": "    let Some(direct_left) = same_term_with_work(a, s, work, work_limit) else { return None; };\n",
+        "replacement": "    let direct_left = same_term(a, s);\n"
+      }
+    ],
+    "expected_failure": "congruence step work-meter regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_equality_factoring_pivot_charge",
+    "source_file": "first_order_core_without_equality_factoring_pivot_charge.rs",
+    "binary_name": "first-order-core-without-equality-factoring-pivot-charge",
+    "edits": [
+      {
+        "anchor": "    let Some(equal) = same_term_with_work(&left_instance, &right_instance, work, work_limit)\n    else { return None; };\n",
+        "replacement": "    let equal = same_term(&left_instance, &right_instance);\n"
+      }
+    ],
+    "expected_failure": "equality factoring pivot work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_excluded_middle_atom_charge",
+    "source_file": "first_order_core_without_excluded_middle_atom_charge.rs",
+    "binary_name": "first-order-core-without-excluded-middle-atom-charge",
+    "edits": [
+      {
+        "anchor": "    let Some(atoms_match) = same_atom_with_work(&l1.atom, &l2.atom, work, work_limit) else {\n        return None;\n    };\n",
+        "replacement": "    let atoms_match = same_atom(&l1.atom, &l2.atom);\n"
+      }
+    ],
+    "expected_failure": "excluded middle work-meter regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_freshening_lookup_charge",
+    "source_file": "first_order_core_without_freshening_lookup_charge.rs",
+    "binary_name": "first-order-core-without-freshening-lookup-charge",
+    "edits": [
+      {
+        "anchor": "        // Charge each binding-domain comparison and every node copied from a\n        // matching replacement term.\n        if !consume_work(work, work_limit) { return None; }\n",
+        "replacement": "        // Mutant omits the binding-domain comparison charge.\n        if false { return None; }\n"
+      }
+    ],
+    "expected_failure": "freshening cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_freshening_materialization_charge",
+    "source_file": "first_order_core_without_freshening_materialization_charge.rs",
+    "binary_name": "first-order-core-without-freshening-materialization-charge",
+    "edits": [
+      {
+        "anchor": "    // Charge each term node visited during substitution materialization.\n    if !consume_work(work, work_limit) { return None; }\n",
+        "replacement": "    // Mutant omits a term-node materialization charge.\n    if false { return None; }\n"
+      }
+    ],
+    "expected_failure": "clause freshening cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_input_compare_charge",
+    "source_file": "first_order_core_without_input_compare_charge.rs",
+    "binary_name": "first-order-core-without-input-compare-charge",
+    "edits": [
+      {
+        "anchor": "            if !charge_clause_structure(&node.clause, work, work_limit) {\n                return false;\n            }\n",
+        "replacement": "            if false { return false; }\n"
+      }
+    ],
+    "expected_failure": null,
+    "wire": false,
+    "no_cheating": false,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_path_sequence_charge",
+    "source_file": "first_order_core_without_path_sequence_charge.rs",
+    "binary_name": "first-order-core-without-path-sequence-charge",
+    "edits": [
+      {
+        "anchor": "    if !charge_u64_sequence(left, work, work_limit)\n        || !charge_u64_sequence(right, work, work_limit)\n    {\n        return None;\n    }\n",
+        "replacement": "    if false { return None; }\n"
+      }
+    ],
+    "expected_failure": "path sequence cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_reflexivity_term_charge",
+    "source_file": "first_order_core_without_reflexivity_term_charge.rs",
+    "binary_name": "first-order-core-without-reflexivity-term-charge",
+    "edits": [
+      {
+        "anchor": "    let Some(terms_match) = same_term_with_work(s, t, work, work_limit) else {\n        return false;\n    };\n",
+        "replacement": "    let terms_match = same_term(s, t);\n"
+      }
+    ],
+    "expected_failure": "reflexivity work-meter regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_replay_comparison_charge",
+    "source_file": "first_order_core_without_replay_comparison_charge.rs",
+    "binary_name": "first-order-core-without-replay-comparison-charge",
+    "edits": [
+      {
+        "anchor": "    // Charge both compared clause structures before exact ordered comparison.\n    if !charge_clause_structure(left, work, work_limit)\n        || !charge_clause_structure(right, work, work_limit)\n    {\n        return None;\n    }\n",
+        "replacement": "    // Charge both compared clause structures before exact ordered comparison.\n    if false { return None; }\n"
+      }
+    ],
+    "expected_failure": "replay output cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_replay_conclusion_build_charge",
+    "source_file": "first_order_core_without_replay_conclusion_build_charge.rs",
+    "binary_name": "first-order-core-without-replay-conclusion-build-charge",
+    "edits": [
+      {
+        "anchor": "    if !charge_clause_structure(source, work, work_limit)\n        || !charge_clause_structure(rewritten_target, work, work_limit)\n    {\n        return None;\n    }\n",
+        "replacement": "    if false { return None; }\n"
+      }
+    ],
+    "expected_failure": "replay output cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_replay_substitution_meter",
+    "source_file": "first_order_core_without_replay_substitution_meter.rs",
+    "binary_name": "first-order-core-without-replay-substitution-meter",
+    "edits": [
+      {
+        "anchor": "    let Some(instantiated_source) = substitute_clause_exec_with_work(\n        source, unifier, work, work_limit,\n    ) else { return None; };\n",
+        "replacement": "    let Some(instantiated_source) = Some(substitute_clause_exec(source, unifier))\n    else { return None; };\n"
+      }
+    ],
+    "expected_failure": "replay substitution cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_replay_target_replacement_charge",
+    "source_file": "first_order_core_without_replay_target_replacement_charge.rs",
+    "binary_name": "first-order-core-without-replay-target-replacement-charge",
+    "edits": [
+      {
+        "anchor": "    // Charge the target traversal and replacement data before recursive replay.\n    if !charge_clause_structure(clause, work, work_limit) { return None; }\n",
+        "replacement": "    // Charge the target traversal and replacement data before recursive replay.\n    if false { return None; }\n"
+      }
+    ],
+    "expected_failure": "replay output cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_root_closure",
+    "source_file": "first_order_core_without_root_closure.rs",
+    "binary_name": "first-order-core-without-root-closure",
+    "edits": [
+      {
+        "anchor": "    match check_root_ancestor_closure_with_work(dag, work, work_limit) {\n        Some(true) => {},\n        Some(false) => return DagVerdict::Rejected,\n        None => return DagVerdict::Unknown,\n    }\n",
+        "replacement": "    \n"
+      }
+    ],
+    "expected_failure": null,
+    "wire": false,
+    "no_cheating": false,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_selected_term_charge",
+    "source_file": "first_order_core_without_selected_term_charge.rs",
+    "binary_name": "first-order-core-without-selected-term-charge",
+    "edits": [
+      {
+        "anchor": "    if !charge_atom_structure(atom, work, work_limit) { return None; }\n    if !charge_u64_sequence(path, work, work_limit) { return None; }\n",
+        "replacement": "    if false { return None; }\n"
+      }
+    ],
+    "expected_failure": "selected-term cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_subsumption_literal_charge",
+    "source_file": "first_order_core_without_subsumption_literal_charge.rs",
+    "binary_name": "first-order-core-without-subsumption-literal-charge",
+    "edits": [
+      {
+        "anchor": "    // Charge literal polarity and both atom structures before recursive match.\n    if !consume_work(work, work_limit)\n        || !charge_atom_structure(&left.atom, work, work_limit)\n",
+        "replacement": "    // Mutant omits literal-polarity comparison work.\n    if false { return None; }\n    if !charge_atom_structure(&left.atom, work, work_limit)\n"
+      }
+    ],
+    "expected_failure": "subsumption literal comparison work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_symmetry_term_charge",
+    "source_file": "first_order_core_without_symmetry_term_charge.rs",
+    "binary_name": "first-order-core-without-symmetry-term-charge",
+    "edits": [
+      {
+        "anchor": "    let Some(direct_left) = same_term_with_work(u, s, work, work_limit) else {\n        return None;\n    };\n",
+        "replacement": "    let direct_left = same_term(u, s);\n"
+      }
+    ],
+    "expected_failure": "symmetry step work-meter regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_target_freshening_guard",
+    "source_file": "first_order_core_without_target_freshening_guard.rs",
+    "binary_name": "first-order-core-without-target-freshening-guard",
+    "edits": [
+      {
+        "anchor": "    ) || !extend_unique_with_work(\n        &mut avoid_target, &fresh_source_variables, work, work_limit,\n    )\n",
+        "replacement": "    ) || { let _fresh_source_variable_count = fresh_source_variables.len(); false }\n"
+      },
+      {
+        "anchor": "    ) || !extend_unique_with_work(\n        &mut target_avoid, &fresh_source_variables, work, work_limit,\n    )\n",
+        "replacement": "    ) || { let _fresh_source_variable_count = fresh_source_variables.len(); false }\n"
+      }
+    ],
+    "expected_failure": "superposition parent-variable collision regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_tautology_atom_charge",
+    "source_file": "first_order_core_without_tautology_atom_charge.rs",
+    "binary_name": "first-order-core-without-tautology-atom-charge",
+    "edits": [
+      {
+        "anchor": "                let Some(atoms_match) = same_atom_with_work(\n                    &clause.literals[i].atom, &clause.literals[j].atom, work, work_limit,\n                ) else { return None; };\n",
+        "replacement": "                let atoms_match = same_atom(\n                    &clause.literals[i].atom, &clause.literals[j].atom,\n                );\n"
+      }
+    ],
+    "expected_failure": "tautology work-meter regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_transitivity_term_charge",
+    "source_file": "first_order_core_without_transitivity_term_charge.rs",
+    "binary_name": "first-order-core-without-transitivity-term-charge",
+    "edits": [
+      {
+        "anchor": "    let Some(direct_left) = same_term_with_work(left_a, right_a, work, work_limit) else {\n        return None;\n    };\n",
+        "replacement": "    let direct_left = same_term(left_a, right_a);\n"
+      }
+    ],
+    "expected_failure": "transitivity step work-meter regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_unifier_term_charge",
+    "source_file": "first_order_core_without_unifier_term_charge.rs",
+    "binary_name": "first-order-core-without-unifier-term-charge",
+    "edits": [
+      {
+        "anchor": "    // Charge one unit for each compared term-node pair.\n    if !consume_work(work, work_limit) { return None; }\n",
+        "replacement": "    // Mutant omits term-node comparison work.\n    if false { return None; }\n"
+      }
+    ],
+    "expected_failure": "unifier cumulative work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  }
+]

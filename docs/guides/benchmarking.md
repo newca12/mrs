@@ -38,11 +38,12 @@ method, the comparability rules, and how to add another host.
 
 ## Prepare the corpus
 
-Freeze a materialized corpus and predeclare family-disjoint development/holdout
-membership before tuning:
+Build the shared Rust tooling binary, then freeze a materialized corpus and
+predeclare family-disjoint development/holdout membership before tuning:
 
 ```bash
-python3 crates/mrs-bench/freeze_corpus.py --root /path/to/casc-30 \
+cargo build --release -p mrs-bench --bin mrs_tools
+target/release/mrs_tools freeze-corpus --root /path/to/casc-30 \
   --output /path/outside-corpus/corpus-manifest.json --seed 42
 ```
 
@@ -91,7 +92,7 @@ For an archived, paired fixed-work comparison of two frozen builds (or the same
 build with the candidate queue options), use:
 
 ```bash
-python3 crates/mrs-bench/fixed_work_compare.py \
+target/release/mrs_tools fixed-work-compare \
   --baseline /path/mrs-base --candidate /path/mrs-next --problem /path/problem.p \
   --schedule casc_ueq --strategy 4 --processed 1000 --reps 5 \
   --candidate-specialize --candidate-compact --output /path/new-comparison
@@ -141,7 +142,10 @@ cooperative strategy execution or equality sharing.
 For a paired certified comparison of frozen baseline/candidate binaries:
 
 ```bash
-python3 crates/mrs-bench/paired_campaign.py \
+nix develop -c cargo build --release -p mrs-bench --bin mrs_tools --bin audit_casc_proofs
+nix develop -c cargo build --release -p mrs-proover
+
+target/release/mrs_tools paired-campaign \
   --baseline /path/to/mrs-baseline --candidate /path/to/mrs-candidate \
   --problems-dir /path/to/casc-30 --edition casc-30 \
   --divisions fne,feq,ueq --reps 2 --output /path/to/new-experiment
@@ -152,7 +156,7 @@ the effect is marginal. The driver balances and shuffles which arm runs first,
 runs sequentially with eight workers and `jobs=1` in CASC mode, strictly audits
 every arm, checks matching evaluation sets, and reports paired certified
 gains/losses. It checks frozen binary hashes before each arm. It does not build
-tools or automatically promote a candidate. Remaining inherited `MRS_*`
+the producer binaries or automatically promote a candidate. Remaining inherited `MRS_*`
 overrides are recorded: review the manifest and hardware lines before
 interpreting the result. The reported range is descriptive, not a confidence
 interval or a division-wide noise estimate.
@@ -190,7 +194,7 @@ These retain earlier outcomes when the top-level resume CSV is updated. Generate
 a dashboard from selected snapshots without pooling different campaigns/checkers:
 
 ```bash
-python3 crates/mrs-bench/certification_dashboard.py \
+target/release/mrs_tools certification-dashboard \
   /path/to/audit/snapshots/<audit-csv-sha256>
 ```
 

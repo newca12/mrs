@@ -31,10 +31,16 @@ jobs:
       - name: Optional root feature checks
         run: cargo check --features proover,ml-guidance,parent-guidance
       - name: Benchmark shell syntax
-        run: bash -n crates/mrs-bench/casc.sh crates/mrs-bench/run_variance.sh
-      - name: Paired campaign analysis regression
-        working-directory: crates/mrs-bench
-        run: python3 -B -m unittest test_paired_campaign test_certification_dashboard test_freeze_corpus test_fixed_work_compare
+        run: >-
+          bash -n crates/mrs-bench/casc.sh crates/mrs-bench/tools.sh
+          crates/mrs-bench/run_variance.sh crates/mrs-bench/certification_campaign.sh
+          crates/mrs-bench/check_canary_drift.sh
+          crates/mrs-bench/epr_ab_sweep.sh crates/mrs-bench/prephase/ab.sh
+          crates/mrs-bench/cooperative_portfolio_search.sh
+          formal/superposition-checker/install-verus.sh
+          formal/superposition-checker/verify.sh
+          formal/superposition-checker/build-runtime.sh
+          formal/superposition-checker/tools.sh
 
   formal-superposition-checker:
     runs-on: ubuntu-24.04
@@ -43,15 +49,19 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Build shared Rust tools
+        run: cargo build -p mrs-bench --bin mrs_tools
       - name: Install pinned Verus toolchain
         env:
           VERUS_INSTALL_DIR: ${{ runner.temp }}/mrs-verus
           RUSTUP_HOME: ${{ runner.temp }}/mrs-verus-rustup
+          MRS_TOOLS_BIN: ${{ github.workspace }}/target/debug/mrs_tools
         run: formal/superposition-checker/install-verus.sh
       - name: Verify superposition checker specifications and executable refinements
         env:
           VERUS: ${{ runner.temp }}/mrs-verus/0.2026.10.18.7d82994/verus
           RUSTUP_HOME: ${{ runner.temp }}/mrs-verus-rustup
+          MRS_TOOLS_BIN: ${{ github.workspace }}/target/debug/mrs_tools
           VERUS_LOG: ${{ runner.temp }}/superposition-verus.log
           MRS_VERUS_BRIDGE_TESTS: "1"
         run: formal/superposition-checker/verify.sh

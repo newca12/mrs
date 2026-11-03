@@ -241,21 +241,19 @@ records the source commit, Verus binary SHA-256, requested and effective Rust
 toolchains, verifier version/output, source-audit result, and per-module verification counts. CI
 uploads that log even when a later gate fails. Local verification does not
 retain a build artifact unless `VERUS_LOG` is set.
-`runtime-check.py` also compiles the core twice and compares executable SHA-256
+`mrs-tools verus-runtime-check` also compiles the core twice and compares executable SHA-256
 values before running it; this currently checks byte reproducibility on one
 host and toolchain only.
 
 The verification gate enforces 58 verifier-negative mutations across inference
 replay, DAG dispatch and wire tokenization. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
-contracts; it is not comprehensive threat-model coverage. Eight compiled-runtime
-mutations cover root-ancestor closure, repeated node-clause charging,
-duplicate-ID rejection, decimal-token validation and target-parent freshening
-collision, plus freshening lookup-work, clause-collection literal and
-materialization charges;
-each must fail its corresponding
-runtime regression. The gate also compiles and runs positive and negative DAG
-examples via `runtime-check.py`; the ordinary Rust `main` assertion
+contracts; it is not comprehensive threat-model coverage. Forty-seven
+compiled-runtime mutations cover root-ancestor closure, input and node identity,
+target-parent freshening, freshening and replay work charges, clause/term
+comparison, and shared work across local inference replay and DAG nodes. Each
+must fail its corresponding runtime regression. The gate also compiles and runs positive and negative DAG
+examples via `mrs-tools verus-runtime-check`; the ordinary Rust `main` assertion
 is a test oracle outside the verified certification API.
 The mutation suite injects `#[verifier::assume_specification]` into a temporary
 source copy and requires `--no-cheating` to reject it.

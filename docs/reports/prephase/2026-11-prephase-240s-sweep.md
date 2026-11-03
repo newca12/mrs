@@ -16,7 +16,7 @@ At an 8-slot **simulated** width:
 
 The corrected, edition-specific union contains **1,787 benchmark instances**, of which 510 are solved by at least one base strategy. The best 8-strategy greedy candidate covers 496 in the solo matrix. It must not be promoted from these numbers alone: concurrent interference, search races, and sharing were not measured.
 
-Review found two defects in `prephase/analyze.py` that produced the initial draft of this follow-up: the fitted strategy order put greedy-selected strategies last, and the “best fixed” column reported the full 15-strategy union at every width. The archived feature CSVs had a third defect: a missing delimiter concatenated `probe_iterations` onto `label` and shifted all probe columns. The serializer is fixed in `prephase_dump.rs`; the legacy CSVs were repaired with `repair_probe_columns.py` before analysis (3,088 C30 and 1,331 J13 feature rows repaired; remaining rows have no probe data). The 3 s cross-validated route count and p-value in `2026-10-prephase-study.md` also used the inverted fitter and are withdrawn; the 3 s/30 s label matrices are not present in the retained artifact bundles for correction.
+Review found two defects in the original pre-phase analyzer that produced the initial draft of this follow-up: the fitted strategy order put greedy-selected strategies last, and the “best fixed” column reported the full 15-strategy union at every width. The archived feature CSVs had a third defect: a missing delimiter concatenated `probe_iterations` onto `label` and shifted all probe columns. The serializer is fixed in `prephase_dump.rs`; the legacy CSVs were repaired with `mrs-tools repair-probe-columns` before analysis (3,088 C30 and 1,331 J13 feature rows repaired; remaining rows have no probe data). The 3 s cross-validated route count and p-value in `2026-10-prephase-study.md` also used the inverted fitter and are withdrawn; the 3 s/30 s label matrices are not present in the retained artifact bundles for correction.
 
 ---
 
@@ -58,17 +58,18 @@ the data cannot establish canonical hardware performance.
 After extracting the tarballs, repair the legacy feature CSVs with:
 
 ```bash
-python3 crates/mrs-bench/prephase/repair_probe_columns.py \
+cargo build --release -p mrs-bench --bin mrs_tools
+target/release/mrs_tools repair-probe-columns \
   /home/hack/results/prephase/casc30_features_probed.csv \
   > /tmp/casc30_features_probed_repaired.csv
-python3 crates/mrs-bench/prephase/repair_probe_columns.py \
+target/release/mrs_tools repair-probe-columns \
   /home/hack/results/prephase/cascj13_features_probed.csv \
   > /tmp/cascj13_features_probed_repaired.csv
 ```
 
 ### Input and repaired-feature hashes
 
-Rows labeled “Repaired” are derived by `repair_probe_columns.py`; they are not
+Rows labeled “Repaired” are derived by `mrs-tools repair-probe-columns`; they are not
 members of the original tarballs.
 
 | Artifact | SHA-256 |
@@ -228,6 +229,14 @@ eight *distinct* strategies in its best coverage set, while another may need
 problem-dependent choices among more than eight complementary strategies.
 
 ### Phase 1 — Establish exact solo-matrix bounds
+
+**Status: completed for the archived matrices.** Exact results, the verified
+input hashes, and the per-division width bounds are in the [exact solo-matrix
+report](2026-11-exact-solo-bounds.md). This reanalysis applies the official
+180-second CASC-J13 limits; the 240-second tables earlier in this report remain
+240-second candidate-generation measurements and should not be read as J13
+competition-time bounds. The analysis is exact for saved solo outcomes only,
+not strict proof certification or concurrent coverage.
 
 1. Key every row by `(edition, division, problem)`; do not merge same-named
    problems across releases. Deduplicate only the known CASC-30 EPU path aliases.

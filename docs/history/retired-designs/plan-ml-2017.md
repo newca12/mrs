@@ -80,7 +80,7 @@ We expand the feature extraction from 16 to 40+ dimensions to capture highly-gra
     *   *Simplification efficiency*: Demodulations/subsumptions relative to generated clauses.
 
 ### Phase 3: Pure-Rust White-Box Learning (`smartcore` + Code Generation)
-Instead of relying on Python/scikit-learn, we use the pure-Rust **`smartcore`** library to train a **Decision Tree Classifier** in `mrs-train`.
+Instead of relying on an external machine-learning stack, we use the pure-Rust **`smartcore`** library to train a **Decision Tree Classifier** in `mrs-train`.
 *   **The Setup**: Add `smartcore` to `crates/mrs-train/Cargo.toml`.
 *   **Auto-Generated Code Generation**: After fitting the Decision Tree to optimize **solved counts**, we traverse the tree nodes in Rust and automatically generate a static Rust file (`src/adaptive_resource.rs`) containing nested `if-else` blocks. 
 *   **Runtime Inference Overhead**: **0ms**. The generated code is compiled directly into the binary, executing with zero dependency overhead.

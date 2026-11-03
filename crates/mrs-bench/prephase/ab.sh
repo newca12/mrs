@@ -24,6 +24,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../tools.sh"
 ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 DIVISION="${1:?usage: ab.sh <division> <edition> [time] [jobs] [workers]}"
@@ -40,6 +41,7 @@ if [[ ! -x "${BINARY}" ]]; then
     echo "mrs binary not found at ${BINARY}; run: cargo build --release" >&2
     exit 1
 fi
+mrs_tools --help >/dev/null
 
 export TPTP="${TPTP:-${ROOT}/crates/mrs-bench/problems/casc-30}"
 export MRS_HARDWARE="${MRS_HARDWARE:-casc}"
@@ -104,31 +106,4 @@ run_arm prephase
 
 echo
 echo "[ab] === summary ==="
-python3 - "${OUTPUT}" <<'PY'
-import csv
-import pathlib
-import sys
-
-root = pathlib.Path(sys.argv[1])
-def load(arm):
-    with open(root / arm / "run.csv", newline="") as handle:
-        return {row["problem"]: row["szs_status"] for row in csv.DictReader(handle)
-                if row["problem"] != "problem"}
-
-SOLVED = {"Theorem", "Unsatisfiable", "Satisfiable", "CounterSatisfiable"}
-baseline, prephase = load("baseline"), load("prephase")
-problems = sorted(set(baseline) | set(prephase))
-def solved(statuses):
-    return sum(1 for p in problems if statuses.get(p) in SOLVED)
-
-base_n, pre_n = solved(baseline), solved(prephase)
-print(f"  baseline: {base_n}/{len(problems)}")
-print(f"  prephase: {pre_n}/{len(problems)}")
-print(f"  delta:    {pre_n - base_n:+d}")
-print("\n  problems where the arms disagree:")
-for problem in problems:
-    b, p = baseline.get(problem, "missing"), prephase.get(problem, "missing")
-    if (b in SOLVED) != (p in SOLVED):
-        print(f"    {problem:<20} baseline={b or 'none':<14} prephase={p or 'none'}")
-print(f"\n  raw output under {root}")
-PY
+mrs_tools prephase-ab-summary "${OUTPUT}"

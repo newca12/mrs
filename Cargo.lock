@@ -4141,6 +4141,8 @@ dependencies = [
 name = "mrs-bench"
 version = "0.2.3"
 dependencies = [
+ "clap",
+ "csv",
  "libc",
  "mrs",
  "mrs-core",
@@ -4150,10 +4152,14 @@ dependencies = [
  "mrs-szs",
  "mrs-tptp",
  "num_cpus",
+ "rand 0.10.3",
  "rayon",
+ "regex",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "shlex 2.0.1",
  "tempfile",
  "wait-timeout",
  "walkdir",

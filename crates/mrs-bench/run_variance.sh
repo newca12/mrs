@@ -48,6 +48,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/tools.sh"
 REPS="${1:?usage: $0 <reps> <casc-args...>}"
 shift || true
 
@@ -93,6 +94,8 @@ else
   set -- "${forwarded[@]}"
 fi
 
+mrs_tools --help >/dev/null
+
 echo "[variance] reps=${REPS} parent=${PARENT}" >&2
 
 for r in $(seq 1 "${REPS}"); do
@@ -109,75 +112,4 @@ done
 # ---------------------------------------------------------------------------
 # Per-problem spread. Uses run.csv only; no search runs again.
 # ---------------------------------------------------------------------------
-python3 - "${PARENT}" "${REPS}" <<'PY'
-import csv
-import pathlib
-import sys
-from collections import defaultdict
-
-parent = pathlib.Path(sys.argv[1])
-reps = int(sys.argv[2])
-
-rows = defaultdict(dict)
-systems = set()
-for r in range(1, reps + 1):
-    csv_path = parent / f"rep{r}" / "run.csv"
-    if not csv_path.is_file():
-        sys.exit(f"variance: missing {csv_path}")
-    with csv_path.open(newline="") as fh:
-        for row in csv.DictReader(fh):
-            key = (row["division"], row["system"], row["problem"])
-            if r in rows[key]:
-                sys.exit(f"variance: duplicate row for {key} in rep{r}")
-            rows[key][r] = row
-            systems.add(row["system"])
-
-def solved(row):
-    """A correctly graded solve, not a wrong or ungraded definitive answer."""
-    return row["verdict"] == "ok"
-
-print(f"\n{'division':10} {'system':16} {'problem':16} {'solved':>12} {'verdicts'}")
-print("-" * 82)
-unstable = []
-for key in sorted(rows):
-    per_rep = rows[key]
-    tally = sorted(r for r, row in per_rep.items() if solved(row))
-    marks = "".join("." if r in tally else "x" for r in range(1, reps + 1))
-    outcomes = {
-        (per_rep[r]["szs_status"], per_rep[r]["verdict"])
-        for r in per_rep
-    }
-    print(f"{key[0]:10} {key[1]:16} {key[2]:16} {marks:>12}   "
-          f"{'/'.join(f'{status}:{verdict}' for status, verdict in sorted(outcomes))}")
-    # Unstable = the grading outcome differs between replicates. These are the
-    # problem/system pairs that a single run cannot speak for.
-    if len(outcomes) > 1 or len(per_rep) != reps:
-        unstable.append(key)
-
-totals_by_system = {
-    system: [
-        sum(
-            1 for (_, row_system, _), per_rep in rows.items()
-            if row_system == system and r in per_rep and solved(per_rep[r])
-        )
-        for r in range(1, reps + 1)
-    ]
-    for system in sorted(systems)
-}
-print("-" * 82)
-for system, totals in totals_by_system.items():
-    print(f"{system} solved per replicate: {totals}")
-    if totals:
-        print(f"  mean {sum(totals)/len(totals):.2f}  min {min(totals)}  max {max(totals)}"
-              f"  spread {max(totals)-min(totals)}")
-
-if unstable:
-    print(f"\n{len(unstable)} problem(s) changed verdict between replicates:")
-    for key in unstable:
-        print(f"  {key[0]}/{key[1]}/{key[2]}")
-    print("\nA single-run A/B cannot separate these from a real effect. Report means.")
-else:
-    print("\nno problem changed verdict across replicates.")
-
-print(f"\nreplicate runs under {parent}")
-PY
+mrs_tools variance-report "${PARENT}" "${REPS}"

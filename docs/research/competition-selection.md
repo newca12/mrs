@@ -197,7 +197,7 @@ Understanding this generation process provides concrete guidance for `mrs` devel
 2. **Equality Symmetry Invariance**:
    - Because equality orientations (`LHS = RHS` vs `RHS = LHS`) are randomly swapped by `RandomizeCommutativeFormulae`, superposition simplification and rewriting must reliably orient equations via term orderings (KBO/LPO) rather than relying on input orientation.
 3. **Canary Verification & Axiom Drift**:
-   - Because benchmark problems use `include('Axioms/XYZ.ax')`, and competition suites ship randomized/pre-processed axiom files in `Axioms/`, running benchmarks without setting `$TPTP` to the local competition suite can lead to axiom drift. The canary suite and `check_canary_drift.sh` monitor processed clause counts to catch discrepancies early.
+   - Because benchmark problems use `include('Axioms/XYZ.ax')`, and competition suites ship randomized/pre-processed axiom files in `Axioms/`, running benchmarks without setting `$TPTP` to the local competition suite can lead to axiom drift. The canary suite and the `check_canary_drift.sh` wrapper (`mrs-tools check-canary-drift`) monitor solver details to catch discrepancies early.
 4. **No Cheating on Headers**:
    - Prover components (or ML guidance pipelines) must never inspect file comments or headers, as all headers are stripped in official competition problems.
 

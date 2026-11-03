@@ -9,7 +9,13 @@ rust-version.workspace = true
 description = "CASC benchmark harness and report tool for mrs"
 
 [dependencies]
+clap = { workspace = true }
+csv = { workspace = true }
 rayon = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
+rusqlite = { workspace = true }
+shlex = { workspace = true }
 mrs-core = { workspace = true }
 mrs-search = { workspace = true }
 mrs-szs = { workspace = true }
@@ -25,6 +31,10 @@ walkdir = { workspace = true }
 num_cpus = { workspace = true }
 libc = { workspace = true }
 wait-timeout = { workspace = true }
+
+[[bin]]
+name = "mrs_tools"
+path = "src/bin/mrs_tools.rs"
 
 [[bin]]
 name = "bench_report"

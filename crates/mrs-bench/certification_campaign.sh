@@ -46,6 +46,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/tools.sh"
 ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 STRICT_TIME="${CERT_STRICT_TIME:-120}"
 JOBS="${CERT_JOBS:-4}"
@@ -107,6 +108,7 @@ done
 AUDIT_BIN="${ROOT}/target/release/audit_casc_proofs"
 (cd "${ROOT}" && cargo build --release -p mrs-bench --bin audit_casc_proofs)
 [[ -x "${AUDIT_BIN}" ]] || { echo "campaign: ${AUDIT_BIN} not built" >&2; exit 2; }
+mrs_tools --help >/dev/null
 
 if [[ -n "${AUDIT_ONLY}" ]]; then
     RUN_DIR="${AUDIT_ONLY}"
@@ -189,88 +191,4 @@ REPORT="${CERT_OUT}/audit.csv"
 [[ -f "${REPORT}" ]] || { echo "campaign: no audit report at ${REPORT}" >&2; exit 2; }
 
 echo "== outcome =="
-python3 - "${REPORT}" "${RUN_DIR}/run_meta.txt" <<'PY'
-import collections, csv, re, sys
-
-with open(sys.argv[1], newline="") as report:
-    rows = list(csv.DictReader(report))
-audit_checks = set(filter(None, (rows[0].get("checks", "").split(",") if rows else [])))
-run_meta = sys.argv[2]
-resolved_subset_path = None
-try:
-    for line in open(run_meta):
-        if line.startswith("subset_resolved="):
-            resolved_subset_path = line.split("=", 1)[1].strip()
-            break
-except OSError:
-    pass
-if resolved_subset_path:
-    try:
-        selected = set()
-        for line in open(resolved_subset_path):
-            entry = line.strip()
-            if entry:
-                division, problem = entry.split("/", 1)
-                selected.add((division.lower(), problem.removesuffix(".p")))
-        rows = [row for row in rows
-                if (row["division"].lower(), row["problem"].removesuffix(".p")) in selected]
-    except OSError as error:
-        print(f"campaign: cannot read resolved subset {resolved_subset_path}: {error}", file=sys.stderr)
-        raise SystemExit(2)
-refutations = [r for r in rows if r["generation_status"] in ("Theorem", "Unsatisfiable")]
-models = [r for r in rows if r["generation_status"] in ("Satisfiable", "CounterSatisfiable")]
-if not refutations:
-    print("no refutations in this run")
-
-by_division = collections.defaultdict(collections.Counter)
-for row in refutations:
-    by_division[row["division"]][row["strict_status"]] += 1
-    by_division[row["division"]]["refutations"] += 1
-for row in models:
-    by_division[row["division"]]["models"] += 1
-    if row["strict_status"] == "VerifiedGood" and "certified_model" in (row["strict_detail"] or ""):
-        by_division[row["division"]]["certified_models"] += 1
-    elif row["strict_status"] == "not_run" and "strict" not in audit_checks:
-        by_division[row["division"]]["certified_models"] += 1
-
-print(f"{'division':10s} {'refutations':>12s} {'certified':>10s} {'rejected':>9s} {'unverified':>11s} {'unchecked':>10s} {'certified%':>10s}")
-total = collections.Counter()
-for division in sorted(by_division):
-    counts = by_division[division]
-    n = counts["refutations"]
-    certified = counts["VerifiedGood"]
-    rejected = counts["VerifiedBad"]
-    unverified = counts["Unknown"] + counts["Timeout"]
-    # Every refutation the audit never reached: `proof_omitted`,
-    # `artifact_mismatch`, `problem_missing`, `no_proof`, `artifact_error`.
-    # The percentage used to divide by the five statuses it knew about, which
-    # quietly excluded these -- a run whose proofs were mostly unchecked
-    # reported a high "certified" rate over the handful it did check.
-    unchecked = n - certified - rejected - unverified
-    total.update({"refutations": n, "certified": certified, "rejected": rejected,
-                  "unverified": unverified, "unchecked": unchecked})
-    print(f"{division:10s} {n:12d} {certified:10d} {rejected:9d} {unverified:11d} "
-          f"{unchecked:10d} {100.0 * certified / n if n else 0.0:9.1f}%")
-    if counts["models"]:
-        print(f"  models: {counts['certified_models']}/{counts['models']} certified")
-n = total["refutations"]
-print(f"{'TOTAL':10s} {n:12d} {total['certified']:10d} {total['rejected']:9d} "
-      f"{total['unverified']:11d} {total['unchecked']:10d} "
-      f"{100.0 * total['certified'] / n if n else 0.0:9.1f}%")
-
-if not rows:
-    print("no benchmark rows matched the selected subset", file=sys.stderr)
-    raise SystemExit(2)
-
-print("\nreasons (rejected first: those are the ones to investigate)")
-reasons = collections.Counter()
-for row in refutations:
-    if row["strict_status"] == "VerifiedGood":
-        continue
-    detail = re.sub(r"\bc\d+\b", "N", row["strict_detail"] or "")
-    detail = re.sub(r"\d+", "N", detail)
-    reasons[(row["strict_status"], detail[:100])] += 1
-for (status, detail), count in reasons.most_common(25):
-    print(f"  {count:5d} {status:10s} {detail}")
-
-PY
+mrs_tools summarize-certification "${REPORT}" "${RUN_DIR}/run_meta.txt"

@@ -83,11 +83,13 @@
 #     ko      — system status disagrees with the reference answer
 #     unknown — system gave up / timed out, or no reference answer exists
 #
-# Requires: bash >= 4, bc, timeout (GNU coreutils)
+# Requires: bash >= 4, bc, timeout (GNU coreutils), Cargo/Rust if mrs_tools is not built.
 # For --jobs > 1 also requires: GNU parallel OR xargs -P
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/tools.sh"
+mrs_tools --help >/dev/null
 
 # ---------- defaults ----------
 EDITION="casc-30"
@@ -308,18 +310,7 @@ EOF
 # merely the file state from initial harness setup.
 if [[ -f "${MRS_BIN}" && -r "${MRS_BIN}" ]]; then
     MRS_BIN_SHA256="$(sha256sum "${MRS_BIN}" | awk '{print $1}')"
-    python3 - "${OUTPUT}/run_meta.json" "${MRS_BIN_SHA256}" <<'PY'
-import json
-import sys
-
-path, digest = sys.argv[1:]
-with open(path, encoding="utf-8") as stream:
-    metadata = json.load(stream)
-metadata["binary_sha256"] = digest
-with open(path, "w", encoding="utf-8") as stream:
-    json.dump(metadata, stream, indent=2)
-    stream.write("\n")
-PY
+    mrs_tools record-binary-hash "${OUTPUT}/run_meta.json" "${MRS_BIN_SHA256}"
 fi
 export CASC_EXPECTED_BINARY_SHA256="${MRS_BIN_SHA256}"
 
