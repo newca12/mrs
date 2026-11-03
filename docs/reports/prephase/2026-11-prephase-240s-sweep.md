@@ -117,9 +117,9 @@ result.
 | 12 | 246 | 245 | 246 | 239 | 245 | +1 |
 | 15 | 246 | 246 | 246 | 246 | 246 | 0 |
 
-The in-sample fit reaches the oracle at eight slots because it uses the same
-outcomes to choose and score each label's order. It must not be read as
-generalization. The corrected two-fold held-out results are:
+The in-sample fit nearly reaches the oracle at eight slots (263/264 and 242/246)
+because it uses the same outcomes to choose and score each label's order. It
+must not be read as generalization. The corrected two-fold held-out results are:
 
 | Dataset | Fold 1: fit / test | Fold 1 routed / division | Fold 2: fit / test | Fold 2 routed / division | Total routed / division | Delta |
 |---|---:|---:|---:|---:|---:|---:|
@@ -219,19 +219,95 @@ are not cooperative portfolio gains and are not grounds for editing
 
 ---
 
-## 7. Conclusions and Next Steps
+## 7. Investigation Plan: Allocate the Eight-Core Budget by Marginal Value
 
-The corrected, single-split held-out simulation is mixed: the label-fitted route
-is seven instances ahead on CASC-30 and six behind on CASC-J13. That does not
-establish a consistent routing advantage. The full-sample fit reaching nearly
-the oracle is a warning about training-set optimism, not evidence that the
-production router can solve every oracle problem. More importantly, none of
-these union-of-solo-results figures measures actual concurrent 8-worker
-coverage, the shipped `mrs_prephase::plan::rules`, clause sharing, or the effect
-of resource contention.
+The target is not “one universal portfolio of eight.” It is: for each problem,
+use at most eight concurrent workers in the way that maximizes verified solves
+under the division's wall-clock and memory limits. A division may use fewer than
+eight *distinct* strategies in its best coverage set, while another may need
+problem-dependent choices among more than eight complementary strategies.
 
-Do not change the default or per-division schedules on this evidence alone. To
-evaluate candidates, follow `AGENTS.md` §11: run paired baseline/candidate
-cooperative campaigns at eight workers, include shared and no-sharing controls,
-use at least two randomized pairs, and hold out families if the candidate was
-selected from these same sweep results. Re-audit proofs from any promoted run.
+### Phase 1 — Establish exact solo-matrix bounds
+
+1. Key every row by `(edition, division, problem)`; do not merge same-named
+   problems across releases. Deduplicate only the known CASC-30 EPU path aliases.
+2. Apply the official per-division time caps, including 120 s for CASC-30 EPU.
+   Treat the saved solo sweep as a candidate-generation matrix. Its raw
+   `refutation` status is not a substitute for strict proof certification.
+3. For each division, build each base strategy's solved set and enumerate all
+   `C(15, 8) = 6,435` eight-strategy subsets from those cached sets. Also compute
+   the best coverage for widths 1–7 and the all-15 union. This enumeration is
+   inexpensive; it proves an optimum **for the solo matrix only**. The existing
+   `greedy_set_cover` command remains a useful heuristic, not an exact optimizer.
+4. Classify each division from those bounds:
+   - **Compressible in the matrix:** some width `k < 8` reaches the all-15 union.
+     FEQ and FNE have greedy candidates that do so with six strategies; EPU's
+     s5 alone covers its nine matrix solves at the 120 s cap.
+   - **Potentially width-limited:** the exact best width-8 union is below the
+     all-15 union. UEQ's current greedy-8 candidate misses six of 277 union
+     solves, but this does not prove that every eight-set misses them.
+   - **Strategy/algorithm limited:** even the all-15 union is small or empty.
+     ICU has no solve in this matrix; adding workers from the same portfolio is
+     not evidence-based without a different algorithm or inference capability.
+
+The numbers above are screening bounds. A smaller-width portfolio may still be
+valuable for time-to-solution, and a solo result may not survive concurrency.
+Conversely, an eight-set that misses an oracle solve may still be the best real
+portfolio on the competition machine.
+
+### Phase 2 — Test a small candidate set cooperatively
+
+For each division, compare the shipped order with the exact best solo eight-set
+and a small number of diverse near-best candidates. Do not run all 6,435 sets as
+full campaigns. Use the canonical 8-physical-core host, `MRS_HARDWARE=casc`,
+`jobs=1`, and the official division limit. Measure both shared equality exchange
+(`MRS_SHARED_POOL_INTERVAL=500`) and the no-sharing control (`=0`).
+
+Start with at least two randomized paired baseline/candidate blocks as required
+by `AGENTS.md` §11. Report each pair delta, mean/range, per-problem flips,
+resource-outs, and strict-audit results; add pairs when effects are small or
+replicates disagree. Capture per-worker work/progress so “unused slot” means
+measured low marginal contribution, not merely a missing unique solve in a solo
+set.
+
+### Phase 3 — Route resources, not just labels
+
+If the cooperative results show a repeatable opportunity, test a router that
+selects among candidate eight-slot plans by division and held-out problem
+families. Compare in stages:
+
+1. shipped static per-division schedules;
+2. one global fixed portfolio and the per-division exact-solo candidates;
+3. static-feature routing;
+4. routing with a bounded, fixed-work trajectory probe;
+5. eligible certified prepasses or alternative engines, with their setup time
+   charged to the same official budget.
+
+Train on some source families and hold out others before tuning. Do not use a
+problem-name split across editions: the same name can denote different source
+files. Include probe/prepass overhead, and compare the actual `--pre-phase` run
+against the static baseline; this solo sweep did not run the shipped plan under
+concurrency.
+
+A fixed eight-core cap is a concurrency limit, not a limit on the number of
+strategies considered over a whole solve. A router may time-slice more than
+eight candidates or reuse a worker for a different algorithm, but every phase
+reduces the remaining time available to its strategies. For a division whose
+useful coverage saturates below eight distinct strategies, test assigning spare
+workers to a complementary certified engine/prepass or to reduce solve time.
+For a division that needs more than eight complementary candidates, test
+problem-dependent eight-sets or staged schedules. In either case, measure the
+cooperative run; do not assume spare cores can be transferred to another
+division during a single-problem invocation. Today `schedule_from_plan` cycles a
+short strategy order across all workers, so fewer distinct strategies do not
+automatically leave cores idle; using those slots for another engine or prepass
+requires an explicit plan/schedule design and its own cooperative test.
+
+### Promotion gate
+
+Do not change `strategy/named.rs` or enable pre-phase routing by default based on
+the solo matrix. Promote only after paired cooperative tests improve
+strictly-certified coverage on held-out families, with no `VerifiedBad` proofs
+and acceptable resource behavior. EPS remains excluded from this portfolio
+optimization under the §11 policy; its satisfiable/model-certified track is a
+separate problem.

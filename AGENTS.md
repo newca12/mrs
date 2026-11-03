@@ -552,7 +552,8 @@ and do not evaluate the shipped `mrs_prephase::plan::rules`. The solo union is
 candidate-generation evidence only; before changing a schedule or routing rule,
 measure the intended configuration with paired cooperative campaigns under §11.
 Feasibility prediction remains the pre-phase study's strongest supported result
-(5x spread).
+(5x spread). The proposed exact set-cover, cooperative-testing, and router
+investigation sequence is in §7 of the 240 s follow-up.
 
 ---
 
