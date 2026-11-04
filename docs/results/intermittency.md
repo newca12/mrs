@@ -1,6 +1,6 @@
 # Intermittent certified solves by competition division
 
-This is the current inventory of problems that have a **strictly certified
+This is an inventory of problems that have a **strictly certified
 solve in at least one complete division campaign and no certified solve in at
 least one other included campaign** for the same competition edition/division.
 For EPS, a certified solve means a `VerifiedGood` model certificate. A dash in
@@ -19,6 +19,17 @@ this inventory. The incomplete FEQ campaign at
 `campaign-feq-W8C16J2-20260930` is also omitted because it evaluated 600 rows
 with artifact-mismatch entries, rather than one auditable 300-problem division
 run.
+
+> **CASC-J13 refresh pending (2026-11-04):** The J13 campaign keys and
+> signatures below do not yet include the complete October 30 and November 3
+> full campaigns or the November 4 explicit FNE portfolio run. The November 3
+> run strictly certified 253/253 refutations and retained all 249 problems
+> refuted on October 30, adding four. The November 4 FNE run has 37
+> `VerifiedGood` proofs and three cause-unconfirmed `SIGKILL` errors. These
+> observations do not recompute signatures against every older campaign; do not
+> treat the J13 tables below as a complete current inventory. See the
+> [November 3 report](../reports/benchmarks/cert-j13-2026-11-03.md) and
+> [November 4 FNE report](../reports/benchmarks/fne-j13-explicit-portfolio-2026-11-04.md).
 
 This inventory is an **observed run-to-run difference list**, not a claim that
 the prover is nondeterministic under a fixed binary and configuration. Included

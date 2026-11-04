@@ -380,12 +380,19 @@ The question is whether those division schedules are optimal for 8 cores.
 > `VerifiedBad`; this does not audit the specific `codex.db` 257/400 or 222/300
 > snapshots and supplies no corrected score (see UI-1 in
 > `docs/policies/unresolved-issues.md`, `docs/CERTIFICATION_STATUS.md`, and
-> `docs/reports/benchmarks/ueq-soundness-regression-2026-10.md`). The current
-> strictly verified UEQ baseline is **107/400** on CASC-J13 (all 107
-> kernel-certified `VerifiedGood`, 0 `VerifiedBad`). A 2026-10-29 CASC-30 run
-> produced 149/300 strict `VerifiedGood`, but is a dirty, single-run result on
-> an unpinned 16-core host with only 54,198 MB effective memory and 25 memory
-> resource-outs; it is supplemental, not a standardized baseline (see
+> `docs/reports/benchmarks/ueq-soundness-regression-2026-10.md`). The latest
+> full CASC-J13 campaign observation (2026-11-03) is **143/400 UEQ**, all 143
+> kernel-certified `VerifiedGood`, within **253/800** strictly verified
+> refutations across FEQ/FNE/UEQ. This is a single run from a dirty producer
+> tree on an 8-core host with 95,979 MB RAM (81,582 MB reported effective
+> memory, below the 128 GiB allowance); it is not an official score or a
+> standardized baseline. The 2026-10-30 full campaign re-audited to 141/400
+> strict UEQ `VerifiedGood`. The Sep 30 `c07cac9` result of 107/400 is an
+> earlier adaptive-mode historical result, not the current full-campaign
+> observation. See `docs/reports/benchmarks/cert-j13-2026-11-03.md`. A
+> 2026-10-29 CASC-30 run produced 149/300 strict `VerifiedGood`, but is a dirty
+> single-run result on an unpinned 16-core host (54,198 MB effective memory,
+> 25 memory resource-outs); it is supplemental, not a standardized baseline (see
 > `docs/reports/benchmarks/ueq-2026-10.md`).
 > Never present the raw 257/400 or 222/300 figures as valid scores: they are
 > unsound/unverified legacy status counts and are superseded.

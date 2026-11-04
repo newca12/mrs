@@ -163,10 +163,10 @@ See [`reports/benchmarks/ueq-2026-09.md`](reports/benchmarks/ueq-2026-09.md).
 The full-division follow-up at
 `~/crates/mrs-bench/results/ueq-syntactic-recovery-j13` generated 112
 refutations on all 400 CASC-J13 UEQ problems. Strict audit returned **111
-`VerifiedGood`, 0 `VerifiedBad`, 1 `Unknown`, and 0 errors**. Thus the latest
-measured strict result is **111/400 (27.75%)**, four certified problems above
-the 107/400 campaign above; the raw refutation count is 112/400 (28.00%). The
-remaining `Unknown` is `RNG009-7`, an incomplete `ac_superposition` replay at
+`VerifiedGood`, 0 `VerifiedBad`, 1 `Unknown`, and 0 errors**. For this October 16
+recovery campaign, the strict result was **111/400 (27.75%)**, four certified
+problems above the 107/400 campaign above; the raw refutation count was 112/400
+(28.00%). The remaining `Unknown` is `RNG009-7`, an incomplete `ac_superposition` replay at
 node `c3774551` (“superposition conclusion is not a valid rewrite”). This is
 the known AC replay gap; no proof was classified `VerifiedBad`.
 
@@ -943,6 +943,58 @@ October 28 run are resolved, and `REL045-2` derived a complete 25.8 KB proof tha
 certified strictly as `VerifiedGood` (confirming UI-12 under live campaign
 conditions). Full details, per-division solve times, and memory envelopes are in
 the [October 30 campaign report](reports/benchmarks/cert-j13-2026-10-30.md).
+
+### Full CASC-J13 follow-up campaign (2026-11-03)
+
+The full 800-problem campaign
+`~/crates/mrs-bench/results/campaign-casc-j13-full-W8CASCHJ1-01-20261103`
+generated **253 refutations**: **72/300 FEQ**, **38/100 FNE**, and **143/400
+UEQ**. The archived strict audit certified **all 253 as `VerifiedGood`**, with
+0 `VerifiedBad`, `Unknown`, verifier timeouts, proof omissions, or missing-proof
+rows. All processes exited successfully; no `ResourceOut` was recorded.
+
+Compared with the October 30 full campaign, the new run refuted four additional
+problems (`GEO277+1`, `SWB073+1`, `KLE108-10`, `REL024-2`) and lost none of its
+249 solved problems. The October 30 result is 249/249 only after its subsequent
+strict re-audit; the original archived audit had 248 `VerifiedGood` and one
+`Unknown` (`LAT142-1`). Thus the comparable strict delta is +4, not +5. This is
+an observational comparison between different dirty producer builds, not a
+paired or causal estimate.
+
+The campaign used the `casc` profile, eight workers, sequential `jobs=1`, and
+official 180-second CASC-J13 limits on the same eight-core host as October 30.
+The host had 95,979 MB RAM; the run warned that this was below the profile's
+128 GiB allowance and reported 81,582 MB effective memory. No resource-out was
+recorded, but the memory difference is a comparability caveat. The full report,
+including provenance, per-division timing/memory, and the status flips among
+unsolved problems, is at
+[`reports/benchmarks/cert-j13-2026-11-03.md`](reports/benchmarks/cert-j13-2026-11-03.md).
+
+### CASC-J13 FNE explicit-portfolio experiment (2026-11-04)
+
+The full 100-problem FNE run
+`~/campaign-casc-j13-W8CASCHJ1-04-1_2_3_4_6_11_13_15_20261104` tested the
+explicit no-sharing portfolio `[1,2,3,4,6,11,13,15]` with eight workers and the
+official 180-second limit. It generated **37 theorems**, all **37 `VerifiedGood`**,
+with 0 `VerifiedBad`, `Unknown`, verifier timeouts, or proof omissions. Three
+other rows (`NLP260+1`, `NLP261+1`, `NLP262+1`) ended in exit-137 `SIGKILL`
+errors. The archived run records the cause as unconfirmed; do not label them
+OOMs without host/cgroup evidence.
+
+The November 3 full `casc_fne` campaign had 38/100 `VerifiedGood`: this run
+missed `CSR116+19` and added no solve against it. The October 22 candidate
+portfolio had 39 `VerifiedGood` plus one proof omission; 34 certified problems
+are common with this run. These are single-run comparisons across dirty builds
+and different hosts, not evidence to change the shipped schedule. `KRS261+1`,
+whose 55.6 MB proof was omitted in the October 22 run, emitted a 10.17 MB proof
+here and certified `VerifiedGood`.
+
+The producer used commit `c021be5` with a dirty tree on `mtsdev04`; the host
+reported 95,969 MB RAM and 81,573 MB effective memory against the 128 GiB `casc`
+allowance. Peak RSS on the three `SIGKILL` rows was 59.5–60.8 GB. Those values
+and the prior run's different outcomes do not establish the kill cause. Full
+provenance, exact per-problem flips, and the portfolio comparison are in the
+[`FNE explicit-portfolio report`](reports/benchmarks/fne-j13-explicit-portfolio-2026-11-04.md).
 
 ### Canonical full CASC-30 certification campaign (2026-10-30)
 

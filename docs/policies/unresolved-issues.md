@@ -31,7 +31,7 @@ what is blocked on hardware rather than on knowledge.
 
 ## UI-1 — Ordinary superposition recovery and incomplete AC replay
 
-### Current finding (2026-10-15; supersedes the historical diagnosis below)
+### Current finding (updated 2026-11-04; supersedes the historical diagnosis below)
 
 Target-variable binding is not inherently unsound. The blanket rigidity guard
 had disabled valid ordinary superposition. The producer now first tries
@@ -77,9 +77,18 @@ diagnosis and experiments below are retained as history, **not current rule
 semantics or established proofs of unsoundness**. In particular, statements
 below calling c26, c502, or the small lattice test invalid are superseded.
 
-The current implementation, measurements, audit pitfalls, and requested
-eight-core/128-GB campaign are described in
-[`the recovery report`](../reports/benchmarks/ueq-soundness-regression-2026-10.md).
+The November 3 full CASC-J13 campaign emitted 143 UEQ refutations, all 143
+`VerifiedGood`, and 253 strictly verified refutations across FEQ/FNE/UEQ. It
+retained all 141 UEQ proofs from the October 30 campaign and added
+`KLE108-10` and `REL024-2`; `LAT142-1` also certified cleanly. This is a fresh
+audited observation from a different dirty producer build, not evidence that
+all AC replay shapes are covered or a controlled estimate of code impact. See
+the [November 3 campaign report](../reports/benchmarks/cert-j13-2026-11-03.md).
+
+The implementation and audit history are described in the
+[`recovery report`](../reports/benchmarks/ueq-soundness-regression-2026-10.md);
+the latest full-campaign evidence is in the
+[`November 3 report`](../reports/benchmarks/cert-j13-2026-11-03.md).
 
 ### Historical investigation (superseded where contradicted above)
 
@@ -2545,4 +2554,8 @@ complete failure chain:
    `VerifiedGood` under `mrs-proover --strict`.
 5. Confirmed live under full campaign conditions in
    `campaign-casc-j13-full-W8CASCHJ1-01-20261030`, where `REL045-2` derived a
-   complete 25,821-byte proof and certified strictly as `VerifiedGood`.
+   complete 25,821-byte proof and certified strictly as `VerifiedGood`. The
+   November 3 full CASC-J13 campaign independently emitted a complete 159-node,
+   26,161-byte proof for the same problem, also `VerifiedGood` under the
+   archived strict audit (see
+   [`cert-j13-2026-11-03.md`](../reports/benchmarks/cert-j13-2026-11-03.md)).
