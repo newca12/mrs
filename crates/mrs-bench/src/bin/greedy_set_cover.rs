@@ -32,7 +32,8 @@
 //! Why K=8? CASC competition hardware has exactly 8 cores. This tool can
 //! generate candidate sets for that many slots, but its output is not the
 //! cooperative objective because it only sees solo coverage. Validate any
-//! candidate with `cooperative_portfolio_sweep.sh` before changing a schedule.
+//! candidate with `certification_campaign.sh --portfolio IDS` before changing
+//! a schedule.
 
 use std::collections::{HashMap, HashSet};
 use std::env;

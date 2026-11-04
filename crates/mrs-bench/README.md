@@ -44,10 +44,9 @@ Notes:
 | Path | Purpose |
 |------|---------|
 | `casc.sh` | Run a full benchmark: invoke each system on each problem, collect SZS status and wall time, archive raw stdout/stderr and hashes, and write `results/<edition>/*/run.csv` |
+| `certification_campaign.sh` | Run an MRS benchmark, strictly audit its proofs, summarize certification outcomes, and archive the complete output directory as `<output>.tar.bz2` |
 | `perf_probe.sh` | Measure search throughput on this host with a fixed amount of work, then append the result to the bank in `docs/results/perf/` |
 | `throughput_probe.sh` / `throughput_probe_list.txt` | Compare two `mrs` builds on clauses retired out of a fixed per-problem budget; the corpus is a fixed stride over the checked-in editions, and each row records the binary sha |
-| `cooperative_portfolio_sweep.sh` | Measure an explicit multi-worker portfolio; enable shared equality exchange with a positive `MRS_SHARED_POOL_INTERVAL`, or use `0` for a no-sharing control |
-| `cooperative_portfolio_search.sh` / `mrs-tools cooperative-portfolio-search` | Run one-swap local search over portfolios using Rust CSV scoring and measured cooperative coverage |
 | `setup.sh` | Download and extract the CASC problem and axiom archives from tptp.org |
 | `systems/` | Per-system `invoke.sh` scripts (add a new directory here to register a competitor) |
 | `problems/` | Extracted TPTP problems and axioms (gitignored, populated by `setup.sh`) |
@@ -116,48 +115,54 @@ Reads a `run.csv` produced by `casc.sh` and prints:
 with one worker. Their union/set-cover output is diagnostic only: it does not
 model the cross-strategy unit-equality pool used by `casc_*` schedules.
 
-Measure the actual cooperative portfolio instead:
+Measure the actual cooperative portfolio with the certification campaign. Use
+`--portfolio` for explicit base-strategy IDs, or the existing `--schedule` option
+for a named schedule. `MRS_SHARED_POOL_INTERVAL` enables equality exchange when
+positive and disables it at `0`:
 
 ```bash
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \
-crates/mrs-bench/cooperative_portfolio_sweep.sh \
-  casc-30 feq 12,11,10,6,8,1,4,13 30 4 \
-  results/cooperative-feq
+  crates/mrs-bench/certification_campaign.sh \
+  --edition casc-30 --systems mrs --divisions feq \
+  --portfolio 12,11,10,6,8,1,4,13 --time 30 --jobs 4 \
+  --output results/cooperative-feq
 
 # Control run with sharing disabled:
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
-crates/mrs-bench/cooperative_portfolio_sweep.sh \
-  casc-30 feq 12,11,10,6,8,1,4,13 30 4 \
-  results/cooperative-feq-no-sharing
+  crates/mrs-bench/certification_campaign.sh \
+  --edition casc-30 --systems mrs --divisions feq \
+  --portfolio 12,11,10,6,8,1,4,13 --time 30 --jobs 4 \
+  --output results/cooperative-feq-no-sharing
 ```
 
 The cooperative result is the portfolio-selection objective. Compare the
 shared and no-sharing runs to quantify cooperation separately from strategy
 diversity. `failure_detail` records `strategy_ids`, `shared_published`, and
-`shared_imported` telemetry for each problem.
+`shared_imported` telemetry for each problem. Each campaign also produces a
+strict certification report and `<output>.tar.bz2` archive.
 
-`cooperative_portfolio_sweep.sh` also accepts `schedule:<name>` to benchmark a
-built-in schedule through the same harness. This supports named schedules that
-mix base strategies with experimental selectors and do not fit the numeric
-`--portfolio` interface:
+Named schedules use `--schedule`:
 
 ```bash
 # Eight-worker FNE/MultiQueue hybrid candidate; repeat with interval 0 as a control.
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
-  crates/mrs-bench/cooperative_portfolio_sweep.sh \
-  casc-30 fne schedule:casc_fne_mq_hybrid 240 1 \
-  results/cooperative-fne-mq-hybrid-no-sharing
+  crates/mrs-bench/certification_campaign.sh \
+  --edition casc-30 --systems mrs --divisions fne \
+  --schedule casc_fne_mq_hybrid --time-fne 240 --jobs 1 \
+  --output results/cooperative-fne-mq-hybrid-no-sharing
 
 # Eight-worker FEQ/MultiQueue hybrid candidate.
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
-  crates/mrs-bench/cooperative_portfolio_sweep.sh \
-  casc-30 feq schedule:casc_feq_mq_hybrid 240 1 \
-  results/cooperative-feq-mq-hybrid-no-sharing
+  crates/mrs-bench/certification_campaign.sh \
+  --edition casc-30 --systems mrs --divisions feq \
+  --schedule casc_feq_mq_hybrid --time-feq 240 --jobs 1 \
+  --output results/cooperative-feq-mq-hybrid-no-sharing
 
 # Diagnose one MultiQueue archetype across the corpus as one full-budget worker.
 MRS_WORKERS=1 MRS_SHARED_POOL_INTERVAL=0 \
-  crates/mrs-bench/cooperative_portfolio_sweep.sh \
-  casc-30 fne schedule:mq_1 240 1 results/solo-mq-1
+  crates/mrs-bench/certification_campaign.sh \
+  --edition casc-30 --systems mrs --divisions fne \
+  --schedule mq_1 --time-fne 240 --jobs 1 --output results/solo-mq-1
 ```
 
 The `mq_1` … `mq_8` schedules repeat one archetype over the requested workers;

@@ -19,7 +19,7 @@
 # replayed" is actionable, "certification is 89%" is not.
 #
 # Usage:
-#   crates/mrs-bench/certification_campaign.sh <casc-args...>
+#   crates/mrs-bench/certification_campaign.sh [--portfolio IDS] <casc-args...>
 #
 # For a pinned local corpus, `--manifest-out FILE` to `casc.sh` writes the
 # division/name inventory without running any systems. Pass that inventory as
@@ -30,15 +30,30 @@
 # already exists. Phase 1 is the expensive half (every problem, full wall
 # clock); re-running a campaign to reach the audit repeats all of it.
 #
+# `--portfolio IDS` selects one base strategy per worker (IDs 1..15); it is
+# checked against `MRS_WORKERS` (default 8). `--schedule NAME` remains the
+# `casc.sh` option for selecting a named schedule. `MRS_SHARED_POOL_INTERVAL`
+# is inherited (default 0); 0 disables cross-strategy equality sharing.
+#
+# Every successful run archives its complete output directory as a sibling
+# `<output>.tar.bz2`. `--audit-only` archives the audited run directory too.
+#
 # Examples (8-core competition hardware, two jobs of four workers):
-#   MRS_WORKERS=8 crates/mrs-bench/certification_campaign.sh \
-#       --edition casc-j13 --systems mrs --divisions fne,feq,ueq \
-#       --casc-times --jobs 2 --output results/cert-j13
+#   MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \
 #   crates/mrs-bench/certification_campaign.sh \
-#       --edition casc-30 --systems mrs --divisions eps,epu,feq --casc-times --jobs 2
+#       --edition casc-j13 --systems mrs --divisions fne,feq,ueq \
+#       --portfolio 11,4,12,1,6,8,2,3 --casc-times --jobs 2 \
+#       --output results/cert-j13
+#   MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
+#   crates/mrs-bench/certification_campaign.sh \
+#       --edition casc-30 --systems mrs --divisions feq --portfolio 12,11,10,6,8,1,4,13 \
+#       --casc-times --jobs 1 --output results/coop-feq-no-sharing
 #   crates/mrs-bench/certification_campaign.sh --audit-only results/cert-j13
 #
 # Environment:
+#   MRS_WORKERS             worker count for mrs (default 8)
+#   MRS_PORTFOLIO           explicit portfolio (alternative to --portfolio)
+#   MRS_SHARED_POOL_INTERVAL equality-sharing poll interval (default 0)
 #   CERT_STRICT_TIME   per-proof kernel budget   (default 120)
 #   CERT_JOBS          audit parallelism        (default 4)
 #   CERT_OUT           report directory         (default <output>/certification)
@@ -55,6 +70,8 @@ CERT_OUT="${CERT_OUT:-}"
 SUBSET_FILE=""
 MANIFEST_OUT=""
 AUDIT_ONLY=""
+PORTFOLIO_ARG=""
+CASC_ARGS=()
 
 # `--edition` and the problems root must agree with what phase 1 actually ran
 # against. The run metadata records the corpus root; --edition and
@@ -66,6 +83,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
         --output)
             ((i + 1 < ${#args[@]})) || { echo "campaign: --output requires a directory" >&2; exit 2; }
             OUT="${args[i + 1]}"
+            CASC_ARGS+=("--output" "${args[i + 1]}")
             i=$((i + 1))
             ;;
         --audit-only)
@@ -73,32 +91,82 @@ for ((i = 0; i < ${#args[@]}; i++)); do
             AUDIT_ONLY="${args[i + 1]}"
             i=$((i + 1))
             ;;
+        --portfolio)
+            ((i + 1 < ${#args[@]})) || { echo "campaign: --portfolio requires strategy IDs" >&2; exit 2; }
+            [[ -n "${args[i + 1]}" ]] || { echo "campaign: --portfolio requires strategy IDs" >&2; exit 2; }
+            [[ -z "${PORTFOLIO_ARG}" ]] || { echo "campaign: --portfolio may be specified only once" >&2; exit 2; }
+            PORTFOLIO_ARG="${args[i + 1]}"
+            i=$((i + 1))
+            ;;
         --edition)
             ((i + 1 < ${#args[@]})) || { echo "campaign: --edition requires a value" >&2; exit 2; }
             EDITION="${args[i + 1]}"
+            CASC_ARGS+=("--edition" "${args[i + 1]}")
             i=$((i + 1))
             ;;
         --subset)
             ((i + 1 < ${#args[@]})) || { echo "campaign: --subset requires a file" >&2; exit 2; }
             SUBSET_FILE="${args[i + 1]}"
+            CASC_ARGS+=("--subset" "${args[i + 1]}")
             i=$((i + 1))
             ;;
         --subset-list-out)
             ((i + 1 < ${#args[@]})) || { echo "campaign: --subset-list-out requires a file" >&2; exit 2; }
+            CASC_ARGS+=("--subset-list-out" "${args[i + 1]}")
             i=$((i + 1))
             ;;
         --manifest-out)
             ((i + 1 < ${#args[@]})) || { echo "campaign: --manifest-out requires a file" >&2; exit 2; }
             MANIFEST_OUT="${args[i + 1]}"
+            CASC_ARGS+=("--manifest-out" "${args[i + 1]}")
             i=$((i + 1))
             ;;
         --time-*)
             ((i + 1 < ${#args[@]})) || { echo "campaign: ${args[i]} requires a value" >&2; exit 2; }
+            CASC_ARGS+=("${args[i]}" "${args[i + 1]}")
             i=$((i + 1))
+            ;;
+        *)
+            CASC_ARGS+=("${args[i]}")
             ;;
     esac
 done
 [[ -n "${OUT}" || -n "${AUDIT_ONLY}" ]] || { echo "campaign: --output DIR is required" >&2; exit 2; }
+
+# Resolve explicit portfolio configuration before starting the expensive search.
+# An audit-only run does not search, so its result must not depend on the caller's
+# current prover environment.
+if [[ -z "${AUDIT_ONLY}" ]]; then
+    # The prover defaults to eight workers in systems/mrs/invoke.sh, so use the
+    # same default here when checking one strategy per portfolio worker.
+    if [[ -n "${PORTFOLIO_ARG}" ]]; then
+        MRS_PORTFOLIO="${PORTFOLIO_ARG}"
+    fi
+    MRS_WORKERS="${MRS_WORKERS:-8}"
+    MRS_SHARED_POOL_INTERVAL="${MRS_SHARED_POOL_INTERVAL:-0}"
+    if ! [[ "${MRS_WORKERS}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "campaign: MRS_WORKERS must be a positive integer" >&2
+        exit 2
+    fi
+    if ! [[ "${MRS_SHARED_POOL_INTERVAL}" =~ ^[0-9]+$ ]]; then
+        echo "campaign: MRS_SHARED_POOL_INTERVAL must be a non-negative integer" >&2
+        exit 2
+    fi
+    if [[ -n "${MRS_PORTFOLIO:-}" ]]; then
+        if ! [[ "${MRS_PORTFOLIO}" =~ ^([1-9]|1[0-5])(,([1-9]|1[0-5]))*$ ]]; then
+            echo "campaign: portfolio must be comma-separated strategy IDs in 1..15" >&2
+            exit 2
+        fi
+        IFS=',' read -r -a PORTFOLIO_IDS <<< "${MRS_PORTFOLIO}"
+        if (( ${#PORTFOLIO_IDS[@]} != MRS_WORKERS )); then
+            echo "campaign: portfolio has ${#PORTFOLIO_IDS[@]} strategies but MRS_WORKERS=${MRS_WORKERS}" >&2
+            exit 2
+        fi
+        export MRS_PORTFOLIO
+    fi
+    export MRS_WORKERS MRS_SHARED_POOL_INTERVAL
+fi
+command -v tar >/dev/null 2>&1 || { echo "campaign: tar is required to archive the run" >&2; exit 2; }
 
 # Always build (cargo no-ops when up to date). Building only when the binary is
 # *missing* is not enough: the audit is a measurement of the current kernel, and
@@ -116,7 +184,7 @@ if [[ -n "${AUDIT_ONLY}" ]]; then
     echo "audit-only: search skipped, auditing the archived run in place"
 else
     echo "== phase 1/2: search (normal route, no self-check) =="
-    (cd "${ROOT}" && ./crates/mrs-bench/casc.sh "${args[@]}")
+    (cd "${ROOT}" && ./crates/mrs-bench/casc.sh "${CASC_ARGS[@]}")
     RUN_DIR="${ROOT}/${OUT}"
     if [[ ! -d "${RUN_DIR}" ]]; then RUN_DIR="${OUT}"; fi
     if [[ "${RUN_DIR}" != /* ]]; then RUN_DIR="${PWD}/${RUN_DIR}"; fi
@@ -126,6 +194,7 @@ if [[ ! -f "${RUN_DIR}/run.csv" ]]; then
     echo "campaign: no run.csv at ${RUN_DIR}/run.csv" >&2
     exit 2
 fi
+RUN_DIR="$(cd "${RUN_DIR}" && pwd -P)"
 
 if [[ -n "${AUDIT_ONLY}" ]]; then
     echo "== strict-kernel audit of the archived proofs =="
@@ -192,3 +261,25 @@ REPORT="${CERT_OUT}/audit.csv"
 
 echo "== outcome =="
 mrs_tools summarize-certification "${REPORT}" "${RUN_DIR}/run_meta.txt"
+
+# Keep the archive beside the run directory, rather than inside it, so the
+# archive never attempts to include itself. Stage and rename atomically so an
+# interrupted compression cannot leave a plausible-looking partial archive.
+RUN_PARENT="$(dirname "${RUN_DIR}")"
+RUN_NAME="$(basename "${RUN_DIR}")"
+ARCHIVE="${RUN_DIR}.tar.bz2"
+if ! ARCHIVE_TMP="$(mktemp "${ARCHIVE}.tmp.XXXXXX")"; then
+    echo "campaign: could not create temporary archive beside ${ARCHIVE}" >&2
+    exit 2
+fi
+if ! tar -cjf "${ARCHIVE_TMP}" -C "${RUN_PARENT}" "${RUN_NAME}"; then
+    rm -f -- "${ARCHIVE_TMP}"
+    echo "campaign: failed to create archive ${ARCHIVE}" >&2
+    exit 2
+fi
+if ! mv -f -- "${ARCHIVE_TMP}" "${ARCHIVE}"; then
+    rm -f -- "${ARCHIVE_TMP}"
+    echo "campaign: failed to publish archive ${ARCHIVE}" >&2
+    exit 2
+fi
+echo "archive: ${ARCHIVE}"

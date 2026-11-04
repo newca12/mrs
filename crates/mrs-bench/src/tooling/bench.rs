@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
-use std::fs::{self, File};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use clap::Args;
 use rand::SeedableRng;
@@ -157,19 +157,6 @@ pub struct CodexOverlapArgs {
     codex_status: String,
     #[arg(long, default_value = "ok")]
     run_verdict: String,
-}
-
-#[derive(Args, Debug)]
-pub struct CooperativeSearchArgs {
-    edition: String,
-    division: String,
-    #[arg(default_value_t = 30)]
-    time: u64,
-    #[arg(default_value_t = 1)]
-    jobs: usize,
-    #[arg(default_value_t = 1)]
-    rounds: usize,
-    output: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -1371,227 +1358,6 @@ pub fn codex_overlap(args: CodexOverlapArgs) -> ToolResult<()> {
     Ok(())
 }
 
-fn cooperative_solved_count(path: &Path) -> ToolResult<usize> {
-    let mut reader = csv::Reader::from_path(path)?;
-    let headers = reader.headers()?.clone();
-    let problem = csv_column(&headers, "problem")?;
-    let verdict = csv_column(&headers, "verdict")?;
-    let mut solved = BTreeSet::new();
-    for row in reader.records() {
-        let row = row?;
-        if row.get(verdict) == Some("ok") {
-            solved.insert(row.get(problem).unwrap_or_default().to_owned());
-        }
-    }
-    Ok(solved.len())
-}
-
-struct CooperativeSearchContext<'a> {
-    root: &'a Path,
-    output: &'a Path,
-    edition: &'a str,
-    division: &'a str,
-    time: u64,
-    jobs: usize,
-}
-
-fn evaluate_cooperative_portfolio(
-    context: &CooperativeSearchContext<'_>,
-    round: &str,
-    label: &str,
-    portfolio: &[u8],
-    sharing_interval: u64,
-    cache: &mut BTreeMap<(String, u64), usize>,
-    results: &mut csv::Writer<File>,
-) -> ToolResult<usize> {
-    let portfolio = portfolio
-        .iter()
-        .map(u8::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    let key = (portfolio.clone(), sharing_interval);
-    if let Some(score) = cache.get(&key) {
-        return Ok(*score);
-    }
-    let run_dir = context
-        .output
-        .join(format!("r{round}-{label}-{}", portfolio.replace(',', "-")));
-    let stdout = File::create(run_dir.with_extension("out"))?;
-    let stderr = File::create(run_dir.with_extension("err"))?;
-    let sweep = context
-        .root
-        .join("crates/mrs-bench/cooperative_portfolio_sweep.sh");
-    let status = Command::new("bash")
-        .arg(sweep)
-        .args([
-            context.edition,
-            context.division,
-            &portfolio,
-            &context.time.to_string(),
-            &context.jobs.to_string(),
-        ])
-        .arg(&run_dir)
-        .env("MRS_SHARED_POOL_INTERVAL", sharing_interval.to_string())
-        .env("MRS_TOOLS_BIN", std::env::current_exe()?.canonicalize()?)
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .status()?;
-    if !status.success() {
-        return Err(format!(
-            "cooperative sweep failed for round {round}, portfolio {portfolio}, sharing={sharing_interval}"
-        )
-        .into());
-    }
-    let run_csv = run_dir.join("run.csv");
-    let score = cooperative_solved_count(&run_csv)?;
-    results.write_record([
-        round,
-        portfolio.as_str(),
-        &score.to_string(),
-        run_csv.to_str().ok_or("non-UTF8 run.csv path")?,
-        &sharing_interval.to_string(),
-    ])?;
-    results.flush()?;
-    cache.insert(key, score);
-    Ok(score)
-}
-
-pub fn cooperative_portfolio_search(args: CooperativeSearchArgs) -> ToolResult<()> {
-    if args.rounds == 0 || args.jobs == 0 {
-        return Err("jobs and rounds must be positive".into());
-    }
-    let division = args.division.to_ascii_lowercase();
-    let mut current = match division.as_str() {
-        "feq" => vec![11, 12, 1, 6, 10, 8, 14, 4],
-        "fne" => vec![11, 4, 12, 1, 6, 8, 2, 3],
-        "ueq" => vec![11, 4, 2, 8, 14, 1, 15, 3],
-        "epr" => vec![6, 2, 1, 3, 4, 5, 7, 8],
-        "eps" => vec![2, 3, 1, 8, 11, 12, 9, 14],
-        "epu" => vec![1, 6, 14, 11, 4, 2, 3, 7],
-        "icu" => vec![12, 1, 2, 3, 4, 5, 6, 7],
-        _ => return Err(format!("unsupported division {:?}", args.division).into()),
-    };
-    if current.len() != 8 {
-        return Err("cooperative search requires an eight-slot initial portfolio".into());
-    }
-    let shared_interval = match std::env::var("MRS_SHARED_POOL_INTERVAL") {
-        Ok(value) => value
-            .parse::<u64>()
-            .ok()
-            .filter(|value| *value > 0)
-            .ok_or("MRS_SHARED_POOL_INTERVAL must be a positive integer")?,
-        Err(_) => 500,
-    };
-    let root = repo_root();
-    let output = match args.output {
-        Some(path) => absolute(&path)?,
-        None => {
-            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-            root.join(format!(
-                "crates/mrs-bench/results/{}/cooperative-search-{}-{timestamp}",
-                args.edition, division
-            ))
-        }
-    };
-    fs::create_dir_all(&output)?;
-    let results_path = output.join("search.tsv");
-    let context = CooperativeSearchContext {
-        root: &root,
-        output: &output,
-        edition: &args.edition,
-        division: &division,
-        time: args.time,
-        jobs: args.jobs,
-    };
-    let mut results = csv::WriterBuilder::new()
-        .delimiter(b'\t')
-        .from_path(&results_path)?;
-    results.write_record(["round", "portfolio", "solved", "run_csv", "shared_interval"])?;
-    let mut cache = BTreeMap::new();
-    let mut current_string = current
-        .iter()
-        .map(u8::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    let mut best_score = evaluate_cooperative_portfolio(
-        &context,
-        "0",
-        "initial",
-        &current,
-        shared_interval,
-        &mut cache,
-        &mut results,
-    )?;
-    eprintln!("Initial cooperative portfolio {current_string}: {best_score} solved");
-
-    for round in 1..=args.rounds {
-        let mut round_best_score = best_score;
-        let mut round_best = current.clone();
-        for (slot, candidate, trial) in cooperative_trials(&current) {
-            let score = evaluate_cooperative_portfolio(
-                &context,
-                &round.to_string(),
-                &format!("s{slot}-c{candidate}"),
-                &trial,
-                shared_interval,
-                &mut cache,
-                &mut results,
-            )?;
-            let trial_string = trial
-                .iter()
-                .map(u8::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            eprintln!(
-                "round={round} slot={slot} candidate={candidate} portfolio={trial_string} solved={score}"
-            );
-            if score > round_best_score {
-                round_best_score = score;
-                round_best = trial;
-            }
-        }
-        if round_best_score <= best_score {
-            break;
-        }
-        best_score = round_best_score;
-        current = round_best;
-        current_string = current
-            .iter()
-            .map(u8::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        eprintln!("Accepted round {round}: {current_string} ({best_score} solved)");
-    }
-    let control_score = evaluate_cooperative_portfolio(
-        &context,
-        &format!("{}-control", args.rounds),
-        "no-sharing",
-        &current,
-        0,
-        &mut cache,
-        &mut results,
-    )?;
-    eprintln!("Best cooperative portfolio: {current_string} ({best_score} solved)");
-    eprintln!("Same portfolio without shared pool: {control_score} solved");
-    eprintln!("Results: {}", results_path.display());
-    Ok(())
-}
-
-fn cooperative_trials(current: &[u8]) -> Vec<(usize, u8, Vec<u8>)> {
-    let mut trials = Vec::new();
-    for (slot, _) in current.iter().enumerate() {
-        for candidate in 1..=15 {
-            if current.contains(&candidate) {
-                continue;
-            }
-            let mut trial = current.to_vec();
-            trial[slot] = candidate;
-            trials.push((slot, candidate, trial));
-        }
-    }
-    trials
-}
-
 fn detail_counter(details: &str, key: &str) -> u64 {
     details
         .split_whitespace()
@@ -2023,43 +1789,6 @@ mod tests {
         let output = fs::read_to_string(directory.path().join("epr_telemetry.csv")).unwrap();
         assert!(output.starts_with("problem,szs_status,epr_attempted,epr_route,epr_generated"));
         assert!(output.contains("P001.p,Unsatisfiable,1,ground,3"));
-    }
-
-    #[test]
-    fn cooperative_score_counts_unique_correctly_graded_problems() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("run.csv");
-        fs::write(
-            &path,
-            "division,problem,verdict\nfeq,A,ok\nfeq,A,ok\nfeq,B,ko\nfeq,C,unknown\n",
-        )
-        .unwrap();
-        assert_eq!(cooperative_solved_count(&path).unwrap(), 1);
-    }
-
-    #[test]
-    fn cooperative_search_generates_each_unique_one_swap() {
-        let current = [11, 4, 12, 1, 6, 8, 2, 3];
-        let trials = cooperative_trials(&current);
-        assert_eq!(trials.len(), 8 * 7);
-        for (slot, candidate, trial) in trials {
-            assert_ne!(trial[slot], current[slot]);
-            assert_eq!(trial[slot], candidate);
-            assert_eq!(
-                trial.iter().copied().collect::<BTreeSet<_>>().len(),
-                current.len()
-            );
-            assert_eq!(
-                trial
-                    .iter()
-                    .filter(|strategy| **strategy != candidate)
-                    .collect::<Vec<_>>(),
-                current
-                    .iter()
-                    .filter(|strategy| **strategy != current[slot])
-                    .collect::<Vec<_>>()
-            );
-        }
     }
 
     #[test]

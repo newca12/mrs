@@ -77,5 +77,5 @@ done
 echo "================================================================================"
 echo "Strategy Sweep Completed successfully!"
 echo "Database populated: ${DB_PATH}"
-echo "NOTE: this database measures solo strategies only; use cooperative_portfolio_sweep.sh for portfolio coverage."
+echo "NOTE: this database measures solo strategies only; use certification_campaign.sh --portfolio IDS for cooperative portfolio coverage."
 echo "================================================================================"

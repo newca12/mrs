@@ -21,10 +21,7 @@
 #
 # Two consequences for everything else in this directory:
 #
-#   * `cooperative_portfolio_sweep.sh` is one `casc.sh` exec with no replicates,
-#     so it scores every candidate from a single observation.
-#   * `cooperative_portfolio_search.sh` maximises over ~120 such observations per
-#     round (rounds x 8 slots x 15 candidates), which selects on noise.
+#   * A portfolio campaign is one observation unless it is explicitly repeated.
 #   * `greedy_set_cover` builds each strategy's solved-set from one `run.csv`.
 #
 # Use at least two runs to screen within-configuration variation; add runs when

@@ -36,7 +36,6 @@ jobs:
           crates/mrs-bench/run_variance.sh crates/mrs-bench/certification_campaign.sh
           crates/mrs-bench/check_canary_drift.sh
           crates/mrs-bench/epr_ab_sweep.sh crates/mrs-bench/prephase/ab.sh
-          crates/mrs-bench/cooperative_portfolio_search.sh
           formal/superposition-checker/install-verus.sh
           formal/superposition-checker/verify.sh
           formal/superposition-checker/build-runtime.sh

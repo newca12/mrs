@@ -23,8 +23,6 @@ enum Command {
     PairedCampaign(bench::PairedCampaignArgs),
     /// Compare frozen builds at identical selected-clause work.
     FixedWorkCompare(bench::FixedWorkArgs),
-    /// Search cooperative eight-worker portfolios by measured solved coverage.
-    CooperativePortfolioSearch(bench::CooperativeSearchArgs),
     /// Audit the CASC canaries for problem/include drift.
     CheckCanaryDrift(bench::CanaryDriftArgs),
     /// Render identity-bound audit snapshots as Markdown.
@@ -91,9 +89,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Command::FreezeCorpus(args) => mrs_bench::tooling::corpus::freeze_command(args),
         Command::PairedCampaign(args) => mrs_bench::tooling::bench::paired_campaign(args),
         Command::FixedWorkCompare(args) => mrs_bench::tooling::bench::fixed_work_compare(args),
-        Command::CooperativePortfolioSearch(args) => {
-            mrs_bench::tooling::bench::cooperative_portfolio_search(args)
-        }
         Command::CheckCanaryDrift(args) => mrs_bench::tooling::bench::check_canary_drift(args),
         Command::CertificationDashboard(args) => {
             mrs_bench::tooling::bench::certification_dashboard(args)

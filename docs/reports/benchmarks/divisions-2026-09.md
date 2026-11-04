@@ -61,15 +61,17 @@ export TPTP=/path/to/TPTP-v9.x.x
 # The eight IDs must match MRS_WORKERS. This launches one 8-worker mrs
 # process per problem, as competition runs do.
 MRS_SHARED_POOL_INTERVAL=500 \
-./crates/mrs-bench/cooperative_portfolio_sweep.sh \
-    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
-    results/cooperative-fne
+MRS_WORKERS=8 ./crates/mrs-bench/certification_campaign.sh \
+    --edition casc-30 --systems mrs --divisions fne \
+    --portfolio 11,4,12,1,6,8,2,3 --time 30 --jobs 4 \
+    --output results/cooperative-fne
 
 # Control: isolate the contribution from cross-strategy sharing.
 MRS_SHARED_POOL_INTERVAL=0 \
-./crates/mrs-bench/cooperative_portfolio_sweep.sh \
-    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
-    results/cooperative-fne-no-sharing
+MRS_WORKERS=8 ./crates/mrs-bench/certification_campaign.sh \
+    --edition casc-30 --systems mrs --divisions fne \
+    --portfolio 11,4,12,1,6,8,2,3 --time 30 --jobs 4 \
+    --output results/cooperative-fne-no-sharing
 
 # Step 4: use cooperative results, not solo set-cover alone, to update named.rs
 ```

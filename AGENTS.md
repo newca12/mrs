@@ -368,9 +368,9 @@ The question is whether those division schedules are optimal for 8 cores.
 > shape (8 workers, 8 physical cores, `jobs=1`, campaign at `c07cac9`), the
 > portfolio produced a definitive status on only 2 of 100 problems, both also
 > answered by the certified track, and added 0 unique solves. Thus
-> `greedy_set_cover --division eps` and `cooperative_portfolio_sweep.sh` do not
-> optimize EPS coverage. Focus EPS work on the certified path and grounding
-> tiers; see `docs/reports/benchmarks/eps-2026-09.md`.
+> solo set-cover and the ordinary cooperative portfolio do not optimize EPS
+> coverage. Focus EPS work on the certified path and grounding tiers; see
+> `docs/reports/benchmarks/eps-2026-09.md`.
 
 > **UEQ historical numbers — do not quote superseded/unsound runs as current scores.**
 > Historical unverified snapshots in `codex.db` (such as 257/400 for CASC-J13
@@ -433,22 +433,25 @@ nix develop -c cargo run --release --bin greedy_set_cover -- results/sweep-fne-*
 ```bash
 # One mrs process per problem, eight workers, shared equality pool enabled.
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \
-./crates/mrs-bench/cooperative_portfolio_sweep.sh \
-    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
-    results/cooperative-fne-$(date +%Y%m%d)
+./crates/mrs-bench/certification_campaign.sh \
+    --edition casc-30 --systems mrs --divisions fne \
+    --portfolio 11,4,12,1,6,8,2,3 --time 30 --jobs 4 \
+    --output results/cooperative-fne-$(date +%Y%m%d)
 
 # Control: same portfolio with sharing disabled.
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
-./crates/mrs-bench/cooperative_portfolio_sweep.sh \
-    casc-30 fne 11,4,12,1,6,8,2,3 30 4 \
-    results/cooperative-fne-no-sharing-$(date +%Y%m%d)
+./crates/mrs-bench/certification_campaign.sh \
+    --edition casc-30 --systems mrs --divisions fne \
+    --portfolio 11,4,12,1,6,8,2,3 --time 30 --jobs 4 \
+    --output results/cooperative-fne-no-sharing-$(date +%Y%m%d)
 ```
 
-The cooperative result is the portfolio-selection objective. The difference
-between shared and no-sharing runs measures cooperation gain separately from
-strategy diversity. Use `cooperative_portfolio_search.sh` for one-swap local
-search over candidate portfolios; its Rust implementation owns candidate
-generation, run.csv scoring, caching, and the search loop.
+The campaign's `run.csv` is the portfolio-selection objective; it also runs the
+strict proof audit and archives the complete output directory as
+`<output>.tar.bz2`. The difference between shared and no-sharing runs measures
+cooperation gain separately from strategy diversity. Compare manually selected
+candidate portfolios with paired campaigns and held-out problems before
+changing a shipped schedule.
 
 > **Replication policy (updated 2026-10-30).** Two randomized paired blocks are
 > the minimum screen, not proof that variance is low. `mrs-tools paired-campaign --reps 2`
@@ -459,8 +462,8 @@ generation, run.csv scoring, caching, and the search loop.
 > Start with two pairs. Add pairs when the pair deltas disagree, the effect is
 > small relative to observed problem churn, or a result is being selected from
 > many portfolio candidates. Use held-out problems/families for candidates
-> chosen by `cooperative_portfolio_search.sh`; do not promote a selected-subset
-> result alone. A two-pair result is a screening result, not a significance claim.
+> selected during portfolio exploration; do not promote a selected-subset result
+> alone. A two-pair result is a screening result, not a significance claim.
 > `MRS_SHARED_POOL_INTERVAL=0` removes clause sharing, not worker races, CPU or
 > memory contention, or clock-sensitive LRS behavior.
 >
@@ -497,11 +500,10 @@ The `casc_feq`, `casc_fne`, `casc_ueq`, `casc_epr`, `casc_eps`, `casc_epu`, and
 `casc_icu` schedules have candidate priority orders derived from solo
 strategy-sweep data. Solo coverage is diagnostic only; when enabled, the
 cooperative portfolio can also share derived unit equalities through a
-cross-strategy pool. Use
-`cooperative_portfolio_sweep.sh` and `cooperative_portfolio_search.sh` to
-validate or replace these orders against the actual 8-worker objective. See
-`docs/reports/benchmarks/divisions-2026-09.md` for the workflow and telemetry
-details.
+cross-strategy pool. Use `certification_campaign.sh --portfolio IDS` with the
+intended sharing interval to validate candidate orders against the actual
+8-worker objective. See `docs/reports/benchmarks/divisions-2026-09.md` for the
+historical workflow and telemetry details.
 
 ---
 

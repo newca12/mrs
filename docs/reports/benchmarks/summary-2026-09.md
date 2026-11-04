@@ -94,9 +94,10 @@ The benchmark wrapper is:
 
 ```bash
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \
-crates/mrs-bench/cooperative_portfolio_sweep.sh \
-  casc-30 feq 11,12,1,6,10,8,14,4 240 1 \
-  results/cooperative-feq
+crates/mrs-bench/certification_campaign.sh \
+  --edition casc-30 --systems mrs --divisions feq \
+  --portfolio 11,12,1,6,10,8,14,4 --time-feq 240 --jobs 1 \
+  --output results/cooperative-feq
 ```
 
 ### No-Sharing Control
@@ -105,9 +106,10 @@ Use the same portfolio and disable only cross-strategy equality exchange:
 
 ```bash
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
-crates/mrs-bench/cooperative_portfolio_sweep.sh \
-  casc-30 feq 11,12,1,6,10,8,14,4 240 1 \
-  results/cooperative-feq-no-sharing
+crates/mrs-bench/certification_campaign.sh \
+  --edition casc-30 --systems mrs --divisions feq \
+  --portfolio 11,12,1,6,10,8,14,4 --time-feq 240 --jobs 1 \
+  --output results/cooperative-feq-no-sharing
 ```
 
 This isolates sharing from ordinary strategy diversity. The comparison is:
@@ -363,8 +365,8 @@ The previous ML experiment is a warning:
 2. Run the same interval grid on FEQ and FNE, not only UEQ.
 3. Record `strategy_ids`, `shared_published`, and `shared_imported` for every row.
 4. Add eligible/published/imported/rejected/used counts before extending sharing beyond equality clauses.
-5. Run one-swap cooperative portfolio search using `cooperative_portfolio_search.sh`.
-6. Compare current portfolio, candidate portfolio, and no-sharing controls on the same problem set.
+5. Compare a bounded, preselected set of cooperative portfolio candidates on the same problem set.
+6. Include current-portfolio and no-sharing controls in each comparison.
 7. Join `codex.db` profiles to cooperative results by corpus and canonical problem identity.
 8. Train a policy model only after the cooperative experiment table is sufficiently populated.
 9. Keep all incomplete paths fail-closed as `GaveUp`, `Timeout`, or `Unknown`.
@@ -382,25 +384,20 @@ Run a cooperative portfolio:
 
 ```bash
 MRS_WORKERS=8 \
-crates/mrs-bench/cooperative_portfolio_sweep.sh \
-  casc-j13 feq 11,12,1,6,10,8,14,4 180 1 \
-  results/cooperative-j13-feq
+crates/mrs-bench/certification_campaign.sh \
+  --edition casc-j13 --systems mrs --divisions feq \
+  --portfolio 11,12,1,6,10,8,14,4 --time-feq 180 --jobs 1 \
+  --output results/cooperative-j13-feq
 ```
 
 Run the no-sharing control:
 
 ```bash
 MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
-crates/mrs-bench/cooperative_portfolio_sweep.sh \
-  casc-j13 feq 11,12,1,6,10,8,14,4 180 1 \
-  results/cooperative-j13-feq-no-sharing
-```
-
-Run one-swap cooperative search:
-
-```bash
-crates/mrs-bench/cooperative_portfolio_search.sh \
-  casc-j13 feq 180 1 1 results/cooperative-search-j13-feq
+crates/mrs-bench/certification_campaign.sh \
+  --edition casc-j13 --systems mrs --divisions feq \
+  --portfolio 11,12,1,6,10,8,14,4 --time-feq 180 --jobs 1 \
+  --output results/cooperative-j13-feq-no-sharing
 ```
 
 Inspect a completed CSV:

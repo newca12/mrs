@@ -145,9 +145,9 @@ reported as an MQ speedup. A same-host, same-binary rerun is needed.
    not establish that `mq` lacks all positive-literal selection, since one
    `mq` archetype uses `LiteralSelection::All`.
 
-The benchmark harness accepts named schedules using `schedule:<name>` in
-`cooperative_portfolio_sweep.sh`; examples and the isolated archetype workflow
-are documented in [`crates/mrs-bench/README.md`](../../../crates/mrs-bench/README.md#portfolio-coverage).
+The certification campaign accepts named schedules with `--schedule NAME`;
+examples and the isolated archetype workflow are documented in
+[`crates/mrs-bench/README.md`](../../../crates/mrs-bench/README.md#portfolio-coverage).
 
 For an initial comparison, run two sequential replicates for each condition
 against the same corpus and clean binary, on the canonical eight-worker host.

@@ -379,15 +379,14 @@ Settling this needs the control arm — `casc-sim`, pinned, LRS at default — o
 pair deltas disagree or the effect is marginal. Full analysis is in
 [`unresolved-issues.md`](../policies/unresolved-issues.md) **UI-8**.
 
-**Every portfolio A/B in this file is affected by this.** `cooperative_portfolio_sweep.sh`
-is a single `casc.sh` exec with no replicates, and `cooperative_portfolio_search.sh`
-maximises over ~120 noisy evaluations per round (`rounds × 8 slots × 15
-candidates`), which selects on noise. `greedy_set_cover` builds each strategy's
-solved-set from one `run.csv`. A single-run comparison cannot establish that a
-small portfolio difference is stable. Start with two paired reps; add more if
-the result is ambiguous. Use `run_variance.sh` for within-configuration
-variation and paired/interleaved campaigns for configuration comparisons to
-limit host-drift bias.
+**Every portfolio A/B in this file is affected by run-to-run variance.** A
+`certification_campaign.sh` run measures one configuration; its strict audit
+does not make the search result a replicate. `greedy_set_cover` also builds each
+strategy's solved-set from one `run.csv`. A single-run comparison cannot
+establish that a small portfolio difference is stable. Start with two paired
+reps; add more if the result is ambiguous. Use `run_variance.sh` for
+within-configuration variation and paired/interleaved campaigns for
+configuration comparisons to limit host-drift bias.
 
 Two things worth keeping from the run mechanics:
 
