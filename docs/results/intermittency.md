@@ -18,18 +18,29 @@ per-proof re-audit has not been materialized as a row-level campaign audit in
 this inventory. The incomplete FEQ campaign at
 `campaign-feq-W8C16J2-20260930` is also omitted because it evaluated 600 rows
 with artifact-mismatch entries, rather than one auditable 300-problem division
-run.
+run. The October 30 and November 3 CASC-30 all-division attempts are omitted
+as complete division campaigns as well: each manifest has 1,101 jobs, but each
+archive stops after 1,032 rows, at ICU `CSI007+1`, before `CSI008+1` and 68
+other ICU jobs. Their saved proofs have strict audits, but the incomplete ICU
+outcome does not qualify them as full CASC-30/ICU campaigns for this inventory.
 
-> **CASC-J13 refresh pending (2026-11-04):** The J13 campaign keys and
+> **CASC-J13 refresh pending (2026-11-05):** The J13 campaign keys and
 > signatures below do not yet include the complete October 30 and November 3
-> full campaigns or the November 4 explicit FNE portfolio run. The November 3
-> run strictly certified 253/253 refutations and retained all 249 problems
-> refuted on October 30, adding four. The November 4 FNE run has 37
-> `VerifiedGood` proofs and three cause-unconfirmed `SIGKILL` errors. These
-> observations do not recompute signatures against every older campaign; do not
-> treat the J13 tables below as a complete current inventory. See the
-> [November 3 report](../reports/benchmarks/cert-j13-2026-11-03.md) and
-> [November 4 FNE report](../reports/benchmarks/fne-j13-explicit-portfolio-2026-11-04.md).
+> full campaigns, the two November 4 explicit FNE portfolio runs, or the
+> November 4 explicit UEQ portfolio run. That UEQ run strictly certified 106
+> problems; against the November 3 full UEQ run, 101 were common, five were
+> November 4-only, and 42 November 3 solves were not reproduced. The November 3
+> full run strictly certified 253/253 refutations and retained all 249
+> problems refuted on October 30, adding four. Both November 4 portfolios
+> strictly certified the same 37 FNE problems; the `[1,2,3,4,6,11,13,15]` run
+> had three cause-unconfirmed `SIGKILL` errors, while the
+> `[1,2,3,4,11,12,13,15]` run had no process errors but warned that its binary
+> was older than sources. These observations do not recompute signatures
+> against every older campaign; do not treat the J13 tables below as a complete
+> current inventory. See the [November 3 report](../reports/benchmarks/cert-j13-2026-11-03.md),
+> [November 4 portfolio-6 report](../reports/benchmarks/fne-j13-explicit-portfolio-2026-11-04.md),
+> [November 4 portfolio-12 report](../reports/benchmarks/fne-j13-explicit-portfolio-s12-2026-11-04.md),
+> and [November 4 UEQ report](../reports/benchmarks/ueq-j13-explicit-portfolio-2026-11-04.md).
 
 This inventory is an **observed run-to-run difference list**, not a claim that
 the prover is nondeterministic under a fixed binary and configuration. Included
@@ -145,6 +156,14 @@ different dirty binaries. The later run re-certified all 92 `VerifiedGood`
 proofs from Oct 28, strictly verified 11 of its 12 `no_proof` rows, and added
 `SWV458+1`; `KLE071+1` emitted a proof but remained `Unknown`. Treat the change
 as an observed cross-build difference, not a replicated same-binary result.
+
+**Paired FEQ portfolio screen (separate comparison):** Across four completed
+baseline/candidate blocks, `GRP776+1` was candidate-only in 4/4 pairs,
+`SWV459+1` was candidate-only in 3/4, and `SWV458+1` was baseline-only in 3/4.
+The paired FNE control had no certified flips. These comparison outcomes are
+not folded into the single-campaign signature table above; see the [paired
+FEQ/FNE report](../reports/benchmarks/paired-feq-fne-2026-10-28.md) for the
+per-pair counts and audit details.
 
 ### FNE — 12 intermittent problems
 

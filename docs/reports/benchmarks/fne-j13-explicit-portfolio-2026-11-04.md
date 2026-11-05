@@ -116,3 +116,7 @@ terminations are not isolated. Treat the observed solve-set differences and
 promotion result. See the experimental-design rules in
 [`methodology.md` §8.5](../../policies/methodology.md#85-experimental-design-and-evidence-strength)
 and the [October candidate portfolio report](fne-candidate-portfolio-2026-10.md).
+The companion Nov 4 run using `[1,2,3,4,11,12,13,15]` is documented in the
+[portfolio-12 report](fne-j13-explicit-portfolio-s12-2026-11-04.md); it had the
+same observed theorem set, but is not a controlled strategy-6-versus-strategy-12
+comparison.

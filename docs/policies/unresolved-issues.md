@@ -69,10 +69,11 @@ target operands. Extending AC operand matching in `mrs-proof-kernel` (`match_ac_
 to permit unbound pattern variables to absorb non-empty subsets of remaining target
 operands resolves `c26184` and certifies `LAT142-1` as `VerifiedGood`, bringing
 all 141 UEQ refutations (and 249 overall) to 100% `VerifiedGood`. Similarly, in
-the concurrent full CASC-30 campaign (2026-10-30), `KLE071+1` (node `c11506`)
-failed because `match_assoc_sequence` did not allow rigid pattern variables to
-match identical target variables; allowing rigid variable identity in associative
-sequence matching certifies `c11506` as `VerifiedGood`. The older
+the FEQ segment of the October 30 CASC-30 all-division attempt (which later
+stopped during ICU), `KLE071+1` (node `c11506`) failed because
+`match_assoc_sequence` did not allow rigid pattern variables to match identical
+target variables; allowing rigid variable identity in associative sequence
+matching certifies `c11506` as `VerifiedGood`. The older
 diagnosis and experiments below are retained as history, **not current rule
 semantics or established proofs of unsoundness**. In particular, statements
 below calling c26, c502, or the small lattice test invalid are superseded.

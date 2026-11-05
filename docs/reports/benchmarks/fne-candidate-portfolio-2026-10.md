@@ -1,6 +1,8 @@
 # FNE Candidate Cooperative Portfolio Validation Report (October 2026)
 
-> Status: Banked campaign analysis and cooperative portfolio validation.
+> Status: Historical standalone campaign observations. Candidate-versus-shipped
+> deltas below are not paired estimates; see §1 and §4 for the current evidence
+> qualification and the later FNE control run.
 > Campaign directories:
 > - CASC-30: `~/crates/mrs-bench/results/casc-30/coop-fne-candidate-20261021` (symlink: `results/coop-fne-candidate-20261021`)
 > - CASC-J13 (32c host): `~/crates/mrs-bench/results/casc-j13/coop-fne-candidate-20261021` (symlink: `results/coop-fne-candidate-j13-20261021`)
@@ -47,10 +49,17 @@ was evaluated cooperatively across three campaigns in **CASC-30** (240 s) and
    - **38 Theorems solved out of 100**, with **38 of 38 `VerifiedGood` (100.0%)**,
      **0 `VerifiedBad`**, and **0 `Unknown`**.
 
-4. **Decision Rule Compliance (AGENTS.md §11)**:
-   The empirical data confirms that the candidate portfolio outperforms the shipped
-   portfolio by **+4 solves (+9.8%) on CASC-30** and **+4 refutations / +3 verified on CASC-J13**,
-   fully exceeding the 5% threshold required to update `CASC_FNE_ORDER` in the engine.
+4. **Evidence status under the current replication policy**:
+   These historical campaigns observed **+4 solves on CASC-30** and **+4
+   refutations / +3 verified on CASC-J13** for the candidate against the cited
+   shipped runs, but they are not paired estimates. A later CASC-30 paired
+   screen kept the FNE portfolio identical in both arms and found 44/100
+   `VerifiedGood` in every arm; it is an FNE control, not a candidate-versus-
+   shipped FNE comparison. A separate November 5 CASC-30 portfolio-swap run
+   compared `[1,2,3,4,8,12,14,15]` with `[1,2,3,4,11,12,14,15]`; its 39-versus-37
+   result is also a single cross-host observation, not a promotion result. See
+   the [paired FEQ/FNE screen](paired-feq-fne-2026-10-28.md) and the
+   [November 5 FNE comparison](fne-casc30-portfolio-s8-vs-s11-2026-11-05.md).
 
 ---
 
@@ -117,8 +126,9 @@ Comparing Candidate `11,13,4,8,15,7,3,1` against Shipped Baseline (`campaign-cas
 | **`LCL390+2`** | `s13` (slot 1) | 91.71 s | 11,278 MB | Timeout (238.4 s) | Logic Calculi; 1,749 nodes |
 | **`LCL403+2`** | `s13` (slot 1) | 92.71 s | 13,327 MB | Timeout (238.3 s) | Logic Calculi; 1,781 nodes |
 
-All four gained problems solved cleanly via Strategy 13, perfectly validating the theoretical
-set-cover analysis.
+All four newly observed solves in this campaign were produced by Strategy 13,
+consistent with the set-cover analysis. This single campaign is not a replicated
+validation of the portfolio gain.
 
 ### 4.2 CASC-J13 FNE (180 s)
 
@@ -141,8 +151,10 @@ Comparing Candidate `11,13,4,8,15,7,3,1` on `mtsdev03` against Shipped Baseline 
 ### 4.3 Comparison against MultiQueue Hybrid (`casc_fne_mq_hybrid`)
 
 Parallel evaluations of the experimental `casc_fne_mq_hybrid` portfolio
-([`fne-multiqueue-2026-10.md`](fne-multiqueue-2026-10.md)) demonstrate that the pure
-base candidate portfolio `[11, 13, 4, 8, 15, 7, 3, 1]` is the superior production choice:
+([`fne-multiqueue-2026-10.md`](fne-multiqueue-2026-10.md)) provide an unpaired
+comparison with the pure base candidate portfolio `[11, 13, 4, 8, 15, 7, 3, 1]`.
+The observed counts are summarized below; they do not establish a general
+production ranking:
 
 | Edition / Condition | Shipped Baseline | MultiQueue Hybrid (`casc_fne_mq_hybrid`) | Candidate Portfolio (`11,13,4,8,15,7,3,1`) |
 |:---|---:|---:|---:|
@@ -151,9 +163,16 @@ base candidate portfolio `[11, 13, 4, 8, 15, 7, 3, 1]` is the superior productio
 | **CASC-J13 (8-core host)** | 36 | 37 (37 VG) | **40** (39 VG + 1 omitted) |
 | **CASC-J13 (32-core host)** | — | **41** (41 VG) | 38 (38 VG) |
 
-On canonical 8-core competition hardware, the pure base candidate portfolio outperforms
-both the shipped baseline (+4 in C30, +4 in J13) and `casc_fne_mq_hybrid` (+3 verified on C30,
-+2 verified on J13 8c), while avoiding verifier factoring step-limit timeouts.
+In these unpaired campaign observations, the pure base candidate portfolio
+outperformed both the cited shipped baseline (+4 in C30, +4 in J13) and
+`casc_fne_mq_hybrid` (+3 verified on C30, +2 verified on J13 8c), while
+avoiding verifier factoring step-limit timeouts.
+
+The later paired FEQ experiment used this same FNE order, `[11, 13, 4, 8, 15,
+7, 3, 1]`, in both binary arms. All four completed pairs certified the same 44
+FNE problems per arm, with no per-problem FNE flips. This does not re-test the
+candidate against the shipped FNE portfolio; the historical single-run
+comparison above remains a separate observation.
 
 ---
 
@@ -192,23 +211,31 @@ Performance across TPTP problem domains for the candidate portfolio:
 
 ---
 
-## 7. Conclusions & Implementation Recommendation
+## 7. Conclusions & Evidence Status
 
-1. **Decisive Cooperative Validation**:
-   The candidate portfolio `[11, 13, 4, 8, 15, 7, 3, 1]` decisively outperforms the
-   shipped portfolio across both editions:
-   - **+4 strictly verified refutations on CASC-30** (45 vs. 41).
-   - **+4 refutations / +3 strictly verified on CASC-J13** (40 vs. 36).
-2. **Strategy 13 is Proven**:
-   All gained LCL problems derive directly from `s13` in slot 1, solving in 60–93 s
-   with under 2,000 processed clauses.
-3. **Flawless Strict Soundness**:
-   100% of emitted proofs across both CASC-30 and CASC-J13 certified as `VerifiedGood`
-   with zero `VerifiedBad` and zero `Unknown`.
-4. **Actionable Recommendation**:
-   Per the decision rule in AGENTS.md §11, the candidate portfolio achieves a >5%
-   coverage increase (+9.8% on CASC-30, +11.1% raw on CASC-J13). `CASC_FNE_ORDER` in
-   `crates/mrs-search/src/strategy/named.rs` should be updated to:
-   ```rust
-   pub const CASC_FNE_ORDER: [usize; 15] = [11, 13, 4, 8, 15, 7, 3, 1, 10, 12, 6, 2, 9, 14, 5];
-   ```
+The cited comparisons recorded higher counts for the candidate: +4 strictly
+verified refutations on CASC-30 (45 vs. 41) and
++4 raw refutations / +3 strictly verified refutations on the 8-core CASC-J13
+run (40 raw, 39 verified, vs. 36). These are single-run, unpaired observations
+from different artifacts and, in some cases, different hosts; they are not
+estimates of a stable portfolio effect.
+
+The four new CASC-30 LCL solves in the October campaign were attributed to
+strategy 13 in that run. This is useful cooperative evidence for candidate
+generation, but it does not prove a general strategy effect. Likewise, the
+strict audits detected no `VerifiedBad` proofs in these campaigns, but the
+CASC-J13 8-core campaign had one proof omission (`KRS261+1`); audit results
+describe these archived outputs, not global soundness.
+
+**Do not treat this report alone as a schedule-promotion recommendation.** The
+later paired FNE screen used the same FNE portfolio in both arms and therefore
+was a control, not a candidate-versus-shipped comparison. The November 5
+CASC-30 swap of strategy 8 for strategy 11 is another one-run, cross-host
+observation and does not establish which strategy caused the solve-set flips.
+See the [paired FEQ/FNE screen](paired-feq-fne-2026-10-28.md) and the
+[November 5 s8/s11 comparison](fne-casc30-portfolio-s8-vs-s11-2026-11-05.md).
+
+Before changing `CASC_FNE_ORDER`, run randomized paired cooperative campaigns
+on the same host and binary, report each pair's certified delta and per-problem
+flips, and validate selected portfolios on held-out problems or families, as
+required by [methodology §8.5](../../policies/methodology.md#85-experimental-design-and-evidence-strength).

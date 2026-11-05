@@ -279,6 +279,14 @@ replicates disagree. Capture per-worker work/progress so “unused slot” means
 measured low marginal contribution, not merely a missing unique solve in a solo
 set.
 
+**Initial cooperative-screen status:** a first CASC-30 static-versus-routed
+screen is documented in the [cooperative A/B report](2026-11-prephase-cooperative-ab.md).
+Its complete FEQ/UEQ arms differ by −3 and +1 solves, respectively, but it does
+not satisfy the protocol above: the baseline accidentally enabled report-only
+pre-phase analysis, the arms were not replicated or randomized, and the FNE run
+stopped before its routed arm. Treat it as a preliminary observation, not a
+promotion result.
+
 ### Phase 3 — Route resources, not just labels
 
 If the cooperative results show a repeatable opportunity, test a router that
@@ -295,8 +303,9 @@ families. Compare in stages:
 Train on some source families and hold out others before tuning. Do not use a
 problem-name split across editions: the same name can denote different source
 files. Include probe/prepass overhead, and compare the actual `--pre-phase` run
-against the static baseline; this solo sweep did not run the shipped plan under
-concurrency.
+against the static baseline. This solo sweep did not run the shipped plan under
+concurrency; the subsequent preliminary screen linked above is not a substitute
+for the replicated, audited comparison required for promotion.
 
 A fixed eight-core cap is a concurrency limit, not a limit on the number of
 strategies considered over a whole solve. A router may time-slice more than

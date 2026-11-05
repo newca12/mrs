@@ -970,7 +970,28 @@ including provenance, per-division timing/memory, and the status flips among
 unsolved problems, is at
 [`reports/benchmarks/cert-j13-2026-11-03.md`](reports/benchmarks/cert-j13-2026-11-03.md).
 
-### CASC-J13 FNE explicit-portfolio experiment (2026-11-04)
+### CASC-J13 UEQ explicit-portfolio experiment (2026-11-04)
+
+The complete 400-problem UEQ campaign
+`~/campaign-casc-j13-ueq-W8CASCHJ1-04-1_2_3_5_7_8_12_15_20261104` tested the
+explicit no-sharing portfolio `[1,2,3,5,7,8,12,15]` with eight workers and the
+official 180-second limit. It produced 106 `Unsatisfiable` results, and the
+strict audit certified all **106 as `VerifiedGood`**, with 0 `VerifiedBad`,
+`Unknown`, verifier timeouts, or proof omissions. The other outcomes were 19
+`GaveUp` and 275 `Timeout`; there were no process errors or resource-outs.
+
+Against the November 3 full UEQ run (143 `VerifiedGood`), 101 certified
+problems were common, five were unique to this run, and 42 November 3 solves
+were not reproduced: a net difference of −37. This is a single exploratory
+comparison, not a controlled or randomized schedule test, and it does not
+support changing the shipped schedule. The producer tree was dirty; the run
+used a different producer binary and host from November 3. The host reported
+95,969 MB RAM and 81,573 MB effective memory against the 128 GiB `casc`
+allowance. Full provenance, the strict-set comparison, and solve/memory
+measurements are in the
+[`UEQ explicit-portfolio report`](reports/benchmarks/ueq-j13-explicit-portfolio-2026-11-04.md).
+
+### CASC-J13 FNE explicit-portfolio experiments (2026-11-04)
 
 The full 100-problem FNE run
 `~/campaign-casc-j13-W8CASCHJ1-04-1_2_3_4_6_11_13_15_20261104` tested the
@@ -996,28 +1017,101 @@ and the prior run's different outcomes do not establish the kill cause. Full
 provenance, exact per-problem flips, and the portfolio comparison are in the
 [`FNE explicit-portfolio report`](reports/benchmarks/fne-j13-explicit-portfolio-2026-11-04.md).
 
-### Canonical full CASC-30 certification campaign (2026-10-30)
+A second full FNE run on the same date used the explicit no-sharing portfolio
+`[1,2,3,4,11,12,13,15]` on `mtsdev02`. It also produced 37 theorems, all 37
+strictly `VerifiedGood`, with no process errors; its theorem set is exactly the
+same as the `[1,2,3,4,6,11,13,15]` run above. Against the November 3 full FNE
+run, it again misses only `CSR116+19` and adds no solve. The run used the same
+producer-binary SHA-256 as November 3, but `run.log` warns that this binary was
+older than its sources; treat this as an observation about the binary digest,
+not a clean build of commit `c021be5`. The two November 4 portfolio runs differ
+in host and binary, and their matching solve set does not isolate a strategy
+effect. See the [second explicit-portfolio report](reports/benchmarks/fne-j13-explicit-portfolio-s12-2026-11-04.md).
 
-The full 1,032-problem campaign
-`~/crates/mrs-bench/results/campaign-casc30-full-W8CASCHJ1-01-20261030`
-evaluated all six CASC-30 divisions (FNE, FEQ, EPU, EPS, UEQ, ICU) under
-canonical CASC constraints: eight workers, `MRS_HARDWARE=casc`, sequential
-`jobs=1`, and official wall-clock limits on the dedicated 8-physical-core
-host `mtsdev01`. It generated **356 solves**:
-- **UEQ:** 143 / 300 `Unsatisfiable`, **all 143 `VerifiedGood` (100.0%)** (+19 strictly certified over the October 28 baseline of 124, 0 regressions)
-- **FNE:** 44 / 100 `Theorem`, **all 44 `VerifiedGood` (100.0%)** (+3 over the October 19 baseline)
-- **FEQ:** 112 / 400 `Theorem`, **107 (108 re-audited) `VerifiedGood`** (+4 refutations / +5 verified over October 20/21)
-- **EPU:** 11 / 100 `Unsatisfiable`, **all 11 `VerifiedGood` (100.0%)**
-- **EPS:** 44 / 100 `Satisfiable`, **40 Certified Models** (4 inconclusive evaluation limit)
-- **ICU:** 2 / 32 `Theorem`, **both 2 `VerifiedGood` (100.0%)**
+### CASC-30 FNE explicit-portfolio swap experiment (2026-11-05)
 
-The archived strict audit certified **307 `VerifiedGood` refutations + 40
-certified models (347 solutions)**. Re-audit with the rigid variable matching
-fix in `mrs-proof-kernel` certifies **308 `VerifiedGood` refutations + 40
-certified models (348 solutions)**, with **0 `VerifiedBad`** and **0 `no_proof`**
-across all 1,032 problems. It resolves `KLE071+1` (node `c11506`), bringing FEQ
-to 108 `VerifiedGood`. Full details, solve times, and memory metrics are in the
-[October 30 CASC-30 campaign report](reports/benchmarks/cert-30-2026-10-30.md).
+Two complete 100-problem campaigns compared portfolios
+`[1,2,3,4,8,12,14,15]` and `[1,2,3,4,11,12,14,15]`, swapping strategy 8 for
+strategy 11 in the same slot. The first generated 39 theorems, all 39
+`VerifiedGood`; the second generated 37, all 37 `VerifiedGood`. Both strict
+audits reported 0 `VerifiedBad`, `Unknown`, verifier timeouts, or proof
+omissions. Their solve sets have 36 problems in common: `LCL390+1`,
+`MED007+1`, and `MED009+1` are first-run-only, while `KRS234+1` is
+second-run-only. Their observed union of 40 names is not a measured result for
+one portfolio.
+
+The portfolios also had three `Timeout`→`GaveUp` status changes in the second
+run (`LCL682+1.015`, `NUN057+1`, `SYN986+1.004`); the archived telemetry does
+not establish their cause. Both runs had exit-137 / signal-9 `SIGKILL` errors on
+`NLP260+1`, `NLP261+1`, and `NLP262+1`, with cause unconfirmed. The hosts
+reported 95,969 MB RAM and 81,573 MB effective memory against the 131,072 MB
+nominal `casc` allowance. Do not label the signals as confirmed OOMs.
+
+This is not a controlled strategy-only result: the runs were on `mtsdev03` and
+`mtsdev04`, both producer trees were dirty, and the binary hashes differ despite
+the common source commit. The per-problem telemetry is aggregate and does not
+identify the worker that found each proof. Treat the observed +2 theorem count
+for the strategy-8 portfolio and the solve-set flips as candidate-generation
+evidence only; do not promote or infer that including both s8 and s11 would
+retain the 40-problem union. Repeat with randomized paired campaigns on the
+same host and binary, then check selected portfolios on held-out problems or
+families. See the [full comparison report](reports/benchmarks/fne-casc30-portfolio-s8-vs-s11-2026-11-05.md)
+and [methodology §8.5](policies/methodology.md#85-experimental-design-and-evidence-strength).
+
+### CASC-30 all-division attempt interrupted during ICU (2026-11-03)
+
+The archive
+`~/crates/mrs-bench/results/campaign-casc30-full-W8CASCHJ1-01-20261103`
+planned 1,101 jobs across all six divisions. Its `.jobs` manifest and run log
+show that only **1,032 rows** completed: all 1,000 FNE/FEQ/EPU/EPS/UEQ jobs and
+the first 32 of 101 ICU jobs. The last row is `CSI007+1`; the next manifest
+entry is `CSI008+1`, followed by 68 more ICU jobs. Both this archive and the
+October 30 attempt stopped at that same point. These are not full-division ICU
+or full-CASC-30 campaign results.
+
+The saved rows generated **357 raw solves** (313 refutations and 44 models). A
+strict audit of those rows certifies **310 refutations + 40 EPS models = 350
+strictly verified results**, with **0 `VerifiedBad`**. FEQ has 2 `Unknown` and 1
+strict verifier timeout; 4 EPS model checks were inconclusive. The per-division
+results are:
+
+| Division | Saved rows / planned | Raw solves | Strict result |
+|:---|---:|---:|:---|
+| UEQ | 300 / 300 | 144 `Unsatisfiable` | 144 `VerifiedGood` |
+| FNE | 100 / 100 | 44 `Theorem` | 44 `VerifiedGood` |
+| FEQ | 400 / 400 | 112 `Theorem` | 109 `VerifiedGood`, 2 `Unknown`, 1 `Timeout` |
+| EPU | 100 / 100 | 11 `Unsatisfiable` | 11 `VerifiedGood` |
+| EPS | 100 / 100 | 44 `Satisfiable` | 40 certified models, 4 inconclusive |
+| ICU | 32 / 101 | 2 `Theorem` | 2 `VerifiedGood`; 69 jobs missing |
+
+Compared with a current-kernel re-audit of the October 30 saved proofs (308
+refutations + 40 models), this run has three new certified problems
+(`SWV459+1`, `LAT230-10`, `REL036-2`) and one prior certified problem not
+reproduced (`LCL416-10`), for a net +2. This is a single archive comparison
+between dirty producer builds, not a paired or causal result. The host reported
+96,350 MB RAM and 81,897 MB effective memory against the 128-GiB CASC budget;
+the recorded search time is 162,841.5 seconds. The certification artifacts and
+provenance are in the [November 3 campaign report](reports/benchmarks/cert-30-2026-11-03.md).
+
+The operator reports that the remote host rebooted during ICU. The local
+artifacts identify the interruption point but cannot diagnose the reset; see
+the [remote-host reboot investigation guide](guides/remote-only-work.md#investigating-a-campaign-host-reboot).
+
+### CASC-30 all-division attempt interrupted during ICU (2026-10-30)
+
+The archive
+`~/crates/mrs-bench/results/campaign-casc30-full-W8CASCHJ1-01-20261030` has the
+same completeness issue: 1,101 manifest jobs, 1,032 saved rows, and no results
+for the 69 ICU jobs after `CSI007+1`. The previously used “full” label and
+1,032-problem denominator were incorrect; the first five divisions completed,
+but ICU did not. The settings for the recorded jobs were canonical CASC mode
+(eight workers, `jobs=1`, official limits) on `mtsdev01`.
+
+The saved archive generated 356 raw solves. The archived audit had 307
+`VerifiedGood` refutations + 40 certified models; the current-kernel re-audit
+certifies **308 refutations + 40 models (348 total)**, with **0 `VerifiedBad`**.
+It resolves `KLE071+1` (node `c11506`), bringing FEQ to 108 `VerifiedGood`.
+The recorded result details are in the [corrected October 30 report](reports/benchmarks/cert-30-2026-10-30.md).
 
 ### Cooperative FNE candidate portfolio campaigns (2026-10-21 and 2026-10-22)
 
@@ -1097,11 +1191,19 @@ The FEQ candidate portfolio $\mathbf{P}_{\text{FEQ}} = [12, 11, 10, 6, 8, 1, 4, 
 
 Across all 365 refutations evaluated across the four campaigns, **0 `VerifiedBad`** were detected. Full details are in the [FEQ candidate portfolio report](reports/benchmarks/feq-candidate-portfolio-2026-10.md).
 
-These four single full-division campaign observations are not paired
+### Later paired CASC-30 screen (2026-10-28–11-05)
+
+The four single full-division campaign observations above are not paired
 comparisons; their totals are not estimates of means or statistically
-significant gains. Promotion as the canonical portfolio remains pending at
-least a two-pair screen at the canonical 240 s limit, with more pairs if the
-result is ambiguous under the current replication policy.
+significant gains. A subsequent four-completed-pair CASC-30 screen is now
+available; it observed FEQ certified deltas of **+2, +1, 0, +1** (mean +1,
+range 0–2), with no FNE flips because both arms used the same FNE schedule.
+This small, concentrated result is descriptive rather than a promotion or
+optimality claim: the candidate was selected using CASC-30 data, the frozen
+producer trees were dirty, and the host was below the configured memory
+allowance. The planned fifth pair is incomplete. See the [paired FEQ/FNE
+report](reports/benchmarks/paired-feq-fne-2026-10-28.md) for per-pair results,
+strict-audit accounting, and provenance.
 
 ---
 

@@ -1,9 +1,9 @@
 # FEQ Candidate Cooperative Portfolio Validation Report (October 2026)
 
-> Status: Banked single-run campaign observations; portfolio validation remains
-> provisional. These are not replicated paired comparisons. Current policy uses
-> two paired blocks as an initial screen and adds pairs when results are
-> inconclusive. The CASC-J13 runs used 180 s;
+> Status: The October standalone campaigns below remain single-run observations.
+> A later four-completed-pair CASC-30 screen is recorded in the [paired FEQ/FNE
+> report](paired-feq-fne-2026-10-28.md): it is modestly positive, but not a
+> held-out or definitive portfolio evaluation. The CASC-J13 runs used 180 s;
 > current canonical FEQ comparisons use 240 s, so those J13 results are
 > supplemental and must not be treated as canonical-limit comparisons.
 > A separate October 29 CASC-30 FEQ run is documented in §5; it is not included
@@ -18,11 +18,11 @@
 > - CASC-J13: `~/crates/mrs-bench/results/cooperative-feq-greedy-candidate-99-casc-j13`
 
 The four full-division candidate campaigns below are single observations per
-host/division, not replicated paired comparisons. Their totals describe
-those runs; they do not estimate a mean or establish statistical significance.
-Per `AGENTS.md` §11, a canonical portfolio decision needs at least a paired
-screen, with more pairs if the result is ambiguous; this report does not satisfy
-that gate.
+host/division, not replicated paired comparisons. Their totals describe those
+runs; they do not estimate a mean or establish statistical significance. The
+later paired screen supplies matched CASC-30 evidence but does not turn these
+standalone totals into a mean or establish that the selected portfolio is
+optimal; see the linked report for its result and limitations.
 
 ---
 
@@ -173,9 +173,14 @@ CASC-30 but drops `s04` and has **4 observed regressions on CASC-J13** (includin
 comparison was not replicated, this does not establish a robust cross-edition
 tradeoff or show that the candidate order is optimal. The selected candidate
 retains `s04` and had zero observed CASC-30 regressions in the 8-core comparison.
-The available report does not establish a statistically significant overall
-advantage or compare strict verification rates against the pure-greedy candidate.
-Replicated paired runs at the canonical 240 s limit remain necessary.
+The standalone observations do not establish a statistically significant
+overall advantage or compare strict verification rates against the pure-greedy
+candidate. A later four-pair, canonical-limit comparison against the shipped
+FEQ order observed a mean paired delta of +1 `VerifiedGood` (range 0 to +2),
+with churn concentrated in three problems. Because the portfolio was selected
+from CASC-30 evidence and the frozen producer trees were dirty, this remains a
+screen rather than held-out validation or evidence of optimality; see the
+[paired FEQ/FNE report](paired-feq-fne-2026-10-28.md).
 
 ---
 

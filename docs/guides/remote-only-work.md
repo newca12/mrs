@@ -73,6 +73,93 @@ guard the value of every campaign.
 
 ---
 
+## Investigating a campaign-host reboot
+
+Use this when a campaign has a complete job manifest but a short `run.csv`,
+leftover `.jobs`/`.lock` files, and no final `[casc] Done` line. Those artifacts
+show an unclean stop, not its cause. A solver OOM kill should normally return to
+the harness, which then records an `Error` row; a missing row for the active job
+is more consistent with the harness/host disappearing, but does not prove a
+reboot.
+
+Start with the archive on the campaign host. Compare the last progress count in
+`run.log`, the last row in `run.csv`, and the next manifest entry. Preserve the
+directory as-is: `.jobs` and the lock file are useful evidence. Record the
+campaign's `run_meta.json` start time and host before checking system logs.
+
+From a machine with access to the host, check boot history and list the retained
+boots first (these commands are read-only):
+
+```bash
+ssh mtsdev01 'who -b; uptime -s; last -x -F -w | grep -E "^(reboot|shutdown)"'
+ssh -t mtsdev01 'sudo journalctl --list-boots --no-pager'
+```
+
+Select the boot that ended at the incident time from `last`/`--list-boots`, then
+read its kernel journal. `-b -1` means “the immediately previous boot”; if there
+have been later reboots, replace it with the matching boot ID from
+`--list-boots` (for example `-b <boot-id>`):
+
+```bash
+ssh -t mtsdev01 'sudo journalctl -b -1 -k -o short-iso --no-pager' \
+  | grep -Ei 'oom|out of memory|killed process|panic|watchdog|mce|thermal|reset'
+```
+
+On CentOS/RHEL 7-era hosts, older journal boots may not be persistent. Check the
+system log as a fallback, around the reboot time shown by `last`:
+
+```bash
+ssh -t mtsdev01 'sudo zgrep -hEi "oom|out of memory|killed process|panic|watchdog|mce|thermal|reset" /var/log/messages* /var/log/kern.log* 2>/dev/null'
+```
+
+If the host has an IPMI/BMC, its event log can distinguish an OS crash from a
+power/watchdog reset; availability and privileges vary:
+
+```bash
+ssh -t mtsdev01 'sudo ipmitool sel list'
+```
+
+For a controlled reproduction after collecting the historical logs, stream the
+kernel journal to the workstation so output already received survives a host
+reset:
+
+```bash
+ssh -t mtsdev01 'sudo journalctl -kf -o short-iso --no-pager' \
+  | tee "$HOME/icu-kernel-live.log"
+```
+
+Interpret the evidence together:
+
+- A new boot in `last`/`journalctl --list-boots` confirms a reboot; an OOM,
+  kernel panic, watchdog, or machine-check record near the time may identify the
+  trigger. No kernel event does not rule out a power loss or hardware reset.
+- If the boot ID did not change, inspect the benchmark/session manager and
+  parent process logs. A killed solver with the harness still alive should
+  normally leave a row; a killed parent may leave only the manifest and partial
+  CSV.
+- Do not rerun the entire ICU list until the previous-boot logs and BMC record
+  (if available) have been saved. If reproduction is necessary, isolate the
+  first unrecorded problem and monitor/cap memory in a diagnostic run; do not
+  assume the host's 128-GiB CASC allowance is physically available.
+
+The audit phase in `certification_campaign.sh` runs only after search returns.
+A reboot during search therefore prevents that invocation from creating
+`certification/`. Once the run directory is accessible again, audit the saved
+rows without repeating search:
+
+```bash
+CERT_JOBS=8 CERT_STRICT_TIME=120 \
+  crates/mrs-bench/certification_campaign.sh --audit-only "$RUN_DIR"
+```
+
+That wrapper also creates a sibling `.tar.bz2` archive. To materialize only the
+audit directory, call `audit_casc_proofs` with `--run "$RUN_DIR"`, the matching
+`--problems-dir`, `--checks strict`, and `--output "$RUN_DIR/certification"`.
+If `casc.sh` was run directly rather than through `certification_campaign.sh`,
+it never creates a certification directory on its own.
+
+---
+
 ## Remote-only items
 
 ### R1 — Fresh `casc-j13` campaign for fne, feq, ueq

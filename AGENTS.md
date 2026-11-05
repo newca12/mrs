@@ -566,6 +566,15 @@ a reliable route advantage. These are not actual concurrent 8-worker results
 and do not evaluate the shipped `mrs_prephase::plan::rules`. The solo union is
 candidate-generation evidence only; before changing a schedule or routing rule,
 measure the intended configuration with paired cooperative campaigns under §11.
+An initial CASC-30 cooperative screen is documented in
+`docs/reports/prephase/2026-11-prephase-cooperative-ab.md`: FEQ was 114/400
+static versus 111/400 routed, and UEQ was 150/300 versus 151/300. It is not a
+clean pre-phase-off/on comparison because `ab.sh` passed `MRS_PREPHASE=baseline`,
+which enables report-only analysis; FNE stopped before its routed arm. This is a
+single fixed-order, unaudited observation on a host with 54,198 MB effective
+memory against the 128 GiB allowance. Do not treat it as a verified score or a
+promotion result; correct the harness and follow §11 before drawing a routing
+conclusion.
 Feasibility prediction remains the pre-phase study's strongest supported result
 (5x spread). The proposed exact set-cover, cooperative-testing, and router
 investigation sequence is in §7 of the 240 s follow-up.
