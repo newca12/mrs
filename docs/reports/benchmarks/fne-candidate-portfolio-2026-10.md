@@ -60,6 +60,11 @@ was evaluated cooperatively across three campaigns in **CASC-30** (240 s) and
    result is also a single cross-host observation, not a promotion result. See
    the [paired FEQ/FNE screen](paired-feq-fne-2026-10-28.md) and the
    [November 5 FNE comparison](fne-casc30-portfolio-s8-vs-s11-2026-11-05.md).
+   A November 6 run of the shipped order observed 46/100 strict theorems,
+   including one solve not present in the October 21 same-order run; it is a
+   separate, cross-build observation rather than paired promotion evidence.
+   See the [November 6 shipped-order campaign](fne-casc30-shipped-order-2026-11-06.md)
+   for its audit and hardware/corpus qualifications.
 
 ---
 
