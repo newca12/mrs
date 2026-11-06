@@ -61,6 +61,17 @@ outcome does not qualify them as full CASC-30/ICU campaigns for this inventory.
 > not a complete current inventory for these runs. Recompute full signatures
 > before adding campaign keys, rather than appending only pairwise differences.
 
+> **CASC-30 EPU refresh pending (2026-11-06):** Two complete Nov 6 EPU archives
+> include bundled row-level strict audits: portfolio `[1,6,5,11,4,2,3,7]`
+> certified 13/100, and `[1,6,14,5,11,4,2,3]` certified 12/100. Their
+> problem-name sets overlap on 12 names; `HWV107-1` is candidate-only by name.
+> Do not fold these into the EPU signature table yet: their audit corpus digests
+> differ (`bb153a22…b6f16` versus `9a9cabd1…77570a`), and the latter matches the
+> Nov 3 full-campaign audit while the former does not. The producer binaries and
+> hosts also differ, so this is not a same-input portfolio comparison. Reconcile
+> the corpus identity and recompute full EPU signatures before adding campaign
+> keys. See the [EPU report](../reports/benchmarks/epu-2026-09.md#2026-11-06-explicit-portfolio-screen-supplemental).
+
 This inventory is an **observed run-to-run difference list**, not a claim that
 the prover is nondeterministic under a fixed binary and configuration. Included
 runs differ in binary, host, hardware mode, strategy schedule, or other settings;

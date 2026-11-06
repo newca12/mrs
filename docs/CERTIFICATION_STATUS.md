@@ -1177,6 +1177,49 @@ two randomized paired blocks, strict audits, and a held-out check. See the
 [EPU report](reports/benchmarks/epu-2026-09.md#2026-11-05-explicit-portfolio-screen-supplemental)
 for the solve times, EPR fallbacks, and audit details.
 
+### CASC-30 EPU explicit-portfolio screen (2026-11-06, supplemental)
+
+The archive
+`campaign-casc-30-epu-W8CASCHJ1-04-1_6_5_11_4_2_3_7_20261106` completed all
+100 EPU rows with portfolio `[1,6,5,11,4,2,3,7]`, eight workers,
+`MRS_HARDWARE=casc`, sharing disabled, `jobs=1`, and the official 120-second
+limit. It reported **13 `Unsatisfiable`**, 27 `GaveUp`, and 60 `Timeout`; its
+bundled strict audit verified **13/13** proofs, with 0 `VerifiedBad`, `Unknown`,
+verifier timeouts, or omitted proofs. There were no `Error` rows. The 13
+certified problem names are recorded in the [EPU report](reports/benchmarks/epu-2026-09.md#2026-11-06-explicit-portfolio-screen-supplemental).
+
+The producer was a dirty `main` tree at
+`c021be580651c0bbf1cefdf3c56f05081eb6610e`, binary SHA-256
+`5b5637d8c0d77f3feb9be5f61dab5b583f822038679425ddf8c70c70300fd3e9`, on
+`mtsdev04` (Xeon E5-2407, 8 physical cores, 95,969 MB RAM). The hardware lines
+report 81,573 MB effective memory against the 131,072 MB `casc` allowance, with
+`mem_unrepresentable=1`. The archived audit records corpus SHA-256
+`bb153a22fd4e330e035386104d3cecfea03d998e224282795f83ef51233b6f16`.
+
+A second complete Nov 6 EPU archive,
+`campaign-casc-30-epu-W8CASCHJ1-97-1_6_14_5_11_4_2_3_20261106`, used
+`[1,6,14,5,11,4,2,3]` and returned 12 `Unsatisfiable`, 27 `GaveUp`, and 61
+`Timeout`; its bundled strict audit verified all 12 proofs. By problem name,
+those 12 are common with the 13-result run and `HWV107-1` is candidate-only.
+This is **not a matched portfolio comparison**: the second audit records corpus
+SHA-256 `9a9cabd1a059f737c56353e01f7008597b96de7a312d0fb69559d8e15d77570a`,
+which matches the Nov 3 full-campaign audit, while the 13-result archive records
+a different complete input/include tree. The producer binaries also differ
+(`6f771df032287a9ab022904356ac35b11c4eb1da4668d0008b720180478d65b7` versus
+`5b5637d8c0d77f3feb9be5f61dab5b583f822038679425ddf8c70c70300fd3e9`), both
+trees are dirty, and the second host (`tlpnf9701`) reports 16 physical / 32
+logical CPUs, 63,763 MB RAM, and 54,198 MB effective memory. The audit
+identities also record different verifier binaries.
+
+The 13/100 result is therefore a strict, supplemental observation on the
+candidate archive's audited corpus, not a replacement for the 11/100 reference
+or evidence that changing a strategy caused the extra problem. Reconcile the
+corpus difference before a same-input comparison; then use randomized paired
+blocks on a clean, common binary and canonical 8-core host, with `jobs=1`, strict
+audits, and a held-out check before changing `casc_epu`. See the
+[EPU report](reports/benchmarks/epu-2026-09.md#2026-11-06-explicit-portfolio-screen-supplemental)
+for telemetry and the detailed set comparison.
+
 ### CASC-30 EPS rerun with portfolio launch failures (2026-11-06; supplemental)
 
 The archive `campaign-casc-30-eps-W8CASCHJ1-01-1_6_5_11_4_2_3_7_20261106`
