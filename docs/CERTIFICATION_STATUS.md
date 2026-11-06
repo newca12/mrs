@@ -1200,6 +1200,34 @@ corpus is available for a matching re-audit. This supplemental run neither
 changes the EPS portfolio policy nor establishes a new baseline. See the
 [EPS report](reports/benchmarks/eps-2026-09.md#casc-30-eps-run-with-portfolio-validation-failures-2026-11-06-supplemental).
 
+#### Second 2026-11-06 run on `mtsdev02`
+
+The archive `campaign-casc-30-eps-W8CASCHJ1-02-1_6_14_5_11_4_2_3_20261106`
+also completed all 100 rows with **44 `Satisfiable` and 56 `GaveUp`**. Its
+archived strict audit reports 40/44 certified models, 0 invalid, and the same
+four inconclusive model-work-limit checks (`NLP115-1`, `NLP118-1`, `NLP120-1`,
+`NLP123-1`). Its 44 `Satisfiable` problems are exactly the same set as the
+first Nov 6 archive.
+
+This is a second certifier-only observation, not a portfolio measurement. It
+requested `MRS_PORTFOLIO=1,6,14,5,11,4,2,3` with `MRS_WORKERS=8`; the EPS wrapper
+reserved one worker for the certifier and launched the portfolio with seven.
+All 100 portfolio children exited before search because the eight IDs did not
+match the seven portfolio workers. Thus the identical solve set does not show
+anything about either requested portfolio. The existing 44/44 local-corpus
+follow-up above audited the first archive's models only; it is not an
+identity-matched re-audit of this archive, whose own recorded result remains
+40/44.
+
+The producer tree was dirty at `c021be580651c0bbf1cefdf3c56f05081eb6610e`,
+the run log warns that the binary was stale, and the `mtsdev02` host (95,979 MB
+RAM) reported 81,582 MB effective memory against the 114,688 MB portfolio
+allowance. This and the first Nov 6 run are supplemental observations, not a
+matched replication or a new EPS baseline. Commit `2532363` subsequently added
+worker-count preflight checks to the campaign and invocation scripts, with a
+regression test for this mismatch; that guard does not change the archived
+results. See the [second-run details](reports/benchmarks/eps-2026-09.md#second-casc-30-eps-run-with-portfolio-validation-failures-2026-11-06-supplemental).
+
 ### CASC-30 all-division attempt interrupted during ICU (2026-11-03)
 
 The archive
