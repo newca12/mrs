@@ -34,12 +34,16 @@ jobs:
         run: >-
           bash -n crates/mrs-bench/casc.sh crates/mrs-bench/tools.sh
           crates/mrs-bench/run_variance.sh crates/mrs-bench/certification_campaign.sh
+          crates/mrs-bench/systems/mrs/invoke.sh
+          crates/mrs-bench/test_eps_portfolio_workers.sh
           crates/mrs-bench/check_canary_drift.sh
           crates/mrs-bench/epr_ab_sweep.sh crates/mrs-bench/prephase/ab.sh
           formal/superposition-checker/install-verus.sh
           formal/superposition-checker/verify.sh
           formal/superposition-checker/build-runtime.sh
           formal/superposition-checker/tools.sh
+      - name: EPS portfolio worker contract
+        run: bash crates/mrs-bench/test_eps_portfolio_workers.sh
 
   formal-superposition-checker:
     runs-on: ubuntu-24.04

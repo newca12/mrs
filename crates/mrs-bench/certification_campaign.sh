@@ -30,8 +30,11 @@
 # already exists. Phase 1 is the expensive half (every problem, full wall
 # clock); re-running a campaign to reach the audit repeats all of it.
 #
-# `--portfolio IDS` selects one base strategy per worker (IDs 1..15); it is
-# checked against `MRS_WORKERS` (default 8). `--schedule NAME` remains the
+# `--portfolio IDS` selects one base strategy per portfolio worker (IDs 1..15).
+# It is checked against `MRS_WORKERS` (default 8), except EPS with certification
+# enabled, where one base slot is reserved for the certifier and the portfolio
+# needs `MRS_WORKERS-1` IDs. An explicit portfolio cannot cover EPS and other
+# divisions in one campaign; split the divisions. `--schedule NAME` remains the
 # `casc.sh` option for selecting a named schedule. `MRS_SHARED_POOL_INTERVAL`
 # is inherited (default 0); 0 disables cross-strategy equality sharing.
 #
@@ -53,6 +56,7 @@
 # Environment:
 #   MRS_WORKERS             worker count for mrs (default 8)
 #   MRS_PORTFOLIO           explicit portfolio (alternative to --portfolio)
+#   MRS_EPS_CERTIFY         EPS certification track toggle (default 1)
 #   MRS_SHARED_POOL_INTERVAL equality-sharing poll interval (default 0)
 #   MRS_PROOF_BYTES_LIMIT   proof bytes limit (default 32MB)
 #   CERT_STRICT_TIME   per-proof kernel budget   (default 240)
@@ -72,6 +76,7 @@ SUBSET_FILE=""
 MANIFEST_OUT=""
 AUDIT_ONLY=""
 PORTFOLIO_ARG=""
+DIVISIONS="fne,feq,epu,eps,ueq,icu"
 CASC_ARGS=()
 
 # `--edition` and the problems root must agree with what phase 1 actually ran
@@ -103,6 +108,12 @@ for ((i = 0; i < ${#args[@]}; i++)); do
             ((i + 1 < ${#args[@]})) || { echo "campaign: --edition requires a value" >&2; exit 2; }
             EDITION="${args[i + 1]}"
             CASC_ARGS+=("--edition" "${args[i + 1]}")
+            i=$((i + 1))
+            ;;
+        --divisions)
+            ((i + 1 < ${#args[@]})) || { echo "campaign: --divisions requires a value" >&2; exit 2; }
+            DIVISIONS="${args[i + 1]}"
+            CASC_ARGS+=("--divisions" "${args[i + 1]}")
             i=$((i + 1))
             ;;
         --subset)
@@ -159,8 +170,36 @@ if [[ -z "${AUDIT_ONLY}" ]]; then
             exit 2
         fi
         IFS=',' read -r -a PORTFOLIO_IDS <<< "${MRS_PORTFOLIO}"
-        if (( ${#PORTFOLIO_IDS[@]} != MRS_WORKERS )); then
-            echo "campaign: portfolio has ${#PORTFOLIO_IDS[@]} strategies but MRS_WORKERS=${MRS_WORKERS}" >&2
+        EXPECTED_PORTFOLIO_WORKERS="${MRS_WORKERS}"
+        HAS_EPS=0
+        HAS_OTHER_DIVISION=0
+        if [[ "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
+            IFS=',' read -r -a SELECTED_DIVISIONS <<< "${DIVISIONS}"
+            for division in "${SELECTED_DIVISIONS[@]}"; do
+                case "${division,,}" in
+                    eps) HAS_EPS=1 ;;
+                    "") ;;
+                    *) HAS_OTHER_DIVISION=1 ;;
+                esac
+            done
+            if (( HAS_EPS )); then
+                if (( MRS_WORKERS < 2 )); then
+                    echo "campaign: EPS certification requires MRS_WORKERS >= 2" >&2
+                    exit 2
+                fi
+                if (( HAS_OTHER_DIVISION )); then
+                    echo "campaign: one explicit portfolio cannot cover EPS and non-EPS divisions while EPS certification is enabled (EPS uses MRS_WORKERS-1 portfolio workers; other divisions use MRS_WORKERS); split the campaign by division" >&2
+                    exit 2
+                fi
+                EXPECTED_PORTFOLIO_WORKERS=$((MRS_WORKERS - 1))
+            fi
+        fi
+        if (( ${#PORTFOLIO_IDS[@]} != EXPECTED_PORTFOLIO_WORKERS )); then
+            if (( HAS_EPS )); then
+                echo "campaign: EPS reserves one of MRS_WORKERS=${MRS_WORKERS} for certification; its portfolio needs ${EXPECTED_PORTFOLIO_WORKERS} strategies, got ${#PORTFOLIO_IDS[@]}" >&2
+            else
+                echo "campaign: portfolio has ${#PORTFOLIO_IDS[@]} strategies but the selected worker count requires ${EXPECTED_PORTFOLIO_WORKERS}" >&2
+            fi
             exit 2
         fi
         export MRS_PORTFOLIO

@@ -88,6 +88,8 @@ ulimit -s unlimited 2>/dev/null || true
 # certifier worker plus MRS_WORKERS-1 portfolio workers concurrently. Their
 # memory ceilings partition the run-level allowance. The certified result can
 # add sound EPS coverage while the established portfolio continues searching.
+# An explicit MRS_PORTFOLIO therefore contains one ID per portfolio worker,
+# not one per MRS_WORKERS slot; reject a mismatch before launching either child.
 if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
     TOTAL_WORKERS="${MRS_WORKERS:-8}"
     if ! [[ "${TOTAL_WORKERS}" =~ ^[0-9]+$ ]] || (( TOTAL_WORKERS < 2 )); then
@@ -118,6 +120,13 @@ if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
         exit 1
     fi
     PORTFOLIO_WORKERS=$((TOTAL_WORKERS - 1))
+    if [[ -n "${MRS_PORTFOLIO:-}" ]]; then
+        IFS=',' read -r -a PORTFOLIO_IDS <<< "${MRS_PORTFOLIO}"
+        if (( ${#PORTFOLIO_IDS[@]} != PORTFOLIO_WORKERS )); then
+            echo "% SZS status Error (EPS portfolio has ${#PORTFOLIO_IDS[@]} strategies for ${PORTFOLIO_WORKERS} workers; MRS_WORKERS=${TOTAL_WORKERS} reserves one slot for certification)"
+            exit 1
+        fi
+    fi
     HARDWARE_ARGS=()
     if [[ -n "${MRS_HARDWARE:-}" ]]; then
         HARDWARE_ARGS+=(--hardware "${MRS_HARDWARE}")
