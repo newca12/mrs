@@ -26,6 +26,32 @@ use mrs_search::strategy::{StrategySchedule, run_schedule};
 use mrs_search::{ScheduleReport, SearchResult};
 use mrs_szs::{SzsStatus, szs_output_end, szs_output_start, szs_status_line};
 
+const DEFAULT_PROOF_BYTES_LIMIT: usize = 32 * 1024 * 1024;
+
+fn parse_positive_bytes(value: &str) -> Option<usize> {
+    value.parse::<usize>().ok().filter(|limit| *limit > 0)
+}
+
+fn resolve_proof_bytes_limit(
+    cli_limit: Option<usize>,
+    env_value: Result<String, env::VarError>,
+) -> Result<usize, String> {
+    if let Some(limit) = cli_limit {
+        return (limit > 0)
+            .then_some(limit)
+            .ok_or_else(|| "--proof-bytes-limit must be greater than zero".into());
+    }
+    match env_value {
+        Ok(value) => parse_positive_bytes(&value).ok_or_else(|| {
+            format!("MRS_PROOF_BYTES_LIMIT requires a positive byte count, got {value:?}")
+        }),
+        Err(env::VarError::NotPresent) => Ok(DEFAULT_PROOF_BYTES_LIMIT),
+        Err(env::VarError::NotUnicode(value)) => Err(format!(
+            "MRS_PROOF_BYTES_LIMIT must be a valid positive byte count, got {value:?}"
+        )),
+    }
+}
+
 fn run_time_budget(mode: mrs_search::HardwareMode, seconds: u64, factor: f64) -> Duration {
     if mode != mrs_search::HardwareMode::CascSim {
         return Duration::from_secs(seconds);
@@ -69,6 +95,27 @@ mod budget_tests {
                 "% Proof : input\nfof(c1, plain, $false, inference(test, [], [])).\n"
             ),
             1
+        );
+    }
+
+    #[test]
+    fn proof_byte_limit_requires_a_positive_integer() {
+        assert_eq!(
+            parse_positive_bytes("33554432"),
+            Some(DEFAULT_PROOF_BYTES_LIMIT)
+        );
+        assert_eq!(parse_positive_bytes("1"), Some(1));
+        assert_eq!(parse_positive_bytes("0"), None);
+        assert_eq!(parse_positive_bytes("-1"), None);
+        assert_eq!(parse_positive_bytes("not-a-number"), None);
+        assert_eq!(
+            resolve_proof_bytes_limit(None, Err(env::VarError::NotPresent)),
+            Ok(DEFAULT_PROOF_BYTES_LIMIT)
+        );
+        assert!(resolve_proof_bytes_limit(None, Ok("0".into())).is_err());
+        assert_eq!(
+            resolve_proof_bytes_limit(Some(1234), Ok("not-a-number".into())),
+            Ok(1234)
         );
     }
 }
@@ -132,13 +179,7 @@ fn run() {
     let mut pre_phase = false;
     let mut pre_phase_only = false;
     let mut pre_phase_probe = false;
-    // Default 32 MiB: accommodates large and useful certificates such as the
-    // measured 13.38 MB HWV078-1 EPR proof while keeping output explicitly
-    // bounded. Deployments with a lower output allowance can override it.
-    let mut proof_bytes_limit: usize = env::var("MRS_PROOF_BYTES_LIMIT")
-        .ok()
-        .and_then(|val| val.parse().ok())
-        .unwrap_or(32 * 1024 * 1024);
+    let mut proof_bytes_limit: Option<usize> = None;
     #[cfg(feature = "ml")]
     let mut ml_premise_weights: Option<String> = None;
 
@@ -416,17 +457,13 @@ fn run() {
                     eprintln!("Error: --proof-bytes-limit requires a byte count");
                     process::exit(1);
                 });
-                proof_bytes_limit = val.parse().unwrap_or_else(|_| {
+                proof_bytes_limit = Some(parse_positive_bytes(&val).unwrap_or_else(|| {
                     eprintln!(
-                        "Error: --proof-bytes-limit requires a byte count, got {:?}",
+                        "Error: --proof-bytes-limit requires a positive byte count, got {:?}",
                         val
                     );
                     process::exit(1);
-                });
-                if proof_bytes_limit == 0 {
-                    eprintln!("Error: --proof-bytes-limit must be greater than zero");
-                    process::exit(1);
-                }
+                }));
             }
             // Deprecated alias: --fast is now --schedule fast.
             "--fast" => {
@@ -479,6 +516,16 @@ fn run() {
             }
         }
     }
+    // Default 32 MiB accommodates useful certificates such as the measured
+    // 13.38 MB HWV078-1 EPR proof while keeping output explicitly bounded. The
+    // environment supplies a run-wide default; a valid CLI value takes
+    // precedence over it.
+    let proof_bytes_limit =
+        resolve_proof_bytes_limit(proof_bytes_limit, env::var("MRS_PROOF_BYTES_LIMIT"))
+            .unwrap_or_else(|error| {
+                eprintln!("Error: {error}");
+                process::exit(1);
+            });
     let Some(path) = path else {
         eprintln!(
             "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--pre-phase] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"

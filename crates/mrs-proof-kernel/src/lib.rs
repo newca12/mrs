@@ -8,7 +8,7 @@
 //! name.
 
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -165,6 +165,13 @@ pub struct VerificationLimits {
     /// without expanding anything -- not a larger ceiling.
     pub max_expansion_clauses: usize,
     pub max_subsumption_steps: usize,
+    /// Weighted work allowed while replaying a factoring inference. Pair
+    /// checks, term sizes sent to unification, and successor clause nodes all
+    /// consume units.
+    pub max_factoring_work: usize,
+    /// Literal and term nodes retained by the factoring frontier and its
+    /// currently expanded state. This bounds breadth-first queue memory.
+    pub max_factoring_frontier_nodes: usize,
     pub max_skolem_steps: usize,
     pub max_equivalence_steps: usize,
     /// Recursive unification/multiset candidate steps allowed during one AC
@@ -197,6 +204,8 @@ impl Default for VerificationLimits {
             max_comparison_steps: 200_000,
             max_expansion_clauses: 100_000,
             max_subsumption_steps: 5_000,
+            max_factoring_work: 5_000_000,
+            max_factoring_frontier_nodes: 5_000_000,
             max_skolem_steps: 5_000,
             max_equivalence_steps: 5_000,
             max_ac_unifier_steps: 50_000,
@@ -9075,6 +9084,51 @@ fn match_subsumption_term(
     }
 }
 
+fn charge_factoring_work(used: &mut usize, amount: usize, limit: usize) -> bool {
+    *used = used.saturating_add(amount);
+    *used <= limit
+}
+
+fn factoring_frontier_size(clause: &[Literal]) -> usize {
+    clause.len().saturating_add(clause_term_size(clause))
+}
+
+fn enqueue_factoring_state(
+    expected: Vec<Literal>,
+    goal: &[Literal],
+    goal_condensed: &[Literal],
+    queue: &mut VecDeque<Vec<Literal>>,
+    work: &mut usize,
+    frontier_nodes: &mut usize,
+    limits: VerificationLimits,
+) -> Result<bool, KernelVerdict> {
+    let state_nodes = factoring_frontier_size(&expected);
+    if !charge_factoring_work(work, state_nodes, limits.max_factoring_work) {
+        return Err(KernelVerdict::Inconclusive(
+            "factoring search exceeded strict work limit".into(),
+        ));
+    }
+    let condensed_expected = condense_clause(&expected);
+    if clause_alpha_equiv(&expected, goal)
+        || clause_alpha_equiv(&condensed_expected, goal_condensed)
+    {
+        return Ok(true);
+    }
+    if condensed_expected.len() < goal_condensed.len() {
+        return Ok(false);
+    }
+
+    let total_nodes = frontier_nodes.saturating_add(state_nodes);
+    if total_nodes > limits.max_factoring_frontier_nodes {
+        return Err(KernelVerdict::Inconclusive(
+            "factoring search exceeded strict frontier-size limit".into(),
+        ));
+    }
+    *frontier_nodes = total_nodes;
+    queue.push_back(expected);
+    Ok(false)
+}
+
 fn verify_factoring(
     parents: &[Formula],
     conclusion: &Formula,
@@ -9092,23 +9146,28 @@ fn verify_factoring(
         );
     };
     // Factoring may merge more than one pair of literals in a single
-    // exported step (e.g. `X1 = X2 = X3` collapses three literals at
-    // once). Accept any conclusion reachable by repeated single-factor
-    // steps: each step removes exactly one literal, so the search depth is
-    // bounded by the parent size.
+    // exported step (e.g. `X1 = X2 = X3` collapses three literals at once).
+    // Accept any conclusion reachable by repeated single-factor steps. An
+    // already equivalent conclusion is also a sound identity inference.
     let goal_condensed = condense_clause(&goal);
     if clause_alpha_equiv(&parent, &goal)
         || clause_alpha_equiv(&condense_clause(&parent), &goal_condensed)
     {
         return KernelVerdict::Certified;
     }
-    let step_cap = limits.max_subsumption_steps.max(50_000);
-    let mut visited: usize = 0;
-    let mut queue: std::collections::VecDeque<Vec<Literal>> = std::collections::VecDeque::new();
-    // Seed with all one-step factors of the parent (at least one merge is
-    // required; a verbatim repeat of the parent is not factoring).
+    let mut work = 0usize;
+    let mut frontier_nodes = 0usize;
+    let mut queue: VecDeque<Vec<Literal>> = VecDeque::new();
+    // Seed with all one-step factors of the parent. Queue size and pair-check
+    // work are independently capped because breadth-first search trades memory
+    // for not exhausting its search budget on a deep branch first.
     for first in 0..parent.len() {
         for second in (first + 1)..parent.len() {
+            if !charge_factoring_work(&mut work, 1, limits.max_factoring_work) {
+                return KernelVerdict::Inconclusive(
+                    "factoring search exceeded strict work limit".into(),
+                );
+            }
             let left = &parent[first];
             let right = &parent[second];
             if left.positive != right.positive {
@@ -9121,6 +9180,12 @@ fn verify_factoring(
             };
             if left_symbol != right_symbol || left_args.len() != right_args.len() {
                 continue;
+            }
+            let term_work = atom_term_size(&left.atom).saturating_add(atom_term_size(&right.atom));
+            if !charge_factoring_work(&mut work, term_work, limits.max_factoring_work) {
+                return KernelVerdict::Inconclusive(
+                    "factoring search exceeded strict work limit".into(),
+                );
             }
             let mut substitution = HashMap::new();
             if !left_args
@@ -9136,23 +9201,22 @@ fn verify_factoring(
                 .filter(|(idx, _)| *idx != second)
                 .map(|(_, literal)| apply_substitution_literal(literal, &substitution))
                 .collect();
-            let condensed_expected = condense_clause(&expected);
-            if clause_alpha_equiv(&expected, &goal)
-                || clause_alpha_equiv(&condensed_expected, &goal_condensed)
-            {
-                return KernelVerdict::Certified;
+            match enqueue_factoring_state(
+                expected,
+                &goal,
+                &goal_condensed,
+                &mut queue,
+                &mut work,
+                &mut frontier_nodes,
+                limits,
+            ) {
+                Ok(true) => return KernelVerdict::Certified,
+                Ok(false) => {}
+                Err(verdict) => return verdict,
             }
-            if condensed_expected.len() < goal_condensed.len() {
-                continue;
-            }
-            queue.push_back(expected);
         }
     }
     while let Some(state) = queue.pop_front() {
-        visited += 1;
-        if visited > step_cap {
-            return KernelVerdict::Inconclusive("factoring search exceeded step limit".into());
-        }
         // The prover condenses intermediate factors before export (MGT079+1
         // c9135 collapses a duplicate after the predicate merge).
         let condensed_state = condense_clause(&state);
@@ -9162,10 +9226,16 @@ fn verify_factoring(
             return KernelVerdict::Certified;
         }
         if condensed_state.len() <= goal_condensed.len() {
+            frontier_nodes = frontier_nodes.saturating_sub(factoring_frontier_size(&state));
             continue;
         }
         for first in 0..state.len() {
             for second in (first + 1)..state.len() {
+                if !charge_factoring_work(&mut work, 1, limits.max_factoring_work) {
+                    return KernelVerdict::Inconclusive(
+                        "factoring search exceeded strict work limit".into(),
+                    );
+                }
                 let left = &state[first];
                 let right = &state[second];
                 if left.positive != right.positive {
@@ -9178,6 +9248,13 @@ fn verify_factoring(
                 };
                 if left_symbol != right_symbol || left_args.len() != right_args.len() {
                     continue;
+                }
+                let term_work =
+                    atom_term_size(&left.atom).saturating_add(atom_term_size(&right.atom));
+                if !charge_factoring_work(&mut work, term_work, limits.max_factoring_work) {
+                    return KernelVerdict::Inconclusive(
+                        "factoring search exceeded strict work limit".into(),
+                    );
                 }
                 let mut substitution = HashMap::new();
                 if !left_args
@@ -9193,18 +9270,22 @@ fn verify_factoring(
                     .filter(|(idx, _)| *idx != second)
                     .map(|(_, literal)| apply_substitution_literal(literal, &substitution))
                     .collect();
-                let condensed_expected = condense_clause(&expected);
-                if clause_alpha_equiv(&expected, &goal)
-                    || clause_alpha_equiv(&condensed_expected, &goal_condensed)
-                {
-                    return KernelVerdict::Certified;
+                match enqueue_factoring_state(
+                    expected,
+                    &goal,
+                    &goal_condensed,
+                    &mut queue,
+                    &mut work,
+                    &mut frontier_nodes,
+                    limits,
+                ) {
+                    Ok(true) => return KernelVerdict::Certified,
+                    Ok(false) => {}
+                    Err(verdict) => return verdict,
                 }
-                if condensed_expected.len() < goal_condensed.len() {
-                    continue;
-                }
-                queue.push_back(expected);
             }
         }
+        frontier_nodes = frontier_nodes.saturating_sub(factoring_frontier_size(&state));
     }
     KernelVerdict::Rejected("factoring conclusion is not a valid factor".into())
 }
@@ -20197,18 +20278,47 @@ mod tests {
 
     #[test]
     fn certifies_wide_clause_factoring_step() {
-        // GEO340+1 c102813 shape: multi-literal clause with repeated predicate literals.
-        let problem = "fof(a, axiom, p(X, Y) | p(Y, a) | q(X) | q(Y)).\n\
-                       fof(n1, axiom, ~p(a, a)).\n\
-                       fof(n2, axiom, ~q(a)).";
-        let proof = "fof(a, axiom, p(X, Y) | p(Y, a) | q(X) | q(Y), file('problem.p', a)).\n\
-                     fof(n1, axiom, ~p(a, a), file('problem.p', n1)).\n\
-                     fof(n2, axiom, ~q(a), file('problem.p', n2)).\n\
-                     fof(s, plain, p(a, a) | q(a) | q(a), inference(factoring, [status(thm)], [a])).\n\
-                     fof(mid, plain, q(a) | q(a), inference(resolution, [status(thm)], [s, n1])).\n\
-                     fof(mid2, plain, q(a), inference(factoring, [status(thm)], [mid])).\n\
-                     fof(bot, plain, $false, inference(resolution, [status(thm)], [mid2, n2])).";
-        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+        // Synthetic wide-clause regression motivated by GEO340+1 c102813:
+        // decoy q-factorings create more than 5,000 one-step candidates, but
+        // only the p-p branch can reach the goal. A depth-first stack spends
+        // its budget exploring those decoys first.
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let p_literal = |variable| Formula::atom(Atom::Pred(p, vec![Term::var(variable)]));
+        let q_literal = |variable| Formula::atom(Atom::Pred(q, vec![Term::var(variable)]));
+
+        let mut parent_literals = vec![p_literal(0), p_literal(1), p_literal(2)];
+        let mut goal_literals = vec![p_literal(2)];
+        for index in 0..103 {
+            let literal = q_literal(3 + index);
+            parent_literals.push(literal.clone());
+            goal_literals.push(literal);
+        }
+        let parent = Formula::or(parent_literals);
+        let goal = Formula::or(goal_literals);
+        let parents = [parent.clone()];
+
+        assert_eq!(
+            verify_factoring(&parents, &goal, VerificationLimits::default()),
+            KernelVerdict::Certified
+        );
+
+        for limits in [
+            VerificationLimits {
+                max_factoring_work: 0,
+                ..VerificationLimits::default()
+            },
+            VerificationLimits {
+                max_factoring_frontier_nodes: 0,
+                ..VerificationLimits::default()
+            },
+        ] {
+            assert!(matches!(
+                verify_factoring(&parents, &goal, limits),
+                KernelVerdict::Inconclusive(_)
+            ));
+        }
     }
 
     #[test]

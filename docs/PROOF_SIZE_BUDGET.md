@@ -56,8 +56,10 @@ risk rather than a systemic one, and it is confined to one division.
 
 ## The output budget
 
-`--proof-bytes-limit N` (default 32 MiB) caps the proof body. A proof larger
-than the cap is *omitted* rather than truncated:
+`--proof-bytes-limit N` (default 32 MiB) caps the proof body. The
+`MRS_PROOF_BYTES_LIMIT` environment variable sets the same default for a run;
+the explicit CLI option takes precedence. Both forms require a positive byte
+count. A proof larger than the cap is *omitted* rather than truncated:
 
 ```
 % SZS status Theorem for SWV406+1

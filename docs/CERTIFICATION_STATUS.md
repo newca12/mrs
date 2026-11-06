@@ -1203,6 +1203,12 @@ results are:
 | EPS | 100 / 100 | 44 `Satisfiable` | 40 certified models, 4 inconclusive |
 | ICU | 32 / 101 | 2 `Theorem` | 2 `VerifiedGood`; 69 jobs missing |
 
+The EPS model-checking outcomes above are from the recorded audit before the
+2026-11-06 increase of the model-work ceiling to 10⁹. The four inconclusive
+models have not been re-audited under that ceiling; keep the observed count at
+40 until a fresh audit reports otherwise. See the [campaign report](reports/benchmarks/cert-30-2026-11-03.md)
+and the [model-work policy update](reports/benchmarks/eps-2026-09.md).
+
 Compared with a current-kernel re-audit of the October 30 saved proofs (308
 refutations + 40 models), this run has three new certified problems
 (`SWV459+1`, `LAT230-10`, `REL036-2`) and one prior certified problem not

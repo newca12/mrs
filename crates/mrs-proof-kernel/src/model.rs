@@ -30,9 +30,10 @@ pub use mrs_core::model::MAX_MODEL_TABLE_ENTRIES;
 /// Bound on the dense interpretation work one model validation may perform.
 ///
 /// This bound applies to callers that invoke the model checker synchronously as
-/// well as to `mrs-proover`'s strict-time process. Keep it comfortably above
-/// the measured ordinary-model regression case, but low enough that the
-/// in-process call cannot monopolize a search run for tens of seconds.
+/// well as to `mrs-proover`'s strict-time process. Keep it finite even for
+/// callers without an external watchdog. The current ceiling deliberately
+/// admits several expensive EPS models; synchronous callers can consequently
+/// spend tens of seconds in one validation.
 ///
 /// Measured on the 100-problem `casc-30/EPS` run `cert-eps-20260926`: the
 /// expensive models (domain 11, one clause with 6 free variables and 18
@@ -40,9 +41,11 @@ pub use mrs_core::model::MAX_MODEL_TABLE_ENTRIES;
 /// whole division audits in 1.7 s wall. At the previous 10⁷ cap those models
 /// were refused as `inconclusive`, halving the certified count (4 of 12 → 10
 /// of 12) while saving no measurable time. A 10⁸ cap admits that family with
-/// useful headroom while keeping a single validation below roughly 5 s at the
-/// measured throughput; importantly this remains an explicit finite ceiling,
-/// rather than assuming every caller supplies a strict-time watchdog.
+/// useful headroom. The current 10⁹ ceiling also admits the four larger NLP
+/// models reported in the 2026-11 certification campaign; the prior audit
+/// estimated about 50 s of dense evaluation for each. This is an intentional
+/// latency tradeoff, not a cheap default, and remains an explicit finite
+/// ceiling rather than assuming every caller supplies a strict-time watchdog.
 const MAX_MODEL_EVALUATION_WORK: u64 = 1_000_000_000;
 const MAX_MODEL_EVALUATION_DEPTH: usize = 256;
 const MAX_MODEL_METADATA_BYTES: usize = 16 * 1024 * 1024;
@@ -2519,7 +2522,7 @@ fof(conj, conjecture, p(a)).
     /// expensive, while each takes ~1.5 s to check. The guard that matters is
     /// the strict time budget, so the cap is sized to fit it.
     #[test]
-    fn certifies_model_needing_more_than_the_old_work_cap() {
+    fn certifies_model_above_historical_ten_million_work_cap() {
         let domain_size = 11usize;
         // One clause over 6 variables and 18 argument positions, plus a ground
         // clause: 11^6 valuations x 18 positions is ≈3.2·10⁷ steps, past the
@@ -2582,5 +2585,54 @@ fof(conj, conjecture, p(a)).
             matches!(verdict, ModelVerdict::Certified { .. }),
             "a model costing ~3.2e7 steps must certify, not stall: {verdict:?}"
         );
+    }
+
+    #[test]
+    fn certifies_model_above_the_previous_hundred_million_work_cap() {
+        let domain_size = 7usize;
+        // The extra literals raise the conservative estimate above 10⁸, while
+        // the first true literal lets evaluation short-circuit cheaply at each
+        // valuation. This exercises the new ceiling without a 50-second test.
+        let literals = (0..61)
+            .map(|index| {
+                let variable = index % 7;
+                format!("p{variable}(X{variable})")
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let problem_text = format!("cnf(wide, negated_conjecture, {literals}).");
+        let problem = parse_tptp(&problem_text).expect("problem parses");
+        let AnnotatedFormula::CNF(annotated) = &problem.formulas[0] else {
+            panic!("expected a CNF formula");
+        };
+        let CNFStatement::Logical(formula) = &annotated.formula;
+        let work = cnf_model_work(formula, domain_size).expect("work estimate fits u64");
+        assert!(work > 100_000_000 && work <= MAX_MODEL_EVALUATION_WORK);
+
+        let predicates = (0..7)
+            .map(|index| {
+                (
+                    format!("p{index}"),
+                    PredicateTable {
+                        arity: 1,
+                        table: vec![true; domain_size],
+                    },
+                )
+            })
+            .collect();
+        let mut certificate = ModelCertificate {
+            domain_size,
+            constants: BTreeMap::new(),
+            functions: BTreeMap::new(),
+            predicates,
+            equality: EqualitySemantics::StrictIdentity,
+            digest: String::new(),
+        };
+        certificate.digest = certificate.compute_digest();
+
+        assert!(matches!(
+            certificate.validate(&problem, Some("Satisfiable")),
+            ModelVerdict::Certified { .. }
+        ));
     }
 }
