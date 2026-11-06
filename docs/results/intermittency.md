@@ -65,6 +65,10 @@ outcome does not qualify them as full CASC-30/ICU campaigns for this inventory.
 > include bundled row-level strict audits: portfolio `[1,6,5,11,4,2,3,7]`
 > certified 13/100, and `[1,6,14,5,11,4,2,3]` certified 12/100. Their
 > problem-name sets overlap on 12 names; `HWV107-1` is candidate-only by name.
+> The `[1,6,14,5,11,4,2,3]` run's 12-name set also matches Nov 5's result by
+> name. Against Nov 3 it shares 10 certified names, adds `PUZ037-2` and
+> `PUZ037-3`, and does not reproduce `HWV107-1`; this archive's corpus digest
+> matches Nov 3, so that is a same-input-set observation, not a paired run.
 > Do not fold these into the EPU signature table yet: their audit corpus digests
 > differ (`bb153a22…b6f16` versus `9a9cabd1…77570a`), and the latter matches the
 > Nov 3 full-campaign audit while the former does not. The producer binaries and

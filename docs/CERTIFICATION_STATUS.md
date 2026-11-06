@@ -1201,6 +1201,10 @@ A second complete Nov 6 EPU archive,
 `[1,6,14,5,11,4,2,3]` and returned 12 `Unsatisfiable`, 27 `GaveUp`, and 61
 `Timeout`; its bundled strict audit verified all 12 proofs. By problem name,
 those 12 are common with the 13-result run and `HWV107-1` is candidate-only.
+The 12-name set also matches the Nov 5 `[1,2,3,4,5,6,7,8]` result by name.
+Because this archive's corpus digest matches Nov 3, its set comparison with that
+reference is on the same recorded input/include tree: 10 solves are common,
+`PUZ037-2` and `PUZ037-3` are Nov 6-only, and `HWV107-1` is Nov 3-only.
 This is **not a matched portfolio comparison**: the second audit records corpus
 SHA-256 `9a9cabd1a059f737c56353e01f7008597b96de7a312d0fb69559d8e15d77570a`,
 which matches the Nov 3 full-campaign audit, while the 13-result archive records
@@ -1211,12 +1215,14 @@ trees are dirty, and the second host (`tlpnf9701`) reports 16 physical / 32
 logical CPUs, 63,763 MB RAM, and 54,198 MB effective memory. The audit
 identities also record different verifier binaries.
 
-The 13/100 result is therefore a strict, supplemental observation on the
-candidate archive's audited corpus, not a replacement for the 11/100 reference
-or evidence that changing a strategy caused the extra problem. Reconcile the
-corpus difference before a same-input comparison; then use randomized paired
-blocks on a clean, common binary and canonical 8-core host, with `jobs=1`, strict
-audits, and a held-out check before changing `casc_epu`. See the
+Both Nov 6 results are supplemental observations, not evidence that changing a
+strategy caused a coverage gain. The 13/100 run is on a different audited corpus;
+the 12/100 run matches Nov 3's recorded corpus but is still a single run from a
+dirty producer tree on a 16-physical-core host below the 128-GiB memory
+allowance. Neither replaces the 11/100 reference. Before changing `casc_epu`,
+reconcile the candidate corpus and use randomized paired blocks on a clean,
+common binary and canonical 8-core host, with `jobs=1`, strict audits, and a
+held-out check. See the
 [EPU report](reports/benchmarks/epu-2026-09.md#2026-11-06-explicit-portfolio-screen-supplemental)
 for telemetry and the detailed set comparison.
 
