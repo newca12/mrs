@@ -823,6 +823,43 @@ difference to a code or portfolio change. Full observations are in the
 [October UEQ campaign report](reports/benchmarks/ueq-2026-10.md) and
 [`results/README.md`](results/README.md).
 
+### CASC-30 UEQ explicit-portfolio observation (2026-11-05, supplemental)
+
+The complete 300-problem campaign
+`campaign-casc-30-ueq-W8CASCHJ1-02-1_2_3_6_7_8_11_12_20261105` used portfolio
+`[1,2,3,6,7,8,11,12]`, eight workers, `MRS_HARDWARE=casc`, disabled sharing,
+`jobs=1`, and the official 240-second limit. It returned **142
+`Unsatisfiable`**, 148 `Timeout`, and 10 `GaveUp`. The archived strict audit
+certified **142/142 `VerifiedGood`**, with 0 `VerifiedBad`, `Unknown`, verifier
+timeouts, or proof omissions; there were no process errors or resource-outs.
+
+Against the latest shipped-`casc_ueq` observation, November 3's 144 strictly
+certified UEQ refutations, the sets have 132 solves in common, ten November
+5-only and twelve November 3-only. The 154-problem union is not a tested
+portfolio. These were single runs from different dirty producer trees and
+different hosts; the count difference is not a causal schedule comparison.
+The November 5 host (`mtsdev02`) had eight physical cores and 95,979 MB RAM,
+below the 128-GiB allowance (`effective_mem_mb=81582`), though no resource-out
+was recorded. The November 3 report notes that byte identity between its
+original host-side corpus and the local re-audit corpus was not independently
+established; see that report before interpreting the set comparison.
+
+A separate November 5 portfolio, `[1,2,5,6,7,8,11,12]`, strictly certified
+148/300. It ran on an unpinned 16-physical-core host with 54,198 MB effective
+memory and had 22 memory `ResourceOut`s. The two November 5 portfolios differ
+by strategy 3 versus 5, but their producer binaries and audited corpus digests
+differ; the result is not a controlled strategy comparison.
+
+The **124/300** October 28 result is an older supplemental run on `mtsdev01`,
+not the November 5 host and not the established comparison reference. The
+repository retains October 7's **127/300** as that historical reference; the
+latest shipped-order observation is November 3's 144. The **149/300** October
+29 artifact is strictly verified but was run on an unpinned 16-physical-core
+host with 25 memory resource-outs, so it remains non-canonical supplemental
+evidence. The November 5 run is not a promotion result. See the [full
+campaign report](reports/benchmarks/ueq-casc30-explicit-portfolio-2026-11-05.md)
+for per-problem differences, hashes, and complete provenance.
+
 ### Fresh CASC-J13 FEQ standalone campaigns (2026-10-20 and 2026-10-21)
 
 Two consecutive full 300-problem runs were evaluated on canonical 8-core hardware (`mtsdev03`):
@@ -991,6 +1028,33 @@ allowance. Full provenance, the strict-set comparison, and solve/memory
 measurements are in the
 [`UEQ explicit-portfolio report`](reports/benchmarks/ueq-j13-explicit-portfolio-2026-11-04.md).
 
+### CASC-J13 UEQ explicit-portfolio follow-up (2026-11-05, supplemental)
+
+The complete 400-problem campaign
+`~/campaign-casc-j13-ueq-W8CASCHJ1-01-1_2_5_7_8_12_14_15_20261105` used the
+no-sharing portfolio `[1,2,5,7,8,12,14,15]`, eight workers, and the official
+180-second CASC-J13 limit. It returned **119 `Unsatisfiable`**, 15 `GaveUp`, and
+266 `Timeout`; the archived strict audit certified **all 119 refutations as
+`VerifiedGood`**, with no `VerifiedBad`, `Unknown`, verifier timeouts, or proof
+omissions. There were no process errors or resource-outs.
+
+Against the November 3 full UEQ observation (143/400 under the shipped order),
+116 certified solves are common, three are November 5-only, and 27 November
+3-only; the observed net difference is −24. Against the November 4 explicit
+portfolio `[1,2,3,5,7,8,12,15]` (106/400), 100 are common, 19 are November
+5-only, and six November 4-only. These are single-run set comparisons, not
+causal portfolio tests; the November 3 full-campaign observation remains the
+latest full J13 result.
+
+The producer tree was dirty at `c021be580651c0bbf1cefdf3c56f05081eb6610e`.
+More importantly, `run.log` warns that the release binary was older than the
+sources. The run used `mtsdev01` (eight reported physical cores, 96,350 MB RAM)
+and reported 81,897 MB effective memory against the 131,072 MB CASC allowance.
+No resource-out occurred, but the memory and stale-binary caveats preclude
+treating this as a source-revision or schedule-promotion result. The full audit,
+problem-set comparisons, hashes, and follow-up recommendation are in the
+[`November 5 UEQ report`](reports/benchmarks/ueq-j13-explicit-portfolio-2026-11-05.md).
+
 ### CASC-J13 FNE explicit-portfolio experiments (2026-11-04)
 
 The full 100-problem FNE run
@@ -1028,6 +1092,31 @@ not a clean build of commit `c021be5`. The two November 4 portfolio runs differ
 in host and binary, and their matching solve set does not isolate a strategy
 effect. See the [second explicit-portfolio report](reports/benchmarks/fne-j13-explicit-portfolio-s12-2026-11-04.md).
 
+### CASC-J13 FEQ explicit-portfolio observation (2026-11-05, supplemental)
+
+The complete 300-row FEQ campaign
+`~/campaign-casc-j13-feq-W8CASCHJ1-04-1_2_3_4_6_8_12_13_20261105` used the
+explicit portfolio `[1,2,3,4,6,8,12,13]`, eight workers, disabled sharing,
+`jobs=1`, and the official 180-second CASC-J13 limit. It generated **69
+theorems**, all **69 `VerifiedGood`**. The other outcomes were 160 `Timeout`,
+68 `GaveUp`, and three `Error`; the strict audit reports 0 `VerifiedBad`,
+`Unknown`, verifier timeouts, or proof omissions.
+
+The three errors (`CSR036+5`, `SWX209+1`, `SWX211+1`) were exit-137 / signal-9
+`SIGKILL`s with cause unconfirmed. The host had 95,969 MB RAM and reported
+81,573 MB effective memory against the 128-GiB `casc` allowance. The campaign
+does not contain kernel or cgroup evidence proving these were OOM kills.
+
+Against the November 3 full `casc_feq` observation (72/300), 68 solves are
+common, this run adds `GEO494+1`, and four November 3 solves are not reproduced:
+`GEO277+1`, `GEO526+1`, `GEO535+1`, and `SEV677+1`. Against the earlier 8-core
+candidate portfolio `[12,11,10,6,8,1,4,13]` (69/300), 66 are common; this run
+adds `SWW298+1`, `SWB073+1`, and `SET101+1`, while six earlier candidate solves
+are absent. These are by-name comparisons between dirty builds on different
+hosts, not a paired portfolio estimate. The count delta does not justify
+changing the shipped schedule. See the [full FEQ report](reports/benchmarks/feq-j13-explicit-portfolio-2026-11-05.md)
+for the full set lists, run identity, and timing/memory details.
+
 ### CASC-30 FNE explicit-portfolio swap experiment (2026-11-05)
 
 Two complete 100-problem campaigns compared portfolios
@@ -1057,6 +1146,36 @@ retain the 40-problem union. Repeat with randomized paired campaigns on the
 same host and binary, then check selected portfolios on held-out problems or
 families. See the [full comparison report](reports/benchmarks/fne-casc30-portfolio-s8-vs-s11-2026-11-05.md)
 and [methodology §8.5](policies/methodology.md#85-experimental-design-and-evidence-strength).
+
+### CASC-30 EPU explicit-portfolio screen (2026-11-05, supplemental)
+
+The 100-row run
+`campaign-casc-30-epu-W8CASCHJ2-99-1_2_3_4_5_6_7_8_20261105` used the explicit
+portfolio `[1,2,3,4,5,6,7,8]`, eight workers, `MRS_HARDWARE=casc`, disabled
+sharing, the official 120-second limit, and `jobs=2`. It returned **12
+`Unsatisfiable`**, 27 `GaveUp`, and 61 `Timeout`. A separate post-hoc strict
+replay of the archived raw outputs found **12/12 `VerifiedGood`**, 0
+`VerifiedBad`, and no verifier `Unknown`, timeouts, or omitted proofs; the 88
+non-refutations were `N/A: Incomplete`.
+
+Compared with the Nov 3 full EPU result (11/100, all `VerifiedGood`), ten solves
+are common: Nov 5 adds `PUZ037-2` and `PUZ037-3`, and does not reproduce
+`HWV107-1`. The two audited sets therefore have a 13-problem union, not a
+13/100 result. This is a supplemental single-run portfolio observation, not a
+controlled gain or a replacement for the 11/100 reference result.
+
+The campaign's `certification/` directory is empty, so this audit was not
+bundled as a row-level `certification/audit.csv`. Provenance is a dirty tree at
+commit `c021be580651c0bbf1cefdf3c56f05081eb6610e`, binary SHA-256
+`efb06b302c61a7127d6560dc5d6522549b35753ba3ece40c160acf63872180ff`, Rust
+1.99.1, on `teenf9901` (Xeon Silver 4108, 16 physical / 32 logical CPUs). Two
+8-worker jobs ran concurrently; per-run logs report 108,816 MB effective memory
+on a 128,019 MB host against the 131,072 MB `casc` allowance. These host,
+concurrency, portfolio, and dirty-build differences preclude attributing the
+solve-set flips to a strategy. Do not promote the candidate without at least
+two randomized paired blocks, strict audits, and a held-out check. See the
+[EPU report](reports/benchmarks/epu-2026-09.md#2026-11-05-explicit-portfolio-screen-supplemental)
+for the solve times, EPR fallbacks, and audit details.
 
 ### CASC-30 all-division attempt interrupted during ICU (2026-11-03)
 

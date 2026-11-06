@@ -390,6 +390,42 @@ The question is whether those division schedules are optimal for 8 cores.
 > strict UEQ `VerifiedGood`. The Sep 30 `c07cac9` result of 107/400 is an
 > earlier adaptive-mode historical result, not the current full-campaign
 > observation. See `docs/reports/benchmarks/cert-j13-2026-11-03.md`. A
+> November 5 CASC-J13 UEQ explicit portfolio `[1,2,5,7,8,12,14,15]` strictly
+> certified 119/400. Against the November 3 shipped-order observation, 116
+> solves are common, three are candidate-only, and 27 were not reproduced; this
+> is supplemental and does not replace the 143/400 full-campaign observation.
+> The producer tree was dirty and `run.log` warns that its release binary was
+> older than the sources. The 8-core `mtsdev01` host reported 96,350 MB RAM and
+> 81,897 MB effective memory, below the 128-GiB allowance. Do not treat this as
+> a source-revision or schedule-promotion result; see
+> `docs/reports/benchmarks/ueq-j13-explicit-portfolio-2026-11-05.md`.
+> A November 5 CASC-J13 FEQ explicit portfolio `[1,2,3,4,6,8,12,13]` strictly
+> certified 69/300. Against the November 3 full FEQ result (72/300), 68 solves
+> are common, this run adds `GEO494+1`, and it does not reproduce four November 3
+> solves. The earlier 8-core candidate also strictly certified 69/300, but only
+> 66 solves are common; the candidate-only and prior-only problems are listed in
+> `docs/reports/benchmarks/feq-j13-explicit-portfolio-2026-11-05.md`. The
+> producer tree was dirty on `mtsdev04`; three other processes ended in
+> cause-unconfirmed `SIGKILL`s. The host had 95,969 MB RAM and 81,573 MB effective
+> memory, below the 128-GiB allowance. This is a supplemental single-run
+> observation, not a schedule-promotion result. A November 3 CASC-30 all-division
+> run completed all 300 UEQ rows and strictly
+> certified 144 under the shipped `casc_ueq` order; the campaign later stopped
+> during ICU. This is the latest shipped-order observation, not a standardized
+> baseline: the producer tree was dirty and the 8-core host had 96,350 MB RAM,
+> below the 128-GiB allowance. A November 5 explicit portfolio
+> `[1,2,3,6,7,8,11,12]` certified 142/300; it shares 132 solves with November 3,
+> has 10 candidate-only and 12 November 3-only. These are single runs from
+> different dirty builds and hosts, not a causal portfolio comparison. The
+> separate November 5 portfolio `[1,2,5,6,7,8,11,12]` scored 148/300, all strict,
+> but used an unpinned 16-core host with 54,198 MB effective memory and had 22
+> memory resource-outs; its binary and audited corpus digest differ from the
+> 142/300 run, so do not treat it as a matched s3-versus-s5 test. The
+> established historical comparison reference remains October 7's 127/300.
+> October 28's 124/300 is supplemental, and its metadata names `mtsdev01` (the
+> November 5 run used `mtsdev02`), so it is not a same-host comparator for that
+> candidate. See `docs/reports/benchmarks/ueq-casc30-explicit-portfolio-2026-11-05.md`
+> and `docs/reports/benchmarks/cert-30-2026-11-03.md`. A
 > 2026-10-29 CASC-30 run produced 149/300 strict `VerifiedGood`, but is a dirty
 > single-run result on an unpinned 16-core host (54,198 MB effective memory,
 > 25 memory resource-outs); it is supplemental, not a standardized baseline (see

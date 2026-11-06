@@ -24,23 +24,42 @@ archive stops after 1,032 rows, at ICU `CSI007+1`, before `CSI008+1` and 68
 other ICU jobs. Their saved proofs have strict audits, but the incomplete ICU
 outcome does not qualify them as full CASC-30/ICU campaigns for this inventory.
 
-> **CASC-J13 refresh pending (2026-11-05):** The J13 campaign keys and
+> **CASC-J13 refresh pending (2026-11-06):** The J13 campaign keys and
 > signatures below do not yet include the complete October 30 and November 3
-> full campaigns, the two November 4 explicit FNE portfolio runs, or the
-> November 4 explicit UEQ portfolio run. That UEQ run strictly certified 106
-> problems; against the November 3 full UEQ run, 101 were common, five were
-> November 4-only, and 42 November 3 solves were not reproduced. The November 3
-> full run strictly certified 253/253 refutations and retained all 249
-> problems refuted on October 30, adding four. Both November 4 portfolios
-> strictly certified the same 37 FNE problems; the `[1,2,3,4,6,11,13,15]` run
-> had three cause-unconfirmed `SIGKILL` errors, while the
-> `[1,2,3,4,11,12,13,15]` run had no process errors but warned that its binary
-> was older than sources. These observations do not recompute signatures
-> against every older campaign; do not treat the J13 tables below as a complete
-> current inventory. See the [November 3 report](../reports/benchmarks/cert-j13-2026-11-03.md),
+> full campaigns, the two November 4 explicit FNE portfolio runs, the November 4
+> and November 5 explicit UEQ portfolio runs, or the November 5 explicit FEQ
+> run. The November 4 UEQ run strictly certified 106 problems; against the
+> November 3 full UEQ run, 101 were common, five were November 4-only, and 42
+> November 3 solves were not reproduced. The November 5 UEQ portfolio
+> `[1,2,5,7,8,12,14,15]` strictly certified 119/400; against November 3, 116
+> were common, three were November 5-only, and 27 November 3 solves were not
+> reproduced. Its complete row-level audit has not yet been folded into the
+> signature table; its `run.log` warns that the release binary was older than
+> sources. The November 3 full run strictly certified 253/253 refutations and
+> retained all 249 problems refuted on October 30, adding four. Both November 4
+> portfolios strictly certified the same 37 FNE problems; the
+> `[1,2,3,4,6,11,13,15]` run had three
+> cause-unconfirmed `SIGKILL` errors, while the `[1,2,3,4,11,12,13,15]` run had
+> no process errors but warned that its binary was older than sources. The
+> November 5 FEQ portfolio strictly certified 69/69 proofs and had three
+> cause-unconfirmed `SIGKILL` errors; it shares 68 solves with November 3, adds
+> `GEO494+1`, and does not reproduce four November 3 solves. These observations
+> do not recompute signatures against every older campaign; do not treat the J13
+> tables below as a complete current inventory. See the [November 3 report](../reports/benchmarks/cert-j13-2026-11-03.md),
 > [November 4 portfolio-6 report](../reports/benchmarks/fne-j13-explicit-portfolio-2026-11-04.md),
 > [November 4 portfolio-12 report](../reports/benchmarks/fne-j13-explicit-portfolio-s12-2026-11-04.md),
-> and [November 4 UEQ report](../reports/benchmarks/ueq-j13-explicit-portfolio-2026-11-04.md).
+> [November 4 UEQ report](../reports/benchmarks/ueq-j13-explicit-portfolio-2026-11-04.md),
+> [November 5 UEQ report](../reports/benchmarks/ueq-j13-explicit-portfolio-2026-11-05.md),
+> and [November 5 FEQ report](../reports/benchmarks/feq-j13-explicit-portfolio-2026-11-05.md).
+
+> **CASC-30 UEQ refresh pending (2026-11-06):** Two complete November 5
+> explicit-portfolio artifacts have row-level strict audits: `[1,2,3,6,7,8,11,12]`
+> (142 `VerifiedGood`) and `[1,2,5,6,7,8,11,12]` (148 `VerifiedGood`, 22 memory
+> resource-outs). Their comparison with the November 3 shipped-schedule results
+> is documented in the [campaign report](../reports/benchmarks/ueq-casc30-explicit-portfolio-2026-11-05.md).
+> They have not yet been folded into the signature table; the table below is
+> not a complete current inventory for these runs. Recompute full signatures
+> before adding campaign keys, rather than appending only pairwise differences.
 
 This inventory is an **observed run-to-run difference list**, not a claim that
 the prover is nondeterministic under a fixed binary and configuration. Included
