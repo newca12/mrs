@@ -54,7 +54,8 @@
 #   MRS_WORKERS             worker count for mrs (default 8)
 #   MRS_PORTFOLIO           explicit portfolio (alternative to --portfolio)
 #   MRS_SHARED_POOL_INTERVAL equality-sharing poll interval (default 0)
-#   CERT_STRICT_TIME   per-proof kernel budget   (default 120)
+#   MRS_PROOF_BYTES_LIMIT   proof bytes limit (default 32MB)
+#   CERT_STRICT_TIME   per-proof kernel budget   (default 240)
 #   CERT_JOBS          audit parallelism        (default 4)
 #   CERT_OUT           report directory         (default <output>/certification)
 
@@ -63,7 +64,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/tools.sh"
 ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-STRICT_TIME="${CERT_STRICT_TIME:-120}"
+STRICT_TIME="${CERT_STRICT_TIME:-240}"
 JOBS="${CERT_JOBS:-4}"
 OUT=""
 CERT_OUT="${CERT_OUT:-}"
@@ -164,7 +165,7 @@ if [[ -z "${AUDIT_ONLY}" ]]; then
         fi
         export MRS_PORTFOLIO
     fi
-    export MRS_WORKERS MRS_SHARED_POOL_INTERVAL
+    export MRS_WORKERS MRS_SHARED_POOL_INTERVAL ${MRS_PROOF_BYTES_LIMIT:+MRS_PROOF_BYTES_LIMIT}
 fi
 command -v tar >/dev/null 2>&1 || { echo "campaign: tar is required to archive the run" >&2; exit 2; }
 

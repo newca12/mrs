@@ -155,6 +155,9 @@ if [[ "${DIV_LOWER}" == "eps" && "${MRS_EPS_CERTIFY:-1}" != "0" ]]; then
     if [[ -n "${MRS_PORTFOLIO:-}" ]]; then
         PORTFOLIO_ARGS+=(--portfolio "${MRS_PORTFOLIO}")
     fi
+    if [[ -n "${MRS_PROOF_BYTES_LIMIT:-}" ]]; then
+        PORTFOLIO_ARGS+=(--proof-bytes-limit "${MRS_PROOF_BYTES_LIMIT}")
+    fi
     env "${PORTFOLIO_MEMORY_ENV[@]+"${PORTFOLIO_MEMORY_ENV[@]}"}" "${BINARY}" "${PORTFOLIO_ARGS[@]}" \
         "${HARDWARE_ARGS[@]+"${HARDWARE_ARGS[@]}"}" "${PROBLEM}" \
         >"${TMP_DIR}/portfolio.stdout" 2>"${TMP_DIR}/portfolio.stderr" &
@@ -269,6 +272,9 @@ if [[ -n "${MRS_SIM_TIME_FACTOR:-}" ]]; then
 fi
 if [[ -n "${MRS_PORTFOLIO:-}" ]]; then
     ARGS+=(--portfolio "${MRS_PORTFOLIO}")
+fi
+if [[ -n "${MRS_PROOF_BYTES_LIMIT:-}" ]]; then
+    ARGS+=(--proof-bytes-limit "${MRS_PROOF_BYTES_LIMIT}")
 fi
 
 exec "${BINARY}" "${ARGS[@]}" "${PROBLEM}"

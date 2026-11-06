@@ -135,7 +135,10 @@ fn run() {
     // Default 32 MiB: accommodates large and useful certificates such as the
     // measured 13.38 MB HWV078-1 EPR proof while keeping output explicitly
     // bounded. Deployments with a lower output allowance can override it.
-    let mut proof_bytes_limit: usize = 32 * 1024 * 1024;
+    let mut proof_bytes_limit: usize = env::var("MRS_PROOF_BYTES_LIMIT")
+        .ok()
+        .and_then(|val| val.parse().ok())
+        .unwrap_or(32 * 1024 * 1024);
     #[cfg(feature = "ml")]
     let mut ml_premise_weights: Option<String> = None;
 

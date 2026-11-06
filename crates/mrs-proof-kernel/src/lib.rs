@@ -9097,9 +9097,14 @@ fn verify_factoring(
     // steps: each step removes exactly one literal, so the search depth is
     // bounded by the parent size.
     let goal_condensed = condense_clause(&goal);
-    let step_cap = limits.max_subsumption_steps.max(5_000);
+    if clause_alpha_equiv(&parent, &goal)
+        || clause_alpha_equiv(&condense_clause(&parent), &goal_condensed)
+    {
+        return KernelVerdict::Certified;
+    }
+    let step_cap = limits.max_subsumption_steps.max(50_000);
     let mut visited: usize = 0;
-    let mut stack: Vec<Vec<Literal>> = Vec::new();
+    let mut queue: std::collections::VecDeque<Vec<Literal>> = std::collections::VecDeque::new();
     // Seed with all one-step factors of the parent (at least one merge is
     // required; a verbatim repeat of the parent is not factoring).
     for first in 0..parent.len() {
@@ -9131,13 +9136,19 @@ fn verify_factoring(
                 .filter(|(idx, _)| *idx != second)
                 .map(|(_, literal)| apply_substitution_literal(literal, &substitution))
                 .collect();
-            if condense_clause(&expected).len() < goal_condensed.len() {
+            let condensed_expected = condense_clause(&expected);
+            if clause_alpha_equiv(&expected, &goal)
+                || clause_alpha_equiv(&condensed_expected, &goal_condensed)
+            {
+                return KernelVerdict::Certified;
+            }
+            if condensed_expected.len() < goal_condensed.len() {
                 continue;
             }
-            stack.push(expected);
+            queue.push_back(expected);
         }
     }
-    while let Some(state) = stack.pop() {
+    while let Some(state) = queue.pop_front() {
         visited += 1;
         if visited > step_cap {
             return KernelVerdict::Inconclusive("factoring search exceeded step limit".into());
@@ -9182,10 +9193,16 @@ fn verify_factoring(
                     .filter(|(idx, _)| *idx != second)
                     .map(|(_, literal)| apply_substitution_literal(literal, &substitution))
                     .collect();
-                if condense_clause(&expected).len() < goal_condensed.len() {
+                let condensed_expected = condense_clause(&expected);
+                if clause_alpha_equiv(&expected, &goal)
+                    || clause_alpha_equiv(&condensed_expected, &goal_condensed)
+                {
+                    return KernelVerdict::Certified;
+                }
+                if condensed_expected.len() < goal_condensed.len() {
                     continue;
                 }
-                stack.push(expected);
+                queue.push_back(expected);
             }
         }
     }
@@ -10436,6 +10453,28 @@ fn replace_lit_subterm(literal: &mut Literal, path: &[usize], replacement: Term)
 /// exactly, so a wrong or incomplete trace can only produce `Inconclusive` —
 /// it never certifies.
 fn replay_recorded_demodulation(
+    parents: &[Formula],
+    target: &[Literal],
+    goal: &[Literal],
+    steps: &[DemodStepRef],
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    let verdict = replay_recorded_demodulation_inner(parents, target, goal, steps, limits);
+    if matches!(verdict, KernelVerdict::Certified) {
+        return verdict;
+    }
+    let condensed_target = condense_clause(target);
+    if condensed_target.len() < target.len() {
+        let retry_verdict =
+            replay_recorded_demodulation_inner(parents, &condensed_target, goal, steps, limits);
+        if matches!(retry_verdict, KernelVerdict::Certified) {
+            return retry_verdict;
+        }
+    }
+    verdict
+}
+
+fn replay_recorded_demodulation_inner(
     parents: &[Formula],
     target: &[Literal],
     goal: &[Literal],
@@ -17843,6 +17882,26 @@ mod tests {
     }
 
     #[test]
+    fn recorded_demodulation_replay_with_condensed_parent() {
+        // COM149+1 c2151 shape: the target clause contains a duplicated literal
+        // from resolution (e.g. `p(f(X)) | p(f(X)) | spl_0`). The prover simplifies/condenses
+        // it before rewriting, so recorded step indexes into the condensed clause.
+        let problem = "fof(rule, axiom, ![X] : g = f(X)).\n\
+                       fof(target, axiom, p(f(a)) | p(f(a)) | spl_0).\n\
+                       fof(neg, axiom, ~p(g)).\n\
+                       fof(nospl, axiom, ~spl_0).";
+        let proof = "fof(rule, axiom, ![X] : g = f(X), file('problem.p', rule)).\n\
+                     fof(target, axiom, p(f(a)) | p(f(a)) | spl_0, file('problem.p', target)).\n\
+                     fof(s, plain, p(g) | spl_0, inference(demodulation, [status(thm), \
+                       demodulation_steps(rule(1, 0, [0]))], [target,rule])).\n\
+                     fof(n, axiom, ~p(g), file('problem.p', neg)).\n\
+                     fof(nospl, axiom, ~spl_0, file('problem.p', nospl)).\n\
+                     fof(half, plain, spl_0, inference(resolution, [status(thm)], [s,n])).\n\
+                     cnf(bot, plain, $false, inference(resolution, [status(thm)], [half,nospl])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
     fn recorded_demodulation_replay_rejects_an_unsatisfied_condition() {
         // A condition literal absent from the conclusion would be a hidden
         // assumption: the rule could only fire because the guard held, and the
@@ -20133,6 +20192,22 @@ mod tests {
                      fof(s, plain, ~is_v(X) | q(X), inference(factoring, [status(thm)], [a])).\n\
                      fof(mid, plain, q(a), inference(resolution, [status(thm)], [s,n1])).\n\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [mid,n2])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_wide_clause_factoring_step() {
+        // GEO340+1 c102813 shape: multi-literal clause with repeated predicate literals.
+        let problem = "fof(a, axiom, p(X, Y) | p(Y, a) | q(X) | q(Y)).\n\
+                       fof(n1, axiom, ~p(a, a)).\n\
+                       fof(n2, axiom, ~q(a)).";
+        let proof = "fof(a, axiom, p(X, Y) | p(Y, a) | q(X) | q(Y), file('problem.p', a)).\n\
+                     fof(n1, axiom, ~p(a, a), file('problem.p', n1)).\n\
+                     fof(n2, axiom, ~q(a), file('problem.p', n2)).\n\
+                     fof(s, plain, p(a, a) | q(a) | q(a), inference(factoring, [status(thm)], [a])).\n\
+                     fof(mid, plain, q(a) | q(a), inference(resolution, [status(thm)], [s, n1])).\n\
+                     fof(mid2, plain, q(a), inference(factoring, [status(thm)], [mid])).\n\
+                     fof(bot, plain, $false, inference(resolution, [status(thm)], [mid2, n2])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 

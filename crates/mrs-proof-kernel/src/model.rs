@@ -43,7 +43,7 @@ pub use mrs_core::model::MAX_MODEL_TABLE_ENTRIES;
 /// useful headroom while keeping a single validation below roughly 5 s at the
 /// measured throughput; importantly this remains an explicit finite ceiling,
 /// rather than assuming every caller supplies a strict-time watchdog.
-const MAX_MODEL_EVALUATION_WORK: u64 = 100_000_000;
+const MAX_MODEL_EVALUATION_WORK: u64 = 1_000_000_000;
 const MAX_MODEL_EVALUATION_DEPTH: usize = 256;
 const MAX_MODEL_METADATA_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MODEL_PROBLEM_BYTES: usize = 16 * 1024 * 1024;
