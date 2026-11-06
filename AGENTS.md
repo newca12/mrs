@@ -430,6 +430,17 @@ The question is whether those division schedules are optimal for 8 cores.
 > single-run result on an unpinned 16-core host (54,198 MB effective memory,
 > 25 memory resource-outs); it is supplemental, not a standardized baseline (see
 > `docs/reports/benchmarks/ueq-2026-10.md`).
+> A November 5 CASC-30 FEQ explicit portfolio `[1,2,6,8,10,11,12,15]` returned
+> 110 raw theorems, but its bundled audit certified 96; 12 outputs have no proof
+> body, one is `Unknown`, and one hit the archived 120-second verifier limit.
+> A November 6 current-checker replay certified 98 against a different corpus
+> digest, so it does not revise the archive's 96/400 result. The producer
+> binary was reported stale, the tree was dirty, three jobs ended in
+> cause-unconfirmed `SIGKILL`s, and the 8-core host had less than the 128-GiB
+> allowance. Raw solve-set differences from Nov 3 and the October 8-core
+> candidate are single-run observations, not schedule effects or promotion
+> evidence. See
+> `docs/reports/benchmarks/feq-casc30-explicit-portfolio-2026-11-05.md`.
 > Never present the raw 257/400 or 222/300 figures as valid scores: they are
 > unsound/unverified legacy status counts and are superseded.
 

@@ -738,6 +738,30 @@ problem rows are unique; raw output and present proof hashes match, and the
 [FEQ candidate report](reports/benchmarks/feq-candidate-portfolio-2026-10.md)
 and [`results/README.md`](results/README.md).
 
+### Supplemental CASC-30 FEQ explicit-portfolio run (2026-11-05)
+
+The complete 400-row run used `[1,2,6,8,10,11,12,15]`, eight workers,
+`MRS_HARDWARE=casc`, no cross-strategy sharing, and the official 240-second
+limit. It returned 110 raw `Theorem` statuses, 238 `Timeout`, 49 `GaveUp`, and
+3 `Error` rows. The bundled strict audit recorded **96 `VerifiedGood`**,
+0 `VerifiedBad`, one `Unknown` (`COM149+1`), one verifier timeout (`ALG049+1`
+under its 120-second limit), and 12 `no_proof` outputs. The run log warns that
+the release binary was older than sources; the three errors were exit 137 /
+`SIGKILL` with unconfirmed cause. The 8-core host had 95,969 MB RAM and
+81,573 MB effective memory, below the 128-GiB CASC allowance.
+
+A November 6 review-time replay with the current checker and a 240-second
+strict limit verified 98 proofs, including `COM149+1` and `ALG049+1`. However,
+the replay's corpus digest (`9a9cabd1…77570a`) differs from the bundled audit's
+(`bb153a22…b6f16`), so this is not an identity-matched re-audit and does not
+replace the archive's 96/400 count. By raw problem-name sets, the Nov 5 run
+shares 107 theorems with the Nov 3 full-run FEQ rows (3 Nov 5-only, 5 Nov
+3-only), and 105 with the October 8-core candidate (5 candidate-only, 6
+October-only). The portfolios were run on different dirty builds; these are
+not controlled estimates or grounds to promote the candidate. See the
+[campaign report](reports/benchmarks/feq-casc30-explicit-portfolio-2026-11-05.md)
+and [`results/README.md`](results/README.md).
+
 ### Fresh CASC-30 UEQ campaigns (2026-10-20 and 2026-10-21)
 
 Two consecutive full 300-problem runs were evaluated on canonical 8-core hardware (`mtsdev02`):

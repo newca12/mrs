@@ -61,6 +61,16 @@ outcome does not qualify them as full CASC-30/ICU campaigns for this inventory.
 > not a complete current inventory for these runs. Recompute full signatures
 > before adding campaign keys, rather than appending only pairwise differences.
 
+> **CASC-30 FEQ refresh pending (2026-11-06):** The complete November 5
+> portfolio `[1,2,6,8,10,11,12,15]` is not folded into the signature table.
+> Its bundled audit records 96 `VerifiedGood` proofs, 12 `no_proof` outputs,
+> one `Unknown`, and one verifier timeout. A review-time replay returned 98
+> `VerifiedGood`, but its corpus digest differs from the bundled audit's, so it
+> does not repair the campaign's input identity. Raw problem-name comparisons
+> are documented in the [campaign report](../reports/benchmarks/feq-casc30-explicit-portfolio-2026-11-05.md);
+> recompute full signatures after reconciling corpus identity rather than
+> appending only those pairwise differences.
+
 > **CASC-30 EPU refresh pending (2026-11-06):** Two complete Nov 6 EPU archives
 > include bundled row-level strict audits: portfolio `[1,6,5,11,4,2,3,7]`
 > certified 13/100, and `[1,6,14,5,11,4,2,3]` certified 12/100. Their
