@@ -1386,18 +1386,28 @@ fn parse_cmd_template(template: &str, file: &Path, timeout: u64) -> Vec<String> 
 }
 
 fn detect_hardware() -> String {
-    let mut sys = System::new_all();
-    sys.refresh_all();
+    let (cpu_name, cores, memory_gb) = System::new_all()
+        .map(|mut sys| {
+            sys.refresh_all();
 
-    let cpus = sys.cpus();
-    let cpu_name = cpus
-        .first()
-        .map(|c| c.brand())
-        .unwrap_or("Unknown CPU")
-        .trim();
-    let cores = System::physical_core_count().unwrap_or(cpus.len());
-    let memory_gb = (sys.total_memory() as f64 / (1024.0 * 1024.0 * 1024.0)).round();
-    let os = System::name().unwrap_or_else(|| "Unknown OS".to_string());
+            let cpus = sys.cpus();
+            let cpu_name = cpus
+                .first()
+                .map(|cpu| cpu.brand().trim().to_string())
+                .unwrap_or_else(|| "Unknown CPU".to_string());
+            let cores = System::physical_core_count().unwrap_or(cpus.len());
+            let memory_gb = (sys.total_memory() as f64 / (1024.0 * 1024.0 * 1024.0)).round();
+
+            (cpu_name, cores, memory_gb)
+        })
+        .unwrap_or_else(|_| {
+            (
+                "Unknown CPU".to_string(),
+                System::physical_core_count().unwrap_or_default(),
+                0.0,
+            )
+        });
+    let os = System::name().unwrap_or_else(|_| "Unknown OS".to_string());
     let os_ver = System::os_version().unwrap_or_default();
 
     format!(
