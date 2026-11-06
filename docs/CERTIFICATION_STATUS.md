@@ -1177,6 +1177,29 @@ two randomized paired blocks, strict audits, and a held-out check. See the
 [EPU report](reports/benchmarks/epu-2026-09.md#2026-11-05-explicit-portfolio-screen-supplemental)
 for the solve times, EPR fallbacks, and audit details.
 
+### CASC-30 EPS rerun with portfolio launch failures (2026-11-06; supplemental)
+
+The archive `campaign-casc-30-eps-W8CASCHJ1-01-1_6_5_11_4_2_3_7_20261106`
+completed all 100 rows: **44 `Satisfiable`, 56 `GaveUp`**. Its original strict
+audit reports 40/44 certified models, 0 invalid, and 4 inconclusive checks.
+
+This was not a portfolio measurement. The EPS wrapper reserves one of the eight
+total workers for certification and starts the ordinary portfolio with seven,
+but `MRS_PORTFOLIO` contained eight IDs. All 100 portfolio subprocesses exited
+before search with the CLI's portfolio validation error; the recorded statuses
+came from the certified track. The producer tree was dirty at `c021be5`, the
+run log warns that its binary was stale, and the 96,350 MB host could not meet
+the 128-GiB `casc` memory allowance.
+
+A full current-kernel audit at `8d10380` accepted all 44 model files with no
+invalid models when run against the local CASC-30 corpus. This is not an
+identity-matched replacement for the archive's 40/44 count: the archive audit
+records corpus SHA-256 `bb153a22…b6f16`, while the local follow-up used
+`9a9cabd1…77570a`. Retain the archive's own audit result until its producer
+corpus is available for a matching re-audit. This supplemental run neither
+changes the EPS portfolio policy nor establishes a new baseline. See the
+[EPS report](reports/benchmarks/eps-2026-09.md#casc-30-eps-run-with-portfolio-validation-failures-2026-11-06-supplemental).
+
 ### CASC-30 all-division attempt interrupted during ICU (2026-11-03)
 
 The archive
@@ -1204,9 +1227,11 @@ results are:
 | ICU | 32 / 101 | 2 `Theorem` | 2 `VerifiedGood`; 69 jobs missing |
 
 The EPS model-checking outcomes above are from the recorded audit before the
-2026-11-06 increase of the model-work ceiling to 10⁹. The four inconclusive
-models have not been re-audited under that ceiling; keep the observed count at
-40 until a fresh audit reports otherwise. See the [campaign report](reports/benchmarks/cert-30-2026-11-03.md)
+2026-11-06 increase of the model-work ceiling to 10⁹. The four model files from
+this Nov 3 archive have not been re-audited against an identity-matched copy of
+its corpus; retain 40/44 for this archive's recorded audit. The separate Nov 6
+follow-up above concerns another run archive and a local corpus with a different
+digest, so it does not revise this table. See the [campaign report](reports/benchmarks/cert-30-2026-11-03.md)
 and the [model-work policy update](reports/benchmarks/eps-2026-09.md).
 
 Compared with a current-kernel re-audit of the October 30 saved proofs (308
