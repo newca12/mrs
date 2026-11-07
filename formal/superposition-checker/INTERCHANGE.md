@@ -51,7 +51,11 @@ APIs:
   include selection only to formulas imported from that target file, then merges
   the selected closure and clears directives before formal-adapter entry. Loader
   tests cover nested selection. The resolver/parser remain trusted host code;
-  the Verus bridge itself rejects residual include directives.
+  the Verus bridge itself rejects residual include directives. Before lowering,
+  both problem and proof snapshots now check formula count, name, role, and full
+  canonical formula text (including inference annotations) after AST serialization
+  and reparsing. This is a fail-closed host-side consistency check, not a verified
+  refinement from original input bytes.
 
 The CLI example reads standalone files; unresolved includes return Unknown.
 These APIs do not change the default strict kernel or prover output behavior.

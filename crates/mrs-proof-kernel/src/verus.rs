@@ -3736,17 +3736,7 @@ fn resolved_problem_snapshot(
         }
     }
     let owned = mrs_tptp::owned::parse_tptp_owned(source).map_err(|e| e.to_string())?;
-    if owned.problem().formulas.len() != problem.formulas.len() {
-        return Err("problem snapshot did not preserve every formula".into());
-    }
-    for (original, reparsed) in problem.formulas.iter().zip(&owned.problem().formulas) {
-        if original.name() != reparsed.name()
-            || original.role() != reparsed.role()
-            || original.to_string() != reparsed.to_string()
-        {
-            return Err("problem snapshot changed formula identity or syntax".into());
-        }
-    }
+    validate_snapshot_formulas(problem, owned.problem(), "problem")?;
     let mut names = HashSet::new();
     if !owned
         .problem()
@@ -3757,6 +3747,27 @@ fn resolved_problem_snapshot(
         return Err("duplicate formula name in resolved problem closure".into());
     }
     Ok(owned)
+}
+
+fn validate_snapshot_formulas(
+    original: &mrs_tptp::TPTPProblem<'_>,
+    reparsed: &mrs_tptp::TPTPProblem<'_>,
+    kind: &str,
+) -> Result<(), String> {
+    if reparsed.formulas.len() != original.formulas.len() {
+        return Err(format!("{kind} snapshot did not preserve every formula"));
+    }
+    for (before, after) in original.formulas.iter().zip(&reparsed.formulas) {
+        if before.name() != after.name()
+            || before.role() != after.role()
+            || before.to_string() != after.to_string()
+        {
+            return Err(format!(
+                "{kind} snapshot changed formula identity or syntax"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn owned_snapshot(
@@ -3774,10 +3785,48 @@ fn owned_snapshot(
         }
     }
     let owned = mrs_tptp::owned::parse_tptp_owned(source).map_err(|e| e.to_string())?;
-    if owned.problem().formulas.len() != problem.formulas.len() {
-        return Err("proof snapshot did not preserve every formula".into());
+    if !owned.problem().includes.is_empty() {
+        return Err("proof snapshot introduced unresolved includes".into());
     }
+    validate_snapshot_formulas(problem, owned.problem(), "proof")?;
     Ok(owned)
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn proof_snapshot_requires_exact_formula_and_inference_preservation() {
+        let proof = mrs_tptp::parse_tptp(
+            "cnf(left,axiom,p(a)). cnf(right,axiom,~p(a)). \
+             cnf(step,plain,$false,inference(resolution,[status(thm)],[left,right])).",
+        )
+        .unwrap();
+        let snapshot = owned_snapshot(&proof).expect("lossless proof snapshot");
+        validate_snapshot_formulas(&proof, snapshot.problem(), "proof")
+            .expect("snapshot preserves all formulas");
+
+        let changed_parent = mrs_tptp::parse_tptp(
+            "cnf(left,axiom,p(a)). cnf(right,axiom,~p(a)). \
+             cnf(step,plain,$false,inference(resolution,[status(thm)],[left,forged])).",
+        )
+        .unwrap();
+        assert_eq!(proof.formulas[2].name(), changed_parent.formulas[2].name());
+        assert_eq!(proof.formulas[2].role(), changed_parent.formulas[2].role());
+        assert!(
+            validate_snapshot_formulas(&proof, &changed_parent, "proof")
+                .unwrap_err()
+                .contains("changed formula identity or syntax")
+        );
+
+        let dropped = mrs_tptp::parse_tptp("cnf(left,axiom,p(a)).").unwrap();
+        assert!(
+            validate_snapshot_formulas(&proof, &dropped, "proof")
+                .unwrap_err()
+                .contains("did not preserve every formula")
+        );
+    }
 }
 
 fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowReport {
