@@ -153,6 +153,17 @@ that no interchange or caller exists are superseded by this update.
   does not verify TPTP parsing, source-byte-to-AST lowering, include resolution,
   certificate discovery or process orchestration.
 
+### 2026-11-07 TPTP unsupported-type fail-closed checkpoint
+
+- **DONE (M5 host-side guard):** the Verus DAG adapter rejects any proof containing
+  a TPTP `type`-role formula before the shared strict-kernel DAG builder can skip
+  it as metadata. This keeps the adapter's documented CNF-only subset fail-closed.
+- **DONE:** a direct `dag_request` regression supplies a valid CNF refutation plus
+  a TFF type declaration and requires an unsupported result instead of an IR DAG
+  that silently omits the declaration.
+- **Scope:** this guard does not verify the parser or lowering; typed inputs remain
+  unsupported and the TPTP bridge remains trusted.
+
 ### 2026-10-27 multi-literal clause equality transitivity and zero-parent inference checkpoint
 
 - **DONE:** proved `clause_transitivity_sound` in `first_order_core.rs`: from any universally valid parent

@@ -2874,6 +2874,13 @@ fn dag_request(
     if problem.formulas.len() > MAX_NODES || proof.formulas.len() > MAX_NODES {
         return Err("DAG node ceiling".into());
     }
+    if proof
+        .formulas
+        .iter()
+        .any(|formula| formula.role() == FormulaRole::Type)
+    {
+        return Err("TPTP type declarations in proofs are unsupported by the Verus bridge".into());
+    }
     let mut signatures = HashMap::new();
     let dag = build_dag(proof, limits).map_err(|v| v.to_string())?;
     let mut symbols = SymbolTable::new();
@@ -3825,6 +3832,34 @@ mod snapshot_tests {
             validate_snapshot_formulas(&proof, &dropped, "proof")
                 .unwrap_err()
                 .contains("did not preserve every formula")
+        );
+    }
+}
+
+#[cfg(test)]
+mod dag_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn dag_bridge_rejects_proof_type_declarations_instead_of_skipping_them() {
+        let problem = mrs_tptp::parse_tptp("cnf(a,axiom,p). cnf(b,axiom,~p). ").unwrap();
+        let proof = mrs_tptp::parse_tptp(
+            "tff(p_type,type,p:$o). \
+             cnf(a,axiom,p,file('input',a)). \
+             cnf(b,axiom,~p,file('input',b)). \
+             cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,b])).",
+        )
+        .unwrap();
+        let error = dag_request(
+            &problem,
+            &proof,
+            Some("input"),
+            VerificationLimits::default(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("type declarations in proofs are unsupported"),
+            "{error}"
         );
     }
 }
