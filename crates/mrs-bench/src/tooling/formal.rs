@@ -140,14 +140,34 @@ fn contains_unchecked_proof_escape(line: &str) -> bool {
 pub fn audit_source(args: AuditSourceArgs) -> ToolResult<()> {
     let directory = args.source_dir.unwrap_or_else(formal_dir);
     let manifest = directory.join("supported-rules.json");
-    let mut sources = fs::read_dir(&directory)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+    let verify_script = fs::read_to_string(directory.join("verify.sh"))?.replace("\\\n", " ");
+    let mut sources = walkdir::WalkDir::new(&directory)
+        .into_iter()
+        .map(|entry| entry.map(|entry| entry.into_path()))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
         .collect::<Vec<_>>();
     sources.sort();
     let mut failures = Vec::new();
     for path in sources {
+        let relative_path = path
+            .strip_prefix(&directory)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source_argument = format!("$(dirname \"$0\")/{relative_path}");
+        let verified = verify_script.lines().any(|line| {
+            let line = line.trim_start();
+            !line.starts_with('#')
+                && line.contains("run_check \"$VERUS_BIN\"")
+                && line.contains("--no-cheating")
+                && line.contains(&source_argument)
+        });
+        if !verified {
+            failures.push(format!(
+                "{relative_path}: missing strict Verus verification in verify.sh"
+            ));
+        }
         let contents = fs::read_to_string(&path)?;
         for (line_number, line) in contents.lines().enumerate() {
             if contains_unchecked_proof_escape(line) {
@@ -771,6 +791,46 @@ mod tests {
         ));
         assert!(!contains_unchecked_proof_escape("assumption(false);"));
         assert!(!contains_unchecked_proof_escape("// assume(false)"));
+    }
+
+    #[test]
+    fn source_audit_requires_every_rust_file_in_verify_script() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("supported-rules.json"), "{}").unwrap();
+        fs::write(directory.path().join("checked.rs"), "fn checked() {}\n").unwrap();
+        fs::create_dir_all(directory.path().join("nested")).unwrap();
+        fs::write(
+            directory.path().join("nested/unverified.rs"),
+            "fn unverified() {}\n",
+        )
+        .unwrap();
+        let verify_script = directory.path().join("verify.sh");
+        fs::write(
+            &verify_script,
+            r#"run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/checked.rs"
+"#,
+        )
+        .unwrap();
+        let args = AuditSourceArgs {
+            source_dir: Some(directory.path().to_path_buf()),
+        };
+        let error = audit_source(args).unwrap_err().to_string();
+        assert!(error.contains("nested/unverified.rs"), "{error}");
+
+        fs::write(
+            &verify_script,
+            r#"run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/checked.rs"
+run_check "$VERUS_BIN" --no-cheating --triggers-mode silent \
+  "$(dirname "$0")/nested/unverified.rs"
+"#,
+        )
+        .unwrap();
+        assert!(
+            audit_source(AuditSourceArgs {
+                source_dir: Some(directory.path().to_path_buf()),
+            })
+            .is_ok()
+        );
     }
 
     #[test]

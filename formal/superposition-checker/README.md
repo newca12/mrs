@@ -46,9 +46,10 @@ Set `VERUS=/path/to/verus` to verify with an already installed binary.
 The scripts build the shared `mrs-tools` binary with Cargo when it is not already
 available; set `MRS_TOOLS_BIN` to reuse a prebuilt binary.
 
-The verification script also runs `mrs-tools audit-verus-source`; it fails closed if
-formal Rust sources contain `assume`, `admit`, `external_body`, or verifier
-allow attributes. Each proof module is additionally verified with Verus's
+The verification script also runs `mrs-tools audit-verus-source`; it recursively
+checks formal Rust sources for `assume`, `admit`, `external_body`, and verifier
+allow attributes, and fails if any `.rs` file under the checker directory is absent
+from the strict `verify.sh` module list. Each proof module is additionally verified with Verus's
 `--no-cheating` option, which rejects verifier-recognized escape hatches
 including `assume_specification`, even if they evade a lexical audit. See
 [`ASSURANCE.md`](ASSURANCE.md) and

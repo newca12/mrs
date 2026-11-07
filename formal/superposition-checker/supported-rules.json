@@ -160,6 +160,8 @@
     "ordered_calculus_conditions": false,
     "ac_reasoning": false,
     "tstp_parser": false,
+    "formal_source_audit_recursive": true,
+    "formal_rs_modules_require_strict_verify": true,
     "proof_dag_certification": true,
     "dag_requires_root_ancestor_closure": true,
     "dag_closure_work_bounded": true,
