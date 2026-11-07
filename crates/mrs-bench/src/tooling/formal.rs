@@ -390,6 +390,47 @@ fn replace_one(source: &str, anchor: &str, replacement: &str, label: &str) -> To
     Ok(source.replacen(anchor, replacement, 1))
 }
 
+fn enclosing_function_name(source: &str, position: usize) -> ToolResult<String> {
+    let prefix = source
+        .get(..position)
+        .ok_or("mutation anchor is not on a UTF-8 boundary")?;
+    let mut enclosing = None;
+    for line in prefix.lines() {
+        let line = line.trim_start();
+        let tokens: Vec<_> = line.split_whitespace().collect();
+        let Some(fn_index) = tokens.iter().position(|token| *token == "fn") else {
+            continue;
+        };
+        if !tokens[..fn_index].iter().all(|token| {
+            matches!(
+                *token,
+                "pub"
+                    | "proof"
+                    | "spec"
+                    | "open"
+                    | "closed"
+                    | "broadcast"
+                    | "tracked"
+                    | "unsafe"
+                    | "async"
+            ) || token.starts_with("pub(")
+        }) {
+            continue;
+        }
+        let Some(declaration) = tokens.get(fn_index + 1) else {
+            continue;
+        };
+        let name = declaration
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .next()
+            .unwrap_or_default();
+        if !name.is_empty() {
+            enclosing = Some(name.to_owned());
+        }
+    }
+    enclosing.ok_or_else(|| format!("no enclosing function for mutation at byte {position}").into())
+}
+
 fn run_runtime_mutation(
     verus: &Path,
     original: &str,
@@ -403,6 +444,53 @@ fn run_runtime_mutation(
     let source_path = temp.join(&case.source_file);
     let binary_path = temp.join(&case.binary_name);
     fs::write(&source_path, mutated)?;
+
+    if case.compile_failure_all.is_some() || case.compile_failure_any.is_some() {
+        let first_edit = case.edits.first().ok_or("runtime mutation has no edits")?;
+        let anchor_position = original
+            .find(&first_edit.anchor)
+            .ok_or("runtime mutation anchor is missing")?;
+        let function = enclosing_function_name(original, anchor_position)?;
+        let mut command = Command::new(verus);
+        if case.no_cheating {
+            command.arg("--no-cheating");
+        }
+        command
+            .args([
+                "--triggers-mode",
+                "silent",
+                "--rlimit",
+                CORE_SMT_RLIMIT,
+                "--verify-root",
+                "--verify-function",
+            ])
+            .arg(function)
+            .arg(&source_path);
+        let output = run_capture(
+            &mut command,
+            None,
+            Duration::from_secs(case.timeout_compile_s),
+        )?;
+        let text = output_text(&output);
+        let expected = case
+            .compile_failure_all
+            .as_ref()
+            .is_some_and(|needles| needles.iter().all(|needle| text.contains(needle)))
+            || case
+                .compile_failure_any
+                .as_ref()
+                .is_some_and(|needles| needles.iter().any(|needle| text.contains(needle)));
+        if !output.status.success() && expected {
+            println!("mutation rejected at compile: {}", case.name);
+            return Ok(());
+        }
+        return Err(format!(
+            "{} compile-failure mutant did not fail for the expected reason:\n{text}",
+            case.name
+        )
+        .into());
+    }
+
     let mut command = Command::new(verus);
     if case.no_cheating {
         command.arg("--no-cheating");
@@ -430,18 +518,6 @@ fn run_runtime_mutation(
     )?;
     let compile_text = output_text(&compile);
     if !compile.status.success() {
-        if let Some(required) = &case.compile_failure_all
-            && required.iter().all(|needle| compile_text.contains(needle))
-        {
-            println!("mutation rejected at compile: {}", case.name);
-            return Ok(());
-        }
-        if let Some(allowed) = &case.compile_failure_any
-            && allowed.iter().any(|needle| compile_text.contains(needle))
-        {
-            println!("mutation rejected at compile: {}", case.name);
-            return Ok(());
-        }
         return Err(format!(
             "{} mutant failed to compile unexpectedly:\n{compile_text}",
             case.name
@@ -548,13 +624,26 @@ pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
                     &mutation.name,
                 )
                 .map_err(|error| error.to_string())?;
+                let anchor_position = source
+                    .find(&mutation.anchor)
+                    .ok_or_else(|| format!("{}: mutation anchor disappeared", mutation.name))?;
+                let function = enclosing_function_name(&source, anchor_position)
+                    .map_err(|error| error.to_string())?;
                 let path = temp
                     .path()
                     .join(format!("first_order_core_mutated_{index}.rs"));
                 fs::write(&path, mutated).map_err(|error| error.to_string())?;
                 let output = run_capture(
                     Command::new(&verus)
-                        .args(["--triggers-mode", "silent", "--num-threads", "1"])
+                        .args([
+                            "--triggers-mode",
+                            "silent",
+                            "--num-threads",
+                            "1",
+                            "--verify-root",
+                            "--verify-function",
+                        ])
+                        .arg(function)
                         .arg(&path),
                     None,
                     Duration::from_secs(300),
@@ -688,9 +777,16 @@ mod tests {
     fn verifier_mutation_inventory_is_unique_and_complete() {
         let mutations: Vec<VerifierMutation> = serde_json::from_str(VERIFIER_MUTATIONS).unwrap();
         assert_eq!(mutations.len(), 58);
+        let source = formal_source();
         for mutation in mutations {
+            let position = source.find(&mutation.anchor).unwrap();
+            assert!(
+                !enclosing_function_name(&source, position)
+                    .unwrap()
+                    .is_empty()
+            );
             assert_eq!(
-                formal_source().matches(&mutation.anchor).count(),
+                source.matches(&mutation.anchor).count(),
                 1,
                 "{}",
                 mutation.name

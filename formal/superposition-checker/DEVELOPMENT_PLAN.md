@@ -96,7 +96,7 @@ that no interchange or caller exists are superseded by this update.
   of 8 work units and exhausts at 7; a compiled mutation removing the scan charge
   must fail this regression.
 - **Scope:** closes this nested replay scan undercount. The global exact-work audit
-  remains open; `dag_exact_cumulative_replay_work` stays false.
+  is recorded in the completion checkpoint below.
 
 ### 2026-11-07 Verus gate resource and parallelism checkpoint
 
@@ -110,7 +110,24 @@ that no interchange or caller exists are superseded by this update.
   mutations also have unique temporary source/binary names, enforced by a unit test.
   The four-worker run passed all 58 verifier-negative and 49 compiled-runtime cases.
 - **Scope:** reduces serial mutation-gate time and prevents solver-limit false
-  positives. It does not complete the exact cumulative work audit.
+  positives; the completed work-accounting scope is stated below.
+
+### 2026-11-07 cumulative replay work audit completion
+
+- **DONE (M2–M4 checker boundary):** audited the executable paths from
+  `certify_dag_with_work` and `check_superposition_and_replay_with_work` through
+  nested replay helpers. One caller-owned counter covers DAG structural
+  preflight, root closure, topological node validation, local rule replay and
+  derived DAG nodes. No `_with_work` helper resets it.
+- **DONE:** every data-dependent recursive traversal/materialization, collection
+  scan, graph edge/node pass and repeated exact comparison is charged in the
+  checker-defined work-unit model. Repeated certificate comparisons charge both
+  full operands; input-leaf candidate scans do likewise. The 128/127 structural,
+  8/7 transitivity fallback, local rule cutoffs, composed DAG cutoffs and compiled
+  charge-removal/counter-reset mutations exercise these boundaries.
+- **Scope:** `dag_exact_cumulative_replay_work=true` covers this bounded IR checker
+  in its defined work units. It is not a machine-instruction cost model and does
+  not include the trusted TPTP lowering/process bridge or establish completeness.
 
 ### 2026-10-27 multi-literal clause equality transitivity and zero-parent inference checkpoint
 
@@ -684,13 +701,11 @@ the item itself is explicitly marked `ABANDONED`.
 | M6 — Broader rules | **PARTIAL** | Nullary-predicate, exact-atom (including symmetric equality pivots), first-order resolution with unifier (including symmetric equality pivots), equality resolution, clause factoring, equality factoring, subsumption resolution, clause weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology are verified and DAG-dispatched; AC, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
-**M2/M4 update (2026-11-07):** structural preflight exact comparisons between
-inference-certificate clauses and cited parents/conclusions now share the DAG's
-caller-owned meter and charge both operands each time. The 128-unit superposition
-fixture and compiled mutation gate this local contract. The 2026-11-07 transitivity
-fallback-scan checkpoint adds an 8/7 work cutoff and compiled charge-removal mutation
-for non-equality literals skipped during the unchanged-clause search. These close two
-identified undercounts but do not finish the nested-helper or derived-replay audit.
+**M2–M4 resource-accounting completion (2026-11-07):** the source-level audit and
+the successful full verification/mutation gate discharge the table's earlier exact
+cumulative work-meter remaining-gate statements. The manifest now records this as
+complete in checker-defined work units, not machine instructions. Other M2–M4
+limitations in the table remain open.
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
 passes all four Verus files (currently `5`, `570`, `5`, and `5` verified functions
@@ -1081,8 +1096,9 @@ input format remain outside the current support claim.
   mappings over the supplied variable list. The bounded collector proves exact
   variable-set membership against `literal_variables(view_clause(...))`; its
   bridge to the parallel executable `exec_clause_variables` set, first-occurrence
-  ordering, successful variable-only binding postconditions, and cumulative work
-  accounting remain. Successful freshening also directly guarantees that every
+  ordering and successful variable-only binding postconditions are proved.
+  Cumulative work accounting is completed by the 2026-11-07 audit below.
+  Successful freshening also directly guarantees that every
   variable in the supplied list has a variable-valued lookup result.
 - **PARTIAL, executable slice:** the step-certificate IR requires independent
   source/target variable maps. It checks bounded freshening and unifier
@@ -1105,10 +1121,10 @@ input format remain outside the current support claim.
   unifier acceptance exposes that guard. Replay also caps the combined parent
   and conclusion literal counts before materializing standardized clauses and
   its output. A structural traversal additionally caps the aggregate nodes in
-  parent/conclusion terms and substitution replacements before replay. Work
-  across separate checks and derived replay is not cumulatively accounted.
-  Local semantic soundness and whole-DAG IR certification are now proved;
-  cumulative accounting remains open.
+  parent/conclusion terms and substitution replacements before replay. This
+  earlier status predates the 2026-11-07 audit, which now composes work across
+  nested replay and derived DAG nodes. Local semantic soundness and whole-DAG IR
+  certification are proved.
 - **DONE, semantic proof connection:** the replay refuses target paths that differ
   before/after standardization. `replay_semantic_premises` connects checked
   unifier application and replacement to the theorem. Arbitrary-index parent
@@ -1321,34 +1337,33 @@ freshness conditions must also be justified by the calculus contract.
   regressions cover a disconnected but otherwise valid input leaf and
   zero-budget exhaustion.
 - **PARTIAL, phase budget partition:** `certify_dag` reserves disjoint portions
-  of the caller's work ceiling for structural preflight, root-closure checking
-  and per-node replay. This prevents adding unbounded graph-wide repetitions of
-  a locally bounded check. Some local replay helpers still account work with
-  separate counters, so this is not yet an exact cumulative operation budget.
-- **PARTIAL, within-node composition:** `validate_dag_node` charges parent-edge
-  validation and node structure before passing only the remaining share to the
-  superposition/resolution checker. Deep helper calls still use local bounded
-  counters rather than one shared mutable meter; the exact sum of all primitive
-  visits remains unproved.
+  one caller-owned work counter through structural preflight, root-closure
+  checking and per-node replay rather than reserving replenishable phase shares.
+  The 2026-11-07 completion audit confirms exact cumulative use of the checker-
+  defined units across those phases and nested helpers.
+- **DONE, within-node composition:** `validate_dag_node_with_work` charges
+  parent-edge checks, node structure, cited-parent comparisons and local replay
+  on the same caller-owned meter. No nested replay helper resets it.
 - **DONE, repeated input-membership comparisons:** both structural preflight and
   per-node validation charge the node clause and each candidate input clause
   before every exact leaf-membership comparison. A runtime regression exercises
   three candidates, proves the exact 15-unit threshold, and fails at 14; a
   compiled mutation that removes the repeated node-clause charge is rejected.
-  This closes that repeated-comparison undercount only; it does not establish
-  exact accounting for all comparisons or nested replay work.
+  This closes the repeated input-membership comparison undercount; the full
+  comparison and nested-replay audit is recorded below.
 - **DONE, adversarial hygiene/position runtime cases:** standardized parent
   variable-ID collision is explicitly rejected; malformed descendant paths,
   mismatched raw/fresh paths, out-of-range atom slots and forged conclusions
   are also runtime-tested. A compiled mutation that removes the target-side
   standardization-apart freshness check fails the collision case. This is
-  targeted regression coverage; a complete resource meter and broad adversarial
-  corpus remain open.
+  targeted hygiene/position coverage; the resource meter is completed below, while
+  a broader adversarial corpus remains open.
 - **DONE, parent and comparison charges:** superposition DAG replay charges the
   node and cited parent structures before replay, then passes the remainder to
   `check_superposition_and_replay`. Resolution replay similarly charges the
-  node and both parent structures before exact replay. The count of literal
-  comparisons themselves is still not reflected in the primitive-visit meter.
+  node and both parent structures before exact replay. Every exact structural
+  comparison now charges both operands on each invocation, with a dedicated
+  structural-preflight cutoff and compiled mutation.
 - **DONE, zero-share fail-closed guard:** if integer budget partitioning would
   assign no work to a node, `certify_dag` returns `Unknown` before validation.
   Runtime cases exercise zero-work exhaustion and non-certification.
@@ -1359,10 +1374,14 @@ freshness conditions must also be justified by the calculus contract.
   proof certifies; appending an otherwise-valid unrelated input node is rejected;
   removing it restores certification. This directly exercises the runtime
   regression used by the root-closure mutation gate.
-- **Remaining:** general first-order resolution and other refutation rules,
-  production TPTP-to-IR validation, exact cumulative replay accounting within
-  local checks and broader rules/fixtures remain separate gates. M4 is still
-  partial.
+- **Remaining:** production TPTP-to-IR validation and broader supported-rule
+  fixtures remain separate gates. M4 is still partial for those integration and
+  coverage obligations, not for cumulative work accounting.
+
+**M4 resource-accounting completion (2026-11-07):** the exact cumulative work audit
+supersedes the earlier phase-partition, within-node, and remaining-accounting notes
+above. The gate is complete in checker-defined work units; it is not an
+instruction-level cost model.
 
 **Deliverables**
 
@@ -1587,8 +1606,8 @@ separate smoke-test modules. The general executable replay supports bounded
 recursive terms, supplied substitutions, multi-literal clauses and arbitrary
 selected positions, with exact ordered conclusion comparison and a universal
 validity-preservation theorem. It does not yet accept literal permutation or
-alpha-renamed conclusions, parse archived fixtures, or share an exact cumulative
-operation meter across all helper traversals.
+alpha-renamed conclusions or parse archived fixtures. Its accepted replay now
+shares the audited checker-defined cumulative work meter across helper traversals.
 
 The source implementation is broader than the Verus track: the MRS strict Rust
 kernel parses TPTP and checks many rules, but it is independently implemented
@@ -1629,17 +1648,18 @@ satisfiability/model claims, and unrestricted full TSTP.
   executable scan, and accepted certificates expose the domain-restricted
   renaming premise for every parent literal. The semantic position/resolvent
   soundness bridge is proved.
-- [ ] Complete exact cumulative resource accounting across nested replay
-  helpers, repeated comparisons and derived replay (M2–M4). The 2026-11-06
-  checkpoint meters repeated certificate-to-parent/conclusion comparisons during
-  structural preflight (128/127 cutoff); the 2026-11-07 checkpoint meters the
-  transitivity fallback scan (8/7 cutoff). Both have compiled charge-removal
-  mutations. Other nested-helper and derived-replay accounting remains under audit,
-  so the support manifest correctly leaves exact cumulative work open.
+- [x] Complete exact cumulative resource accounting across nested replay
+  helpers, repeated comparisons and derived replay (M2–M4). The DAG meter is
+  caller-owned from structural preflight through closure and every derived node;
+  nested replay helpers share it. The audit covers per-operand repeated comparison
+  charges, input-candidate scans, fallback scans, all supported local rule paths,
+  and compiled charge-removal/counter-reset mutations. Exactness is in
+  checker-defined work units, not machine instructions.
 - [x] Establish a shared local work counter within freshening validation for
   domain uniqueness, binding lookups/copies, avoid scans and injectivity checks;
   accept at 4 units and reject at 3, with a compiled mutation that removes the
-  lookup charge. Global accounting across collectors and replay remains open.
+  lookup charge. These operations are included in the completed cumulative
+  checker work-unit audit above.
 - [x] Extend that counter through clause-variable collection, coverage/membership
   scans, and source/target freshening in both superposition preflight and replay.
   The one-variable clause case accepts at 21 units and fails at 20 after metered

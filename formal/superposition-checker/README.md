@@ -150,8 +150,9 @@ superposition preflight regression checks its exact 128-unit cutoff and rejects 
 127; a compiled mutation that bypasses the source-parent comparison charge must fail.
 A multi-node refutation regression checks the exact whole-DAG cutoff,
 and compiled mutants reset the counter at each phase/node handoff. This establishes
-composition in the checker's bounded work units, not an instruction-level cost model;
-`dag_exact_cumulative_replay_work` remains false until that model is fully audited.
+exact cumulative use of the checker's bounded work units, not an instruction-level
+cost model. The M2–M4 traversal audit is complete and
+`dag_exact_cumulative_replay_work` is true for supported DAG certification.
 The standalone superposition checker
 now carries one counter from its structural charge through certificate preflight
 and replay: collection, freshening, unifier checks, both-parent substitution,
@@ -226,8 +227,9 @@ subsumption resolution, weakening, demodulation, clause instantiation,
 clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology in
 addition to superposition and exact-atom resolution. Every accepted replay is
 bound to its cited parents and conclusion and proves local universal-validity
-preservation. Compiled refutations certify from nonempty inputs; exact cumulative
-replay-work accounting and broader rules remain open.
+preservation. Compiled refutations certify from nonempty inputs. The cumulative
+work claim is exact in checker-defined units; it is not a machine-instruction cost
+model, and broader inference rules remain open.
 Exact and standardized first-order resolution also accept equality pivots in
 either ordered or swapped orientation.
 

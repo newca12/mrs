@@ -198,8 +198,10 @@ implicit; it must occur in the input problem and match an input node.
 
 Limits: 4 MiB request, 500,000 decoded numeric tokens (the producer uses at most
 400,000), 512 nodes/inputs, two parents, 64 literals per clause, term depth below
-64, 256 substitution bindings, 64 path entries, work at most 10,000,000. These
-are ceilings, not completeness claims or exact cumulative replay accounting.
+64, 256 substitution bindings, 64 path entries, work at most 10,000,000. The work
+ceiling is cumulative across DAG structural preflight, root closure and nested
+node replay in checker-defined work units; it is not an instruction-level cost
+model or a completeness claim.
 The tokenizer's Verus postcondition proves both the output token-count ceiling
 and the quantified byte-span-to-token-value correspondence (`wire_tokens_span_correspondence`).
 The MRS subprocess runner bounds output to 1 KiB and the wall clock to the
@@ -306,5 +308,6 @@ the node-meter handoff. Structural preflight uses the same bounded tautology sca
 `certify_dag` uses one mutable work counter across shape preflight, root closure and
 the topological node loop. A three-node refutation tests the exact composed cutoff;
 compiled mutants that reset the counter at each of those three handoffs must fail.
-This is bounded work-unit composition, not an instruction-count refinement; the
-global exact-accounting manifest flag remains false pending the full audit.
+This is exact cumulative use of checker-defined work units, not an
+instruction-count refinement. The claim is limited to the verified IR DAG
+checker; TPTP lowering and the host bridge remain separate trust boundaries.

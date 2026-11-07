@@ -117,8 +117,10 @@ sibling terms must agree exactly; no substitution or simultaneous multi-hole
 replacement is implicit. Nested contexts such as `h(g(c, f(_)), d)` are supported.
 Its theorems `clause_congruence_sound` and `equality_congruence_sound` and checker `check_congruence_and_replay`
 prove universal validity preservation via `oriented_congruence_preserves_value`.
-The existing clause-structure preflight bounds syntax before recursive replay;
-this extension does not claim exact cumulative comparison-work accounting.
+The clause-structure preflight bounds syntax before recursive replay, and the DAG
+checker charges replay comparisons through its shared checker-defined work-unit
+counter. See `ASSURANCE.md` for the cumulative meter scope; this is not an
+instruction-level cost model.
 
 DAG support also includes **clause tautology**:
 any zero-parent clause containing a reflexive equality literal `s = s` or a

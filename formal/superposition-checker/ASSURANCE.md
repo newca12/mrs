@@ -81,14 +81,14 @@ root-ancestor closure and every node validation; no phase or node replenishes th
 caller’s ceiling. Supported inference branches pass that same counter through
 parent/structure charges and local replay. A multi-node exact-cutoff regression
 and compiled resets at the structural, closure and node-validation handoffs test
-the composition. This establishes cumulative budget enforcement in the checker’s
-bounded work units, not an instruction-level cost model. The manifest keeps
-`dag_exact_cumulative_replay_work` false pending a complete audit of every primitive
-and auxiliary operation.
+the composition. The source audit confirms that no `_with_work` helper resets the
+caller-owned meter and that the certified path uses those shared-counter variants.
+`dag_exact_cumulative_replay_work` is true in checker-defined work units across
+structural preflight, closure, node replay and nested helpers. These units are not
+an instruction-level or cycle-accurate cost model.
 Input-leaf validation charges both clause structures for every candidate in its
 repeated exact-membership scan, with a runtime regression for the exact cutoff;
-this closes that specific repeated-comparison undercount, not all comparison
-accounting. Structural preflight now charges both operands on every exact
+structural preflight charges both operands on every exact
 certificate-clause comparison against a cited parent or the node conclusion for
 superposition, first-order resolution, equality resolution, factoring, subsumption
 resolution, weakening, demodulation, instantiation and condensation. A fixed
@@ -130,8 +130,9 @@ instantiation, condensation, demodulation, reflexivity, transitivity, symmetry,
 excluded middle, congruence and tautology.
 The global meter now covers the outer DAG phases, supported rule paths, and
 repeated exact certificate-to-parent/conclusion comparisons in structural
-preflight, while the exact meaning and completeness of each charged work unit
-remain under audit.
+preflight. The 8/7 transitivity fallback scan regression and compiled mutant
+complete the last identified conditional-scan gap; supported local cutoffs and
+the whole-DAG composed cutoff exercise the accounting boundaries.
 First-order binary-resolution replay also has a shared local work counter for
 collection, freshening, unifier application, pivot comparison, resolvent
 construction and conclusion comparison; its pivot atom meter has a 4/3 cutoff
@@ -199,8 +200,8 @@ edges (or has no edges for a zero-parent tautology introduction) and its
 conclusion, and proves local universal-validity preservation.
 Exact and standardized first-order resolution accept equality pivots in either
 ordered or swapped orientation; executable regressions cover both forms.
-Compiled refutations certify from nonempty inputs; exact cumulative replay-work
-accounting and broader rules remain open.
+Compiled refutations certify from nonempty inputs with the audited cumulative
+work-unit counter. Broader inference rules remain open.
 
 The compiled runtime regression also exercises an exact `SWV406+1:c502` local
 superposition certificate. It standardizes the c27 and c39 parents apart, binds
