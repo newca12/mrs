@@ -15,6 +15,7 @@ fi
 TOOLCHAIN_HOME="${RUSTUP_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/mrs-verus/rustup}"
 export RUSTUP_HOME="$TOOLCHAIN_HOME"
 export RUSTUP_TOOLCHAIN="$(mrs_tools verus-pin-field "$(dirname "$0")/verus-toolchain.json" rust_toolchain)"
+CORE_SMT_RLIMIT=30
 
 run_check() {
   if [[ -n "${VERUS_LOG:-}" ]]; then
@@ -40,13 +41,15 @@ if [[ -n "${VERUS_LOG:-}" ]]; then
   printf 'verus_binary_sha256=%s\n' "$(sha256sum "$VERUS_BIN" | cut -d' ' -f1)" | tee -a "$VERUS_LOG"
   printf 'rust_toolchain_requested=%s\n' "$(requested_rust_toolchain)" | tee -a "$VERUS_LOG"
   printf 'rust_toolchain_effective=%s\n' "$(effective_rust_toolchain)" | tee -a "$VERUS_LOG"
+  printf 'first_order_core_smt_rlimit=%s\n' "$CORE_SMT_RLIMIT" | tee -a "$VERUS_LOG"
 fi
 
 run_check "$VERUS_BIN" --version
 run_check mrs_tools audit-verus-source --source-dir "$(dirname "$0")"
 run_check mrs_tools validate-json "$(dirname "$0")/supported-rules.json"
 run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/target_rigidity.rs"
-run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/first_order_core.rs"
+run_check "$VERUS_BIN" --no-cheating --triggers-mode silent --rlimit "$CORE_SMT_RLIMIT" \
+  "$(dirname "$0")/first_order_core.rs"
 run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/superposition_checker.rs"
 run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/variable_superposition.rs"
 run_check mrs_tools verus-runtime-check "$VERUS_BIN" \

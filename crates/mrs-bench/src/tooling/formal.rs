@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use wait_timeout::ChildExt;
 
 type ToolResult<T> = Result<T, Box<dyn Error>>;
+const CORE_SMT_RLIMIT: &str = "30";
 const VERIFIER_MUTATIONS: &str = include_str!("verifier_mutations.json");
 const RUNTIME_MUTATIONS: &str = include_str!("runtime_mutations.json");
 
@@ -195,7 +196,14 @@ pub fn runtime_check(args: RuntimeCheckArgs) -> ToolResult<()> {
     for pass in 0..2 {
         let output = run_capture(
             Command::new(&verus)
-                .args(["--no-cheating", "--triggers-mode", "silent", "--compile"])
+                .args([
+                    "--no-cheating",
+                    "--triggers-mode",
+                    "silent",
+                    "--rlimit",
+                    CORE_SMT_RLIMIT,
+                    "--compile",
+                ])
                 .arg(&source)
                 .arg("-o")
                 .arg(&binary),
@@ -403,7 +411,15 @@ fn run_runtime_mutation(
     // Give those positive compile cases enough SMT budget that a solver rlimit
     // is not mistaken for a mutation caught by the verifier.
     command
-        .args(["--triggers-mode", "silent", "--rlimit", "30", "--compile"])
+        .args([
+            "--triggers-mode",
+            "silent",
+            "--rlimit",
+            CORE_SMT_RLIMIT,
+            "--num-threads",
+            "1",
+            "--compile",
+        ])
         .arg(&source_path)
         .arg("-o")
         .arg(&binary_path);
@@ -474,7 +490,7 @@ pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
     let source = fs::read_to_string(&source_path)?;
     let verifier_mutations: Vec<VerifierMutation> = serde_json::from_str(VERIFIER_MUTATIONS)?;
     let runtime_mutations: Vec<RuntimeMutation> = serde_json::from_str(RUNTIME_MUTATIONS)?;
-    if verifier_mutations.len() != 58 || runtime_mutations.len() != 48 {
+    if verifier_mutations.len() != 58 || runtime_mutations.len() != 49 {
         return Err(format!(
             "mutation inventory changed: verifier-negative={}, compiled-runtime={}",
             verifier_mutations.len(),
@@ -557,10 +573,19 @@ pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
             result.map_err(|error| -> Box<dyn Error> { error.into() })?
         );
     }
-    for case in &runtime_mutations {
-        run_runtime_mutation(&verus, &source, temp.path(), case)?;
+    let runtime_results = pool.install(|| {
+        runtime_mutations
+            .par_iter()
+            .map(|case| {
+                run_runtime_mutation(&verus, &source, temp.path(), case)
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Vec<_>>()
+    });
+    for result in runtime_results {
+        result.map_err(|error| -> Box<dyn Error> { error.into() })?;
     }
-    println!("mutation gate passed: verifier_negative=58 compiled_runtime=48");
+    println!("mutation gate passed: verifier_negative=58 compiled_runtime=49");
     Ok(())
 }
 
@@ -602,7 +627,14 @@ pub fn write_runtime_evidence(args: RuntimeEvidenceArgs) -> ToolResult<()> {
         "artifact_sha256": hash_file(&binary)?,
         "toolchain": toolchain,
         "supported_rules": supported_rules,
-        "verified_build_flags": ["--no-cheating", "--triggers-mode", "silent", "--compile"],
+        "verified_build_flags": [
+            "--no-cheating",
+            "--triggers-mode",
+            "silent",
+            "--rlimit",
+            CORE_SMT_RLIMIT,
+            "--compile"
+        ],
         "unverified_boundary": ["TPTP parser", "Rust lowering", "wire decoder", "process I/O"],
     });
     let mut sidecar = OsString::from(binary.as_os_str());
@@ -639,6 +671,7 @@ pub fn effective_toolchain(version_output: &str) -> ToolResult<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn source_audit_matches_calls_not_identifiers_or_comments() {
@@ -668,7 +701,21 @@ mod tests {
     #[test]
     fn runtime_mutation_inventory_has_unique_anchors() {
         let mutations: Vec<RuntimeMutation> = serde_json::from_str(RUNTIME_MUTATIONS).unwrap();
-        assert_eq!(mutations.len(), 48);
+        assert_eq!(mutations.len(), 49);
+        let mut source_files = HashSet::new();
+        let mut binary_names = HashSet::new();
+        for mutation in &mutations {
+            assert!(
+                source_files.insert(mutation.source_file.as_str()),
+                "duplicate runtime-mutation source file: {}",
+                mutation.name
+            );
+            assert!(
+                binary_names.insert(mutation.binary_name.as_str()),
+                "duplicate runtime-mutation binary name: {}",
+                mutation.name
+            );
+        }
         let source = formal_source();
         for mutation in mutations {
             let mut mutated = source.to_owned();

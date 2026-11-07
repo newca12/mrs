@@ -10844,6 +10844,7 @@ fn check_clause_transitivity_exec_with_work(
                 ==> view_clause(*clause).literals[m] == view_clause(*conclusion).literals[m],
         decreases clause.literals.len() - k,
     {
+        if !consume_work(work, work_limit) { return None; }
         let p_lit = &clause.literals[k];
         let c_lit = &conclusion.literals[k];
         if p_lit.positive && c_lit.positive {
@@ -16652,6 +16653,39 @@ fn executable_transitivity_step_work_meter_example() -> bool
     exact == Some(true) && exact_work == 12 && short.is_none() && short_work == 11
 }
 
+fn executable_transitivity_fallback_scan_work_meter_example() -> bool
+{
+    let unchanged_negative_equality = ExecClause { literals: vec![
+        ExecLiteral {
+            positive: false,
+            atom: ExecAtom::Eq(ExecTerm::Const(3), ExecTerm::Const(4)),
+        },
+    ] };
+    let unit_equality = ExecClause { literals: vec![
+        ExecLiteral {
+            positive: true,
+            atom: ExecAtom::Eq(ExecTerm::Const(5), ExecTerm::Const(6)),
+        },
+    ] };
+    let mut exact_work: usize = 0;
+    let exact = check_clause_transitivity_exec_with_work(
+        &unchanged_negative_equality,
+        &unit_equality,
+        &unchanged_negative_equality,
+        &mut exact_work,
+        8,
+    );
+    let mut short_work: usize = 0;
+    let short = check_clause_transitivity_exec_with_work(
+        &unchanged_negative_equality,
+        &unit_equality,
+        &unchanged_negative_equality,
+        &mut short_work,
+        7,
+    );
+    exact.is_none() && exact_work == 8 && short.is_none() && short_work == 7
+}
+
 fn refl_in1() -> ExecClause {
     ExecClause { literals: vec![
         ExecLiteral { positive: true, atom: ExecAtom::Pred1(1, Box::new(ExecTerm::Const(1))) },
@@ -18671,6 +18705,7 @@ fn run_examples() -> bool {
     if !executable_reflexivity_dag_examples() { return false; }
     if !executable_transitivity_examples() { return false; }
     if !executable_transitivity_step_work_meter_example() { return false; }
+    if !executable_transitivity_fallback_scan_work_meter_example() { return false; }
     if !executable_transitivity_dag_examples() { return false; }
     if !executable_dag_transitivity_shared_work_example() { return false; }
     if !executable_symmetry_examples() { return false; }
@@ -18812,6 +18847,8 @@ fn regression_main() {
         "transitivity regression failed");
     assert!(executable_transitivity_step_work_meter_example(),
         "transitivity step work-meter regression failed");
+    assert!(executable_transitivity_fallback_scan_work_meter_example(),
+        "transitivity fallback scan work-meter regression failed");
     assert!(executable_transitivity_dag_examples(),
         "transitivity DAG regression failed");
     assert!(executable_dag_transitivity_shared_work_example(),

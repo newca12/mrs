@@ -87,6 +87,31 @@ that no interchange or caller exists are superseded by this update.
   preflight only. Nested helper and derived-replay accounting remain under audit;
   `dag_exact_cumulative_replay_work` stays false.
 
+### 2026-11-07 transitivity fallback-scan checkpoint
+
+- **DONE:** the unchanged-clause transitivity fallback now charges each candidate
+  literal scan before checking whether it can be an equality pivot. This covers
+  the path that previously skipped work on non-equality literals.
+- **DONE:** a one-literal negative-equality fixture accepts the exact scan budget
+  of 8 work units and exhausts at 7; a compiled mutation removing the scan charge
+  must fail this regression.
+- **Scope:** closes this nested replay scan undercount. The global exact-work audit
+  remains open; `dag_exact_cumulative_replay_work` stays false.
+
+### 2026-11-07 Verus gate resource and parallelism checkpoint
+
+- **DONE:** the first-order core and its reproducible/runtime mutation builds now
+  use Verus SMT `--rlimit 30`. The default limit of 10 reproducibly exhausted
+  resources in the structural-preflight loop; the same source verifies at 30.
+  The verification log and support manifest record the setting. This raises only
+  the solver resource allowance; it does not change the checked specification.
+- **DONE:** verifier-negative and compiled-runtime mutations share the configurable
+  `VERUS_MUTATION_WORKERS` Rayon pool, with one Verus solver thread per job. Runtime
+  mutations also have unique temporary source/binary names, enforced by a unit test.
+  The four-worker run passed all 58 verifier-negative and 49 compiled-runtime cases.
+- **Scope:** reduces serial mutation-gate time and prevents solver-limit false
+  positives. It does not complete the exact cumulative work audit.
+
 ### 2026-10-27 multi-literal clause equality transitivity and zero-parent inference checkpoint
 
 - **DONE:** proved `clause_transitivity_sound` in `first_order_core.rs`: from any universally valid parent
@@ -621,11 +646,12 @@ invalidate the original code. The gate now removes the actual forbidden-image
 check and requires Verus to reject that mutation. The no-cheating self-test first
 accepts a valid assumption probe without the flag, then requires rejection with
 the flag; the earlier malformed `assume_specification` probe was not evidence.
-Current module counts: **5 / 568 / 5 / 5**, with **58 verifier-negative mutations,
-forty-eight compiled-runtime mutations, and one no-cheating probe**. The tokenizer
+Current module counts: **5 / 570 / 5 / 5**, with **58 verifier-negative mutations,
+forty-nine compiled-runtime mutations, and one no-cheating probe**. The tokenizer
 mutation is rejected at compile time because the weakened source no longer proves
 the tokenizer invariant. The compiled-runtime mutations cover root closure,
-repeated input and DAG structural certificate-comparison accounting, duplicate node IDs, decimal-token
+repeated input, DAG structural certificate comparisons and transitivity fallback
+scan accounting, duplicate node IDs, decimal-token
 validation, target-parent freshening collisions, freshening lookup accounting,
 the clause-collection, materialization, unifier-comparison, path comparison,
 selected-term lookup, replay parent substitution, target replacement, conclusion
@@ -649,7 +675,7 @@ the item itself is explicitly marked `ABANDONED`.
 
 | Milestone | Status | Implemented evidence / remaining gate |
 |---|---|---|
-| M0 — Verus baseline and environment | **PARTIAL** | Verus release and Linux x86_64 SHA-256 are pinned; the requested Rust toolchain follows the release's `rust-toolchain.toml` (`1.99.1`). The pinned release is `0.2026.10.18.7d82994`; `verify.sh` records both requested and effective toolchains. The installer and verifier scripts use the shared Rust `mrs-tools` CLI to read and validate JSON pins. The full `verify.sh` run passes. A lexical escape-hatch audit and Verus `--no-cheating` gate cover verifier-recognized cheats, including `assume_specification`. The gate enforces 58 verifier-negative mutations and forty-eight compiled-runtime/boundary mutations. Remaining: broader mutation coverage and auditing intentionally ignored/unverified modules. |
+| M0 — Verus baseline and environment | **PARTIAL** | Verus release and Linux x86_64 SHA-256 are pinned; the requested Rust toolchain follows the release's `rust-toolchain.toml` (`1.99.1`). The pinned release is `0.2026.10.18.7d82994`; `verify.sh` records both requested and effective toolchains. The installer and verifier scripts use the shared Rust `mrs-tools` CLI to read and validate JSON pins. The full `verify.sh` run passes. A lexical escape-hatch audit and Verus `--no-cheating` gate cover verifier-recognized cheats, including `assume_specification`. The gate enforces 58 verifier-negative mutations and forty-nine compiled-runtime/boundary mutations. Remaining: broader mutation coverage and auditing intentionally ignored/unverified modules. |
 | M1 — Superposition semantics | **PARTIAL** | `first_order_core.rs` proves parent validity survives independent standardization substitutions and connects accepted general replay to `standardized_superposition_sound` through `accepted_replay_preserves_validity`. Arbitrary selected indices and duplicate-preserving contexts are covered. `RULE_CONTRACT.md` specifies the prototype's unordered rule, whole-parent simultaneous one-step substitution and selected position. Remaining: independent review of the calculus/interchange boundary. |
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. One standalone superposition counter spans structure, preflight and replay work: clause-variable collection, coverage/membership, domain uniqueness, binding lookups/copies, avoid scans, injectivity, freshened-clause materialization, both-parent substitution, target replacement, conclusion construction/comparison, path equality, selected-term lookup and unifier application/comparison. Nullary/exact-atom and first-order resolution meters include DAG node/parent work, resolvent construction and conclusion comparison. Reflexivity meters its term-equality test; transitivity shares work across changed-literal matching, orientation candidates and equality-term comparisons; symmetry meters candidate orientation and unchanged-literal matching; excluded middle meters polarity and atom equality. Equality resolution and clause factoring share local replay meters through substitution, pivot checks, deletion and conclusion comparison. Equality factoring meters selected-term applications/comparison, clause substitution, conclusion construction and comparison. Subsumption resolution meters collection, active-parent freshening, unifier application, pivot and mapped-literal comparisons, deletion and conclusion comparison. Weakening meters inclusion-literal matching; instantiation and condensation meter substitution/inclusion and exact conclusion checks; demodulation meters freshening, term application, selected-position matching, replacement and exact conclusion comparison; congruence meters recursive orientation checks, sibling comparisons and clause scanning; tautology meters reflexive-equality and complementary-literal scans, also in structural preflight. These inference DAG paths pass per-node checks into local replay meters. The per-node validator's superposition parent checks also flow through its replay meter. Adversarial unifier conflict/match, var-to-var, subterm variable and parent avoid-set cases are verified. Remaining: larger-arity generalization, `certify_dag` global work-unit completeness audit, other inference-family helpers, and other unifier callers. |
 | M3 — Superposition checker | **PARTIAL: general replay soundness proved** | `check_superposition_and_replay` postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Bounded executable certificates accept archived `SWV406+1:c502` and a source-variable binding case, rejecting forged conclusions. The supported CNF adapter and proof-DAG bridge are exercised by integration fixtures; full archived SWV406+1 TSTP translation/proof-DAG replay, broader equivalence modulo literal order/renaming, exact cumulative resource refinement, and independent calculus review remain. |
@@ -658,14 +684,16 @@ the item itself is explicitly marked `ABANDONED`.
 | M6 — Broader rules | **PARTIAL** | Nullary-predicate, exact-atom (including symmetric equality pivots), first-order resolution with unifier (including symmetric equality pivots), equality resolution, clause factoring, equality factoring, subsumption resolution, clause weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology are verified and DAG-dispatched; AC, transformations, and AVATAR/LRAT remain unimplemented. |
 | M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
 
-**M2/M4 update (2026-11-06):** structural preflight exact comparisons between
+**M2/M4 update (2026-11-07):** structural preflight exact comparisons between
 inference-certificate clauses and cited parents/conclusions now share the DAG's
 caller-owned meter and charge both operands each time. The 128-unit superposition
-fixture and compiled mutation gate this local contract. This narrows the remaining
-resource-accounting gap but does not close the nested-helper or derived-replay audit.
+fixture and compiled mutation gate this local contract. The 2026-11-07 transitivity
+fallback-scan checkpoint adds an 8/7 work cutoff and compiled charge-removal mutation
+for non-equality literals skipped during the unchanged-clause search. These close two
+identified undercounts but do not finish the nested-helper or derived-replay audit.
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `568`, `5`, and `5` verified functions
+passes all four Verus files (currently `5`, `570`, `5`, and `5` verified functions
 respectively), the compiled runtime fixtures pass, and all mutation gates pass.
 The general replay accepts the manually encoded local c502 step with its semantic
 validity-preservation theorem. These results establish the implemented bounded
@@ -1475,7 +1503,7 @@ archived cases, and a versioned support declaration.
   commit, Verus binary SHA-256, Rust toolchain, verifier version, and per-module
   proof output.
 - **DONE, mutation gates:** `verify.sh` enforces 58 verifier-negative mutations
-  and forty-eight compiled-runtime mutations; this is a targeted set, not a
+  and forty-nine compiled-runtime mutations; this is a targeted set, not a
   complete threat-model proof.
 - **DONE, no-cheating self-test:** each module is checked with Verus
   `--no-cheating`, and the mutation gate injects an
@@ -1603,11 +1631,11 @@ satisfiability/model claims, and unrestricted full TSTP.
   soundness bridge is proved.
 - [ ] Complete exact cumulative resource accounting across nested replay
   helpers, repeated comparisons and derived replay (M2–M4). The 2026-11-06
-  checkpoint now charges both operands for every certificate-to-parent/conclusion
-  comparison during DAG structural preflight, with an exact 128/127 cutoff and a
-  compiled charge-removal mutation. This closes that repeated-comparison gap only;
-  nested helper and derived-replay audits remain, so the support manifest correctly
-  leaves exact cumulative work open.
+  checkpoint meters repeated certificate-to-parent/conclusion comparisons during
+  structural preflight (128/127 cutoff); the 2026-11-07 checkpoint meters the
+  transitivity fallback scan (8/7 cutoff). Both have compiled charge-removal
+  mutations. Other nested-helper and derived-replay accounting remains under audit,
+  so the support manifest correctly leaves exact cumulative work open.
 - [x] Establish a shared local work counter within freshening validation for
   domain uniqueness, binding lookups/copies, avoid scans and injectivity checks;
   accept at 4 units and reject at 3, with a compiled mutation that removes the

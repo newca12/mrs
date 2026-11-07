@@ -792,6 +792,22 @@
     "timeout_run_s": 30
   },
   {
+    "name": "first_order_core_without_transitivity_fallback_scan_charge",
+    "source_file": "first_order_core_without_transitivity_fallback_scan_charge.rs",
+    "binary_name": "first-order-core-without-transitivity-fallback-scan-charge",
+    "edits": [
+      {
+        "anchor": "    {\n        if !consume_work(work, work_limit) { return None; }\n        let p_lit = &clause.literals[k];\n",
+        "replacement": "    {\n        let p_lit = &clause.literals[k];\n"
+      }
+    ],
+    "expected_failure": "transitivity fallback scan work-meter regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
     "name": "first_order_core_without_unifier_term_charge",
     "source_file": "first_order_core_without_unifier_term_charge.rs",
     "binary_name": "first-order-core-without-unifier-term-charge",

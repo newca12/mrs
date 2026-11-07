@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and forty-eight
+The mutation inventory is now fifty-eight verifier-negative checks and forty-nine
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -168,6 +168,9 @@ its DAG wrapper; a 5/4 local cutoff and compiled reset mutant test the boundary.
 Transitivity shares its meter across clause matching, candidate orientation checks
 and equality-term comparisons. Its 12/11 local cutoff and exact composed DAG cutoff
 are protected by comparison-charge and counter-reset mutations.
+The unchanged-clause transitivity fallback now charges each candidate-scan iteration;
+its 8/7 exact cutoff and compiled charge-removal mutation guard the otherwise skipped
+non-equality-literal scan.
 Symmetry shares work across candidate equality orientation and unchanged-literal
 matching. Its 3/2 local comparison cutoff and independently computed DAG cutoff are
 guarded by charge-removal and counter-reset mutations.
@@ -241,6 +244,12 @@ verified Linux x86_64 SHA-256. The release's `rust-toolchain.toml` declares
 Rust `1.99.1`, matching the requested toolchain. `verify.sh` records both
 requested and effective values. Updating either pin requires a fresh full
 verification run and recorded evidence.
+The first-order core, reproducible runtime builds and compiled-runtime mutants use
+the explicit Verus SMT `--rlimit 30`; the default limit of 10 reproducibly exhausted
+resources in the structural-preflight loop. Verifier-negative mutants keep the
+default SMT limit so they fail promptly. Mutation jobs run one solver thread each
+in the configurable `VERUS_MUTATION_WORKERS` pool. This changes solver resource
+allowance and scheduling, not the verified specification.
 
 ## Verification evidence
 
@@ -256,7 +265,7 @@ host and toolchain only.
 The verification gate enforces 58 verifier-negative mutations across inference
 replay, DAG dispatch and wire tokenization. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
-contracts; it is not comprehensive threat-model coverage. Forty-eight
+contracts; it is not comprehensive threat-model coverage. Forty-nine
 compiled-runtime mutations cover root-ancestor closure, input and node identity,
 target-parent freshening, freshening and replay work charges, clause/term
 comparison, and shared work across local inference replay and DAG nodes. Each
