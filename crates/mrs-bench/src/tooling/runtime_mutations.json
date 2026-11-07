@@ -564,6 +564,22 @@
     "timeout_run_s": 30
   },
   {
+    "name": "first_order_core_without_dag_preflight_parent_compare_charge",
+    "source_file": "first_order_core_without_dag_preflight_parent_compare_charge.rs",
+    "binary_name": "first-order-core-without-dag-preflight-parent-compare-charge",
+    "edits": [
+      {
+        "anchor": "            if !same_clause_exact_checked_with_work(\n                    &step.source, &dag.nodes[node.parents[0]].clause, work, work_limit,\n                )",
+        "replacement": "            if !same_clause_exact(&step.source, &dag.nodes[node.parents[0]].clause)"
+      }
+    ],
+    "expected_failure": "DAG superposition shared work regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
+  },
+  {
     "name": "first_order_core_without_path_sequence_charge",
     "source_file": "first_order_core_without_path_sequence_charge.rs",
     "binary_name": "first-order-core-without-path-sequence-charge",

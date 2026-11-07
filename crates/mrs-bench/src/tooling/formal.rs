@@ -399,8 +399,11 @@ fn run_runtime_mutation(
     if case.no_cheating {
         command.arg("--no-cheating");
     }
+    // Runtime mutants must verify before their executable behavior is tested.
+    // Give those positive compile cases enough SMT budget that a solver rlimit
+    // is not mistaken for a mutation caught by the verifier.
     command
-        .args(["--triggers-mode", "silent", "--compile"])
+        .args(["--triggers-mode", "silent", "--rlimit", "30", "--compile"])
         .arg(&source_path)
         .arg("-o")
         .arg(&binary_path);
@@ -471,7 +474,7 @@ pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
     let source = fs::read_to_string(&source_path)?;
     let verifier_mutations: Vec<VerifierMutation> = serde_json::from_str(VERIFIER_MUTATIONS)?;
     let runtime_mutations: Vec<RuntimeMutation> = serde_json::from_str(RUNTIME_MUTATIONS)?;
-    if verifier_mutations.len() != 58 || runtime_mutations.len() != 47 {
+    if verifier_mutations.len() != 58 || runtime_mutations.len() != 48 {
         return Err(format!(
             "mutation inventory changed: verifier-negative={}, compiled-runtime={}",
             verifier_mutations.len(),
@@ -557,7 +560,7 @@ pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
     for case in &runtime_mutations {
         run_runtime_mutation(&verus, &source, temp.path(), case)?;
     }
-    println!("mutation gate passed: verifier_negative=58 compiled_runtime=47");
+    println!("mutation gate passed: verifier_negative=58 compiled_runtime=48");
     Ok(())
 }
 
@@ -665,7 +668,7 @@ mod tests {
     #[test]
     fn runtime_mutation_inventory_has_unique_anchors() {
         let mutations: Vec<RuntimeMutation> = serde_json::from_str(RUNTIME_MUTATIONS).unwrap();
-        assert_eq!(mutations.len(), 47);
+        assert_eq!(mutations.len(), 48);
         let source = formal_source();
         for mutation in mutations {
             let mut mutated = source.to_owned();

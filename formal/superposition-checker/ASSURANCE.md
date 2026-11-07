@@ -48,7 +48,7 @@ Per-call reports record artifact
 and request hashes, protocol version and node count. Same-host double compilation
 is checked; cross-host reproducibility and verified TPTP lowering remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and forty-seven
+The mutation inventory is now fifty-eight verifier-negative checks and forty-eight
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -88,7 +88,13 @@ and auxiliary operation.
 Input-leaf validation charges both clause structures for every candidate in its
 repeated exact-membership scan, with a runtime regression for the exact cutoff;
 this closes that specific repeated-comparison undercount, not all comparison
-accounting. The runtime suite also exercises standardized-parent collision
+accounting. Structural preflight now charges both operands on every exact
+certificate-clause comparison against a cited parent or the node conclusion for
+superposition, first-order resolution, equality resolution, factoring, subsumption
+resolution, weakening, demodulation, instantiation and condensation. A fixed
+superposition DAG accepts at the exact 128-unit structural cutoff and rejects at
+127; a compiled mutation that bypasses the source-parent comparison charge must
+fail that regression. The runtime suite also exercises standardized-parent collision
 rejection, malformed/deep target paths, mismatched pre/post-freshening paths,
 out-of-range atom slots and forged conclusions. A superposition certificate
 with a target freshening that collides with a source-fresh variable is rejected,
@@ -122,8 +128,10 @@ superposition, nullary/exact and first-order resolution, equality resolution,
 clause factoring, equality factoring, subsumption resolution, weakening,
 instantiation, condensation, demodulation, reflexivity, transitivity, symmetry,
 excluded middle, congruence and tautology.
-The global meter now covers the outer DAG phases and supported rule paths, while
-the exact meaning and completeness of each charged work unit remain under audit.
+The global meter now covers the outer DAG phases, supported rule paths, and
+repeated exact certificate-to-parent/conclusion comparisons in structural
+preflight, while the exact meaning and completeness of each charged work unit
+remain under audit.
 First-order binary-resolution replay also has a shared local work counter for
 collection, freshening, unifier application, pivot comparison, resolvent
 construction and conclusion comparison; its pivot atom meter has a 4/3 cutoff
@@ -248,7 +256,7 @@ host and toolchain only.
 The verification gate enforces 58 verifier-negative mutations across inference
 replay, DAG dispatch and wire tokenization. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
-contracts; it is not comprehensive threat-model coverage. Forty-seven
+contracts; it is not comprehensive threat-model coverage. Forty-eight
 compiled-runtime mutations cover root-ancestor closure, input and node identity,
 target-parent freshening, freshening and replay work charges, clause/term
 comparison, and shared work across local inference replay and DAG nodes. Each

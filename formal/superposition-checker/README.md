@@ -61,7 +61,7 @@ subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
 tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
-forward parents, and nonempty-root acceptance. Forty-seven compiled-runtime mutations
+forward parents, and nonempty-root acceptance. Forty-eight compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
 duplicate-ID rejection, decimal-token guard, or target-parent freshening avoid
 set, freshening lookup-work charge, clause-collection literal charge, or
@@ -84,6 +84,11 @@ the structural-to-closure, closure-to-node, and between-node global-counter rese
 are checked by the composed multi-node regression as well. Each mutation must fail
 its corresponding regression. The mutation runner enforces
 the expected counts, so deleting a gate cannot silently shrink the inventory.
+The structural preflight also has a fixed 128-unit superposition fixture (127 is
+rejected); its compiled mutant bypasses the cited-source comparison charge.
+The verifier-negative mutation jobs each use one Verus thread; set
+`VERUS_MUTATION_WORKERS` to adjust their Rayon pool size (default `2`), balancing
+CPU parallelism against memory use.
 Two verifier-negative congruence mutations also remove the unchanged binary-sibling
 and nested unary function-symbol checks; Verus must reject both.
 The
@@ -136,7 +141,11 @@ ancestor closure; the bounded closure walk returns `Unknown` on work exhaustion.
 `certify_dag` carries one caller-owned work counter through structural preflight,
 root-ancestor closure, and every node validation; phases and nodes cannot replenish
 the budget. Supported rule paths carry parent/structure and replay charges into this
-same counter. A multi-node refutation regression checks the exact whole-DAG cutoff,
+same counter. Structural preflight charges both complete operands for every exact
+certificate-clause comparison against a cited parent or node conclusion. A fixed
+superposition preflight regression checks its exact 128-unit cutoff and rejects at
+127; a compiled mutation that bypasses the source-parent comparison charge must fail.
+A multi-node refutation regression checks the exact whole-DAG cutoff,
 and compiled mutants reset the counter at each phase/node handoff. This establishes
 composition in the checker's bounded work units, not an instruction-level cost model;
 `dag_exact_cumulative_replay_work` remains false until that model is fully audited.

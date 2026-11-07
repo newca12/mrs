@@ -6533,7 +6533,7 @@ fn executable_dag_superposition_shared_work_example() -> bool
         200,
         vec![ExecBinding { variable: 200, replacement: ExecTerm::Var(100) }],
     );
-    let dag = ProofDag {
+    let mut dag = ProofDag {
         nodes: vec![
             ProofNode {
                 id: 1,
@@ -6597,10 +6597,37 @@ fn executable_dag_superposition_shared_work_example() -> bool
                 inst_step: None,
                 cond_step: None,
             },
+            ProofNode {
+                id: 4,
+                clause: ExecClause { literals: Vec::new() },
+                kind: ProofNodeKind::Input,
+                parents: Vec::new(),
+                step: None,
+                res_step: None,
+                eq_step: None,
+                fact_step: None,
+                eq_fact_step: None,
+                sub_step: None,
+                weaken_step: None,
+                demod_step: None,
+                inst_step: None,
+                cond_step: None,
+            },
         ],
         input_clauses: Vec::new(),
-        root: 2,
+        root: 3,
     };
+    let source_input = ExecClause {
+        literals: vec![copy_literal(&dag.nodes[0].clause.literals[0])],
+    };
+    let target_input = ExecClause {
+        literals: vec![copy_literal(&dag.nodes[1].clause.literals[0])],
+    };
+    dag.input_clauses = vec![
+        source_input,
+        target_input,
+        ExecClause { literals: Vec::new() },
+    ];
     let node = &dag.nodes[2];
     let Some(step) = &node.step else { return false; };
 
@@ -6641,7 +6668,24 @@ fn executable_dag_superposition_shared_work_example() -> bool
     let short_accepted = validate_dag_node_with_work(
         &dag, 2, &mut short_work, exact_limit - 1,
     );
-    exact_accepted && exact_work == exact_limit && !short_accepted
+    if !exact_accepted || exact_work != exact_limit || short_accepted { return false; }
+
+    // Structural preflight compares each certificate clause with a cited
+    // parent or the node conclusion. Each comparison must charge both complete
+    // structures, including when those clauses were already visited elsewhere
+    // in the DAG pass. This fixture's exact total is 128 work units.
+    let mut structural_work: usize = 0;
+    let structural = check_dag_structure_with_work(
+        &dag, 10, 100, &mut structural_work, 128,
+    );
+    let mut short_structural_work: usize = 0;
+    let short_structural = check_dag_structure_with_work(
+        &dag, 10, 100, &mut short_structural_work, 127,
+    );
+    structural == DagVerdict::Unknown
+        && structural_work == 128
+        && short_structural == DagVerdict::Rejected
+        && short_structural_work == 127
 }
 
 fn executable_dag_first_order_resolution_shared_work_example() -> bool
@@ -8934,6 +8978,25 @@ fn same_clause_exact_with_work(
         return None;
     }
     Some(same_clause_exact(left, right))
+}
+
+/// A completed exact comparison is true only when the clauses are equal. Work
+/// exhaustion is deliberately collapsed to false here because the structural
+/// preflight rejects both mismatches and incomplete comparisons.
+fn same_clause_exact_checked_with_work(
+    left: &ExecClause,
+    right: &ExecClause,
+    work: &mut usize,
+    work_limit: usize,
+) -> (same: bool)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        same ==> clause_equal(view_clause(*left), view_clause(*right))
+{
+    match same_clause_exact_with_work(left, right, work, work_limit) {
+        Some(same) => same,
+        None => false,
+    }
 }
 
 fn build_nullary_resolution_conclusion(left: &ExecClause, right: &ExecClause,
@@ -13938,9 +14001,15 @@ fn check_dag_structure_with_work(
             if node.parents.len() != 2 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
             assert(node.parents[1] < dag.nodes.len());
-            if !same_clause_exact(&step.source, &dag.nodes[node.parents[0]].clause)
-                || !same_clause_exact(&step.target, &dag.nodes[node.parents[1]].clause)
-                || !same_clause_exact(&step.conclusion, &node.clause)
+            if !same_clause_exact_checked_with_work(
+                    &step.source, &dag.nodes[node.parents[0]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.target, &dag.nodes[node.parents[1]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.conclusion, &node.clause, work, work_limit,
+                )
             {
                 return DagVerdict::Rejected;
             }
@@ -13950,9 +14019,15 @@ fn check_dag_structure_with_work(
             if node.parents.len() != 2 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
             assert(node.parents[1] < dag.nodes.len());
-            if !same_clause_exact(&step.left, &dag.nodes[node.parents[0]].clause)
-                || !same_clause_exact(&step.right, &dag.nodes[node.parents[1]].clause)
-                || !same_clause_exact(&step.conclusion, &node.clause)
+            if !same_clause_exact_checked_with_work(
+                    &step.left, &dag.nodes[node.parents[0]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.right, &dag.nodes[node.parents[1]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.conclusion, &node.clause, work, work_limit,
+                )
             {
                 return DagVerdict::Rejected;
             }
@@ -13961,8 +14036,12 @@ fn check_dag_structure_with_work(
             let Some(step) = &node.eq_step else { return DagVerdict::Rejected; };
             if node.parents.len() != 1 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
-            if !same_clause_exact(&step.clause, &dag.nodes[node.parents[0]].clause)
-                || !same_clause_exact(&step.conclusion, &node.clause)
+            if !same_clause_exact_checked_with_work(
+                    &step.clause, &dag.nodes[node.parents[0]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.conclusion, &node.clause, work, work_limit,
+                )
             {
                 return DagVerdict::Rejected;
             }
@@ -13971,8 +14050,12 @@ fn check_dag_structure_with_work(
             let Some(step) = &node.fact_step else { return DagVerdict::Rejected; };
             if node.parents.len() != 1 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
-            if !same_clause_exact(&step.clause, &dag.nodes[node.parents[0]].clause)
-                || !same_clause_exact(&step.conclusion, &node.clause)
+            if !same_clause_exact_checked_with_work(
+                    &step.clause, &dag.nodes[node.parents[0]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.conclusion, &node.clause, work, work_limit,
+                )
             {
                 return DagVerdict::Rejected;
             }
@@ -13981,8 +14064,12 @@ fn check_dag_structure_with_work(
             let Some(step) = &node.eq_fact_step else { return DagVerdict::Rejected; };
             if node.parents.len() != 1 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
-            if !same_clause_exact(&step.clause, &dag.nodes[node.parents[0]].clause)
-                || !same_clause_exact(&step.conclusion, &node.clause)
+            if !same_clause_exact_checked_with_work(
+                    &step.clause, &dag.nodes[node.parents[0]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.conclusion, &node.clause, work, work_limit,
+                )
             {
                 return DagVerdict::Rejected;
             }
@@ -13992,9 +14079,15 @@ fn check_dag_structure_with_work(
             if node.parents.len() != 2 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
             assert(node.parents[1] < dag.nodes.len());
-            if !same_clause_exact(&step.target, &dag.nodes[node.parents[0]].clause)
-                || !same_clause_exact(&step.active, &dag.nodes[node.parents[1]].clause)
-                || !same_clause_exact(&step.conclusion, &node.clause)
+            if !same_clause_exact_checked_with_work(
+                    &step.target, &dag.nodes[node.parents[0]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.active, &dag.nodes[node.parents[1]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.conclusion, &node.clause, work, work_limit,
+                )
             {
                 return DagVerdict::Rejected;
             }
@@ -14003,8 +14096,12 @@ fn check_dag_structure_with_work(
             let Some(step) = &node.weaken_step else { return DagVerdict::Rejected; };
             if node.parents.len() != 1 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
-            if !same_clause_exact(&step.parent, &dag.nodes[node.parents[0]].clause)
-                || !same_clause_exact(&step.conclusion, &node.clause)
+            if !same_clause_exact_checked_with_work(
+                    &step.parent, &dag.nodes[node.parents[0]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.conclusion, &node.clause, work, work_limit,
+                )
             {
                 return DagVerdict::Rejected;
             }
@@ -14014,9 +14111,15 @@ fn check_dag_structure_with_work(
             if node.parents.len() != 2 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
             assert(node.parents[1] < dag.nodes.len());
-            if !same_clause_exact(&step.target, &dag.nodes[node.parents[0]].clause)
-                || !same_clause_exact(&step.equality, &dag.nodes[node.parents[1]].clause)
-                || !same_clause_exact(&step.conclusion, &node.clause)
+            if !same_clause_exact_checked_with_work(
+                    &step.target, &dag.nodes[node.parents[0]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.equality, &dag.nodes[node.parents[1]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.conclusion, &node.clause, work, work_limit,
+                )
             {
                 return DagVerdict::Rejected;
             }
@@ -14025,8 +14128,12 @@ fn check_dag_structure_with_work(
             let Some(step) = &node.inst_step else { return DagVerdict::Rejected; };
             if node.parents.len() != 1 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
-            if !same_clause_exact(&step.parent, &dag.nodes[node.parents[0]].clause)
-                || !same_clause_exact(&step.conclusion, &node.clause)
+            if !same_clause_exact_checked_with_work(
+                    &step.parent, &dag.nodes[node.parents[0]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.conclusion, &node.clause, work, work_limit,
+                )
             {
                 return DagVerdict::Rejected;
             }
@@ -14035,8 +14142,12 @@ fn check_dag_structure_with_work(
             let Some(step) = &node.cond_step else { return DagVerdict::Rejected; };
             if node.parents.len() != 1 { return DagVerdict::Rejected; }
             assert(node.parents[0] < dag.nodes.len());
-            if !same_clause_exact(&step.parent, &dag.nodes[node.parents[0]].clause)
-                || !same_clause_exact(&step.conclusion, &node.clause)
+            if !same_clause_exact_checked_with_work(
+                    &step.parent, &dag.nodes[node.parents[0]].clause, work, work_limit,
+                )
+                || !same_clause_exact_checked_with_work(
+                    &step.conclusion, &node.clause, work, work_limit,
+                )
             {
                 return DagVerdict::Rejected;
             }
