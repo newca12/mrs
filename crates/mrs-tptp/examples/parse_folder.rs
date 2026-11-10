@@ -5,12 +5,14 @@
 //!
 //! Uses parallel processing with rayon for faster execution on multi-core systems.
 //!
-//! Run with: cargo run --example parse_folder [folder_path] [--timeout <ms>] [--threads <n>] [--verbose]
+//! Run with: cargo run --example parse_folder [folder_path] [--timeout <ms>] [--threads <n>] [--verbose] [--competition-parse]
 //!
 //! Options:
 //!   --timeout <ms>  Abort parsing of any file that takes longer than <ms> milliseconds
 //!   --threads <n>   Set the number of threads (default: min(system threads, 8))
 //!   --verbose       Show detailed list of timed out files (by default only count is shown)
+//!   --competition-parse  Parse each file with `parse_tptp` into a complete AST;
+//!                        include the source buffer in peak heap; skip round-trip checks
 //!
 //! `--threads N` starts N worker loops. Each worker dynamically claims one
 //! whole file at a time; a file is never split across workers.
@@ -558,9 +560,11 @@ fn parse_file(
     folder: &Path,
     timeout_ms: Option<u64>,
     watchdog_sender: Option<&mpsc::SyncSender<WatchdogJob>>,
+    competition_parse: bool,
 ) -> (PathBuf, String, ParseResult, usize) {
     FILE_HEAP_PEAK.with(|peak| peak.set(0));
-    let (file, relative_path, result) = parse_file_inner(file, folder, timeout_ms, watchdog_sender);
+    let (file, relative_path, result) =
+        parse_file_inner(file, folder, timeout_ms, watchdog_sender, competition_parse);
     let peak = FILE_HEAP_PEAK.with(std::cell::Cell::get);
     (file, relative_path, result, peak)
 }
@@ -570,12 +574,17 @@ fn parse_file_inner(
     folder: &Path,
     timeout_ms: Option<u64>,
     watchdog_sender: Option<&mpsc::SyncSender<WatchdogJob>>,
+    competition_parse: bool,
 ) -> (PathBuf, String, ParseResult) {
     let relative_path = file
         .strip_prefix(folder)
         .unwrap_or(file)
         .display()
         .to_string();
+
+    if competition_parse {
+        return parse_file_materialized(file, relative_path, timeout_ms, watchdog_sender);
+    }
 
     let read_start = Instant::now();
     let content = match fs::read_to_string(file) {
@@ -648,6 +657,81 @@ fn parse_file_inner(
         let result = result_from_sweep(result, read_ms, elapsed_ms, None);
         (file.to_path_buf(), relative_path, result)
     }
+}
+
+/// Mirror MRS's parse stage: read the whole input, build a complete
+/// `TPTPProblem` with `parse_tptp`, and do not run the benchmark-only
+/// display/reparse validation. The heap meter starts before the read so its
+/// peak includes both the source `String` and the retained AST, as they coexist
+/// in MRS. It still excludes allocator/runtime state allocated before this file.
+fn parse_file_materialized(
+    file: &Path,
+    relative_path: String,
+    timeout_ms: Option<u64>,
+    watchdog_sender: Option<&mpsc::SyncSender<WatchdogJob>>,
+) -> (PathBuf, String, ParseResult) {
+    let cancelled = timeout_ms.map(|_| Arc::new(AtomicBool::new(false)));
+    let (result, peak) = measure_file_heap(|| {
+        let read_start = Instant::now();
+        let content = match fs::read_to_string(file) {
+            Ok(content) => content,
+            Err(error) => {
+                return ParseResult::ReadError {
+                    read_ms: read_start.elapsed().as_micros() as f64 / 1000.0,
+                    error: format!("Read error: {error}"),
+                };
+            }
+        };
+        let read_ms = read_start.elapsed().as_micros() as f64 / 1000.0;
+        let start = Instant::now();
+
+        if let (Some(timeout), Some(cancelled), Some(sender)) =
+            (timeout_ms, cancelled.as_ref(), watchdog_sender)
+        {
+            let _ = sender.send(WatchdogJob {
+                deadline: start + Duration::from_millis(timeout),
+                cancelled: cancelled.clone(),
+            });
+        }
+
+        #[cfg(feature = "cancellation")]
+        if let Some(cancelled) = cancelled.as_ref() {
+            set_cancel_flag(cancelled);
+        }
+
+        let parsed = mrs_tptp::parse_tptp(&content);
+        let elapsed_ms = start.elapsed().as_micros() as f64 / 1000.0;
+
+        #[cfg(feature = "cancellation")]
+        if cancelled.is_some() {
+            clear_cancel_flag();
+        }
+
+        if cancelled
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(Ordering::Relaxed))
+        {
+            return ParseResult::Timeout {
+                timeout_ms: timeout_ms.unwrap_or_default(),
+            };
+        }
+
+        match parsed {
+            Ok(problem) => ParseResult::Success {
+                formula_count: problem.formulas.len(),
+                include_count: problem.includes.len(),
+                read_ms,
+                elapsed_ms,
+            },
+            Err(error) => ParseResult::Failed {
+                read_ms,
+                elapsed_ms,
+                error: error.to_string(),
+            },
+        }
+    });
+    FILE_HEAP_PEAK.with(|file_peak| file_peak.set(peak));
+    (file.to_path_buf(), relative_path, result)
 }
 
 /// Background watchdog thread: receives `WatchdogJob` entries and sets each `cancelled` flag
@@ -736,6 +820,7 @@ fn main_inner(num_threads: usize) {
     let mut folder = PathBuf::from("tests/resources");
     let mut timeout_ms: Option<u64> = None;
     let mut verbose = false;
+    let mut competition_parse = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -758,6 +843,9 @@ fn main_inner(num_threads: usize) {
         } else if args[i] == "--verbose" || args[i] == "-v" {
             verbose = true;
             i += 1;
+        } else if args[i] == "--competition-parse" {
+            competition_parse = true;
+            i += 1;
         } else if !args[i].starts_with('-') {
             folder = PathBuf::from(&args[i]);
             i += 1;
@@ -777,6 +865,14 @@ fn main_inner(num_threads: usize) {
     println!("###################################");
     println!();
     println!("Scanning folder: {}", folder.display());
+    if competition_parse {
+        println!("Parse mode: MRS-compatible full AST (`parse_tptp`), no round-trip check");
+        println!(
+            "Peak heap includes the source buffer and complete AST; it excludes process baseline, lowering, and search."
+        );
+    } else {
+        println!("Parse mode: streaming parse plus per-item AST round-trip validation");
+    }
     if let Some(timeout) = timeout_ms {
         println!("Timeout per file: {}ms", timeout);
     }
@@ -826,7 +922,13 @@ fn main_inner(num_threads: usize) {
             scope.spawn(|_| loop {
                 let index = next_file.fetch_add(1, Ordering::Relaxed);
                 let Some(file) = files.get(index) else { break };
-                let result = parse_file(file, &folder, timeout_ms, watchdog_sender_opt.as_ref());
+                let result = parse_file(
+                    file,
+                    &folder,
+                    timeout_ms,
+                    watchdog_sender_opt.as_ref(),
+                    competition_parse,
+                );
                 let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
                 let status = match &result.2 {
                     ParseResult::Success { formula_count, include_count, read_ms, elapsed_ms } => format!(
@@ -988,7 +1090,11 @@ fn main_inner(num_threads: usize) {
     println!();
     println!("Total formulas:   {}", total_formulas);
     println!("Total includes:   {}", total_includes);
-    println!("Roundtrip fails:  {}", roundtrip_failures);
+    if competition_parse {
+        println!("Roundtrip check:  skipped (--competition-parse)");
+    } else {
+        println!("Roundtrip fails:  {}", roundtrip_failures);
+    }
     println!();
     println!("Wall time:        {:.2}s", total_time.as_secs_f64());
     println!("I/O time (sum):   {:.2}ms", total_read_time_ms);
@@ -1078,11 +1184,60 @@ fn main_inner(num_threads: usize) {
         }
     }
 
-    if !failed_files.is_empty() || !roundtrip_failed_files.is_empty() || !timeout_files.is_empty() {
+    if !failed_files.is_empty()
+        || (!competition_parse && !roundtrip_failed_files.is_empty())
+        || !timeout_files.is_empty()
+    {
         std::process::exit(1);
     } else {
         println!();
         println!("✓ All files parsed successfully!");
-        println!("✓ Parsing-reparsing comparison successful for all files.");
+        if competition_parse {
+            println!(
+                "✓ Used full-AST MRS-compatible parse mode; round-trip validation was skipped."
+            );
+        } else {
+            println!("✓ Parsing-reparsing comparison successful for all files.");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn competition_parse_measures_source_and_builds_the_complete_problem_ast() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("mrs-parse-folder-{}-{unique}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let file = directory.join("problem.p");
+        let source =
+            "include('axioms.ax',[chosen]).\nfof(chosen,axiom,p).\nfof(goal,conjecture,p).\n";
+        fs::write(&file, source).unwrap();
+
+        let (_, relative, result, peak) = parse_file(&file, &directory, None, None, true);
+        assert_eq!(relative, "problem.p");
+        assert!(matches!(
+            result,
+            ParseResult::Success {
+                formula_count: 2,
+                include_count: 1,
+                ..
+            }
+        ));
+        assert!(
+            peak >= source.len(),
+            "source buffer must be inside peak accounting"
+        );
+
+        fs::remove_file(file).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 }

@@ -198,6 +198,17 @@ nix develop -c cargo run --release -p mrs-tptp --example parse_folder -- \
   /path/to/TPTP-v10.0.0/Axioms --threads 2
 ```
 
+To approximate MRS's competition **parse stage** instead, use
+`--competition-parse`. This calls `parse_tptp` and retains the complete problem
+AST during parsing, like `mrs`; it skips the benchmark-only display/reparse
+check. Its per-file peak heap meter includes the source buffer plus parsed AST,
+but not process baseline, lowering, include resolution, or search:
+
+```bash
+nix develop -c cargo run --release -p mrs-tptp --example parse_folder -- \
+  /path/to/TPTP-v10.0.0/Problems --threads 16 --competition-parse
+```
+
 ## Features
 
 ### `cancellation`

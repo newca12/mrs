@@ -488,6 +488,8 @@ cargo test -- --nocapture
 # Run the streaming parse/round-trip sweep on both halves of a TPTP release
 cargo run --release -p mrs-tptp --example parse_folder -- /path/to/TPTP/Problems --threads 4
 cargo run --release -p mrs-tptp --example parse_folder -- /path/to/TPTP/Axioms --threads 2
+# MRS-compatible parse stage (full AST, input buffer included in per-file peak)
+cargo run --release -p mrs-tptp --example parse_folder -- /path/to/TPTP/Problems --threads 16 --competition-parse
 ```
 
 ### Adding Tests
