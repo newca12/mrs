@@ -175,7 +175,7 @@ fn fof_infix_or_atomic<'a>(input: &mut &'a str) -> PResult<FOFFormula<'a>> {
             }
         }
         // Plain predicate or infix
-        b'a'..=b'z' | b'\'' => {
+        b'a'..=b'z' | b'\'' | b'`' => {
             let pred = atomic_word.parse_next(input)?;
             ws.parse_next(input)?;
             // Check for function args
@@ -500,7 +500,7 @@ pub fn fof_term<'a>(input: &mut &'a str) -> PResult<FOFTerm<'a>> {
         .ok_or_else(|| winnow::error::ErrMode::Backtrack(winnow::error::ContextError::new()))?;
     match first {
         b'A'..=b'Z' => upper_word.map(FOFTerm::Variable).parse_next(input),
-        b'a'..=b'z' | b'\'' => fof_function_term.parse_next(input),
+        b'a'..=b'z' | b'\'' | b'`' => fof_function_term.parse_next(input),
         b'"' => distinct_object
             .map(FOFTerm::DistinctObject)
             .parse_next(input),

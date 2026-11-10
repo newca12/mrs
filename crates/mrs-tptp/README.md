@@ -17,7 +17,7 @@ A robust, zero-copy TPTP (Thousands of Problems for Theorem Provers) parser for 
 
 ### TPTP Version Compatibility
 
-`mrs-tptp` implements a single, high-performance, permissive parser supporting a superset of all TPTP language standards up to **TPTP v9.x.x** (including classical CNF/FOF, typed TFF/TCF/THF, TXF/FOOL extensions, and non-classical NXF/NHF). Because the TPTP BNF is designed to be backwards-compatible, older problem files from earlier TPTP releases (e.g. v3.x.x through v8.x.x) are parsed natively without any configuration.
+`mrs-tptp` implements the TPTP **v10.0.0** syntax, including classical CNF/FOF, typed TFF/TCF/THF, TXF/FOOL extensions, non-classical NXF/NHF, datatype/codatatype roles, and the current grammar for names and includes. Older TPTP problem files remain supported.
 
 
 ## Installation
@@ -174,7 +174,7 @@ assert!(iter.remaining().is_empty());
 
 ### Display / Round-trip
 
-All AST types implement `Display`, producing valid TPTP output that can be reparsed to an equivalent AST:
+Annotated formulas and include directives implement `Display`, producing valid TPTP that can be reparsed to the same AST structure:
 
 ```rust
 use mrs_tptp::parse_tptp;
@@ -185,6 +185,17 @@ let problem = parse_tptp(input).unwrap();
 for formula in &problem.formulas {
     println!("{}", formula); // prints valid TPTP
 }
+```
+
+Round-trip checks compare the reparsed AST, not just the formatted text. The
+`parse_folder` example performs this check item-by-item while streaming large
+files. It scans both `.p` problem files and `.ax` axiom files:
+
+```bash
+nix develop -c cargo run --release -p mrs-tptp --example parse_folder -- \
+  /path/to/TPTP-v10.0.0/Problems --threads 2
+nix develop -c cargo run --release -p mrs-tptp --example parse_folder -- \
+  /path/to/TPTP-v10.0.0/Axioms --threads 2
 ```
 
 ## Features
@@ -221,8 +232,8 @@ mrs_tptp::clear_cancel_flag();
 | `TPTPProblem<'a>` | A complete parsed TPTP file (`includes`, `formulas`, `formula_comments`) |
 | `AnnotatedFormula<'a>` | One annotated formula — `THF`, `TFF`, `FOF`, `TCF`, `CNF`, or `TPI` variant |
 | `TPTPInput<'a>` | A single streamed item — `Formula` or `Include` |
-| `FormulaRole` | Role of a formula: `Axiom`, `Conjecture`, `NegatedConjecture`, `Type`, `Definition`, `Lemma`, `Theorem`, … |
-| `Include<'a>` | An `include(…)` directive with `file_name` and optional `selection` |
+| `FormulaRole` | Role of a formula, including the TPTP 10 datatype and codatatype roles; unrecognised role keywords are parse errors |
+| `Include<'a>` | An `include(…)` directive with `file_name`, optional `selection`, and optional `space_name` |
 | `Comment<'a>` | A `% line` or `/* block */` comment |
 
 **Dialect-specific formula types:**

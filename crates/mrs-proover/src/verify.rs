@@ -1796,7 +1796,7 @@ fn collect_background_ac(
             continue;
         };
         let role = af.role();
-        if role == FormulaRole::Type || role == FormulaRole::Logic {
+        if role.is_type_declaration() || role == FormulaRole::Logic {
             continue;
         }
         // For the conjecture, use the negation (NNF) so existential

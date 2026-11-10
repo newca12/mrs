@@ -1,13 +1,15 @@
 //! Common types shared across TPTP dialects.
 
 /// A name in TPTP (used for formula names).
-/// Names can be lower_word, single_quoted, or integer (anonymous).
+/// Names can be lower_word, single_quoted, back_quoted, or integer (anonymous).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Name<'a> {
     /// A lower_word: starts with lowercase, alphanumeric + underscore
     Lower(&'a str),
     /// A single-quoted string 'content'
     SingleQuoted(&'a str),
+    /// A back-quoted upper word, e.g. `` `Variable` ``
+    BackQuoted(&'a str),
     /// An integer (for anonymous names)
     Integer(&'a str),
 }
@@ -17,6 +19,7 @@ impl<'a> Name<'a> {
         match self {
             Name::Lower(s) => s,
             Name::SingleQuoted(s) => s,
+            Name::BackQuoted(s) => s,
             Name::Integer(s) => s,
         }
     }
@@ -48,7 +51,7 @@ impl<'a> Number<'a> {
 /// General term used in annotations
 #[derive(Debug, Clone, PartialEq)]
 pub enum GeneralTerm<'a> {
-    /// A word (lower_word, single_quoted, or defined)
+    /// An atomic word (lower_word, single-quoted, or back-quoted)
     Word(AtomicWord<'a>),
     /// A number
     Number(Number<'a>),
@@ -81,13 +84,15 @@ pub enum GeneralData<'a> {
     FOT(Box<super::fof::FOFTerm<'a>>),
 }
 
-/// An atomic word: lower_word, single_quoted, or defined word
+/// An atomic word: lower_word, single_quoted, or back_quoted.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AtomicWord<'a> {
     /// A lower_word: starts with lowercase, alphanumeric + underscore
     Lower(&'a str),
     /// A single-quoted string 'content'
     SingleQuoted(&'a str),
+    /// A back-quoted upper word, e.g. `` `Variable` ``
+    BackQuoted(&'a str),
 }
 
 impl<'a> AtomicWord<'a> {
@@ -95,6 +100,7 @@ impl<'a> AtomicWord<'a> {
         match self {
             AtomicWord::Lower(s) => s,
             AtomicWord::SingleQuoted(s) => s,
+            AtomicWord::BackQuoted(s) => s,
         }
     }
 }

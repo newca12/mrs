@@ -12,8 +12,8 @@ use crate::ast::tff::{
 };
 use crate::ast::thf::{LogicProperty, LogicSpecification, LogicValue, NonClassicalOperator};
 use crate::lexer::{
-    PResult, atomic_word, check_cancel, defined_word, distinct_object, number, single_quoted,
-    system_word, upper_word, ws,
+    PResult, atomic_word, check_cancel, defined_word, distinct_object, keyword, number,
+    single_quoted, system_word, upper_word, ws,
 };
 use crate::parser::common::{nonassoc_connective, quantifier};
 
@@ -96,6 +96,7 @@ pub fn tff_statement<'a>(input: &mut &'a str) -> PResult<TFFStatement<'a>> {
 /// Parse a TFF type declaration
 fn tff_typing<'a>(input: &mut &'a str) -> PResult<TFFTyping<'a>> {
     let symbol = alt((
+        distinct_object.map(TypedSymbol::DistinctObject),
         defined_word.map(TypedSymbol::Defined),
         atomic_word.map(TypedSymbol::Atom),
     ))
@@ -218,11 +219,10 @@ fn tff_logic_key<'a>(input: &mut &'a str) -> PResult<&'a str> {
         },
         // Regular atomic word
         |i: &mut &'a str| {
-            let word = atomic_word(i)?;
-            match word {
-                AtomicWord::Lower(s) => Ok(s),
-                AtomicWord::SingleQuoted(s) => Ok(s),
-            }
+            let start = *i;
+            atomic_word(i)?;
+            let len = i.as_ptr() as usize - start.as_ptr() as usize;
+            Ok(&start[..len])
         },
     ))
     .parse_next(input)
@@ -252,6 +252,7 @@ fn tff_logic_value<'a>(input: &mut &'a str) -> PResult<LogicValue<'a>> {
             match word {
                 AtomicWord::Lower(s) => Ok(LogicValue::Atom(s)),
                 AtomicWord::SingleQuoted(s) => Ok(LogicValue::String(s)),
+                AtomicWord::BackQuoted(s) => Ok(LogicValue::BackQuoted(s)),
             }
         },
     ))
@@ -526,7 +527,7 @@ fn tff_infix_or_atomic<'a>(input: &mut &'a str) -> PResult<TFFFormula<'a>> {
             }
         }
         // Lowercase or single-quoted: predicate/function
-        'a'..='z' | '\'' => {
+        'a'..='z' | '\'' | '`' => {
             let name = atomic_word.parse_next(input)?;
             ws.parse_next(input)?;
 
@@ -890,8 +891,15 @@ fn tff_nonclassical<'a>(input: &mut &'a str) -> PResult<TFFFormula<'a>> {
 
     // Formula argument: @ (formula) or (formula)
     let formula = alt((
-        // THF application style: @ formula
-        preceded((ws, '@', ws), tff_unary_formula),
+        // Application style: @ formula. A parenthesized argument is grouping
+        // syntax, not an AST Parens node, just as in the direct form below.
+        preceded(
+            (ws, '@', ws),
+            alt((
+                delimited(('(', ws), tff_formula, (ws, ')')),
+                tff_unary_formula,
+            )),
+        ),
         // Direct parenthesized: (formula)
         delimited(('(', ws), tff_formula, (ws, ')')),
     ))
@@ -1334,6 +1342,8 @@ fn tff_let_binding<'a>(input: &mut &'a str) -> PResult<(AtomicWord<'a>, TFFLetBo
 /// Optimized ordering: most common (plain atomic) first
 pub fn tff_atomic_formula<'a>(input: &mut &'a str) -> PResult<TFFAtomicFormula<'a>> {
     alt((
+        keyword("$true").value(TFFAtomicFormula::True),
+        keyword("$false").value(TFFAtomicFormula::False),
         // Plain atomic: pred(args) or prop (most common)
         tff_plain_atomic,
         // FOOL/TXF: variable of type $o used as atomic formula (common in FOOL)
@@ -1342,9 +1352,6 @@ pub fn tff_atomic_formula<'a>(input: &mut &'a str) -> PResult<TFFAtomicFormula<'
         tff_defined_atomic,
         // System predicate: $$pred(args) (rare)
         tff_system_atomic,
-        // Explicit $true/$false after defined_atomic catches most cases
-        "$true".value(TFFAtomicFormula::True),
-        "$false".value(TFFAtomicFormula::False),
     ))
     .parse_next(input)
 }
@@ -1607,12 +1614,15 @@ fn tff_conditional_term<'a>(input: &mut &'a str) -> PResult<TFFTerm<'a>> {
     ','.parse_next(input)?;
     ws.parse_next(input)?;
 
-    let then_branch = tff_term.parse_next(input)?;
+    // TXF branches are terms, which may themselves be formula-valued terms
+    // such as an unparenthesized equality. Use the argument-term parser so
+    // nested `$ite` expressions do not fall back to generic `$ite(...)` atoms.
+    let then_branch = tff_arg_term.parse_next(input)?;
     ws.parse_next(input)?;
     ','.parse_next(input)?;
     ws.parse_next(input)?;
 
-    let else_branch = tff_term.parse_next(input)?;
+    let else_branch = tff_arg_term.parse_next(input)?;
     ws.parse_next(input)?;
     ')'.parse_next(input)?;
 
@@ -1801,11 +1811,13 @@ fn tff_negation_as_term_simple<'a>(input: &mut &'a str) -> PResult<TFFTerm<'a>> 
 /// Parse a unary formula for simple terms (avoids infix equality recursion)
 fn tff_unary_formula_simple<'a>(input: &mut &'a str) -> PResult<TFFFormula<'a>> {
     alt((
-        tff_atomic_formula.map(TFFFormula::Atomic),
-        tff_quantified_formula,
-        tff_negation_simple,
+        // FOOL/TXF constructs must precede the generic defined-atom parser:
+        // otherwise `$ite`/`$let` become `Defined` and reparse differently.
         tff_conditional,
         tff_let,
+        tff_quantified_formula,
+        tff_atomic_formula.map(TFFFormula::Atomic),
+        tff_negation_simple,
         tff_parens_formula_simple,
     ))
     .parse_next(input)

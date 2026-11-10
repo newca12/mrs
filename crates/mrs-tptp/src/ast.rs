@@ -121,13 +121,15 @@ impl<'a> TPTPProblem<'a> {
     }
 }
 
-/// An include directive: `include('Axioms/SET001+0.ax', [sel1, sel2]).`
+/// An include directive, optionally narrowed by formula names or a namespace.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Include<'a> {
     /// The file path (without surrounding quotes).
     pub file_name: &'a str,
     /// Optional formula-name selection list.  `None` means "include all".
     pub selection: Option<Vec<common::Name<'a>>>,
+    /// Optional name of the namespace in which selected formulas are included.
+    pub space_name: Option<common::Name<'a>>,
 }
 
 /// A comment in a TPTP file (`% line comment` or `/* block comment */`).
@@ -391,8 +393,16 @@ pub enum FormulaRole {
     NegatedConjecture,
     /// `plain` — no special role.
     Plain,
-    /// `type` — a type declaration (`p: $i > $o`).
+    /// `type` and its standard subroles — a type/declaration record.
     Type,
+    /// `type-datatype` — a datatype declaration.
+    TypeDatatype,
+    /// `type-codatatype` — a codatatype declaration.
+    TypeCodatatype,
+    /// `type-datatype_constructor` — a datatype constructor declaration.
+    TypeDatatypeConstructor,
+    /// `type-codatatype_constructor` — a codatatype constructor declaration.
+    TypeCodatatypeConstructor,
     /// `interpretation` — a model interpretation.
     Interpretation,
     /// `fi_domain` — finite interpretation domain.
@@ -403,14 +413,15 @@ pub enum FormulaRole {
     FiPredicates,
     /// `logic` — a logic specification.
     Logic,
-    /// `unknown` — role not recognised.
+    /// `unknown` — the TPTP `unknown` role, an error situation for provers.
     Unknown,
 }
 
 impl FormulaRole {
     /// Parse a [`FormulaRole`] from its TPTP keyword string.
     ///
-    /// Returns `None` for unrecognised strings.
+    /// Returns `None` for keywords outside the TPTP role list. Parsers reject such
+    /// roles instead of guessing what they mean.
     pub fn parse(s: &str) -> Option<FormulaRole> {
         match s {
             "axiom" => Some(FormulaRole::Axiom),
@@ -425,6 +436,10 @@ impl FormulaRole {
             "negated_conjecture" => Some(FormulaRole::NegatedConjecture),
             "plain" => Some(FormulaRole::Plain),
             "type" => Some(FormulaRole::Type),
+            "type-datatype" => Some(FormulaRole::TypeDatatype),
+            "type-codatatype" => Some(FormulaRole::TypeCodatatype),
+            "type-datatype_constructor" => Some(FormulaRole::TypeDatatypeConstructor),
+            "type-codatatype_constructor" => Some(FormulaRole::TypeCodatatypeConstructor),
             "interpretation" => Some(FormulaRole::Interpretation),
             "fi_domain" => Some(FormulaRole::FiDomain),
             "fi_functors" => Some(FormulaRole::FiFunctors),
@@ -450,6 +465,10 @@ impl FormulaRole {
             FormulaRole::NegatedConjecture => "negated_conjecture",
             FormulaRole::Plain => "plain",
             FormulaRole::Type => "type",
+            FormulaRole::TypeDatatype => "type-datatype",
+            FormulaRole::TypeCodatatype => "type-codatatype",
+            FormulaRole::TypeDatatypeConstructor => "type-datatype_constructor",
+            FormulaRole::TypeCodatatypeConstructor => "type-codatatype_constructor",
             FormulaRole::Interpretation => "interpretation",
             FormulaRole::FiDomain => "fi_domain",
             FormulaRole::FiFunctors => "fi_functors",
@@ -508,9 +527,17 @@ impl FormulaRole {
         self == FormulaRole::NegatedConjecture
     }
 
-    /// `true` for `type` declarations (e.g. `p: $i > $o`).
+    /// `true` for `type` declarations (e.g. `p: $i > $o`) and the datatype and
+    /// codatatype declarations of TPTP 10.
     pub fn is_type_declaration(self) -> bool {
-        self == FormulaRole::Type
+        matches!(
+            self,
+            FormulaRole::Type
+                | FormulaRole::TypeDatatype
+                | FormulaRole::TypeCodatatype
+                | FormulaRole::TypeDatatypeConstructor
+                | FormulaRole::TypeCodatatypeConstructor
+        )
     }
 
     // -----------------------------------------------------------------------

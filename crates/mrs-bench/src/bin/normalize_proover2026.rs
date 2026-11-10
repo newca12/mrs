@@ -277,6 +277,10 @@ fn render_problem(name: &str, formulas: &[AnnotatedFormula<'_>]) -> Result<Strin
                 | FormulaRole::Definition
                 | FormulaRole::Conjecture
                 | FormulaRole::Type
+                | FormulaRole::TypeDatatype
+                | FormulaRole::TypeCodatatype
+                | FormulaRole::TypeDatatypeConstructor
+                | FormulaRole::TypeCodatatypeConstructor
         ) {
             continue;
         }

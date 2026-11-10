@@ -3,7 +3,7 @@
 //! TCF is essentially typed CNF - clauses with typed terms.
 
 use super::common::*;
-use super::tff::{TFFTerm, TFFType, TFFVariable};
+use super::tff::{TFFTerm, TFFType, TFFVariable, TypedSymbol};
 
 /// A TCF statement
 #[derive(Debug, Clone, PartialEq)]
@@ -17,7 +17,7 @@ pub enum TCFStatement<'a> {
 /// A TCF type declaration
 #[derive(Debug, Clone, PartialEq)]
 pub struct TCFTyping<'a> {
-    pub symbol: AtomicWord<'a>,
+    pub symbol: TypedSymbol<'a>,
     pub typ: TFFType<'a>,
 }
 

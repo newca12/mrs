@@ -666,6 +666,7 @@ fn run() {
     } else if resolved_includes > 0 {
         info!("% Resolved {} include directive(s)", resolved_includes);
     }
+    let partial_input = prepared.include_error.is_some() || prepared.lowered.unsupported_axioms > 0;
     let lowered = prepared.lowered;
     let prephase_meta = prepared.meta;
     let all_clauses = prepared.clauses;
@@ -693,6 +694,15 @@ fn run() {
         && lowered.cnf_clauses.is_empty()
     {
         info!("% Warning: No supported logical formulas could be lowered");
+        println!("{}", szs_status_line(SzsStatus::GaveUp, problem_name));
+        process::exit(0);
+    }
+
+    if lowered.unsupported_goals > 0 {
+        info!(
+            "% Warning: {} goal formula(s) could not be lowered; no verdict is claimed",
+            lowered.unsupported_goals
+        );
         println!("{}", szs_status_line(SzsStatus::GaveUp, problem_name));
         process::exit(0);
     }
@@ -1357,6 +1367,19 @@ fn run() {
 
     let mut status = final_status;
     let result = final_result;
+
+    // A satisfiability claim covers the whole input. A skipped formula or an
+    // unresolved include means the search saw only part of it, so a saturated
+    // subset must not be reported as a model of the problem.
+    if partial_input
+        && matches!(
+            status,
+            SzsStatus::Satisfiable | SzsStatus::CounterSatisfiable
+        )
+    {
+        info!("% Warning: input was only partly lowered; no satisfiability claim is made");
+        status = SzsStatus::GaveUp;
+    }
 
     // A search saturation is not a certified model.  The strict release path
     // certifies only the two completeness witnesses produced by the ordered

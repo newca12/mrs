@@ -116,35 +116,24 @@ pub fn line_comment<'a>(input: &mut &'a str) -> PResult<Comment<'a>> {
 }
 
 /// Parse a block comment: /* ... */
+///
+/// TPTP block comments do not nest: the first `*/` closes the comment.
 pub fn block_comment<'a>(input: &mut &'a str) -> PResult<Comment<'a>> {
     "/*".parse_next(input)?;
 
     let start = *input;
-    let mut depth = 1;
-
-    while depth > 0 && !input.is_empty() {
-        if input.starts_with("*/") {
-            depth -= 1;
-            if depth == 0 {
-                let content = &start[..start.len() - input.len()];
-                "*/".parse_next(input)?;
-                return Ok(Comment {
-                    content,
-                    is_block: true,
-                });
-            }
-            *input = &input[2..];
-        } else if input.starts_with("/*") {
-            depth += 1;
-            *input = &input[2..];
-        } else {
-            *input = &input[1..];
+    match start.find("*/") {
+        Some(end) => {
+            *input = &start[end + 2..];
+            Ok(Comment {
+                content: &start[..end],
+                is_block: true,
+            })
         }
+        None => Err(winnow::error::ErrMode::Cut(
+            winnow::error::ContextError::new(),
+        )),
     }
-
-    Err(winnow::error::ErrMode::Cut(
-        winnow::error::ContextError::new(),
-    ))
 }
 
 /// Parse a lower_word: [a-z][a-zA-Z0-9_']*
@@ -192,30 +181,32 @@ fn single_quoted_content<'a>(input: &mut &'a str) -> PResult<&'a str> {
     let start = *input;
 
     loop {
-        // Take non-special characters
-        take_while(0.., |c| c != '\'' && c != '\\').parse_next(input)?;
+        take_while(0.., |c: char| c != '\'' && c != '\\').parse_next(input)?;
 
         if input.starts_with('\'') {
-            // End of string
-            let len = start.len() - input.len();
-            return Ok(&start[..len]);
+            return Ok(&start[..start.len() - input.len()]);
         } else if input.starts_with('\\') {
-            // Escape sequence
-            *input = &input[1..];
-            if !input.is_empty() {
-                *input = &input[1..];
-            } else {
-                return Err(winnow::error::ErrMode::Cut(
-                    winnow::error::ContextError::new(),
-                ));
-            }
+            skip_escaped_char(input)?;
         } else {
-            // Unexpected end
+            // Unterminated string
             return Err(winnow::error::ErrMode::Cut(
                 winnow::error::ContextError::new(),
             ));
         }
     }
+}
+
+/// Skip a backslash and the character it escapes. The escaped character may be
+/// multi-byte, so the skip advances by characters, never by a fixed byte count.
+fn skip_escaped_char(input: &mut &str) -> PResult<()> {
+    *input = &input[1..];
+    let Some(escaped) = input.chars().next() else {
+        return Err(winnow::error::ErrMode::Cut(
+            winnow::error::ContextError::new(),
+        ));
+    };
+    *input = &input[escaped.len_utf8()..];
+    Ok(())
 }
 
 /// Parse a distinct object: "content"
@@ -229,20 +220,12 @@ fn distinct_object_content<'a>(input: &mut &'a str) -> PResult<&'a str> {
     let start = *input;
 
     loop {
-        take_while(0.., |c| c != '"' && c != '\\').parse_next(input)?;
+        take_while(0.., |c: char| c != '"' && c != '\\').parse_next(input)?;
 
         if input.starts_with('"') {
-            let len = start.len() - input.len();
-            return Ok(&start[..len]);
+            return Ok(&start[..start.len() - input.len()]);
         } else if input.starts_with('\\') {
-            *input = &input[1..];
-            if !input.is_empty() {
-                *input = &input[1..];
-            } else {
-                return Err(winnow::error::ErrMode::Cut(
-                    winnow::error::ContextError::new(),
-                ));
-            }
+            skip_escaped_char(input)?;
         } else {
             return Err(winnow::error::ErrMode::Cut(
                 winnow::error::ContextError::new(),
@@ -290,6 +273,7 @@ fn scan_dollar_word<'a>(input: &mut &'a str, system: bool) -> PResult<&'a str> {
 pub fn atomic_word<'a>(input: &mut &'a str) -> PResult<AtomicWord<'a>> {
     dispatch! {peek(winnow::token::any);
         '\'' => single_quoted.map(AtomicWord::SingleQuoted),
+        '`' => back_quoted.map(AtomicWord::BackQuoted),
         'a'..='z' => lower_word.map(AtomicWord::Lower),
         _ => fail,
     }
@@ -306,6 +290,12 @@ pub fn defined_word<'a>(input: &mut &'a str) -> PResult<DefinedWord<'a>> {
 #[inline]
 pub fn system_word<'a>(input: &mut &'a str) -> PResult<SystemWord<'a>> {
     dollar_dollar_word.map(SystemWord).parse_next(input)
+}
+
+/// Parse a back-quoted upper word: a backtick followed by an upper word.
+#[inline]
+pub fn back_quoted<'a>(input: &mut &'a str) -> PResult<&'a str> {
+    preceded('`', upper_word).parse_next(input)
 }
 
 /// Parse an integer (with optional sign) - returns string to handle arbitrary precision
@@ -371,16 +361,25 @@ pub fn number<'a>(input: &mut &'a str) -> PResult<Number<'a>> {
     }
 }
 
-/// Parse a name (lower_word, single_quoted, or integer for anonymous)
+/// Parse a name (atomic_word or signed integer for anonymous names).
 #[inline]
 pub fn name<'a>(input: &mut &'a str) -> PResult<Name<'a>> {
     dispatch! {peek(winnow::token::any);
         'a'..='z' => lower_word.map(Name::Lower),
         '\'' => single_quoted.map(Name::SingleQuoted),
-        '0'..='9' => digit1.map(Name::Integer),
+        '`' => back_quoted.map(Name::BackQuoted),
+        '+' | '-' | '0'..='9' => integer_name.map(Name::Integer),
         _ => fail,
     }
     .parse_next(input)
+}
+
+fn integer_name<'a>(input: &mut &'a str) -> PResult<&'a str> {
+    let start = *input;
+    opt(one_of(['+', '-'])).parse_next(input)?;
+    digit1.parse_next(input)?;
+    let len = start.len() - input.len();
+    Ok(&start[..len])
 }
 
 /// Parse a variable name
@@ -431,6 +430,20 @@ mod tests {
     }
 
     #[test]
+    fn test_back_quoted_word_and_signed_name() {
+        assert_eq!(back_quoted.parse_peek("`Variable"), Ok(("", "Variable")));
+        assert_eq!(
+            atomic_word.parse_peek("`Variable"),
+            Ok(("", AtomicWord::BackQuoted("Variable")))
+        );
+        assert_eq!(name.parse_peek("+42"), Ok(("", Name::Integer("+42"))));
+        assert_eq!(
+            name.parse_peek("`Variable"),
+            Ok(("", Name::BackQuoted("Variable")))
+        );
+    }
+
+    #[test]
     fn test_single_quoted() {
         assert_eq!(single_quoted.parse_peek("'hello'"), Ok(("", "hello")));
         assert_eq!(
@@ -441,6 +454,9 @@ mod tests {
             single_quoted.parse_peek("'escaped\\'quote'"),
             Ok(("", "escaped\\'quote"))
         );
+        assert_eq!(single_quoted.parse_peek("''"), Ok(("", "")));
+        assert_eq!(single_quoted.parse_peek(r"'bad\q'"), Ok(("", r"bad\q")));
+        assert_eq!(single_quoted.parse_peek("'\\é'"), Ok(("", "\\é")));
     }
 
     #[test]
@@ -450,6 +466,8 @@ mod tests {
             distinct_object.parse_peek("\"with space\""),
             Ok(("", "with space"))
         );
+        assert_eq!(distinct_object.parse_peek("\"\""), Ok(("", "")));
+        assert_eq!(distinct_object.parse_peek(r#""bad\q""#), Ok(("", r"bad\q")));
     }
 
     #[test]
@@ -488,5 +506,16 @@ mod tests {
         let (_rest, comment) = result.unwrap();
         assert_eq!(comment.content, " block comment ");
         assert!(comment.is_block);
+    }
+
+    #[test]
+    fn test_block_comment_does_not_nest_and_accepts_multibyte_text() {
+        let (rest, comment) = block_comment.parse_peek("/* a /* b */ c").unwrap();
+        assert_eq!(comment.content, " a /* b ");
+        assert_eq!(rest, " c");
+        let (rest, comment) = block_comment.parse_peek("/* é — ü */x").unwrap();
+        assert_eq!(comment.content, " é — ü ");
+        assert_eq!(rest, "x");
+        assert!(block_comment.parse_peek("/* unterminated").is_err());
     }
 }

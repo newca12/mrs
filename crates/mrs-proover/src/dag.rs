@@ -122,7 +122,7 @@ pub fn build<'p>(proof: &'p mrs_tptp::TPTPProblem<'p>) -> Result<Dag<'p>, DagErr
         // metadata, not proof-inference steps, and appear in Vampire- and
         // Beagle-generated proofs of FOF problems.  Silently dropping them is
         // sound because they carry no logical content.
-        if af.role() == FormulaRole::Type {
+        if af.role().is_type_declaration() {
             continue;
         }
 

@@ -32,6 +32,8 @@ pub struct THFTyping<'a> {
 pub enum THFTypedSymbol<'a> {
     /// An atomic word
     Atom(AtomicWord<'a>),
+    /// A distinct object used as a typed atom
+    DistinctObject(&'a str),
     /// A defined word
     Defined(DefinedWord<'a>),
     /// A system word
@@ -439,6 +441,8 @@ pub enum LogicValue<'a> {
     Atom(&'a str),
     /// A quoted string (e.g., 'LOG002_1.l')
     String(&'a str),
+    /// A back-quoted upper word used as an atomic logic value.
+    BackQuoted(&'a str),
     /// A list of values
     List(Vec<LogicValue<'a>>),
     /// A property assignment: name == value

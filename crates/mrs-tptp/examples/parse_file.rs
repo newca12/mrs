@@ -88,7 +88,7 @@ tff(typed_axiom, axiom,
             let types = problem
                 .formulas
                 .iter()
-                .filter(|f| f.role() == FormulaRole::Type)
+                .filter(|f| f.role().is_type_declaration())
                 .count();
 
             println!("  Axioms:      {}", axioms);
@@ -103,24 +103,5 @@ tff(typed_axiom, axiom,
 }
 
 fn format_role(role: FormulaRole) -> &'static str {
-    match role {
-        FormulaRole::Axiom => "axiom",
-        FormulaRole::AxiomLocal => "axiom-local",
-        FormulaRole::Hypothesis => "hypothesis",
-        FormulaRole::Definition => "definition",
-        FormulaRole::Assumption => "assumption",
-        FormulaRole::Lemma => "lemma",
-        FormulaRole::Theorem => "theorem",
-        FormulaRole::Corollary => "corollary",
-        FormulaRole::Conjecture => "conjecture",
-        FormulaRole::NegatedConjecture => "negated_conjecture",
-        FormulaRole::Plain => "plain",
-        FormulaRole::Type => "type",
-        FormulaRole::Interpretation => "interpretation",
-        FormulaRole::FiDomain => "fi_domain",
-        FormulaRole::FiFunctors => "fi_functors",
-        FormulaRole::FiPredicates => "fi_predicates",
-        FormulaRole::Logic => "logic",
-        FormulaRole::Unknown => "unknown",
-    }
+    role.as_str()
 }

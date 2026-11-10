@@ -26,7 +26,7 @@ fn determine_category(ast: &TPTPProblem) -> Category {
 
     for input in &ast.formulas {
         let role = input.role();
-        if role == FormulaRole::Type || role == FormulaRole::Definition {
+        if role.is_type_declaration() || role == FormulaRole::Definition {
             continue; // Skip types
         }
 

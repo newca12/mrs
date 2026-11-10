@@ -34,6 +34,8 @@ pub struct TFFTyping<'a> {
 pub enum TypedSymbol<'a> {
     /// An atomic word
     Atom(AtomicWord<'a>),
+    /// A distinct object used as a typed atom
+    DistinctObject(&'a str),
     /// A defined word
     Defined(DefinedWord<'a>),
 }

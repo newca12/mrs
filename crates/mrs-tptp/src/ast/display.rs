@@ -15,6 +15,7 @@ impl<'a> Display for Name<'a> {
         match self {
             Name::Lower(s) => write!(f, "{}", s),
             Name::SingleQuoted(s) => write!(f, "'{}'", s),
+            Name::BackQuoted(s) => write!(f, "`{}", s),
             Name::Integer(s) => write!(f, "{}", s),
         }
     }
@@ -31,6 +32,7 @@ impl<'a> Display for AtomicWord<'a> {
         match self {
             AtomicWord::Lower(s) => write!(f, "{}", s),
             AtomicWord::SingleQuoted(s) => write!(f, "'{}'", s),
+            AtomicWord::BackQuoted(s) => write!(f, "`{}", s),
         }
     }
 }
@@ -438,6 +440,7 @@ impl<'a> Display for TypedSymbol<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             TypedSymbol::Atom(a) => write!(f, "{}", a),
+            TypedSymbol::DistinctObject(s) => write!(f, "\"{}\"", s),
             TypedSymbol::Defined(d) => write!(f, "{}", d),
         }
     }
@@ -617,16 +620,10 @@ impl<'a> Display for TFFFormula<'a> {
                     NonClassicalOperator::ShortBox(_) | NonClassicalOperator::ShortDiamond(_) => {
                         write!(f, "{}({})", operator, formula)
                     }
-                    _ => {
-                        // Check if the formula needs parentheses after @
-                        // Binary connectives have lower precedence than @, so they need parens
-                        let needs_parens = matches!(formula.as_ref(), TFFFormula::Binary { .. });
-                        if needs_parens {
-                            write!(f, "{} @ ({})", operator, formula)
-                        } else {
-                            write!(f, "{} @ {}", operator, formula)
-                        }
-                    }
+                    // The parser strips one grouping pair from the @ argument.
+                    // Always emit that pair so nested applications and explicit
+                    // Parens nodes both round-trip without changing the AST.
+                    _ => write!(f, "{} @ ({})", operator, formula),
                 }
             }
         }
@@ -1146,6 +1143,7 @@ impl<'a> Display for THFTypedSymbol<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             THFTypedSymbol::Atom(a) => write!(f, "{}", a),
+            THFTypedSymbol::DistinctObject(s) => write!(f, "\"{}\"", s),
             THFTypedSymbol::Defined(d) => write!(f, "{}", d),
             THFTypedSymbol::System(s) => write!(f, "{}", s),
         }
@@ -1250,17 +1248,10 @@ impl<'a> Display for THFFormula<'a> {
                         | NonClassicalOperator::ShortDiamond(_) => {
                             write!(f, "({})", formula)?;
                         }
-                        _ => {
-                            // Check if the formula needs parentheses after @
-                            // Binary connectives have lower precedence than @, so they need parens
-                            let needs_parens =
-                                matches!(formula.as_ref(), THFFormula::Binary { .. });
-                            if needs_parens {
-                                write!(f, " @ ({})", formula)?;
-                            } else {
-                                write!(f, " @ {}", formula)?;
-                            }
-                        }
+                        // The parser strips one grouping pair from the @ argument.
+                        // Always emit that pair so nested applications and explicit
+                        // Parens nodes both round-trip without changing the AST.
+                        _ => write!(f, " @ ({})", formula)?,
                     }
                 }
                 Ok(())
@@ -1522,6 +1513,7 @@ impl<'a> Display for LogicValue<'a> {
         match self {
             LogicValue::Atom(s) => write!(f, "{}", s),
             LogicValue::String(s) => write!(f, "'{}'", s),
+            LogicValue::BackQuoted(s) => write!(f, "`{}", s),
             LogicValue::List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
@@ -1559,6 +1551,13 @@ impl<'a> Display for Include<'a> {
                 write!(f, "{}", s)?;
             }
             write!(f, "]")?;
+        } else if self.space_name.is_some() {
+            // A space name requires an explicit selection argument; when the
+            // selection is all formulas, the TPTP spelling is `*`.
+            write!(f, ", *")?;
+        }
+        if let Some(space_name) = &self.space_name {
+            write!(f, ", {}", space_name)?;
         }
         write!(f, ").")
     }

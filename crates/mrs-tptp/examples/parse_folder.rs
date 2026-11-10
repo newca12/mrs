@@ -1,7 +1,7 @@
 //! Example: Recursively parse all TPTP files in a folder.
 //!
 //! This example mimics the behavior of ParserTestSuite.scala from scala-tptp-parser,
-//! recursively finding and parsing all .p files in a given directory.
+//! recursively finding and parsing all .p and .ax files in a given directory.
 //!
 //! Uses parallel processing with rayon for faster execution on multi-core systems.
 //!
@@ -17,7 +17,7 @@
 //!
 //! If no folder is provided, it defaults to tests/resources
 
-use mrs_tptp::{AnnotatedFormula, parse_tptp};
+use mrs_tptp::{TPTPInput, TPTPIterator};
 #[cfg(feature = "cancellation")]
 use mrs_tptp::{clear_cancel_flag, set_cancel_flag};
 use rayon::ThreadPoolBuilder;
@@ -280,7 +280,7 @@ fn fmt_bytes(bytes: usize) -> String {
     }
 }
 
-/// Recursively collect all .p files in a directory
+/// Recursively collect TPTP problem and axiom files in a directory.
 fn collect_tptp_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
 
@@ -292,7 +292,10 @@ fn collect_tptp_files(dir: &Path) -> Vec<PathBuf> {
                 let path = entry.path();
                 if path.is_dir() {
                     files.extend(collect_tptp_files(&path));
-                } else if path.extension().is_some_and(|ext| ext == "p") {
+                } else if path
+                    .extension()
+                    .is_some_and(|ext| ext == "p" || ext == "ax")
+                {
                     files.push(path);
                 }
             }
@@ -330,6 +333,217 @@ enum ParseResult {
     Timeout {
         timeout_ms: u64,
     },
+}
+
+enum SweepError {
+    Parse(String),
+    Roundtrip { formula_count: usize, error: String },
+    Cancelled,
+}
+
+/// Parse one file item at a time and verify that each Display representation
+/// reparses to the same AST. Streaming avoids materializing enormous generated
+/// TPTP files (some exceed 250 MiB) as a single in-memory problem AST.
+fn parse_and_roundtrip(
+    content: &str,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(usize, usize), SweepError> {
+    let mut iterator = TPTPIterator::new(content);
+    let mut formula_count = 0;
+    let mut include_count = 0;
+
+    for item in iterator.by_ref() {
+        if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Err(SweepError::Cancelled);
+        }
+
+        match item.map_err(|error| SweepError::Parse(error.to_string()))? {
+            TPTPInput::Formula(formula) => {
+                formula_count += 1;
+                let name = formula.name().to_owned();
+                let pretty = formula.to_string();
+                let reparsed =
+                    parse_single_input(&pretty).map_err(|error| SweepError::Roundtrip {
+                        formula_count,
+                        error: format!(
+                            "Failed to reparse formula '{name}': {error}\n  Display: {}",
+                            preview(&pretty)
+                        ),
+                    })?;
+
+                match reparsed {
+                    TPTPInput::Formula(reparsed) => {
+                        if formula != reparsed {
+                            return Err(SweepError::Roundtrip {
+                                formula_count,
+                                error: format!(
+                                    "Display reparsed to a different AST for formula '{name}'\n  Display: {}\n  AST diff: {}",
+                                    preview(&pretty),
+                                    compact_debug_diff(&formula, &reparsed),
+                                ),
+                            });
+                        }
+                    }
+                    TPTPInput::Include(_) => {
+                        return Err(SweepError::Roundtrip {
+                            formula_count,
+                            error: format!(
+                                "Display for formula '{name}' reparsed as an include\n  Display: {}",
+                                preview(&pretty)
+                            ),
+                        });
+                    }
+                }
+            }
+            TPTPInput::Include(include) => {
+                include_count += 1;
+                let pretty = include.to_string();
+                let reparsed =
+                    parse_single_input(&pretty).map_err(|error| SweepError::Roundtrip {
+                        formula_count,
+                        error: format!(
+                            "Failed to reparse include '{}': {error}\n  Display: {}",
+                            include.file_name,
+                            preview(&pretty)
+                        ),
+                    })?;
+
+                match reparsed {
+                    TPTPInput::Include(reparsed) => {
+                        if include != reparsed {
+                            return Err(SweepError::Roundtrip {
+                                formula_count,
+                                error: format!(
+                                    "Display reparsed to a different AST for include '{}'\n  Display: {}\n  AST diff: {}",
+                                    include.file_name,
+                                    preview(&pretty),
+                                    compact_debug_diff(&include, &reparsed),
+                                ),
+                            });
+                        }
+                    }
+                    TPTPInput::Formula(_) => {
+                        return Err(SweepError::Roundtrip {
+                            formula_count,
+                            error: format!(
+                                "Display for include '{}' reparsed as a formula\n  Display: {}",
+                                include.file_name,
+                                preview(&pretty)
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        return Err(SweepError::Cancelled);
+    }
+
+    if !iterator.remaining().is_empty() {
+        return Err(SweepError::Parse(format!(
+            "{} bytes of input were not consumed",
+            iterator.remaining().len()
+        )));
+    }
+
+    Ok((formula_count, include_count))
+}
+
+fn parse_single_input(input: &str) -> Result<TPTPInput<'_>, String> {
+    let mut iterator = TPTPIterator::new(input);
+    let item = match iterator.next() {
+        Some(Ok(item)) => item,
+        Some(Err(error)) => return Err(error.to_string()),
+        None => return Err("expected one TPTP input, got none".to_owned()),
+    };
+
+    match iterator.next() {
+        Some(Ok(_)) => return Err("expected one TPTP input, got more than one".to_owned()),
+        Some(Err(error)) => return Err(error.to_string()),
+        None => {}
+    }
+
+    if !iterator.remaining().is_empty() {
+        return Err(format!(
+            "{} bytes of input were not consumed",
+            iterator.remaining().len()
+        ));
+    }
+    Ok(item)
+}
+
+fn preview(text: &str) -> String {
+    const LIMIT: usize = 600;
+    if text.len() <= LIMIT {
+        return text.to_owned();
+    }
+    let mut end = LIMIT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
+fn compact_debug_diff(left: &impl std::fmt::Debug, right: &impl std::fmt::Debug) -> String {
+    let left = format!("{left:?}");
+    let right = format!("{right:?}");
+    let common = left
+        .bytes()
+        .zip(right.bytes())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut start = common.saturating_sub(80).min(left.len()).min(right.len());
+    while !left.is_char_boundary(start) || !right.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut left_end = (common + 160).min(left.len());
+    while !left.is_char_boundary(left_end) {
+        left_end -= 1;
+    }
+    let mut right_end = (common + 160).min(right.len());
+    while !right.is_char_boundary(right_end) {
+        right_end -= 1;
+    }
+    format!(
+        "first difference at byte {common}: original {:?}, reparsed {:?}",
+        &left[start..left_end],
+        &right[start..right_end]
+    )
+}
+
+fn result_from_sweep(
+    result: Result<(usize, usize), SweepError>,
+    read_ms: f64,
+    elapsed_ms: f64,
+    timeout_ms: Option<u64>,
+) -> ParseResult {
+    match result {
+        Ok((formula_count, include_count)) => ParseResult::Success {
+            formula_count,
+            include_count,
+            read_ms,
+            elapsed_ms,
+        },
+        Err(SweepError::Parse(error)) => ParseResult::Failed {
+            read_ms,
+            elapsed_ms,
+            error,
+        },
+        Err(SweepError::Roundtrip {
+            formula_count,
+            error,
+        }) => ParseResult::RoundtripFail {
+            formula_count,
+            read_ms,
+            elapsed_ms,
+            error,
+        },
+        Err(SweepError::Cancelled) => ParseResult::Timeout {
+            timeout_ms: timeout_ms.unwrap_or_default(),
+        },
+    }
 }
 
 /// A job sent to the watchdog thread: fires `cancelled` at `deadline`.
@@ -402,8 +616,9 @@ fn parse_file_inner(
         #[cfg(feature = "cancellation")]
         set_cancel_flag(&cancelled);
 
-        // Parse directly in this Rayon worker thread
-        let (result, peak) = measure_file_heap(|| parse_tptp(&content));
+        // Stream items in this Rayon worker thread so large files do not
+        // require an AST for every formula to be resident at once.
+        let (result, peak) = measure_file_heap(|| parse_and_roundtrip(&content, Some(&cancelled)));
         FILE_HEAP_PEAK.with(|file_peak| file_peak.set(peak));
         let elapsed_ms = start.elapsed().as_micros() as f64 / 1000.0;
 
@@ -421,176 +636,17 @@ fn parse_file_inner(
             );
         }
 
-        match result {
-            Ok(p) => {
-                let formula_count = p.formulas.len();
-                let include_count = p.includes.len();
-
-                let mut roundtrip_error: Option<String> = None;
-                for formula in &p.formulas {
-                    // Check if the watchdog fired during the roundtrip pass
-                    if cancelled.load(Ordering::Relaxed) {
-                        return (
-                            file.to_path_buf(),
-                            relative_path,
-                            ParseResult::Timeout {
-                                timeout_ms: timeout,
-                            },
-                        );
-                    }
-                    let name = formula.name().to_string();
-                    let pretty = formula.to_string();
-                    match parse_tptp(&pretty) {
-                        Ok(reparsed_problem) => {
-                            if reparsed_problem.formulas.len() == 1 {
-                                let reparsed_pretty = reparsed_problem.formulas[0].to_string();
-                                if pretty != reparsed_pretty {
-                                    roundtrip_error = Some(format!(
-                                        "Round-trip mismatch for '{}':\n  Original:  {}\n  Reparsed:  {}",
-                                        name, pretty, reparsed_pretty
-                                    ));
-                                    break;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            roundtrip_error = Some(format!(
-                                "Failed to reparse '{}': {}\n  Pretty: {}",
-                                name, e, pretty
-                            ));
-                            break;
-                        }
-                    }
-                }
-
-                match roundtrip_error {
-                    Some(error) => (
-                        file.to_path_buf(),
-                        relative_path,
-                        ParseResult::RoundtripFail {
-                            formula_count,
-                            read_ms,
-                            elapsed_ms,
-                            error,
-                        },
-                    ),
-                    None => (
-                        file.to_path_buf(),
-                        relative_path,
-                        ParseResult::Success {
-                            formula_count,
-                            include_count,
-                            read_ms,
-                            elapsed_ms,
-                        },
-                    ),
-                }
-            }
-            Err(e) => (
-                file.to_path_buf(),
-                relative_path,
-                ParseResult::Failed {
-                    read_ms,
-                    elapsed_ms,
-                    error: e.to_string(),
-                },
-            ),
-        }
+        let result = result_from_sweep(result, read_ms, elapsed_ms, Some(timeout));
+        (file.to_path_buf(), relative_path, result)
     } else {
-        // No timeout - original behavior
+        // No timeout; still stream and round-trip each input independently.
         let start = Instant::now();
-        let (result, peak) = measure_file_heap(|| parse_tptp(&content));
+        let (result, peak) = measure_file_heap(|| parse_and_roundtrip(&content, None));
         FILE_HEAP_PEAK.with(|file_peak| file_peak.set(peak));
         let elapsed = start.elapsed();
         let elapsed_ms = elapsed.as_micros() as f64 / 1000.0;
-
-        match result {
-            Ok(problem) => {
-                let formula_count = problem.formulas.len();
-                let include_count = problem.includes.len();
-
-                // Parsing-reparsing comparison test (Pollack-consistency)
-                for formula in &problem.formulas {
-                    let pretty = formula.to_string();
-                    match parse_single_formula(&pretty) {
-                        Ok(reparsed) => {
-                            let reparsed_pretty = reparsed.to_string();
-                            if pretty != reparsed_pretty {
-                                return (
-                                    file.to_path_buf(),
-                                    relative_path,
-                                    ParseResult::RoundtripFail {
-                                        formula_count,
-                                        read_ms,
-                                        elapsed_ms,
-                                        error: format!(
-                                            "Round-trip mismatch for '{}':\n  Original:  {}\n  Reparsed:  {}",
-                                            formula.name(),
-                                            pretty,
-                                            reparsed_pretty
-                                        ),
-                                    },
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            return (
-                                file.to_path_buf(),
-                                relative_path,
-                                ParseResult::RoundtripFail {
-                                    formula_count,
-                                    read_ms,
-                                    elapsed_ms,
-                                    error: format!(
-                                        "Failed to reparse '{}': {}\n  Pretty: {}",
-                                        formula.name(),
-                                        e,
-                                        pretty
-                                    ),
-                                },
-                            );
-                        }
-                    }
-                }
-
-                (
-                    file.to_path_buf(),
-                    relative_path,
-                    ParseResult::Success {
-                        formula_count,
-                        include_count,
-                        read_ms,
-                        elapsed_ms,
-                    },
-                )
-            }
-            Err(e) => (
-                file.to_path_buf(),
-                relative_path,
-                ParseResult::Failed {
-                    read_ms,
-                    elapsed_ms,
-                    error: e.to_string(),
-                },
-            ),
-        }
-    }
-}
-
-/// Parse a single annotated formula from a string
-fn parse_single_formula(input: &str) -> Result<AnnotatedFormula<'_>, String> {
-    match parse_tptp(input) {
-        Ok(problem) => {
-            if problem.formulas.len() == 1 {
-                Ok(problem.formulas.into_iter().next().unwrap())
-            } else {
-                Err(format!(
-                    "Expected 1 formula, got {}",
-                    problem.formulas.len()
-                ))
-            }
-        }
-        Err(e) => Err(e.to_string()),
+        let result = result_from_sweep(result, read_ms, elapsed_ms, None);
+        (file.to_path_buf(), relative_path, result)
     }
 }
 
@@ -729,7 +785,7 @@ fn main_inner(num_threads: usize) {
     let files = collect_tptp_files(&folder);
 
     if files.is_empty() {
-        println!("No .p files found in {}", folder.display());
+        println!("No .p or .ax files found in {}", folder.display());
         return;
     }
 

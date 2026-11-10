@@ -38,6 +38,14 @@ pub struct LoweredProblem {
     pub input_axioms_count: usize,
     /// Number of supported input formulas with goal roles.
     pub input_conjectures_count: usize,
+    /// Number of input goal formulas (`conjecture`, `negated_conjecture`) that
+    /// could not be lowered. A dropped goal would make the problem look as if it
+    /// had no conjecture, so the caller must not report a verdict for it.
+    pub unsupported_goals: usize,
+    /// Number of input formulas that are neither goals nor type declarations and
+    /// could not be lowered. The search then runs on a weaker theory: a refutation
+    /// still holds, but a satisfiability claim does not.
+    pub unsupported_axioms: usize,
 }
 
 /// A formula with its metadata from the TPTP input.
@@ -97,8 +105,10 @@ impl<'a> LowerCtx<'a> {
 
 /// Lowers an entire TPTP problem into core types.
 ///
-/// This processes all FOF and CNF formulas, converting them to `mrs-core` types.
-/// TFF, TCF, and THF formulas are currently skipped with a warning.
+/// Formulas that cannot be lowered (for example THF and TPI formulas, or TFF
+/// constructs such as `$ite` and `let`) are not dropped silently. They are
+/// counted in `unsupported_goals` and `unsupported_axioms`, so the caller can
+/// withhold any verdict the missing formulas could invalidate.
 pub fn lower_problem(problem: &TPTPProblem<'_>) -> LoweredProblem {
     let mut symbols = SymbolTable::new();
     let mut axioms = Vec::new();
@@ -107,8 +117,11 @@ pub fn lower_problem(problem: &TPTPProblem<'_>) -> LoweredProblem {
     let mut id_gen = ClauseIdGen::new();
     let mut input_axioms_count = 0;
     let mut input_conjectures_count = 0;
+    let mut unsupported_axioms = 0;
+    let mut unsupported_goals = 0;
 
     for formula in &problem.formulas {
+        let entries_before = axioms.len() + conjectures.len() + cnf_clauses.len();
         let mut ctx = LowerCtx::new(&mut symbols);
         ctx.reset_vars();
 
@@ -195,6 +208,13 @@ pub fn lower_problem(problem: &TPTPProblem<'_>) -> LoweredProblem {
             // THF (higher-order) and TPI (process instructions) are not supported
             _ => {}
         }
+        if axioms.len() + conjectures.len() + cnf_clauses.len() == entries_before {
+            record_unsupported(
+                formula.role(),
+                &mut unsupported_axioms,
+                &mut unsupported_goals,
+            );
+        }
     }
 
     LoweredProblem {
@@ -205,6 +225,8 @@ pub fn lower_problem(problem: &TPTPProblem<'_>) -> LoweredProblem {
         id_gen,
         input_axioms_count,
         input_conjectures_count,
+        unsupported_axioms,
+        unsupported_goals,
     }
 }
 
@@ -219,20 +241,11 @@ pub fn lower_into(
     selection: Option<&[&str]>,
 ) {
     for formula in &problem.formulas {
-        // Filter by selection if provided
-        if let Some(sel) = selection {
-            let name = match formula {
-                AnnotatedFormula::FOF(fof) => fof.name.as_str(),
-                AnnotatedFormula::CNF(cnf) => cnf.name.as_str(),
-                AnnotatedFormula::TFF(tff) => tff.name.as_str(),
-                AnnotatedFormula::TCF(tcf) => tcf.name.as_str(),
-                _ => continue,
-            };
-            if !sel.contains(&name) {
-                continue;
-            }
+        if !selected(formula, selection) {
+            continue;
         }
 
+        let entries_before = lowered_entries(lowered);
         let mut ctx = LowerCtx::new(&mut lowered.symbols);
         ctx.reset_vars();
 
@@ -321,7 +334,39 @@ pub fn lower_into(
             }
             _ => {}
         }
+        if lowered_entries(lowered) == entries_before {
+            record_unsupported(
+                formula.role(),
+                &mut lowered.unsupported_axioms,
+                &mut lowered.unsupported_goals,
+            );
+        }
     }
+}
+
+/// Number of lowered axioms, conjectures and clauses. A formula that lowers
+/// adds exactly one of them, so an unchanged count means it was skipped.
+fn lowered_entries(lowered: &LoweredProblem) -> usize {
+    lowered.axioms.len() + lowered.conjectures.len() + lowered.cnf_clauses.len()
+}
+
+/// Counts a formula that produced no lowered entry. Type declarations carry no
+/// logical content, so they are not counted.
+fn record_unsupported(
+    role: FormulaRole,
+    unsupported_axioms: &mut usize,
+    unsupported_goals: &mut usize,
+) {
+    if role.is_goal() {
+        *unsupported_goals += 1;
+    } else if !role.is_type_declaration() {
+        *unsupported_axioms += 1;
+    }
+}
+
+/// Whether a formula passes the include selection (`None` selects everything).
+fn selected(formula: &AnnotatedFormula<'_>, selection: Option<&[&str]>) -> bool {
+    selection.is_none_or(|names| names.contains(&formula.name()))
 }
 
 fn record_input_role(
@@ -486,6 +531,7 @@ fn lower_fof_term(ctx: &mut LowerCtx<'_>, t: &FOFTerm<'_>) -> Term {
 
 /// Lowers a CNF formula directly into `mrs-core` clause representation.
 /// This is useful when the input is already in CNF and doesn't need clausification.
+/// Returns `None` for a clause containing `$true` or `$false`.
 pub fn lower_cnf_to_clause(
     symbols: &mut SymbolTable,
     id_gen: &mut ClauseIdGen,
@@ -499,7 +545,7 @@ pub fn lower_cnf_to_clause(
 
     match &cnf.formula {
         CNFStatement::Logical(f) => {
-            let literals = lower_cnf_to_literals(&mut ctx, f);
+            let literals = lower_cnf_to_literals(&mut ctx, f)?;
             Some(Clause::new(
                 id_gen.next(),
                 literals,
@@ -509,59 +555,54 @@ pub fn lower_cnf_to_clause(
     }
 }
 
-/// Lowers a CNF formula to a vector of literals.
-fn lower_cnf_to_literals(ctx: &mut LowerCtx<'_>, f: &CNFFormula<'_>) -> Vec<Literal> {
+/// Lowers a CNF formula to a vector of literals. `None` when a literal cannot be
+/// lowered faithfully (see `lower_cnf_atomic`).
+fn lower_cnf_to_literals(ctx: &mut LowerCtx<'_>, f: &CNFFormula<'_>) -> Option<Vec<Literal>> {
     let raw_lits = f.literals();
     raw_lits.iter().map(|l| lower_cnf_literal(ctx, l)).collect()
 }
 
 /// Lowers a single CNF literal.
-fn lower_cnf_literal(ctx: &mut LowerCtx<'_>, lit: &CNFLiteral<'_>) -> Literal {
+fn lower_cnf_literal(ctx: &mut LowerCtx<'_>, lit: &CNFLiteral<'_>) -> Option<Literal> {
     match lit {
-        CNFLiteral::Positive(a) => Literal::pos(lower_cnf_atomic(ctx, a)),
-        CNFLiteral::Negative(a) => Literal::neg(lower_cnf_atomic(ctx, a)),
+        CNFLiteral::Positive(a) => Some(Literal::pos(lower_cnf_atomic(ctx, a)?)),
+        CNFLiteral::Negative(a) => Some(Literal::neg(lower_cnf_atomic(ctx, a)?)),
         CNFLiteral::Equality(l, r) => {
             let lt = lower_fof_term(ctx, l);
             let rt = lower_fof_term(ctx, r);
-            Literal::pos(Atom::eq(lt, rt))
+            Some(Literal::pos(Atom::eq(lt, rt)))
         }
         CNFLiteral::Inequality(l, r) => {
             let lt = lower_fof_term(ctx, l);
             let rt = lower_fof_term(ctx, r);
-            Literal::neg(Atom::eq(lt, rt))
+            Some(Literal::neg(Atom::eq(lt, rt)))
         }
     }
 }
 
-/// Lowers a CNF atomic formula to an `Atom`.
-fn lower_cnf_atomic(ctx: &mut LowerCtx<'_>, a: &CNFAtomicFormula<'_>) -> Atom {
+/// Lowers a CNF atomic formula to an `Atom`, or `None` for a truth constant.
+fn lower_cnf_atomic(ctx: &mut LowerCtx<'_>, a: &CNFAtomicFormula<'_>) -> Option<Atom> {
     match a {
         CNFAtomicFormula::Plain(word, args) => {
             let sym = ctx.intern(word.as_str());
             let terms: Vec<Term> = args.iter().map(|t| lower_fof_term(ctx, t)).collect();
-            Atom::pred(sym, terms)
+            Some(Atom::pred(sym, terms))
         }
         CNFAtomicFormula::Defined(word, args) => {
             let name = format!("${}", word.0);
             let sym = ctx.intern(&name);
             let terms: Vec<Term> = args.iter().map(|t| lower_fof_term(ctx, t)).collect();
-            Atom::pred(sym, terms)
+            Some(Atom::pred(sym, terms))
         }
         CNFAtomicFormula::System(word, args) => {
             let name = format!("$${}", word.0);
             let sym = ctx.intern(&name);
             let terms: Vec<Term> = args.iter().map(|t| lower_fof_term(ctx, t)).collect();
-            Atom::pred(sym, terms)
+            Some(Atom::pred(sym, terms))
         }
-        // $true and $false as atoms: use special symbol names
-        CNFAtomicFormula::True => {
-            let sym = ctx.intern("$true");
-            Atom::pred(sym, vec![])
-        }
-        CNFAtomicFormula::False => {
-            let sym = ctx.intern("$false");
-            Atom::pred(sym, vec![])
-        }
+        // Truth constants are not predicate symbols. An atom named `$true` would be
+        // unconstrained, so the clause stays unsupported.
+        CNFAtomicFormula::True | CNFAtomicFormula::False => None,
     }
 }
 
@@ -850,14 +891,9 @@ fn lower_tcf_atomic(ctx: &mut LowerCtx<'_>, a: &TCFAtomicFormula<'_>) -> Option<
                 .collect::<Option<Vec<_>>>()?;
             Some(Atom::pred(sym, terms))
         }
-        TCFAtomicFormula::True => {
-            let sym = ctx.intern("$true");
-            Some(Atom::pred(sym, vec![]))
-        }
-        TCFAtomicFormula::False => {
-            let sym = ctx.intern("$false");
-            Some(Atom::pred(sym, vec![]))
-        }
+        // Truth constants are not predicate symbols. An atom named `$true` would be
+        // unconstrained, so the clause stays unsupported.
+        TCFAtomicFormula::True | TCFAtomicFormula::False => None,
     }
 }
 
@@ -1008,6 +1044,65 @@ mod tests {
         assert_eq!(result.axioms.len(), 1);
         let display = format!("{}", result.axioms[0].formula.display(&result.symbols));
         assert_eq!(display, "![X0]: ((p(X0) => q(X0)))");
+    }
+
+    #[test]
+    fn unsupported_goal_is_counted_instead_of_silently_dropped() {
+        let problem = mrs_tptp::parse_tptp(
+            "tff(c, conjecture, $ite(p, $true, $false)).\ncnf(a, negated_conjecture, p).",
+        )
+        .unwrap();
+        let lowered = lower_problem(&problem);
+        assert_eq!(lowered.unsupported_goals, 1);
+        assert_eq!(lowered.input_conjectures_count, 1);
+        assert!(lowered.conjectures.is_empty());
+    }
+
+    #[test]
+    fn unsupported_axiom_is_counted_but_type_declarations_are_not() {
+        let problem = mrs_tptp::parse_tptp(
+            "tff(t, type, p: $o).\ntff(a, axiom, $ite(p, $true, $false)).\ncnf(c, axiom, p).",
+        )
+        .unwrap();
+        let lowered = lower_problem(&problem);
+        assert_eq!(lowered.unsupported_axioms, 1);
+        assert_eq!(lowered.unsupported_goals, 0);
+        assert_eq!(lowered.axioms.len() + lowered.cnf_clauses.len(), 1);
+    }
+
+    #[test]
+    fn cnf_truth_constants_are_counted_not_lowered_as_atoms() {
+        let problem = mrs_tptp::parse_tptp(
+            "cnf(g, negated_conjecture, $false).\ncnf(a, axiom, p | $true).\ncnf(b, axiom, p | q).",
+        )
+        .unwrap();
+        let lowered = lower_problem(&problem);
+        assert_eq!(lowered.unsupported_goals, 1);
+        assert_eq!(lowered.unsupported_axioms, 1);
+        assert_eq!(lowered.cnf_clauses.len(), 1);
+    }
+
+    #[test]
+    fn include_selection_counts_only_selected_unsupported_formulas() {
+        let problem = mrs_tptp::parse_tptp(
+            "tff(a, axiom, $ite(p, $true, $false)).\n\
+             thf(g, conjecture, p).\n\
+             cnf(c, axiom, q).",
+        )
+        .unwrap();
+        let mut lowered = parse_and_lower("");
+        lower_into(&mut lowered, &problem, Some(&["c"]));
+        assert_eq!(lowered.unsupported_axioms, 0);
+        assert_eq!(lowered.unsupported_goals, 0);
+        assert_eq!(lowered.cnf_clauses.len(), 1);
+
+        lower_into(&mut lowered, &problem, Some(&["g"]));
+        assert_eq!(lowered.unsupported_goals, 1);
+        assert_eq!(lowered.unsupported_axioms, 0);
+
+        lower_into(&mut lowered, &problem, Some(&["a"]));
+        assert_eq!(lowered.unsupported_axioms, 1);
+        assert_eq!(lowered.unsupported_goals, 1);
     }
 
     #[test]

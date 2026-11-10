@@ -7,7 +7,8 @@ use winnow::prelude::*;
 use crate::ast::cnf::{CNFAtomicFormula, CNFFormula, CNFLiteral, CNFStatement};
 use crate::ast::fof::FOFTerm;
 use crate::lexer::{
-    PResult, atomic_word, defined_word, distinct_object, number, system_word, upper_word, ws,
+    PResult, atomic_word, defined_word, distinct_object, keyword, number, system_word, upper_word,
+    ws,
 };
 use crate::parser::fof::fof_term;
 
@@ -59,7 +60,7 @@ fn cnf_infix_or_positive<'a>(input: &mut &'a str) -> PResult<CNFLiteral<'a>> {
         .ok_or_else(|| winnow::error::ErrMode::Backtrack(winnow::error::ContextError::new()))?;
     match first {
         // Plain predicate or function term in infix
-        b'a'..=b'z' | b'\'' => {
+        b'a'..=b'z' | b'\'' | b'`' => {
             let pred = atomic_word.parse_next(input)?;
             ws.parse_next(input)?;
             let args: Vec<FOFTerm<'a>> = opt(delimited(
@@ -248,10 +249,10 @@ fn cnf_infix_or_positive<'a>(input: &mut &'a str) -> PResult<CNFLiteral<'a>> {
 /// Parse a CNF atomic formula
 pub fn cnf_atomic_formula<'a>(input: &mut &'a str) -> PResult<CNFAtomicFormula<'a>> {
     alt((
-        // $true
-        "$true".value(CNFAtomicFormula::True),
+        // $true (whole word only, so `$true_x` stays a defined word)
+        keyword("$true").value(CNFAtomicFormula::True),
         // $false
-        "$false".value(CNFAtomicFormula::False),
+        keyword("$false").value(CNFAtomicFormula::False),
         // System predicate: $$pred(args)
         cnf_system_atomic,
         // Defined predicate: $pred(args)

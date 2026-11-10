@@ -11,8 +11,8 @@ use crate::ast::thf::{
     THFTypedSymbol, THFTyping, THFVariable,
 };
 use crate::lexer::{
-    PResult, atomic_word, check_cancel, defined_word, distinct_object, number, single_quoted,
-    system_word, upper_word, ws,
+    PResult, atomic_word, check_cancel, defined_word, distinct_object, keyword, number,
+    single_quoted, system_word, upper_word, ws,
 };
 
 /// Parse a THF statement
@@ -37,6 +37,7 @@ fn thf_typing<'a>(input: &mut &'a str) -> PResult<THFTyping<'a>> {
     let symbol = alt((
         system_word.map(THFTypedSymbol::System),
         defined_word.map(THFTypedSymbol::Defined),
+        distinct_object.map(THFTypedSymbol::DistinctObject),
         atomic_word.map(THFTypedSymbol::Atom),
     ))
     .parse_next(input)?;
@@ -181,11 +182,10 @@ fn logic_key<'a>(input: &mut &'a str) -> PResult<&'a str> {
         },
         // Regular atomic word
         |i: &mut &'a str| {
-            let word = atomic_word(i)?;
-            match word {
-                crate::ast::common::AtomicWord::Lower(s) => Ok(s),
-                crate::ast::common::AtomicWord::SingleQuoted(s) => Ok(s),
-            }
+            let start = *i;
+            atomic_word(i)?;
+            let len = i.as_ptr() as usize - start.as_ptr() as usize;
+            Ok(&start[..len])
         },
     ))
     .parse_next(input)
@@ -215,6 +215,7 @@ fn logic_value<'a>(input: &mut &'a str) -> PResult<LogicValue<'a>> {
             match word {
                 crate::ast::common::AtomicWord::Lower(s) => Ok(LogicValue::Atom(s)),
                 crate::ast::common::AtomicWord::SingleQuoted(s) => Ok(LogicValue::String(s)),
+                crate::ast::common::AtomicWord::BackQuoted(s) => Ok(LogicValue::BackQuoted(s)),
             }
         },
     ))
@@ -646,8 +647,15 @@ fn thf_nonclassical<'a>(input: &mut &'a str) -> PResult<THFFormula<'a>> {
 
     // Optional formula argument: @ (formula) or (formula)
     let formula = opt(alt((
-        // THF application style: @ formula
-        preceded((ws, '@', ws), thf_unary_formula),
+        // Application style: @ formula. A parenthesized argument is grouping
+        // syntax, not an AST Parens node, just as in the direct form below.
+        preceded(
+            (ws, '@', ws),
+            alt((
+                delimited(('(', ws), thf_formula, (ws, ')')),
+                thf_unary_formula,
+            )),
+        ),
         // Direct parenthesized: (formula)
         delimited(('(', ws), thf_formula, (ws, ')')),
     )))
@@ -895,8 +903,8 @@ fn thf_atomic_with_type<'a>(input: &mut &'a str) -> PResult<THFFormula<'a>> {
 /// Parse a THF atomic formula
 pub fn thf_atomic_formula<'a>(input: &mut &'a str) -> PResult<THFAtomicFormula<'a>> {
     alt((
-        "$true".value(THFAtomicFormula::True),
-        "$false".value(THFAtomicFormula::False),
+        keyword("$true").value(THFAtomicFormula::True),
+        keyword("$false").value(THFAtomicFormula::False),
         thf_system_atomic,
         thf_defined_atomic,
         thf_plain_atomic,

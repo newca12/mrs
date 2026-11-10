@@ -226,7 +226,7 @@ fn determine_division_from_ast(ast: &TPTPProblem, status: Option<&str>, content:
 
     for input in &ast.formulas {
         let role = input.role();
-        if role == FormulaRole::Type || role == FormulaRole::Definition {
+        if role.is_type_declaration() || role == FormulaRole::Definition {
             continue; // Skip types
         }
 

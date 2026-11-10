@@ -4,7 +4,8 @@ use winnow::combinator::{alt, delimited, opt, preceded, separated};
 use winnow::prelude::*;
 
 use crate::ast::{
-    BinaryConnective, FormulaRole, GeneralData, GeneralTerm, Quantifier, UnaryConnective,
+    AtomicWord, BinaryConnective, FormulaRole, GeneralData, GeneralTerm, Quantifier,
+    UnaryConnective,
 };
 use crate::lexer::{
     PResult, atomic_word, distinct_object, dollar_word, lower_word, number, upper_word, ws,
@@ -48,37 +49,48 @@ pub fn unary_connective(input: &mut &str) -> PResult<UnaryConnective> {
     '~'.value(UnaryConnective::Not).parse_next(input)
 }
 
-/// Parse a formula role
-/// Handles hyphenated roles like "axiom-local" as well as simple roles
+/// Parse a formula role.
+///
+/// The base word must be a TPTP role keyword; anything else is a parse error,
+/// because a role the prover cannot interpret must not be silently treated as
+/// a premise or skipped by model checking. A subrole, `<lower_word>-<general_term>`
+/// (whitespace/comments allowed around the `-`), is recognised when it names
+/// a known role such as `axiom-local` or `type-datatype`. Any other subrole only
+/// refines the base role, so the base role applies.
 pub fn formula_role(input: &mut &str) -> PResult<FormulaRole> {
-    // Parse the base word
-    let start = lower_word.parse_next(input)?;
+    let base = lower_word.parse_next(input)?;
+    let base_role = FormulaRole::parse(base)
+        .ok_or_else(|| winnow::error::ErrMode::Backtrack(winnow::error::ContextError::new()))?;
 
-    // Check if there's a hyphen followed by more word characters
-    let checkpoint = *input;
-    let hyphen_result: PResult<&str> = "-".parse_next(input);
-    if hyphen_result.is_ok() {
-        // Try to parse the rest
-        if let Ok(rest) = lower_word.parse_next(input) {
-            // Reconstruct the full role string
-            let end_pos = rest.as_ptr() as usize + rest.len();
-            let start_pos = start.as_ptr() as usize;
-            let full_len = end_pos - start_pos;
-            let full_role = unsafe {
-                std::str::from_utf8_unchecked(std::slice::from_raw_parts(start.as_ptr(), full_len))
-            };
-
-            if let Some(role) = FormulaRole::parse(full_role) {
-                return Ok(role);
-            }
-        }
-        // If we can't parse a hyphenated role, backtrack
-        *input = checkpoint;
+    let before_subrole = *input;
+    ws.parse_next(input)?;
+    if !input.starts_with('-') {
+        // Leave trailing whitespace/comments for the annotated-formula parser.
+        *input = before_subrole;
+        return Ok(base_role);
     }
 
-    // Try to parse as a simple role
-    FormulaRole::parse(start)
-        .ok_or_else(|| winnow::error::ErrMode::Backtrack(winnow::error::ContextError::new()))
+    '-'.parse_next(input)?;
+    ws.parse_next(input)?;
+    let subrole = general_term.parse_next(input)?;
+    Ok(match (base_role, subrole) {
+        (FormulaRole::Axiom, GeneralTerm::Word(AtomicWord::Lower("local"))) => {
+            FormulaRole::AxiomLocal
+        }
+        (FormulaRole::Type, GeneralTerm::Word(AtomicWord::Lower("datatype"))) => {
+            FormulaRole::TypeDatatype
+        }
+        (FormulaRole::Type, GeneralTerm::Word(AtomicWord::Lower("codatatype"))) => {
+            FormulaRole::TypeCodatatype
+        }
+        (FormulaRole::Type, GeneralTerm::Word(AtomicWord::Lower("datatype_constructor"))) => {
+            FormulaRole::TypeDatatypeConstructor
+        }
+        (FormulaRole::Type, GeneralTerm::Word(AtomicWord::Lower("codatatype_constructor"))) => {
+            FormulaRole::TypeCodatatypeConstructor
+        }
+        _ => base_role,
+    })
 }
 
 /// Parse a general term (used in annotations)

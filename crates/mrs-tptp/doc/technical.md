@@ -458,6 +458,7 @@ Check points are placed:
 ```
 tests/
 ├── parser_tests.rs       # Unit tests for basic parsing
+├── roundtrip_tests.rs    # Display → parse structural AST equivalence
 ├── non_classical_tests.rs # NXF/NHF specific tests
 ├── syn000_tests.rs       # SYN000 test suite
 └── resources/
@@ -468,8 +469,8 @@ tests/
 ### Test Categories
 
 1. **Unit tests**: Test individual parsing functions
-2. **Round-trip tests**: Parse → Display → Parse, compare
-3. **TPTP corpus tests**: Parse files from TPTP library
+2. **Round-trip tests**: Parse → Display → Parse, compare ASTs (not just text)
+3. **TPTP corpus tests**: Parse and round-trip `.p` and `.ax` files from the TPTP library
 4. **Error tests**: Verify proper error handling
 
 ### Running Tests
@@ -484,8 +485,9 @@ cargo test test_thf_lambda
 # Run with output
 cargo test -- --nocapture
 
-# Run parse_folder example for corpus testing
-cargo run --release --example parse_folder /path/to/TPTP/Problems/ --timeout 500
+# Run the streaming parse/round-trip sweep on both halves of a TPTP release
+cargo run --release -p mrs-tptp --example parse_folder -- /path/to/TPTP/Problems --threads 4
+cargo run --release -p mrs-tptp --example parse_folder -- /path/to/TPTP/Axioms --threads 2
 ```
 
 ### Adding Tests

@@ -12,7 +12,7 @@ use crate::ast::{
     THFAnnotated, TPIAnnotated, TPTPProblem,
 };
 use crate::error::ParseError;
-use crate::lexer::{PResult, check_cancel, name, single_quoted, ws};
+use crate::lexer::{PResult, atomic_word, check_cancel, name, ws};
 use crate::parser::cnf::cnf_statement;
 use crate::parser::common::{annotations, formula_role};
 use crate::parser::fof::fof_statement;
@@ -176,37 +176,52 @@ fn tptp_input<'a>(input: &mut &'a str) -> PResult<TPTPInput<'a>> {
     .parse_next(input)
 }
 
-/// Parse an include directive: include('filename', [selection]).
+/// Parse an include directive, including its optional selection and space name.
 fn include_directive<'a>(input: &mut &'a str) -> PResult<Include<'a>> {
     "include".parse_next(input)?;
     ws.parse_next(input)?;
     '('.parse_next(input)?;
     ws.parse_next(input)?;
 
-    let file_name = single_quoted
+    let file_name = atomic_word
         .context(StrContext::Label("include filename"))
-        .parse_next(input)?;
+        .parse_next(input)?
+        .as_str();
 
     ws.parse_next(input)?;
 
-    // Optional selection list
-    let selection = opt(preceded(
-        (',', ws),
-        delimited(
-            ('[', ws),
-            separated(
-                0..,
-                |i: &mut &'a str| {
-                    let n = name(i)?;
-                    ws.parse_next(i)?;
-                    Ok(n)
-                },
-                (ws, ',', ws),
-            ),
-            (ws, ']'),
-        ),
-    ))
+    // The selection may be a name list or `*`; the latter is represented as
+    // `None`, the same semantic value as an omitted selection. A space name
+    // is only legal when the selection argument is present.
+    let optionals = opt(preceded((',', ws), |i: &mut &'a str| {
+        let selection = if i.starts_with('*') {
+            '*'.parse_next(i)?;
+            None
+        } else {
+            Some(
+                delimited(
+                    ('[', ws),
+                    separated(
+                        1..,
+                        |names: &mut &'a str| {
+                            let n = name(names)?;
+                            ws.parse_next(names)?;
+                            Ok(n)
+                        },
+                        (ws, ',', ws),
+                    ),
+                    (ws, ']'),
+                )
+                .parse_next(i)?,
+            )
+        };
+
+        ws.parse_next(i)?;
+        let space_name = opt(preceded((',', ws), name)).parse_next(i)?;
+        Ok((selection, space_name))
+    }))
     .parse_next(input)?;
+    let (selection, space_name) = optionals.unwrap_or((None, None));
 
     ws.parse_next(input)?;
     ')'.parse_next(input)?;
@@ -216,6 +231,7 @@ fn include_directive<'a>(input: &mut &'a str) -> PResult<Include<'a>> {
     Ok(Include {
         file_name,
         selection,
+        space_name,
     })
 }
 

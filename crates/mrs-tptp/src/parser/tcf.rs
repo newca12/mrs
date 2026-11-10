@@ -7,7 +7,7 @@ use winnow::prelude::*;
 use crate::ast::tcf::{
     TCFAtomicFormula, TCFClause, TCFFormula, TCFLiteral, TCFStatement, TCFTyping,
 };
-use crate::lexer::{PResult, atomic_word, ws};
+use crate::lexer::{PResult, atomic_word, defined_word, distinct_object, keyword, ws};
 use crate::parser::tff::{tff_term, tff_top_level_type, tff_variable};
 
 /// Parse a TCF statement
@@ -23,7 +23,12 @@ pub fn tcf_statement<'a>(input: &mut &'a str) -> PResult<TCFStatement<'a>> {
 }
 
 fn tcf_typing<'a>(input: &mut &'a str) -> PResult<TCFTyping<'a>> {
-    let symbol = atomic_word.parse_next(input)?;
+    let symbol = alt((
+        distinct_object.map(crate::ast::tff::TypedSymbol::DistinctObject),
+        defined_word.map(crate::ast::tff::TypedSymbol::Defined),
+        atomic_word.map(crate::ast::tff::TypedSymbol::Atom),
+    ))
+    .parse_next(input)?;
     ws.parse_next(input)?;
     ':'.parse_next(input)?;
     ws.parse_next(input)?;
@@ -122,8 +127,8 @@ fn tcf_infix<'a>(input: &mut &'a str) -> PResult<TCFLiteral<'a>> {
 /// Parse a TCF atomic formula
 pub fn tcf_atomic_formula<'a>(input: &mut &'a str) -> PResult<TCFAtomicFormula<'a>> {
     alt((
-        "$true".value(TCFAtomicFormula::True),
-        "$false".value(TCFAtomicFormula::False),
+        keyword("$true").value(TCFAtomicFormula::True),
+        keyword("$false").value(TCFAtomicFormula::False),
         tcf_plain_atomic,
     ))
     .parse_next(input)

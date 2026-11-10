@@ -2877,7 +2877,7 @@ fn dag_request(
     if proof
         .formulas
         .iter()
-        .any(|formula| formula.role() == FormulaRole::Type)
+        .any(|formula| formula.role().is_type_declaration())
     {
         return Err("TPTP type declarations in proofs are unsupported by the Verus bridge".into());
     }

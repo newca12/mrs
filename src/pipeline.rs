@@ -80,13 +80,17 @@ pub fn prepare_until(
         ..MetaInput::default()
     };
     for formula in &problem.formulas {
-        match formula.role() {
-            mrs_tptp::FormulaRole::Conjecture | mrs_tptp::FormulaRole::NegatedConjecture => {
-                meta.n_conjecture_formulas += 1;
+        let role = formula.role();
+        if role.is_type_declaration() {
+            meta.n_type_formulas += 1;
+        } else {
+            match role {
+                mrs_tptp::FormulaRole::Conjecture | mrs_tptp::FormulaRole::NegatedConjecture => {
+                    meta.n_conjecture_formulas += 1;
+                }
+                mrs_tptp::FormulaRole::Definition => meta.n_definition_formulas += 1,
+                _ => {}
             }
-            mrs_tptp::FormulaRole::Type => meta.n_type_formulas += 1,
-            mrs_tptp::FormulaRole::Definition => meta.n_definition_formulas += 1,
-            _ => {}
         }
         if matches!(formula, mrs_tptp::AnnotatedFormula::CNF(_)) {
             meta.n_input_cnf_clauses += 1;

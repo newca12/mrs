@@ -243,12 +243,12 @@ pub fn verify_strict_with_telemetry_and_source(
     let proof_nodes = proof
         .formulas
         .iter()
-        .filter(|formula| formula.role() != FormulaRole::Type)
+        .filter(|formula| !formula.role().is_type_declaration())
         .collect::<Vec<_>>();
     let problem_nodes = problem
         .formulas
         .iter()
-        .filter(|formula| formula.role() != FormulaRole::Type)
+        .filter(|formula| !formula.role().is_type_declaration())
         .count();
     let proof_fof_nodes = proof_nodes
         .iter()
@@ -364,7 +364,7 @@ fn verify_strict_with_source_internal(
     // existential over same-named formulas, which is sound: the cited
     // formula is asserted by the problem under that name either way.
     for formula in &problem.formulas {
-        if formula.role() == FormulaRole::Type {
+        if formula.role().is_type_declaration() {
             continue;
         }
         if !formula.is_fof() && !formula.is_cnf() {
@@ -397,7 +397,7 @@ fn verify_strict_with_source_internal(
         collect_function_symbols(formula, &mut known_function_symbols);
         collect_function_symbols(formula, &mut known_non_skolem_function_symbols);
         collect_all_symbols(formula, &mut known_symbols);
-        if formula.role() != FormulaRole::Type {
+        if !formula.role().is_type_declaration() {
             let lowered = match lower_annotated(&mut symbols, formula, limits) {
                 Ok(formula) => formula,
                 Err(v) => return v,
@@ -3493,7 +3493,7 @@ fn build_dag<'a>(
     let mut nodes = Vec::with_capacity(proof.formulas.len());
     let mut by_name = HashMap::with_capacity(proof.formulas.len());
     for formula in &proof.formulas {
-        if formula.role() == FormulaRole::Type {
+        if formula.role().is_type_declaration() {
             continue;
         }
         if !formula.is_fof() && !formula.is_cnf() {
