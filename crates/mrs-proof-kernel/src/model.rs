@@ -7,6 +7,8 @@
 //! - Every predicate interpretation;
 //! - Equality semantics (strict identity);
 //! - All original formulas and resolved includes;
+//! - Supported closed arithmetic in the fixed, infinite integer/rational sorts
+//!   (not in the finite interpretation tables);
 //! - Correct conjecture polarity;
 //! - Complete ground clause coverage;
 //! - Deterministic model digest (SHA-256).
@@ -93,6 +95,82 @@ impl std::fmt::Display for ModelVerdict {
     }
 }
 
+/// Own only a bounded, selected serialization of the complete include closure.
+/// A stack (not a global visited set) permits different sibling selections.
+#[derive(Default)]
+struct ModelInputLoader {
+    text: String,
+    bytes_read: usize,
+    files_read: usize,
+    active: BTreeSet<std::path::PathBuf>,
+}
+
+impl ModelInputLoader {
+    fn load(
+        &mut self,
+        path: &std::path::Path,
+        selection: Option<&[mrs_tptp::Name<'_>]>,
+        depth: usize,
+    ) -> Result<(), String> {
+        use std::fmt::Write as _;
+        use std::io::Read as _;
+
+        self.files_read += 1;
+        if depth > 64 || self.files_read > 4_096 {
+            return Err("model input include depth/file limit exceeded".into());
+        }
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("model input path {}: {error}", path.display()))?;
+        if !self.active.insert(canonical.clone()) {
+            return Err("circular model input include".into());
+        }
+        let remaining = MAX_MODEL_PROBLEM_BYTES.saturating_sub(self.bytes_read);
+        let mut source = String::new();
+        std::fs::File::open(&canonical)
+            .and_then(|file| {
+                file.take((remaining + 1) as u64)
+                    .read_to_string(&mut source)
+            })
+            .map_err(|error| format!("read model input: {error}"))?;
+        if source.len() > remaining {
+            return Err("model input closure exceeds strict model-validation byte limit".into());
+        }
+        self.bytes_read += source.len();
+        let parsed =
+            mrs_tptp::parse_tptp(&source).map_err(|error| format!("parse model input: {error}"))?;
+        for formula in &parsed.formulas {
+            if selection
+                .is_none_or(|names| names.iter().any(|name| name.as_str() == formula.name()))
+            {
+                writeln!(self.text, "{formula}").map_err(|error| error.to_string())?;
+                if self.text.len() > MAX_MODEL_PROBLEM_BYTES {
+                    return Err("resolved model input exceeds strict byte limit".into());
+                }
+            }
+        }
+        for include in &parsed.includes {
+            if include.space_name.is_some() {
+                return Err("model input include namespaces are unsupported".into());
+            }
+            let local = canonical
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join(include.file_name);
+            let included_path = if local.exists() {
+                local
+            } else if let Some(root) = std::env::var_os("TPTP") {
+                std::path::PathBuf::from(root).join(include.file_name)
+            } else {
+                local
+            };
+            self.load(&included_path, include.selection.as_deref(), depth + 1)?;
+        }
+        self.active.remove(&canonical);
+        Ok(())
+    }
+}
+
 /// Deterministic first-order model checking.
 ///
 /// Implemented for [`ModelCertificate`] (whose data format lives in
@@ -155,34 +233,16 @@ impl ModelEvaluation for ModelCertificate {
         problem_path: &std::path::Path,
         expected_status: Option<&str>,
     ) -> ModelVerdict {
-        let file_bytes = match std::fs::metadata(problem_path) {
-            Ok(metadata) => metadata.len(),
-            Err(error) => {
-                return ModelVerdict::Inconclusive(format!("stat problem file: {error}"));
-            }
-        };
-        if file_bytes > MAX_MODEL_PROBLEM_BYTES as u64 {
-            return ModelVerdict::Inconclusive(
-                "problem file exceeds strict model-validation byte limit".into(),
-            );
+        let mut loader = ModelInputLoader::default();
+        if let Err(reason) = loader.load(problem_path, None, 0) {
+            return ModelVerdict::Inconclusive(reason);
         }
-        let problem_text = match std::fs::File::open(problem_path).and_then(|file| {
-            use std::io::Read as _;
-            let mut bounded = file.take((MAX_MODEL_PROBLEM_BYTES + 1) as u64);
-            let mut text = String::new();
-            bounded.read_to_string(&mut text).map(|_| text)
-        }) {
-            Ok(text) if text.len() <= MAX_MODEL_PROBLEM_BYTES => text,
-            Ok(_) => {
-                return ModelVerdict::Inconclusive(
-                    "problem file exceeds strict model-validation byte limit".into(),
-                );
-            }
-            Err(e) => return ModelVerdict::Inconclusive(format!("read problem file: {e}")),
-        };
+        let problem_text = loader.text;
         let problem = match mrs_tptp::parse_tptp(&problem_text) {
-            Ok(p) => p,
-            Err(e) => return ModelVerdict::Inconclusive(format!("parse problem file: {e}")),
+            Ok(problem) => problem,
+            Err(error) => {
+                return ModelVerdict::Inconclusive(format!("parse resolved model input: {error}"));
+            }
         };
         self.validate(&problem, expected_status)
     }
@@ -478,6 +538,12 @@ impl ModelEvaluation for ModelCertificate {
 
     /// Fully validates this model certificate against a TPTP problem.
     fn validate(&self, problem: &TPTPProblem<'_>, expected_status: Option<&str>) -> ModelVerdict {
+        if !problem.includes.is_empty() {
+            return ModelVerdict::Inconclusive(
+                "unresolved model input includes; use validate_file or supply the resolved problem"
+                    .into(),
+            );
+        }
         if problem
             .formulas
             .iter()
@@ -615,9 +681,32 @@ impl ModelEvaluation for ModelCertificate {
                 ));
             }
         }
-        for input in &problem.formulas {
+        let mut evaluated_arithmetic = BTreeMap::new();
+        let mut arithmetic_work = 0u64;
+        for (index, input) in problem.formulas.iter().enumerate() {
             if !model_formula_role(input.role()) {
                 continue;
+            }
+            let mut evaluator = mrs_arithmetic::Evaluator::default();
+            let evaluated = evaluator.evaluate(input);
+            arithmetic_work = match arithmetic_work.checked_add(evaluator.work_used()) {
+                Some(work) if work <= MAX_MODEL_EVALUATION_WORK => work,
+                _ => {
+                    return ModelVerdict::Inconclusive(
+                        "arithmetic model evaluation work limit".into(),
+                    );
+                }
+            };
+            if let Ok(value) = evaluated {
+                evaluated_arithmetic.insert(index, value);
+                continue;
+            }
+            if mrs_arithmetic::requires_interpretation(input) {
+                return ModelVerdict::Inconclusive(format!(
+                    "unsupported interpreted formula `{}`: {}",
+                    input.name(),
+                    evaluated.unwrap_err()
+                ));
             }
             match input {
                 AnnotatedFormula::FOF(formula) => {
@@ -733,9 +822,12 @@ impl ModelEvaluation for ModelCertificate {
             }
         }
 
-        let mut work = 0u64;
-        for input in &problem.formulas {
+        let mut work = arithmetic_work;
+        for (index, input) in problem.formulas.iter().enumerate() {
             if !model_formula_role(input.role()) {
+                continue;
+            }
+            if evaluated_arithmetic.contains_key(&index) {
                 continue;
             }
             let item_work = match input {
@@ -814,8 +906,22 @@ impl ModelEvaluation for ModelCertificate {
         // `Satisfiable` answer, not a counter-model. The per-formula polarity
         // checks below enforce both cases separately; this flag only drives
         // the status cross-check in step 6.
-        for input in &problem.formulas {
+        for (index, input) in problem.formulas.iter().enumerate() {
             if !model_formula_role(input.role()) {
+                continue;
+            }
+            if let Some(&value) = evaluated_arithmetic.get(&index) {
+                formulas_evaluated += 1;
+                if matches!(input, AnnotatedFormula::CNF(_) | AnnotatedFormula::TCF(_)) {
+                    ground_clauses_evaluated += 1;
+                }
+                let expected = input.role() != FormulaRole::Conjecture;
+                if value != expected {
+                    return ModelVerdict::Rejected(format!(
+                        "fixed arithmetic interpretation violates formula `{}` or its conjecture polarity",
+                        input.name()
+                    ));
+                }
                 continue;
             }
             match input {

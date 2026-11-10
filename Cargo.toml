@@ -24,6 +24,7 @@ mrs-prephase = { path = "crates/mrs-prephase" }
 mrs-proof-kernel = { path = "crates/mrs-proof-kernel" }
 mrs-cadical = { path = "crates/mrs-cadical" }
 mrs-cadical-sys = { path = "crates/mrs-cadical-sys" }
+mrs-arithmetic = { path = "crates/mrs-arithmetic" }
 mrs = { path = "." }
 burn = { version = "0.22.1", default-features = false }
 winnow = { version = "1.0.5", features = ["simd"] }
@@ -40,6 +41,10 @@ crossbeam-channel = "0.5.17"
 libc = "0.2.191"
 mimalloc = { version = "0.1.52", default-features = false }
 num_cpus = "1.17.0"
+num-bigint = "0.4.8"
+num-integer = "0.1.47"
+num-rational = "0.4.2"
+num-traits = "0.2.19"
 pretty_assertions = "1.4.1"
 rand = "0.10.3"
 rayon = "1.12.0"
@@ -85,6 +90,7 @@ mrs-core = { workspace = true }
 rustc-hash = { workspace = true }
 mrs-szs = { workspace = true }
 mrs-tptp = { workspace = true }
+mrs-arithmetic = { workspace = true }
 mrs-unify = { workspace = true }
 mrs-cnf = { workspace = true }
 mrs-calculus = { workspace = true }

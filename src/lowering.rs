@@ -46,6 +46,9 @@ pub struct LoweredProblem {
     /// could not be lowered. The search then runs on a weaker theory: a refutation
     /// still holds, but a satisfiability claim does not.
     pub unsupported_axioms: usize,
+    /// Model output must retain standard numeric sorts, not claim that the
+    /// entire interpretation is finite. Includes numeric type declarations.
+    pub uses_standard_arithmetic: bool,
 }
 
 /// A formula with its metadata from the TPTP input.
@@ -110,124 +113,20 @@ impl<'a> LowerCtx<'a> {
 /// counted in `unsupported_goals` and `unsupported_axioms`, so the caller can
 /// withhold any verdict the missing formulas could invalidate.
 pub fn lower_problem(problem: &TPTPProblem<'_>) -> LoweredProblem {
-    let mut symbols = SymbolTable::new();
-    let mut axioms = Vec::new();
-    let mut conjectures = Vec::new();
-    let mut cnf_clauses = Vec::new();
-    let mut id_gen = ClauseIdGen::new();
-    let mut input_axioms_count = 0;
-    let mut input_conjectures_count = 0;
-    let mut unsupported_axioms = 0;
-    let mut unsupported_goals = 0;
-
-    for formula in &problem.formulas {
-        let entries_before = axioms.len() + conjectures.len() + cnf_clauses.len();
-        let mut ctx = LowerCtx::new(&mut symbols);
-        ctx.reset_vars();
-
-        match formula {
-            AnnotatedFormula::FOF(fof) => {
-                let name = fof.name.as_str().to_string();
-                let role = fof.role;
-                let result = match &fof.formula {
-                    FOFStatement::Logical(f) => Some((name, role, lower_fof_formula(&mut ctx, f))),
-                    FOFStatement::Sequent(_, _) => {
-                        // Sequents are rare; skip for now
-                        None
-                    }
-                };
-                if let Some((name, role, formula)) = result {
-                    let lowered = LoweredFormula {
-                        name,
-                        role: role.as_str().to_string(),
-                        formula,
-                    };
-                    record_input_role(role, &mut input_axioms_count, &mut input_conjectures_count);
-                    if role == FormulaRole::Conjecture {
-                        conjectures.push(lowered);
-                    } else {
-                        axioms.push(lowered);
-                    }
-                }
-            }
-            AnnotatedFormula::CNF(cnf) => {
-                // Lower CNF directly to clauses, bypassing clausification
-                if let Some(clause) = lower_cnf_to_clause(&mut symbols, &mut id_gen, cnf) {
-                    record_input_role(
-                        cnf.role,
-                        &mut input_axioms_count,
-                        &mut input_conjectures_count,
-                    );
-                    cnf_clauses.push(clause);
-                }
-            }
-            AnnotatedFormula::TFF(tff) => {
-                let name = tff.name.as_str().to_string();
-                let role = tff.role;
-                match &tff.formula {
-                    TFFStatement::Logical(f) => {
-                        if let Some(formula) = lower_tff_formula(&mut ctx, f) {
-                            let lowered = LoweredFormula {
-                                name,
-                                role: role.as_str().to_string(),
-                                formula,
-                            };
-                            record_input_role(
-                                role,
-                                &mut input_axioms_count,
-                                &mut input_conjectures_count,
-                            );
-                            if role == FormulaRole::Conjecture {
-                                conjectures.push(lowered);
-                            } else {
-                                axioms.push(lowered);
-                            }
-                        } else {
-                            eprintln!(
-                                "% Warning: skipped TFF formula '{}' (unsupported constructs)",
-                                name
-                            );
-                        }
-                    }
-                    // type declarations, sequents, and NXF logic specs are not logical content
-                    TFFStatement::Typing(_)
-                    | TFFStatement::Sequent(_, _)
-                    | TFFStatement::Logic(_) => {}
-                }
-            }
-            AnnotatedFormula::TCF(tcf) => {
-                if let Some(clause) = lower_tcf_to_clause(&mut symbols, &mut id_gen, tcf) {
-                    record_input_role(
-                        tcf.role,
-                        &mut input_axioms_count,
-                        &mut input_conjectures_count,
-                    );
-                    cnf_clauses.push(clause);
-                }
-            }
-            // THF (higher-order) and TPI (process instructions) are not supported
-            _ => {}
-        }
-        if axioms.len() + conjectures.len() + cnf_clauses.len() == entries_before {
-            record_unsupported(
-                formula.role(),
-                &mut unsupported_axioms,
-                &mut unsupported_goals,
-            );
-        }
-    }
-
-    LoweredProblem {
-        symbols,
-        axioms,
-        conjectures,
-        cnf_clauses,
-        id_gen,
-        input_axioms_count,
-        input_conjectures_count,
-        unsupported_axioms,
-        unsupported_goals,
-    }
+    let mut lowered = LoweredProblem {
+        symbols: SymbolTable::new(),
+        axioms: Vec::new(),
+        conjectures: Vec::new(),
+        cnf_clauses: Vec::new(),
+        id_gen: ClauseIdGen::new(),
+        input_axioms_count: 0,
+        input_conjectures_count: 0,
+        unsupported_axioms: 0,
+        unsupported_goals: 0,
+        uses_standard_arithmetic: false,
+    };
+    lower_into(&mut lowered, problem, None);
+    lowered
 }
 
 /// Lowers additional formulas into an existing `LoweredProblem`.
@@ -242,6 +141,48 @@ pub fn lower_into(
 ) {
     for formula in &problem.formulas {
         if !selected(formula, selection) {
+            continue;
+        }
+
+        let interpreted = mrs_arithmetic::requires_interpretation(formula);
+        if formula.role().is_type_declaration() {
+            lowered.uses_standard_arithmetic |= interpreted;
+            continue;
+        }
+        let evaluated = mrs_arithmetic::Evaluator::default().evaluate(formula);
+        if let Ok(value) = evaluated {
+            lowered.uses_standard_arithmetic |= interpreted;
+            let role = formula.role();
+            record_input_role(
+                role,
+                &mut lowered.input_axioms_count,
+                &mut lowered.input_conjectures_count,
+            );
+            let lf = LoweredFormula {
+                name: formula.name().to_owned(),
+                role: role.as_str().to_owned(),
+                formula: if value { Formula::True } else { Formula::False },
+            };
+            // CNF/TCF truth constants also take this path. Clausification keeps
+            // proof provenance and produces either no clause or an empty clause.
+            if role == FormulaRole::Conjecture {
+                lowered.conjectures.push(lf);
+            } else {
+                lowered.axioms.push(lf);
+            }
+            continue;
+        }
+        if interpreted {
+            eprintln!(
+                "% Warning: skipped interpreted formula '{}': {}",
+                formula.name(),
+                evaluated.unwrap_err()
+            );
+            record_unsupported(
+                formula.role(),
+                &mut lowered.unsupported_axioms,
+                &mut lowered.unsupported_goals,
+            );
             continue;
         }
 
@@ -531,12 +472,17 @@ fn lower_fof_term(ctx: &mut LowerCtx<'_>, t: &FOFTerm<'_>) -> Term {
 
 /// Lowers a CNF formula directly into `mrs-core` clause representation.
 /// This is useful when the input is already in CNF and doesn't need clausification.
-/// Returns `None` for a clause containing `$true` or `$false`.
+/// Returns `None` for interpreted content, including truth constants. The full
+/// problem-lowering path evaluates supported closed arithmetic before calling
+/// this untyped clause adapter.
 pub fn lower_cnf_to_clause(
     symbols: &mut SymbolTable,
     id_gen: &mut ClauseIdGen,
     cnf: &mrs_tptp::CNFAnnotated<'_>,
 ) -> Option<Clause> {
+    if mrs_arithmetic::requires_cnf_interpretation(&cnf.formula) {
+        return None;
+    }
     let mut ctx = LowerCtx::new(symbols);
     ctx.reset_vars();
 
@@ -804,6 +750,9 @@ pub fn lower_tcf_to_clause(
     id_gen: &mut ClauseIdGen,
     tcf: &mrs_tptp::TCFAnnotated<'_>,
 ) -> Option<Clause> {
+    if mrs_arithmetic::requires_tcf_interpretation(&tcf.formula) {
+        return None;
+    }
     let name = tcf.name.as_str().to_string();
     let role = tcf.role.as_str().to_string();
     match &tcf.formula {
@@ -1071,15 +1020,60 @@ mod tests {
     }
 
     #[test]
-    fn cnf_truth_constants_are_counted_not_lowered_as_atoms() {
+    fn cnf_truth_constants_are_evaluated_not_lowered_as_atoms() {
         let problem = mrs_tptp::parse_tptp(
             "cnf(g, negated_conjecture, $false).\ncnf(a, axiom, p | $true).\ncnf(b, axiom, p | q).",
         )
         .unwrap();
         let lowered = lower_problem(&problem);
-        assert_eq!(lowered.unsupported_goals, 1);
+        assert_eq!(lowered.unsupported_goals, 0);
         assert_eq!(lowered.unsupported_axioms, 1);
         assert_eq!(lowered.cnf_clauses.len(), 1);
+        assert_eq!(lowered.axioms.len(), 1);
+        assert_eq!(lowered.axioms[0].formula, Formula::False);
+    }
+
+    #[test]
+    fn exact_arithmetic_does_not_intern_unconstrained_numeric_symbols() {
+        let lowered = parse_and_lower(
+            "tff(a,axiom,$less(1,1)).\n\
+             tff(g,conjecture,$sum(1/3,1/6) = 1/2).",
+        );
+        assert_eq!(lowered.axioms[0].formula, Formula::False);
+        assert_eq!(lowered.conjectures[0].formula, Formula::True);
+        assert_eq!(lowered.unsupported_axioms + lowered.unsupported_goals, 0);
+        assert!(lowered.symbols.is_empty());
+    }
+
+    #[test]
+    fn unsupported_interpreted_content_never_reaches_untyped_search() {
+        let lowered = parse_and_lower(
+            "fof(a,axiom,p($sum(1,2))).\n\
+             fof(b,axiom,$$unknown(a)).\n\
+             tff(c,axiom,$less(1.0,2.0)).\n\
+             tff(g,conjecture,![X:$int]:$less(X,2)).",
+        );
+        assert_eq!(lowered.unsupported_axioms, 3);
+        assert_eq!(lowered.unsupported_goals, 1);
+        assert!(lowered.axioms.is_empty());
+        assert!(lowered.conjectures.is_empty());
+        assert!(lowered.symbols.is_empty());
+    }
+
+    #[test]
+    fn low_level_clause_adapters_refuse_interpreted_content() {
+        let problem = mrs_tptp::parse_tptp("cnf(c,axiom,$less(1,1)). tcf(t,axiom,1=2).").unwrap();
+        let mut symbols = SymbolTable::new();
+        let mut ids = ClauseIdGen::new();
+        let AnnotatedFormula::CNF(cnf) = &problem.formulas[0] else {
+            panic!("expected CNF")
+        };
+        let AnnotatedFormula::TCF(tcf) = &problem.formulas[1] else {
+            panic!("expected TCF")
+        };
+        assert!(lower_cnf_to_clause(&mut symbols, &mut ids, cnf).is_none());
+        assert!(lower_tcf_to_clause(&mut symbols, &mut ids, tcf).is_none());
+        assert!(symbols.is_empty());
     }
 
     #[test]

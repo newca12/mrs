@@ -367,7 +367,10 @@ fn verify_strict_with_source_internal(
         if formula.role().is_type_declaration() {
             continue;
         }
-        if !formula.is_fof() && !formula.is_cnf() {
+        if !formula.is_fof()
+            && !formula.is_cnf()
+            && ground_arithmetic_value(formula, limits).is_err()
+        {
             return KernelVerdict::Inconclusive(format!(
                 "problem formula `{}` uses an unsupported dialect",
                 formula.name()
@@ -3758,6 +3761,21 @@ fn leaf_formula_equiv(
     problem_formula: &Formula,
     limits: VerificationLimits,
 ) -> MatchOutcome {
+    // Input normalization can discharge a closed arithmetic/Boolean source to
+    // one truth constant. This is safe at a provenance leaf, but must not erase
+    // the connective structure of intermediate conjunction/split proof steps.
+    if limits.max_comparison_steps > 0
+        && let (Ok(left), Ok(right)) = (
+            ground_arithmetic_value(proof, limits),
+            ground_arithmetic_value(problem, limits),
+        )
+    {
+        return if left == right {
+            MatchOutcome::Match
+        } else {
+            MatchOutcome::Differ
+        };
+    }
     if proof.is_cnf() && problem.is_cnf() {
         cnf_alpha_equiv(proof_formula, problem_formula, limits)
     } else {
@@ -15131,6 +15149,23 @@ fn lower_annotated_with_var_names(
     formula: &AnnotatedFormula<'_>,
     limits: VerificationLimits,
 ) -> Result<(Formula, HashMap<VarId, String>), KernelVerdict> {
+    let interpreted = mrs_arithmetic::requires_interpretation(formula);
+    if interpreted || (!formula.is_fof() && !formula.is_cnf()) {
+        let evaluated = ground_arithmetic_value(formula, limits);
+        if let Ok(value) = evaluated {
+            return Ok((
+                if value { Formula::True } else { Formula::False },
+                HashMap::new(),
+            ));
+        }
+        if interpreted {
+            return Err(KernelVerdict::Inconclusive(format!(
+                "unsupported interpreted formula `{}`: {}",
+                formula.name(),
+                evaluated.unwrap_err()
+            )));
+        }
+    }
     let mut ctx = LowerCtx::new(symbols, limits);
     let formula = match formula {
         AnnotatedFormula::FOF(formula) => lower_fof_statement(&mut ctx, &formula.formula),
@@ -15142,6 +15177,22 @@ fn lower_annotated_with_var_names(
         }
     }?;
     Ok((formula, ctx.var_names))
+}
+
+/// Ground arithmetic is part of trusted TPTP lowering, not the Verus IR theorem.
+/// Recompute it from the supplied source AST; never trust a producer's claimed
+/// truth value or a symbol table that treats `$less` as an ordinary predicate.
+fn ground_arithmetic_value(
+    formula: &AnnotatedFormula<'_>,
+    limits: VerificationLimits,
+) -> Result<bool, mrs_arithmetic::Error> {
+    mrs_arithmetic::Evaluator::new(mrs_arithmetic::Limits {
+        max_nodes: limits.max_formula_nodes.min(100_000),
+        max_depth: limits.max_term_depth.min(256),
+        deadline: limits.deadline,
+        ..mrs_arithmetic::Limits::default()
+    })
+    .evaluate(formula)
 }
 
 fn lower_annotated(

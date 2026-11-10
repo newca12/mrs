@@ -63,6 +63,8 @@ fn tptp_10_syntax_round_trips() {
         tff(modal_parens, axiom, {#box} @ ((p & q))).
         tff(backquoted_atom, axiom, p(`Const)).
         tcf(object_type, type, "object": $i).
+        tcf(arithmetic, axiom, $less(1,2) | ~$is_int(1/2)).
+        tcf(system, axiom, $$unknown(a) | $true_x).
         thf(object_type, type, "object": $i).
         thf(modal_long, axiom, {#box} @ (p & q)).
         thf(modal_short, axiom, [.] (p & q)).

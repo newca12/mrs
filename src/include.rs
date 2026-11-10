@@ -26,6 +26,8 @@ use crate::lowering::{self, LoweredProblem};
 #[derive(Debug)]
 pub enum IncludeError {
     DeadlineExceeded,
+    /// Syntax is parsed, but namespace interpretation is not implemented.
+    UnsupportedNamespace,
     /// The included file could not be found.
     FileNotFound {
         /// The requested include path (as written in the problem file).
@@ -53,6 +55,7 @@ impl fmt::Display for IncludeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             IncludeError::DeadlineExceeded => f.write_str("include resolution deadline expired"),
+            IncludeError::UnsupportedNamespace => f.write_str("include namespaces are unsupported"),
             IncludeError::FileNotFound { requested, tried } => {
                 write!(f, "Include file not found: '{}'", requested)?;
                 if !tried.is_empty() {
@@ -136,6 +139,9 @@ fn resolve_includes_recursive(
     check_include_deadline(deadline)?;
     for include in &problem.includes {
         check_include_deadline(deadline)?;
+        if include.space_name.is_some() {
+            return Err(IncludeError::UnsupportedNamespace);
+        }
         let (path, tried) = resolve_path(include.file_name, base_dir, tptp_root);
 
         // Circular include detection
@@ -190,6 +196,16 @@ fn resolve_includes_recursive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn include_namespace_is_not_silently_discarded() {
+        let problem = mrs_tptp::parse_tptp("include('axioms.ax',*,space).").unwrap();
+        let mut lowered = lowering::lower_problem(&problem);
+        assert!(matches!(
+            resolve_and_lower(&problem, &mut lowered, Path::new("."), None),
+            Err(IncludeError::UnsupportedNamespace)
+        ));
+    }
 
     #[test]
     fn expired_include_budget_is_distinct_from_missing_input() {

@@ -7,6 +7,11 @@
 //! speak the same format without either depending on the other's crate: the
 //! kernel's trust boundary is that it validates this structure itself, and it
 //! keeps doing so in [`mrs_proof_kernel::model`].
+//!
+//! The kernel can also discharge supported closed arithmetic in the fixed
+//! standard numeric sorts. Those sorts are not the finite domain or table
+//! entries below. Use a general `Model` output block, rather than claiming the
+//! entire typed interpretation is finite, when such arithmetic is present.
 
 use std::collections::BTreeMap;
 
@@ -126,6 +131,19 @@ impl ModelCertificate {
             "% SZS output start FiniteInterpretation for {problem_name}\n\
              {json}\n\
              % SZS output end FiniteInterpretation for {problem_name}\n"
+        )
+    }
+
+    /// A finite uninterpreted reduct together with fixed standard arithmetic.
+    /// The checker recomputes arithmetic from the source; no numeric operation
+    /// is assigned a meaning by these tables.
+    pub fn to_szs_arithmetic_block(&self, problem_name: &str) -> String {
+        let json = serde_json::to_string_pretty(self).unwrap_or_default();
+        format!(
+            "% SZS output start Model for {problem_name}\n\
+             % Standard numeric sorts; JSON tables cover only the uninterpreted reduct.\n\
+             {json}\n\
+             % SZS output end Model for {problem_name}\n"
         )
     }
 }

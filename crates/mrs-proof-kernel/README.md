@@ -11,6 +11,8 @@ familiar or because another theorem prover agrees with it.
 
 - `mrs-core` for lowered formulas, terms, clauses, symbols, and substitutions;
 - `mrs-tptp` for the parsed TPTP/TSTP representation;
+- `mrs-arithmetic` for bounded, exact integer/rational source evaluation (using
+  arbitrary-precision integers and normalized rationals, not floating point);
 - `mrs-cadical` for the bounded in-process SAT consistency check used by
   explicit AVATAR roll-ups that do not carry a replayable SAT trace.
 
@@ -74,6 +76,30 @@ The current kernel checks:
 Subsumption resolution uses standardized-apart, one-way set matching and
 requires the conclusion to be the target clause with one justified literal
 removed, modulo syntactic duplicate literals.
+
+## Arithmetic source normalization
+
+Supported closed integer/rational formulas can be normalized to truth constants
+before ordinary first-order replay. Source leaves are checked against the
+original parsed problem, not an unchecked truth value supplied by search. Closed
+TFF/TCF arithmetic sources are admitted through this path; the proof DAG still
+uses the existing FOF/CNF rules. Intermediate Boolean conjunctions and splits
+retain their structure. General typed reasoning and quantified arithmetic are
+not thereby supported.
+
+The strict kernel recomputes source arithmetic with the same deterministic
+`mrs-arithmetic` library used by lowering. That library is shared trusted code,
+not an independent arithmetic solver or a Verus-verified component. The formal
+theorem remains about decoded first-order IR, not arithmetic normalization or
+TPTP lowering.
+
+Model checking evaluates supported arithmetic in the standard numeric sorts,
+never in finite predicate/function tables. `validate_file` resolves selected
+and nested includes with aggregate byte, depth, and file-count limits; missing,
+circular, and unsupported namespace includes are inconclusive. `validate` on an
+unresolved include-bearing AST is also inconclusive. Arithmetic model output
+uses a general `Model` block: its JSON describes only the finite uninterpreted
+reduct, not a finite integer or rational universe.
 
 ## Unsupported Shapes
 

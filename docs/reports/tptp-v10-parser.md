@@ -53,6 +53,12 @@ system words that currently lower as uninterpreted symbols need a separate
 theory-aware implementation before a positive arithmetic result is justified.
 Arithmetic is separate follow-up work, not covered by the corpus counts above.
 
+Follow-up: [`mrs-arithmetic`](../../crates/mrs-arithmetic/README.md) implements
+bounded exact integer/rational evaluation, source replay, and model checking.
+Unsupported interpreted formulas no longer enter untyped search as free
+symbols. The conservative CNF/TCF truth-constant behavior described above is
+superseded for formulas this evaluator can discharge.
+
 ## Verification
 
 The checkpoint uses the repository gates (`cargo check`,

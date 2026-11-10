@@ -230,6 +230,33 @@ pub(crate) fn certify_ground_ordered_resolution(
     } = budget;
     let mut proof_symbols = symbols.clone();
     let deadline = Instant::now() + time_limit;
+    if clauses.is_empty() {
+        if time_limit.is_zero() {
+            return Err(CertificationFailure::Limit(
+                "certification deadline expired",
+            ));
+        }
+        // An empty residual theory is satisfiable over a nonempty domain.
+        // In particular, exact arithmetic can simplify every source formula
+        // away. Supply an explicit model so the caller can still validate the
+        // original source rather than relying on an absent witness payload.
+        let mut model = mrs_core::model::ModelCertificate {
+            domain_size: 1,
+            constants: Default::default(),
+            functions: Default::default(),
+            predicates: Default::default(),
+            equality: mrs_core::model::EqualitySemantics::StrictIdentity,
+            digest: String::new(),
+        };
+        model.digest = model.compute_digest();
+        return Ok(CertifiedGroundReport {
+            result: SearchResult::Saturated(
+                CompletenessWitness::ground_ordered_resolution().with_model(Some(model)),
+            ),
+            stats: SearchStats::default(),
+            tier: CertifiedTier::One,
+        });
+    }
     // The grounding budget is the smaller of a static ceiling and what the
     // memory allowance can hold at the measured per-literal cost. The static
     // ceiling is what makes a competition-shaped run comparable across hosts;
@@ -2685,6 +2712,31 @@ mod tests {
             &swapped,
             &asymmetric
         ));
+    }
+
+    #[test]
+    fn certifies_empty_residual_theory_with_explicit_nonempty_model() {
+        let report = certify_ground_ordered_resolution(
+            &[],
+            &[],
+            &SymbolTable::new(),
+            &TermOrdering::KBO,
+            &mut ClauseIdGen::new(),
+            CertifyBudget {
+                time_limit: Duration::from_secs(1),
+                workers: 1,
+                memory_mb: None,
+            },
+        )
+        .unwrap();
+        let SearchResult::Saturated(witness) = report.result else {
+            panic!("expected a model")
+        };
+        let model = witness
+            .model()
+            .expect("empty theories still need explicit model data");
+        assert_eq!(model.domain_size, 1);
+        assert_eq!(model.digest, model.compute_digest());
     }
 
     #[test]

@@ -7,7 +7,7 @@ use winnow::prelude::*;
 use crate::ast::tcf::{
     TCFAtomicFormula, TCFClause, TCFFormula, TCFLiteral, TCFStatement, TCFTyping,
 };
-use crate::lexer::{PResult, atomic_word, defined_word, distinct_object, keyword, ws};
+use crate::lexer::{PResult, atomic_word, defined_word, distinct_object, keyword, system_word, ws};
 use crate::parser::tff::{tff_term, tff_top_level_type, tff_variable};
 
 /// Parse a TCF statement
@@ -129,6 +129,14 @@ pub fn tcf_atomic_formula<'a>(input: &mut &'a str) -> PResult<TCFAtomicFormula<'
     alt((
         keyword("$true").value(TCFAtomicFormula::True),
         keyword("$false").value(TCFAtomicFormula::False),
+        |i: &mut &'a str| {
+            let name = system_word.parse_next(i)?;
+            Ok(TCFAtomicFormula::System(name, tcf_atomic_args(i)?))
+        },
+        |i: &mut &'a str| {
+            let name = defined_word.parse_next(i)?;
+            Ok(TCFAtomicFormula::Defined(name, tcf_atomic_args(i)?))
+        },
         tcf_plain_atomic,
     ))
     .parse_next(input)
@@ -136,6 +144,10 @@ pub fn tcf_atomic_formula<'a>(input: &mut &'a str) -> PResult<TCFAtomicFormula<'
 
 fn tcf_plain_atomic<'a>(input: &mut &'a str) -> PResult<TCFAtomicFormula<'a>> {
     let pred = atomic_word.parse_next(input)?;
+    Ok(TCFAtomicFormula::Plain(pred, tcf_atomic_args(input)?))
+}
+
+fn tcf_atomic_args<'a>(input: &mut &'a str) -> PResult<Vec<crate::ast::tff::TFFTerm<'a>>> {
     ws.parse_next(input)?;
 
     let args = opt(delimited(
@@ -153,7 +165,7 @@ fn tcf_plain_atomic<'a>(input: &mut &'a str) -> PResult<TCFAtomicFormula<'a>> {
     ))
     .parse_next(input)?;
 
-    Ok(TCFAtomicFormula::Plain(pred, args.unwrap_or_default()))
+    Ok(args.unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -165,6 +177,9 @@ mod tests {
         assert!(tcf_literal.parse_peek("p").is_ok());
         assert!(tcf_literal.parse_peek("~p").is_ok());
         assert!(tcf_literal.parse_peek("p(X)").is_ok());
+        assert!(tcf_literal.parse_peek("$less(1,2)").is_ok());
+        assert!(tcf_literal.parse_peek("~$less(1,2)").is_ok());
+        assert!(tcf_literal.parse_peek("$$unknown(a)").is_ok());
     }
 
     #[test]

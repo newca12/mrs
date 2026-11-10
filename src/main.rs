@@ -1420,7 +1420,12 @@ fn run() {
         } else {
             Some("Satisfiable")
         };
-        match certificate.validate(&problem, expected) {
+        let model_verdict = if path == "-" {
+            certificate.validate(&problem, expected)
+        } else {
+            certificate.validate_file(std::path::Path::new(&path), expected)
+        };
+        match model_verdict {
             mrs_proof_kernel::model::ModelVerdict::Certified { .. } => {}
             mrs_proof_kernel::model::ModelVerdict::Rejected(reason) => {
                 eprintln!("% Model certificate rejected by the strict kernel: {reason}");
@@ -1526,7 +1531,11 @@ fn run() {
         let model_block = format!(
             "% Proof : {}\n{}",
             path,
-            certificate.to_szs_block(problem_name)
+            if lowered.uses_standard_arithmetic {
+                certificate.to_szs_arithmetic_block(problem_name)
+            } else {
+                certificate.to_szs_block(problem_name)
+            }
         );
         if model_block.len() > proof_bytes_limit {
             eprintln!(

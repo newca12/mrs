@@ -8,6 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+mrs-arithmetic = { workspace = true }
 mrs-core = { workspace = true, features = ["proover"] }
 mrs-cnf = { workspace = true }
 mrs-tptp = { workspace = true, features = ["proover", "owned"] }
@@ -20,4 +21,5 @@ serde_json = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 mrs-proover = { path = "../mrs-proover" }
