@@ -17,6 +17,19 @@ type ToolResult<T> = Result<T, Box<dyn Error>>;
 const CORE_SMT_RLIMIT: &str = "30";
 const VERIFIER_MUTATIONS: &str = include_str!("verifier_mutations.json");
 const RUNTIME_MUTATIONS: &str = include_str!("runtime_mutations.json");
+const VERIFIED_RUNTIME_COMPONENTS: [&str; 3] = [
+    "first-order IR checker and replay refinements",
+    "wire-v1 structural decoder",
+    "ASCII decimal wire tokenizer and span correspondence",
+];
+const UNVERIFIED_RUNTIME_BOUNDARY: [&str; 6] = [
+    "TPTP parser",
+    "TPTP AST lowering and symbol assignment",
+    "certificate discovery and normalization",
+    "wire request encoding",
+    "bounded caller-byte acquisition",
+    "subprocess supervision and response handling",
+];
 
 #[derive(Args, Debug)]
 pub struct AuditSourceArgs {
@@ -41,6 +54,25 @@ pub struct MutationCheckArgs {
 pub struct RuntimeEvidenceArgs {
     root: PathBuf,
     binary: PathBuf,
+    verus: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct VerusCheckVersionArgs {
+    manifest: PathBuf,
+    verus: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerusToolchainPin {
+    verus: String,
+    rust_toolchain: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct VerusIdentity {
+    version: String,
+    rust_toolchain: String,
 }
 
 #[derive(Debug)]
@@ -701,11 +733,14 @@ pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
 pub fn write_runtime_evidence(args: RuntimeEvidenceArgs) -> ToolResult<()> {
     let root = args.root.canonicalize()?;
     let binary = args.binary.canonicalize()?;
+    let verus = args.verus.canonicalize()?;
     let formal = root.join("formal/superposition-checker");
     let core = formal.join("first_order_core.rs");
     let toolchain_path = formal.join("verus-toolchain.json");
     let rules_path = formal.join("supported-rules.json");
     let toolchain: Value = serde_json::from_slice(&fs::read(&toolchain_path)?)?;
+    let pin: VerusToolchainPin = serde_json::from_value(toolchain.clone())?;
+    let (verus_identity, verus_version_output) = inspect_verus(&verus, &pin)?;
     let supported_rules: Value = serde_json::from_slice(&fs::read(&rules_path)?)?;
     let commit = Command::new("git")
         .args([
@@ -734,6 +769,10 @@ pub fn write_runtime_evidence(args: RuntimeEvidenceArgs) -> ToolResult<()> {
         "source_dirty": !dirty.stdout.is_empty(),
         "core_sha256": hash_file(&core)?,
         "artifact_sha256": hash_file(&binary)?,
+        "verus_binary_sha256": hash_file(&verus)?,
+        "verus_version": verus_identity.version,
+        "effective_rust_toolchain": verus_identity.rust_toolchain,
+        "verus_version_output": verus_version_output.trim(),
         "toolchain": toolchain,
         "supported_rules": supported_rules,
         "verified_build_flags": [
@@ -744,7 +783,8 @@ pub fn write_runtime_evidence(args: RuntimeEvidenceArgs) -> ToolResult<()> {
             CORE_SMT_RLIMIT,
             "--compile"
         ],
-        "unverified_boundary": ["TPTP parser", "Rust lowering", "wire decoder", "process I/O"],
+        "verified_components": VERIFIED_RUNTIME_COMPONENTS,
+        "unverified_boundary": UNVERIFIED_RUNTIME_BOUNDARY,
     });
     let mut sidecar = OsString::from(binary.as_os_str());
     sidecar.push(".json");
@@ -753,6 +793,63 @@ pub fn write_runtime_evidence(args: RuntimeEvidenceArgs) -> ToolResult<()> {
         format!("{}\n", serde_json::to_string_pretty(&evidence)?),
     )?;
     Ok(())
+}
+
+pub fn check_verus_version(args: VerusCheckVersionArgs) -> ToolResult<()> {
+    let pin: VerusToolchainPin = serde_json::from_slice(&fs::read(&args.manifest)?)?;
+    let verus = args.verus.canonicalize()?;
+    let (identity, _) = inspect_verus(&verus, &pin)?;
+    println!("verus_version={}", identity.version);
+    println!("effective_rust_toolchain={}", identity.rust_toolchain);
+    println!("verus_binary_sha256={}", hash_file(&verus)?);
+    Ok(())
+}
+
+fn inspect_verus(verus: &Path, pin: &VerusToolchainPin) -> ToolResult<(VerusIdentity, String)> {
+    let output = run_capture(
+        Command::new(verus).arg("--version"),
+        None,
+        Duration::from_secs(30),
+    )?;
+    let text = output_text(&output);
+    if !output.status.success() {
+        return Err(format!("Verus --version failed:\n{text}").into());
+    }
+    let identity = validate_verus_identity(&text, pin)?;
+    Ok((identity, text))
+}
+
+fn validate_verus_identity(output: &str, pin: &VerusToolchainPin) -> ToolResult<VerusIdentity> {
+    let identity = parse_verus_identity(output)?;
+    if identity.version != pin.verus {
+        return Err(format!(
+            "Verus version mismatch: expected {}, found {}",
+            pin.verus, identity.version
+        )
+        .into());
+    }
+    if identity.rust_toolchain != pin.rust_toolchain {
+        return Err(format!(
+            "Verus Rust toolchain mismatch: expected {}, found {}",
+            pin.rust_toolchain, identity.rust_toolchain
+        )
+        .into());
+    }
+    Ok(identity)
+}
+
+fn parse_verus_identity(output: &str) -> ToolResult<VerusIdentity> {
+    let version = output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Version:"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or("could not determine Verus version")?;
+    let rust_toolchain = effective_toolchain(output)?;
+    Ok(VerusIdentity {
+        version: version.to_owned(),
+        rust_toolchain: rust_toolchain.to_owned(),
+    })
 }
 
 pub fn validate_json(path: &Path) -> ToolResult<()> {
@@ -791,6 +888,50 @@ mod tests {
         ));
         assert!(!contains_unchecked_proof_escape("assumption(false);"));
         assert!(!contains_unchecked_proof_escape("// assume(false)"));
+    }
+
+    #[test]
+    fn verus_runtime_evidence_matches_the_pinned_verifier_and_toolchain() {
+        let pin = VerusToolchainPin {
+            verus: "0.2026.10.18.7d82994".into(),
+            rust_toolchain: "1.99.1-x86_64-unknown-linux-gnu".into(),
+        };
+        let output = "Verus\n  Version: 0.2026.10.18.7d82994\n  Profile: release\n  Toolchain: 1.99.1-x86_64-unknown-linux-gnu (overridden by environment variable RUSTUP_TOOLCHAIN)\n";
+        let identity = validate_verus_identity(output, &pin).unwrap();
+        assert_eq!(identity.version, pin.verus);
+        assert_eq!(identity.rust_toolchain, pin.rust_toolchain);
+
+        let wrong_version = output.replace("0.2026.10.18.7d82994", "0.2026.10.01.other");
+        assert!(
+            validate_verus_identity(&wrong_version, &pin)
+                .unwrap_err()
+                .to_string()
+                .contains("Verus version mismatch")
+        );
+        let wrong_toolchain = output.replace("1.99.1-x86_64", "1.98.0-x86_64");
+        assert!(
+            validate_verus_identity(&wrong_toolchain, &pin)
+                .unwrap_err()
+                .to_string()
+                .contains("Verus Rust toolchain mismatch")
+        );
+        assert!(parse_verus_identity("Verus\n  Profile: release\n").is_err());
+    }
+
+    #[test]
+    fn runtime_evidence_distinguishes_verified_wire_decode_from_host_bridge() {
+        assert!(VERIFIED_RUNTIME_COMPONENTS.contains(&"wire-v1 structural decoder"));
+        assert!(
+            VERIFIED_RUNTIME_COMPONENTS
+                .contains(&"ASCII decimal wire tokenizer and span correspondence")
+        );
+        assert!(
+            !UNVERIFIED_RUNTIME_BOUNDARY
+                .iter()
+                .any(|boundary| boundary.contains("wire decoder"))
+        );
+        assert!(UNVERIFIED_RUNTIME_BOUNDARY.contains(&"wire request encoding"));
+        assert!(UNVERIFIED_RUNTIME_BOUNDARY.contains(&"bounded caller-byte acquisition"));
     }
 
     #[test]

@@ -38,8 +38,10 @@ ProoVer loader, then require the same formal DAG gate to accept; introducing an
 unselected premise into the resolved problem is rejected by the adapter. Include
 path resolution and selection filtering remain trusted loader behavior.
 
-Build evidence records source commit/dirty state/hash, artifact SHA-256, toolchain,
-support manifest and strict verification flags. Artifact execution uses a private
+Build evidence records source commit/dirty state/hash, artifact SHA-256, Verus
+binary SHA-256/version, effective Rust toolchain, support manifest and exact
+strict verification flags. The build rejects a Verus release or effective
+toolchain that differs from the checked-in pin. Artifact execution uses a private
 read-only byte snapshot of the hash-checked caller binary, reducing check/launch
 replacement risk. On Unix, the child has a cleared environment, `/` cwd, a private
 process group, 60 s CPU, 768 MiB address-space, 1 MiB file-size and zero core-dump

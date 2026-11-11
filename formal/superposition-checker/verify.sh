@@ -45,6 +45,7 @@ if [[ -n "${VERUS_LOG:-}" ]]; then
 fi
 
 run_check "$VERUS_BIN" --version
+run_check mrs_tools verus-check-version "$(dirname "$0")/verus-toolchain.json" "$VERUS_BIN"
 run_check mrs_tools audit-verus-source --source-dir "$(dirname "$0")"
 run_check mrs_tools validate-json "$(dirname "$0")/supported-rules.json"
 run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/target_rigidity.rs"

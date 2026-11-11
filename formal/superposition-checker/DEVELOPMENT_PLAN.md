@@ -7,6 +7,24 @@ The bounded **M5 interchange and MRS integration implementation now exists**.
 The older milestone narrative below records the prototype's history; statements
 that no interchange or caller exists are superseded by this update.
 
+### 2026-11-11 pinned runtime-artifact evidence checkpoint
+
+- **DONE (M0/M7 release-gate slice):** `verify.sh` and `build-runtime.sh` now
+  reject a Verus executable whose reported release or effective Rust toolchain
+  differs from `verus-toolchain.json`.
+- **DONE:** runtime compilation uses the same explicit SMT `--rlimit 30` as the
+  first-order-core verification gate. Its sidecar records the Verus executable
+  hash/version, effective Rust toolchain, compiled artifact/source hashes,
+  source commit/dirty state, and exact build flags.
+- **DONE:** evidence now separates the Verus-checked wire-v1 decoder and
+  tokenizer from the remaining host trust boundary. The prior sidecar incorrectly
+  listed the verified wire decoder as unverified.
+- **DONE:** tooling unit tests cover version/toolchain mismatch rejection and
+  ensure the evidence boundary keeps wire decoding on the verified side.
+- **Scope:** this improves pinned-build provenance and claim accuracy only. It
+  does not verify TPTP parsing/lowering, establish cross-host bit reproducibility,
+  or add a per-certification-run manifest.
+
 ### 2026-10-21 cumulative accounting and adversarial hygiene checkpoint
 
 - **DONE:** unified DAG exact-resolution node accounting with resolution and
@@ -1573,10 +1591,15 @@ archived cases, and a versioned support declaration.
   Verus core twice and requires byte-identical executable hashes before
   running the fixtures. This currently establishes same-host reproducibility,
   not cross-host or release-artifact determinism.
-- **TODO — DIFFICULT:** add a broader supported proof corpus, deterministic
-  production artifact/hash recording and independent theorem review. The
-  manifest is not yet emitted per run because no production checker adapter is
-  integrated.
+- **DONE, pinned artifact provenance slice (2026-11-11):** verification and
+  runtime-build commands reject Verus version/toolchain drift; the runtime
+  sidecar records verifier, source and artifact hashes, pinned toolchain,
+  support manifest and exact compile flags. This is stronger build identity,
+  not cross-host reproducibility.
+- **TODO — DIFFICULT:** broaden the supported proof corpus and obtain independent
+  theorem review. A manifest is still not emitted per certification run because
+  no production checker adapter is integrated; cross-host artifact
+  reproducibility also remains open.
 
 **Deliverables**
 
@@ -1832,3 +1855,8 @@ satisfiability/model claims, and unrestricted full TSTP.
   or DAG replay, bypassing cited parents/conclusions, and forging DAG structural
   guards. The compiled-runtime root-closure mutation is also required to fail.
   Broader corpus and threat-model coverage remain TODO.
+- [x] Require verification/runtime-build commands to match the pinned Verus
+  release and effective Rust toolchain, use the verification gate's SMT limit
+  for runtime compilation, and record verifier identity, exact flags, artifact
+  provenance, and the accurate verified/unverified boundary in the sidecar.
+  Unit tests reject version/toolchain drift and guard the wire-decoder claim.

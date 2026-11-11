@@ -65,6 +65,8 @@ enum Command {
     VerusMutationCheck(formal::MutationCheckArgs),
     /// Write provenance JSON beside a compiled Verus runtime binary.
     VerusRuntimeEvidence(formal::RuntimeEvidenceArgs),
+    /// Require a Verus executable to match the pinned version and toolchain.
+    VerusCheckVersion(formal::VerusCheckVersionArgs),
     /// Read one field from the pinned Verus toolchain manifest.
     VerusPinField(VerusPinFieldArgs),
     /// Extract Verus's effective Rust toolchain from its version output.
@@ -120,6 +122,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Command::VerusRuntimeEvidence(args) => {
             mrs_bench::tooling::formal::write_runtime_evidence(args)
         }
+        Command::VerusCheckVersion(args) => mrs_bench::tooling::formal::check_verus_version(args),
         Command::VerusPinField(args) => {
             println!(
                 "{}",

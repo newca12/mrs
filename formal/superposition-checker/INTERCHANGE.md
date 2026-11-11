@@ -8,11 +8,15 @@ Build the **same source verified by Verus** into a standalone checker:
 nix develop .#verus -c bash formal/superposition-checker/build-runtime.sh /tmp/opencode/mrs-verus-checker
 ```
 
-The command prints its SHA-256 and writes `OUTPUT.json` containing the binary
-hash, source hash/commit/dirty state, pinned toolchain, support manifest and
-verification flags. On ordinary Linux run the script with `bash` directly.
-Use an existing output directory. Verification never downloads/builds a checker
-implicitly. The caller explicitly supplies the expected artifact SHA-256.
+The command first requires the selected Verus binary to report the pinned Verus
+version and effective Rust toolchain, then compiles with `--no-cheating` and the
+same SMT resource limit as `verify.sh`. It prints the artifact SHA-256 and writes
+`OUTPUT.json` containing the artifact/source hashes, source commit/dirty state,
+Verus binary hash/version, toolchain, support manifest, verified build flags,
+and the verified versus unverified boundary. On ordinary Linux run the script
+with `bash` directly. Use an existing output directory. Verification never
+downloads/builds a checker implicitly. The caller explicitly supplies the
+expected artifact SHA-256.
 
 ```sh
 nix develop -c cargo run -p mrs-proof-kernel --example verus_shadow -- \
@@ -68,8 +72,10 @@ and ASCII whitespace/unsigned-decimal tokenization are Verus-verified by
 `check_wire_tokens` and `wire_tokenize`, including digit limits and checked
 `u64` accumulation. The host shim only acquires a bounded byte buffer and
 performs process I/O/response formatting. TPTP parsing, bounded CNF lowering,
-numeric symbol assignment, certificate discovery, equality orientation, ordered
-alpha matching, and subprocess orchestration remain unverified. The opt-in
+numeric symbol assignment, wire request encoding, certificate discovery,
+equality orientation, ordered alpha matching, and subprocess orchestration
+remain unverified. Build-time evidence records the pinned Verus executable and
+labels the verified decoder separately from these host-side boundaries. The opt-in
 gate remains a trusted-adapter dual-check, not an end-to-end verified TPTP
 certifier. Its positive result requires the independently implemented strict
 kernel. Shadow results always carry `production_certification=false` to prevent
@@ -245,6 +251,8 @@ it twice, compares hashes, runs runtime regressions and wire malformed/truncated
 request tests, then runs Rust integration tests against that exact temporary
 artifact/hash. Rust tests requiring the artifact are explicitly ignored in
 ordinary `cargo test`; they are mandatory in the formal CI job.
+Both `verify.sh` and `build-runtime.sh` reject a Verus executable whose reported
+release or effective Rust toolchain differs from `verus-toolchain.json`.
 The compiled-runtime mutation gate weakens the tokenizer's digit guard and maps
 a non-ASCII byte into a digit, then requires the malformed request to remain
 rejected. It also removes the source-fresh variable images from both target
