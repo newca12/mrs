@@ -84,9 +84,10 @@ mistaking them for an independent formal certification of the original proof.
 Supported TPTP inputs are CNF, uninterpreted first-order predicates/functions of
 arity at most two, equality, variables and a singleton positive `$false` empty
 clause. Literal order and multiplicity are preserved. Interpreted functions,
-numbers, distinct objects, larger arities, non-CNF dialects, types, unimplemented
-rules and conjecture transformations return Unknown. No unsupported literal is
-silently dropped. A shared signature check rejects inconsistent symbol arities.
+numbers, distinct objects, larger arities, non-CNF dialects, type/datatype/
+codatatype declarations, unimplemented rules and conjecture transformations
+return Unknown. No unsupported literal is silently dropped. A shared signature
+check rejects inconsistent symbol arities.
 
 Input leaves require `file(...)` provenance, matching role/source in the strict
 kernel and exact lowered membership in the supplied premise clauses. Proof

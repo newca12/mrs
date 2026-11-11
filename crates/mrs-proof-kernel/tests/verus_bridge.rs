@@ -717,6 +717,69 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
 
 #[test]
 #[ignore = "requires the pinned compiled Verus artifact; run by formal CI"]
+fn tptp_10_type_declaration_roles_fail_closed_in_problem_and_proof() {
+    let cfg = config();
+    let problem_text = "cnf(a,axiom,p). cnf(b,axiom,~p).";
+    let proof_text = "cnf(a,axiom,p,file('input',a)).
+        cnf(b,axiom,~p,file('input',b)).
+        cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,b])).";
+    let problem = mrs_tptp::parse_tptp(problem_text).unwrap();
+    let proof = mrs_tptp::parse_tptp(proof_text).unwrap();
+    let declarations = [
+        "tff(type_decl,type,nat: $tType).",
+        "tff(datatype_decl,type-datatype,nat: $tType).",
+        "tff(codatatype_decl,type-codatatype,stream: $tType).",
+        "tff(datatype_constructor,type-datatype_constructor,s: nat > nat).",
+        "tff(codatatype_constructor,type-codatatype_constructor,stream_cons: $i > stream).",
+    ];
+
+    for declaration in declarations {
+        let typed_proof_text = format!("{proof_text} {declaration}");
+        let typed_proof = mrs_tptp::parse_tptp(&typed_proof_text)
+            .expect("TPTP 10 type declaration in proof should parse");
+        let (verdict, report) = verify_with_verus_gate(
+            &problem,
+            &typed_proof,
+            Some("input"),
+            VerificationLimits::default(),
+            &cfg,
+        );
+        assert_ne!(
+            verdict,
+            KernelVerdict::Certified,
+            "{declaration}: {report:?}"
+        );
+        assert!(
+            matches!(report.verdict, ShadowVerdict::Unknown(_)),
+            "proof-side {declaration} must be unsupported: {report:?}"
+        );
+        assert!(!report.production_certification);
+
+        let typed_problem_text = format!("{problem_text} {declaration}");
+        let typed_problem = mrs_tptp::parse_tptp(&typed_problem_text)
+            .expect("TPTP 10 type declaration in problem should parse");
+        let (verdict, report) = verify_with_verus_gate(
+            &typed_problem,
+            &proof,
+            Some("input"),
+            VerificationLimits::default(),
+            &cfg,
+        );
+        assert_ne!(
+            verdict,
+            KernelVerdict::Certified,
+            "{declaration}: {report:?}"
+        );
+        assert!(
+            matches!(report.verdict, ShadowVerdict::Unknown(_)),
+            "problem-side {declaration} must be unsupported: {report:?}"
+        );
+        assert!(!report.production_certification);
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned compiled Verus artifact; run by formal CI"]
 fn nested_congruence_refutations_and_deep_mutations() {
     let cfg = config();
     for (parent, left, right) in [

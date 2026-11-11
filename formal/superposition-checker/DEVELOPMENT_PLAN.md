@@ -25,6 +25,19 @@ that no interchange or caller exists are superseded by this update.
   does not verify TPTP parsing/lowering, establish cross-host bit reproducibility,
   or add a per-certification-run manifest.
 
+### 2026-11-11 TPTP 10 type-role fail-closed regression checkpoint
+
+- **DONE (M5 adapter guard):** the compiled-checker bridge integration suite now
+  tests all five parser-recognized type declaration roles: `type`,
+  `type-datatype`, `type-codatatype`, `type-datatype_constructor`, and
+  `type-codatatype_constructor`.
+- **DONE:** each role is injected independently into both the problem and proof
+  snapshots. The dual-check API must return an `Unknown` formal report and may
+  not return `Certified`; all ten cases run in formal CI against the pinned
+  artifact.
+- **Scope:** this exercises the host adapter's fail-closed role check. It does
+  not add typed TPTP support or verify parsing/type-declaration lowering.
+
 ### 2026-10-21 cumulative accounting and adversarial hygiene checkpoint
 
 - **DONE:** unified DAG exact-resolution node accounting with resolution and
@@ -1855,6 +1868,10 @@ satisfiability/model claims, and unrestricted full TSTP.
   or DAG replay, bypassing cited parents/conclusions, and forging DAG structural
   guards. The compiled-runtime root-closure mutation is also required to fail.
   Broader corpus and threat-model coverage remain TODO.
+- [x] Make the TPTP 10 type-declaration guard a dual-check integration regression
+  for all five parser roles, in both problem and proof inputs. The formal report
+  must remain `Unknown` and the opt-in gate must not certify any of the ten cases;
+  typed syntax remains unsupported.
 - [x] Require verification/runtime-build commands to match the pinned Verus
   release and effective Rust toolchain, use the verification gate's SMT limit
   for runtime compilation, and record verifier identity, exact flags, artifact
