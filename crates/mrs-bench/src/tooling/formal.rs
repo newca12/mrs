@@ -366,6 +366,30 @@ pub fn runtime_check(args: RuntimeCheckArgs) -> ToolResult<()> {
                 format!("Verus bridge regression failed:\n{}", output_text(&bridge)).into(),
             );
         }
+        let loaded_job_bridge = run_capture(
+            Command::new("cargo")
+                .args([
+                    "test",
+                    "-p",
+                    "mrs-proover",
+                    "--test",
+                    "verus_bridge",
+                    "--",
+                    "--include-ignored",
+                ])
+                .current_dir(&root)
+                .env("MRS_VERUS_TEST_BINARY", &binary)
+                .env("MRS_VERUS_TEST_SHA256", &digest),
+            None,
+            Duration::from_secs(300),
+        )?;
+        if !loaded_job_bridge.status.success() {
+            return Err(format!(
+                "ProoVer loaded-job Verus bridge regression failed:\n{}",
+                output_text(&loaded_job_bridge)
+            )
+            .into());
+        }
         let proof = source
             .parent()
             .ok_or("formal source has no parent directory")?

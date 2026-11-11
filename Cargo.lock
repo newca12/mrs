@@ -4324,7 +4324,6 @@ dependencies = [
  "mrs-cadical",
  "mrs-cnf",
  "mrs-core",
- "mrs-proover",
  "mrs-tptp",
  "serde",
  "serde_json",
