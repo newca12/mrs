@@ -237,21 +237,28 @@ pub(crate) fn certify_ground_ordered_resolution(
             ));
         }
         // An empty residual theory is satisfiable over a nonempty domain.
-        // In particular, exact arithmetic can simplify every source formula
-        // away. Supply an explicit model so the caller can still validate the
-        // original source rather than relying on an absent witness payload.
-        let mut model = mrs_core::model::ModelCertificate {
-            domain_size: 1,
-            constants: Default::default(),
-            functions: Default::default(),
-            predicates: Default::default(),
-            equality: mrs_core::model::EqualitySemantics::StrictIdentity,
-            digest: String::new(),
+        // Exact arithmetic can simplify every source formula away, in which
+        // case an empty signature has a complete one-element witness. If
+        // tautology elimination removed clauses containing uninterpreted
+        // symbols, an empty table set would be incomplete; keep the saturation
+        // result but omit that model certificate.
+        let model = if symbols.is_empty() {
+            let mut model = mrs_core::model::ModelCertificate {
+                domain_size: 1,
+                constants: Default::default(),
+                functions: Default::default(),
+                predicates: Default::default(),
+                equality: mrs_core::model::EqualitySemantics::StrictIdentity,
+                digest: String::new(),
+            };
+            model.digest = model.compute_digest();
+            Some(model)
+        } else {
+            None
         };
-        model.digest = model.compute_digest();
         return Ok(CertifiedGroundReport {
             result: SearchResult::Saturated(
-                CompletenessWitness::ground_ordered_resolution().with_model(Some(model)),
+                CompletenessWitness::ground_ordered_resolution().with_model(model),
             ),
             stats: SearchStats::default(),
             tier: CertifiedTier::One,
@@ -2737,6 +2744,30 @@ mod tests {
             .expect("empty theories still need explicit model data");
         assert_eq!(model.domain_size, 1);
         assert_eq!(model.digest, model.compute_digest());
+    }
+
+    #[test]
+    fn empty_residual_theory_does_not_emit_an_incomplete_model_for_symbols() {
+        let mut symbols = SymbolTable::new();
+        symbols.intern("p");
+        symbols.intern("a");
+        let report = certify_ground_ordered_resolution(
+            &[],
+            &[],
+            &symbols,
+            &TermOrdering::KBO,
+            &mut ClauseIdGen::new(),
+            CertifyBudget {
+                time_limit: Duration::from_secs(1),
+                workers: 1,
+                memory_mb: None,
+            },
+        )
+        .unwrap();
+        let SearchResult::Saturated(witness) = report.result else {
+            panic!("expected a saturation witness")
+        };
+        assert!(witness.model().is_none());
     }
 
     #[test]

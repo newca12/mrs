@@ -137,3 +137,11 @@ fn include_selections_and_arithmetic_model_validation_agree() {
         "Unsatisfiable",
     );
 }
+
+#[test]
+fn empty_residual_tautology_does_not_emit_an_incomplete_model() {
+    let output = run("fof(tautology,axiom,p(a) | ~p(a)).", &["--certify-ordered"]);
+    assert_status(&output, "Satisfiable");
+    assert!(!output.contains("% SZS output start FiniteInterpretation"));
+    assert!(!output.contains("% SZS output start Model for"));
+}

@@ -56,7 +56,9 @@ The strict proof kernel recomputes original source arithmetic before accepting
 normalized input leaves. Model validation checks fixed standard arithmetic,
 conjecture polarity, and the complete selected include closure. It does not
 interpret `$less`, numbers, or arithmetic functions through finite tables.
-An empty residual clause set gets an explicit nonempty model witness.
+An empty residual clause set gets an explicit nonempty model witness when its
+uninterpreted signature is empty; if tautology elimination leaves source
+symbols with no clauses, the prover omits an incomplete model certificate.
 
 Arithmetic is shared trusted source-normalization code, **not covered by the
 Verus decoded-IR theorem**. No new arithmetic inference rule or completeness
@@ -88,7 +90,7 @@ unsupported inputs, and selected includes. Unit tests exhaustively check small
 signed integer quotients/remainders, rational division identities, ties-to-even,
 arbitrary precision, sort separation, malformed values, and resource limits.
 
-The final Nix-wrapped workspace run passed 1,672 tests in 80 suites, along with
+The final Nix-wrapped workspace run passed 1,675 tests in 80 suites, along with
 `cargo check`, workspace all-target checking, formatting, canonical clippy, and
 targeted arithmetic/parser/integration lints. Public `mrs-proover --strict`
 audits also returned `VerifiedGood` for both an emitted rational-sum theorem

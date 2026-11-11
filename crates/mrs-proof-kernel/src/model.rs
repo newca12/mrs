@@ -103,6 +103,7 @@ struct ModelInputLoader {
     bytes_read: usize,
     files_read: usize,
     active: BTreeSet<std::path::PathBuf>,
+    tptp_root: Option<std::path::PathBuf>,
 }
 
 impl ModelInputLoader {
@@ -153,22 +154,46 @@ impl ModelInputLoader {
             if include.space_name.is_some() {
                 return Err("model input include namespaces are unsupported".into());
             }
-            let local = canonical
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join(include.file_name);
-            let included_path = if local.exists() {
-                local
-            } else if let Some(root) = std::env::var_os("TPTP") {
-                std::path::PathBuf::from(root).join(include.file_name)
-            } else {
-                local
-            };
+            let base_dir = canonical.parent().unwrap_or(std::path::Path::new("."));
+            let included_path =
+                resolve_model_include_path(include.file_name, base_dir, self.tptp_root.as_deref());
             self.load(&included_path, include.selection.as_deref(), depth + 1)?;
         }
         self.active.remove(&canonical);
         Ok(())
     }
+}
+
+/// Keep model validation's include resolution aligned with the prover: the
+/// configured TPTP root wins, then a root discovered by its `Axioms/` folder,
+/// then the including file's directory.
+fn resolve_model_include_path(
+    file_name: &str,
+    base_dir: &std::path::Path,
+    tptp_root: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    if let Some(root) = tptp_root {
+        let candidate = root.join(file_name);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    let mut directory = base_dir.to_path_buf();
+    loop {
+        if directory.join("Axioms").is_dir() {
+            let candidate = directory.join(file_name);
+            if candidate.exists() {
+                return candidate;
+            }
+            break;
+        }
+        if !directory.pop() {
+            break;
+        }
+    }
+
+    base_dir.join(file_name)
 }
 
 /// Deterministic first-order model checking.
@@ -233,7 +258,10 @@ impl ModelEvaluation for ModelCertificate {
         problem_path: &std::path::Path,
         expected_status: Option<&str>,
     ) -> ModelVerdict {
-        let mut loader = ModelInputLoader::default();
+        let mut loader = ModelInputLoader {
+            tptp_root: std::env::var_os("TPTP").map(std::path::PathBuf::from),
+            ..ModelInputLoader::default()
+        };
         if let Err(reason) = loader.load(problem_path, None, 0) {
             return ModelVerdict::Inconclusive(reason);
         }
@@ -2740,5 +2768,36 @@ fof(conj, conjecture, p(a)).
             certificate.validate(&problem, Some("Satisfiable")),
             ModelVerdict::Certified { .. }
         ));
+    }
+
+    #[test]
+    fn model_include_loader_matches_tptp_root_precedence_and_discovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("tptp");
+        let problem_dir = root.join("Problems/FOF");
+        std::fs::create_dir_all(&problem_dir).unwrap();
+        std::fs::create_dir_all(root.join("Axioms")).unwrap();
+
+        let problem_path = problem_dir.join("problem.p");
+        let root_axioms = root.join("shared.ax");
+        let local_axioms = problem_dir.join("shared.ax");
+        std::fs::write(&problem_path, "include('shared.ax').").unwrap();
+        std::fs::write(&root_axioms, "tff(rooted,axiom,$less(1,2)).").unwrap();
+        std::fs::write(&local_axioms, "tff(local,axiom,$less(2,1)).").unwrap();
+
+        let mut configured = ModelInputLoader {
+            tptp_root: Some(root.clone()),
+            ..ModelInputLoader::default()
+        };
+        configured.load(&problem_path, None, 0).unwrap();
+        let parsed = parse_tptp(&configured.text).unwrap();
+        assert_eq!(parsed.formulas[0].name(), "rooted");
+
+        // With no explicit root, finding the ancestor's Axioms/ directory
+        // makes that ancestor the root, ahead of the including directory.
+        let mut discovered = ModelInputLoader::default();
+        discovered.load(&problem_path, None, 0).unwrap();
+        let parsed = parse_tptp(&discovered.text).unwrap();
+        assert_eq!(parsed.formulas[0].name(), "rooted");
     }
 }
