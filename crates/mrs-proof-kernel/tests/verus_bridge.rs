@@ -767,6 +767,32 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         );
         assert_eq!(report.checked_nodes, expected_nodes, "{name}: {report:?}");
         assert!(!report.production_certification);
+
+        assert_eq!(
+            proof_text.matches("plain,$false").count(),
+            1,
+            "{name} must have exactly one empty-clause root"
+        );
+        let forged_root_text = proof_text.replacen("plain,$false", "plain,p", 1);
+        let forged_root = mrs_tptp::parse_tptp(&forged_root_text)
+            .unwrap_or_else(|error| panic!("{name} forged root did not parse: {error}"));
+        let (forged_verdict, forged_report) = verify_with_verus_gate(
+            &problem,
+            &forged_root,
+            source,
+            VerificationLimits::default(),
+            &cfg,
+        );
+        assert_ne!(
+            forged_verdict,
+            KernelVerdict::Certified,
+            "{name} forged root: {forged_report:?}"
+        );
+        assert_ne!(
+            forged_report.verdict,
+            ShadowVerdict::CertifiedDagIr,
+            "{name} forged root: {forged_report:?}"
+        );
         cases += 1;
     }
     assert_eq!(cases, 4, "supported DAG corpus inventory changed");

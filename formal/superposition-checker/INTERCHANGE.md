@@ -254,8 +254,9 @@ artifact/hash. Rust tests requiring the artifact are explicitly ignored in
 ordinary `cargo test`; they are mandatory in the formal CI job.
 The bridge suite also reads `fixtures/supported-dag-corpus.tsv` and requires all
 four indexed full TPTP refutations to pass both the strict kernel and Verus DAG
-checker with their recorded node counts. This is a hand-authored smoke corpus,
-not an archived competition-proof corpus.
+checker with their recorded node counts; each case also mutates the root to a
+nonempty clause and requires both paths to fail closed. This is a hand-authored
+smoke corpus, not an archived competition-proof corpus.
 Both `verify.sh` and `build-runtime.sh` reject a Verus executable whose reported
 release or effective Rust toolchain differs from `verus-toolchain.json`.
 The compiled-runtime mutation gate weakens the tokenizer's digit guard and maps

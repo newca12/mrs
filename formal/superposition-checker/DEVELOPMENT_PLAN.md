@@ -45,8 +45,9 @@ that no interchange or caller exists are superseded by this update.
   resolution, unit demodulation, and equality transitivity.
 - **DONE:** formal CI parses every indexed artifact, requires both the strict
   kernel and Verus DAG checker to certify it, and checks its exact node count.
-  `supported-rules.json` records the corpus inventory and explicitly marks it as
-  a non-competition fixture corpus.
+  A per-case mutation replaces the empty-clause root with a nonempty conclusion
+  and must fail closed in both paths. `supported-rules.json` records the corpus
+  inventory and explicitly marks it as a non-competition fixture corpus.
 - **Scope:** this is a small hand-authored smoke corpus, not an archived or
   representative TPTP competition corpus; broader corpus and threat-model work
   remains open.
@@ -1888,8 +1889,9 @@ satisfiability/model claims, and unrestricted full TSTP.
   typed syntax remains unsupported.
 - [x] Add a machine-readable supported-DAG smoke corpus and formal-CI harness for
   four complete TPTP proof artifacts, requiring strict-kernel and Verus
-  certification plus exact node counts. The corpus is explicitly not represented
-  as archived competition coverage.
+  certification plus exact node counts, and reject a forged nonempty root for
+  each case. The corpus is explicitly not represented as archived competition
+  coverage.
 - [x] Require verification/runtime-build commands to match the pinned Verus
   release and effective Rust toolchain, use the verification gate's SMT limit
   for runtime compilation, and record verifier identity, exact flags, artifact
