@@ -1649,7 +1649,7 @@ changing defaults or drawing coverage conclusions.
 
 | | |
 |---|---|
-| Status | Bounded-NNF kernel check verified in campaign; 44 non-decisive references and CSI008+1 OOM remain |
+| Status | Bounded-NNF kernel check verified in campaign; 44 non-decisive references and `CSI008+1` memory-kill behavior remain |
 | Severity | 2026-10-19 run strictly certifies 4/4 refutations (100%); 44 reference answers remain GaveUp |
 | Soundness | No unsound result is reported; the CSV's `ok` label is not a certificate. |
 
@@ -1768,6 +1768,18 @@ are heterogeneous as noted above. The archived run did not report a solve on
 this row. Whether a similar input is solvable within 480 s is unmeasured; an OS
 kill can lose the status line instead of producing a graceful resource-limit
 result.
+
+### Later CASC-profile observation (2026-11-07–10)
+
+The complete CASC-30 all-division campaign also recorded `CSI008+1` as an
+`Error`: exit 137 / signal 9 after 103.625 s, with 125,269 MB peak RSS. Its raw
+stderr reports 2,004,866 axioms, `mem_budget_mb=131072`,
+`effective_mem_mb=108816`, and `mem_unrepresentable=1`. Unlike the earlier
+adaptive-mode artifact above, this campaign's `run.csv` says
+`SIGKILL: cause unconfirmed`; the available files do not establish an OOM-killer
+termination. The campaign nevertheless continued and recorded all 101 ICU
+rows. This adds a complete-run observation, not a diagnosis or evidence that
+`CSI008+1` is solvable within 480 s. See the [full CASC-30 report](../reports/benchmarks/cert-30-2026-11-07.md).
 
 ---
 

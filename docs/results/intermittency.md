@@ -86,6 +86,14 @@ outcome does not qualify them as full CASC-30/ICU campaigns for this inventory.
 > the corpus identity and recompute full EPU signatures before adding campaign
 > keys. See the [EPU report](../reports/benchmarks/epu-2026-09.md#2026-11-06-explicit-portfolio-screen-supplemental).
 
+> **CASC-30 full-campaign refresh pending (2026-11-11):** The Nov 7–10 archive
+> now has a complete 1,101-row strict audit: 319 certified refutations and 43
+> certified EPS models (362 results), with 0 `VerifiedBad`. It is not yet folded
+> into the per-problem signature tables below; recompute the full CASC-30
+> signatures before treating this inventory as current for that campaign. The
+> local audit used corpus digest `9a9cabd1…77570a`; the producer's exact corpus
+> identity is unavailable. See the [full campaign report](../reports/benchmarks/cert-30-2026-11-07.md).
+
 This inventory is an **observed run-to-run difference list**, not a claim that
 the prover is nondeterministic under a fixed binary and configuration. Included
 runs differ in binary, host, hardware mode, strategy schedule, or other settings;

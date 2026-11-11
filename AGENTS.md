@@ -411,9 +411,11 @@ The question is whether those division schedules are optimal for 8 cores.
 > observation, not a schedule-promotion result. A November 3 CASC-30 all-division
 > run completed all 300 UEQ rows and strictly
 > certified 144 under the shipped `casc_ueq` order; the campaign later stopped
-> during ICU. This is the latest shipped-order observation, not a standardized
-> baseline: the producer tree was dirty and the 8-core host had 96,350 MB RAM,
-> below the 128-GiB allowance. A November 5 explicit portfolio
+> during ICU. This was the latest shipped-order observation at the time; the
+> November 7–10 all-division campaign is now the newest complete all-division
+> observation, but not a standardized baseline (see below). The November 3
+> producer tree was dirty and its 8-core host had 96,350 MB RAM, below the
+> 128-GiB allowance. A November 5 explicit portfolio
 > `[1,2,3,6,7,8,11,12]` certified 142/300; it shares 132 solves with November 3,
 > has 10 candidate-only and 12 November 3-only. These are single runs from
 > different dirty builds and hosts, not a causal portfolio comparison. The
@@ -441,6 +443,18 @@ The question is whether those division schedules are optimal for 8 cores.
 > candidate are single-run observations, not schedule effects or promotion
 > evidence. See
 > `docs/reports/benchmarks/feq-casc30-explicit-portfolio-2026-11-05.md`.
+> A November 7–10 CASC-30 all-division campaign saved all 1,101 rows and
+> recorded 365 raw solves; its post-hoc strict audit reports 319 refutations +
+> 43 certified EPS models = 362 results, with 0 `VerifiedBad`. By division it
+> certified FNE 46, FEQ 112/114 theorems (one `Unknown`, one proof omitted), EPU
+> 11, EPS 43/44 models, UEQ 146, and ICU 4. This is not a canonical score: the
+> dirty producer (`8d10380`) ran eight workers on `teenf9901` (16 physical
+> cores, 108,816 MB effective memory). `CSI008+1` ended in a cause-unconfirmed
+> `SIGKILL`. The Nov 3 audit used a different proof-time budget and EPS model
+> ceiling, so the 12-result difference is not a matched gain. The local audit
+> corpus digest is recorded, but the remote producer corpus identity is not
+> established. See
+> `docs/reports/benchmarks/cert-30-2026-11-07.md`.
 > Never present the raw 257/400 or 222/300 figures as valid scores: they are
 > unsound/unverified legacy status counts and are superseded.
 

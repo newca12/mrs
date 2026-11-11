@@ -857,9 +857,10 @@ The complete 300-problem campaign
 certified **142/142 `VerifiedGood`**, with 0 `VerifiedBad`, `Unknown`, verifier
 timeouts, or proof omissions; there were no process errors or resource-outs.
 
-Against the latest shipped-`casc_ueq` observation, November 3's 144 strictly
-certified UEQ refutations, the sets have 132 solves in common, ten November
-5-only and twelve November 3-only. The 154-problem union is not a tested
+Against the November 3 shipped-`casc_ueq` observation, which had 144 strictly
+certified UEQ refutations and was the latest available when this November 5
+campaign was run, the sets have 132 solves in common, ten November 5-only and
+twelve November 3-only. The 154-problem union is not a tested
 portfolio. These were single runs from different dirty producer trees and
 different hosts; the count difference is not a causal schedule comparison.
 The November 5 host (`mtsdev02`) had eight physical cores and 95,979 MB RAM,
@@ -876,8 +877,11 @@ differ; the result is not a controlled strategy comparison.
 
 The **124/300** October 28 result is an older supplemental run on `mtsdev01`,
 not the November 5 host and not the established comparison reference. The
-repository retains October 7's **127/300** as that historical reference; the
-latest shipped-order observation is November 3's 144. The **149/300** October
+repository retains October 7's **127/300** as that historical comparison
+reference. November 3's 144/300 was the comparator used for this November 5
+report; a later November 7–10 all-division run observed **146/300** strictly
+certified UEQ results (see the [full campaign report](reports/benchmarks/cert-30-2026-11-07.md)).
+That is a separate single-run observation, not a matched comparison. The **149/300** October
 29 artifact is strictly verified but was run on an unpinned 16-physical-core
 host with 25 memory resource-outs, so it remains non-canonical supplemental
 evidence. The November 5 run is not a promotion result. See the [full
@@ -1300,6 +1304,51 @@ matched replication or a new EPS baseline. Commit `2532363` subsequently added
 worker-count preflight checks to the campaign and invocation scripts, with a
 regression test for this mismatch; that guard does not change the archived
 results. See the [second-run details](reports/benchmarks/eps-2026-09.md#second-casc-30-eps-run-with-portfolio-validation-failures-2026-11-06-supplemental).
+
+### CASC-30 complete all-division campaign (2026-11-07–10)
+
+The archive `~/crates/mrs-bench/results/campaign-casc30-full-W8CASCHJ1-99-20261107`
+contains rows for all **1,101 scheduled problems**, including all 101 ICU rows.
+The post-hoc strict audit certifies **319 refutations + 43 EPS models = 362
+results**, with **0 `VerifiedBad` proofs and 0 invalid models**. The division
+counts are:
+
+| Division | Rows / planned | Raw decisive results | Strict result |
+|:---|---:|:---|:---|
+| FNE | 100 / 100 | 46 `Theorem` | 46 `VerifiedGood` |
+| FEQ | 400 / 400 | 114 `Theorem` | 112 `VerifiedGood`, 1 `Unknown`, 1 proof omitted |
+| EPU | 100 / 100 | 11 `Unsatisfiable` | 11 `VerifiedGood` |
+| EPS | 100 / 100 | 44 `Satisfiable` | 43 certified models, 1 inconclusive |
+| UEQ | 300 / 300 | 146 `Unsatisfiable` | 146 `VerifiedGood` |
+| ICU | 101 / 101 | 4 `Theorem` | 4 `VerifiedGood`; 1 search `Error` |
+| **Total** | **1,101 / 1,101** | **365** (321 refutations + 44 models) | **362** (319 refutations + 43 models) |
+
+The three non-certified raw answers are `FEQ/LCL894+1` (`Unknown` in bounded
+AC-equivalence replay), `FEQ/GEO559+1` (proof withheld at 68.5 MB, above the
+32-MiB emission limit), and `EPS/SYN720-1` (model check inconclusive because of
+unresolved `%include` files). There are no strict verifier timeouts. The sole
+search error is `ICU/CSI008+1`: exit-137 `SIGKILL` at 125,269 MB RSS, with cause
+unconfirmed. Do not call this run's kill an OOM. The campaign continued and
+recorded the remaining ICU rows.
+
+The run used eight workers with `MRS_HARDWARE=casc`, automatic division
+schedules, sharing disabled, and `jobs=1`. Although the producer metadata says
+32 CPUs, the row's hardware telemetry reports 16 physical cores. The configured
+131,072-MB memory allowance exceeded the host's 128,019 MB; effective memory was
+108,816 MB. Thus this is a complete all-division archive, **not** a canonical
+eight-physical-core CASC measurement or an official score. The producer commit
+was `8d10380cc1938af85070b0f533e00a64dc0135e3`, with a dirty tree.
+
+The strict audit was run after extraction against the local CASC-30 corpus with
+`strict_time=240` and four audit jobs. Its local corpus digest is
+`9a9cabd1a059f737c56353e01f7008597b96de7a312d0fb69559d8e15d77570a`; the
+producer metadata points to an unavailable `/DATA/...` path and does not record
+a corpus digest, so identity with the producer's exact corpus is not established.
+The Nov 3 saved archive reports 350 strict results among 1,032 rows, but its
+audit used a 120-second proof budget and the earlier EPS model-work ceiling. The
+12-result difference is not a matched performance or certification gain. See
+the [full campaign report](reports/benchmarks/cert-30-2026-11-07.md) for all
+hashes, detailed outcome counts, artifact location, and the comparison caveats.
 
 ### CASC-30 all-division attempt interrupted during ICU (2026-11-03)
 

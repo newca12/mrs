@@ -2,7 +2,8 @@
 
 > The explicit eight-strategy portfolio `[1,2,3,6,7,8,11,12]` completed all
 > 300 CASC-30 UEQ problems and strictly certified **142/300** refutations.
-> Against the latest shipped-`casc_ueq` observation (144/300 on November 3),
+> Against the November 3 shipped-`casc_ueq` observation (144/300, the latest
+> available when this November 5 report was prepared),
 > the runs share 132 solves: ten are candidate-only and twelve November-3-only.
 > This is a single comparison between dirty builds on different hosts, not a
 > controlled portfolio result or a promotion case.
@@ -32,7 +33,7 @@ Per-problem actual wall time summed to 44,007.5 seconds (12.22 hours). Among the
 0.138–238.555 s. These are descriptive timings from one run, not a speed
 comparison.
 
-## Comparison with the latest shipped-schedule observation
+## Comparison with the November 3 shipped-schedule observation
 
 The November 3 CASC-30 all-division attempt completed all 300 UEQ jobs before
 the campaign later stopped during ICU. Its UEQ schedule telemetry shows the
@@ -76,9 +77,12 @@ proofs strictly verified. Its metadata names host `mtsdev01`; the November 5
 candidate ran on `mtsdev02`, so 124 is not a same-host comparator for this
 campaign. It was a supplemental single run with a dirty producer build, not the
 repository's established CASC-30 UEQ comparison reference. That historical
-reference remains **127/300 from October 7**. The latest shipped-schedule
-observation is **144/300 from November 3**; it too is a single dirty-build
-observation, not a standardized or official score. A separate October 28
+reference remains **127/300 from October 7**. The November 3 shipped-schedule
+observation was **144/300**; it too is a single dirty-build observation, not a
+standardized or official score. A later November 7–10 all-division run observed
+**146/300** strictly certified UEQ results. That is also a single non-canonical
+observation, documented in the [full campaign report](cert-30-2026-11-07.md),
+not a controlled comparison with the November 3 or November 5 run. A separate October 28
 set comparison gives 116 solves in common, 26 November 5-only and 8 October
 28-only (an observed count difference of +18), but the builds and hosts differ;
 the two audit identities record the same corpus digest for this set comparison.
@@ -89,8 +93,8 @@ The **149/300** October 29 artifact also has a strict audit: all 149 proofs are
 16 physical cores and was not pinned to eight; its effective memory limit was
 54,198 MB, and 25 problems ended in memory `ResourceOut`. Keep 149 as a valid
 strictly verified count for that artifact, but not as evidence that the shipped
-schedule outperforms the 144/300 eight-core observation or this 142/300
-candidate.
+schedule outperforms the November 3 144/300 or later November 7 146/300
+observations, or this 142/300 candidate.
 
 ### Related November 5 alternate portfolio
 
