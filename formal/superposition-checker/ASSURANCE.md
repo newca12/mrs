@@ -29,6 +29,9 @@ The actual archived c502 fixture is now parsed, translated and accepted as a
 local step through the subprocess boundary. Complete supported CNF DAGs,
 including an essential superposition plus exact-atom-resolution refutation,
 are checked against the actual artifact built and verified in formal CI.
+The indexed four-entry smoke corpus also exercises full parsed TPTP refutations
+through both strict and Verus paths with exact node-count checks; it is
+hand-authored regression coverage, not an archived competition corpus.
 Exact-atom resolution has a separate semantic theorem and executable checker;
 it removes one occurrence per parent with identical complementary atoms and
 does not implement pivot unification. The complete archived SWV406+1 proof is

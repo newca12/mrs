@@ -5,7 +5,10 @@
 The compiled checker now exposes bounded wire v1 for local steps and complete
 proof DAGs. `mrs-proof-kernel::verus` and `mrs-proover::strict` provide opt-in
 shadow and dual-check APIs; a CLI example and formal-CI integration tests run
-actual parsed CNF proofs and the archived c502 fixture through the artifact.
+actual parsed CNF proofs, the four-entry smoke corpus in
+`fixtures/supported-dag-corpus.tsv`, and the archived c502 local-step fixture
+through the artifact. The smoke corpus is hand-authored, not a competition
+archive.
 See **[`INTERCHANGE.md`](INTERCHANGE.md)** for build/run commands, wire grammar,
 limits, support and provenance. The dual gate requires both the independent
 strict kernel and Verus IR certifier to accept. Wire-v1 structural decoding and

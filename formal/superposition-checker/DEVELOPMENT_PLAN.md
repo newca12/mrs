@@ -38,6 +38,19 @@ that no interchange or caller exists are superseded by this update.
 - **Scope:** this exercises the host adapter's fail-closed role check. It does
   not add typed TPTP support or verify parsing/type-declaration lowering.
 
+### 2026-11-11 supported DAG fixture-corpus checkpoint
+
+- **DONE (M7 corpus-gate slice):** `fixtures/supported-dag-corpus.tsv` indexes
+  four complete TPTP problem/proof pairs covering superposition, first-order
+  resolution, unit demodulation, and equality transitivity.
+- **DONE:** formal CI parses every indexed artifact, requires both the strict
+  kernel and Verus DAG checker to certify it, and checks its exact node count.
+  `supported-rules.json` records the corpus inventory and explicitly marks it as
+  a non-competition fixture corpus.
+- **Scope:** this is a small hand-authored smoke corpus, not an archived or
+  representative TPTP competition corpus; broader corpus and threat-model work
+  remains open.
+
 ### 2026-10-21 cumulative accounting and adversarial hygiene checkpoint
 
 - **DONE:** unified DAG exact-resolution node accounting with resolution and
@@ -1609,8 +1622,9 @@ archived cases, and a versioned support declaration.
   sidecar records verifier, source and artifact hashes, pinned toolchain,
   support manifest and exact compile flags. This is stronger build identity,
   not cross-host reproducibility.
-- **TODO — DIFFICULT:** broaden the supported proof corpus and obtain independent
-  theorem review. A manifest is still not emitted per certification run because
+- **TODO — DIFFICULT:** expand beyond the current four-case hand-authored smoke
+  corpus to a representative/archived proof set and obtain independent theorem
+  review. A support manifest is still not emitted per certification run because
   no production checker adapter is integrated; cross-host artifact
   reproducibility also remains open.
 
@@ -1872,6 +1886,10 @@ satisfiability/model claims, and unrestricted full TSTP.
   for all five parser roles, in both problem and proof inputs. The formal report
   must remain `Unknown` and the opt-in gate must not certify any of the ten cases;
   typed syntax remains unsupported.
+- [x] Add a machine-readable supported-DAG smoke corpus and formal-CI harness for
+  four complete TPTP proof artifacts, requiring strict-kernel and Verus
+  certification plus exact node counts. The corpus is explicitly not represented
+  as archived competition coverage.
 - [x] Require verification/runtime-build commands to match the pinned Verus
   release and effective Rust toolchain, use the verification gate's SMT limit
   for runtime compilation, and record verifier identity, exact flags, artifact

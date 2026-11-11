@@ -717,6 +717,63 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
 
 #[test]
 #[ignore = "requires the pinned compiled Verus artifact; run by formal CI"]
+fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
+    const CORPUS: &str =
+        include_str!("../../../formal/superposition-checker/fixtures/supported-dag-corpus.tsv");
+
+    let cfg = config();
+    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../formal/superposition-checker/fixtures");
+    let load_fixture = |name: &str| {
+        let path = std::path::Path::new(name);
+        assert_eq!(path.components().count(), 1, "unsafe corpus path: {name}");
+        std::fs::read_to_string(fixture_dir.join(path))
+            .unwrap_or_else(|error| panic!("failed to read corpus fixture {name}: {error}"))
+    };
+
+    let mut cases = 0;
+    for (line_number, line) in CORPUS.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(fields.len(), 5, "malformed corpus row {}", line_number + 1);
+        let [name, problem_file, proof_file, source, expected_nodes] = fields.as_slice() else {
+            unreachable!("field count checked above")
+        };
+        let problem_text = load_fixture(problem_file);
+        let proof_text = load_fixture(proof_file);
+        let problem = mrs_tptp::parse_tptp(&problem_text)
+            .unwrap_or_else(|error| panic!("{name} problem did not parse: {error}"));
+        let proof = mrs_tptp::parse_tptp(&proof_text)
+            .unwrap_or_else(|error| panic!("{name} proof did not parse: {error}"));
+        let expected_nodes = expected_nodes
+            .parse::<usize>()
+            .unwrap_or_else(|error| panic!("{name} has invalid node count: {error}"));
+        let source = (*source != "-").then_some(*source);
+        let (verdict, report) = verify_with_verus_gate(
+            &problem,
+            &proof,
+            source,
+            VerificationLimits::default(),
+            &cfg,
+        );
+        assert_eq!(verdict, KernelVerdict::Certified, "{name}: {report:?}");
+        assert_eq!(
+            report.verdict,
+            ShadowVerdict::CertifiedDagIr,
+            "{name}: {report:?}"
+        );
+        assert_eq!(report.checked_nodes, expected_nodes, "{name}: {report:?}");
+        assert!(!report.production_certification);
+        cases += 1;
+    }
+    assert_eq!(cases, 4, "supported DAG corpus inventory changed");
+}
+
+#[test]
+#[ignore = "requires the pinned compiled Verus artifact; run by formal CI"]
 fn tptp_10_type_declaration_roles_fail_closed_in_problem_and_proof() {
     let cfg = config();
     let problem_text = "cnf(a,axiom,p). cnf(b,axiom,~p).";

@@ -1,0 +1,5 @@
+# id problem proof strict_source checked_nodes
+superposition-resolution superposition-refutation-problem.p superposition-refutation-proof.p superposition-refutation-problem.p 5
+first-order-resolution first-order-resolution-problem.p first-order-resolution-proof.p input 5
+unit-demodulation unit-demodulation-problem.p unit-demodulation-proof.p input 5
+equality-transitivity equality-transitivity-problem.p equality-transitivity-proof.p input 5
