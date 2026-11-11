@@ -1,8 +1,8 @@
 [package]
 name = "mrs-tptp"
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
-description = "A robust TPTP parser for Rust using winnow"
+description = "Zero-copy TPTP v10 parser for Rust using winnow"
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true

@@ -1,15 +1,39 @@
 # mrs — Mechanical Reasoning System
 
-Current workspace version: **0.2.3**. For stable deployments, use the current
+Current workspace version: **0.3.0**. For stable deployments, use the current
 release source and follow the validation rules in
 [`docs/policies/release.md`](docs/policies/release.md).
 
 [![Crates.io](https://img.shields.io/crates/v/mrs.svg)](https://crates.io/crates/mrs)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-An automated theorem prover written in Rust, targeting the [CASC](http://www.tptp.org/CASC/) competition.
+MRS is a proof-producing automated theorem prover written in Rust, targeting the [CASC](http://www.tptp.org/CASC/) competition. Its distinguishing feature is that candidate refutations can be checked by a separate proof kernel, rather than trusting the search that found them.
 
-Reads [TPTP](https://www.tptp.org/) problem files and outputs results in [SZS/TSTP](https://tptp.org/Seminars/TPTPContentAndStandards/SZSPresentationSlides.pdf) format. It employs a **parallel strategy portfolio scheduler** running a **superposition calculus** within a **given-clause loop**, augmented by **AVATAR** (using CaDiCaL) for advanced clause splitting and **cross-strategy clause sharing**.
+MRS reads [TPTP](https://www.tptp.org/) problem files and outputs results in [SZS/TSTP](https://tptp.org/Seminars/TPTPContentAndStandards/SZSPresentationSlides.pdf) format. Its zero-copy `mrs-tptp` parser supports TPTP v10 syntax; downstream lowering and search support depends on the input fragment. Search uses a **parallel strategy portfolio** running a **superposition calculus** within a **given-clause loop**, augmented by **AVATAR** (using CaDiCaL) for advanced clause splitting and **cross-strategy clause sharing**.
+
+## Proof production and verification
+
+MRS separates search from proof checking. Search produces a candidate TSTP
+refutation; the distinct `mrs-proof-kernel` replays its inference steps against
+the cited parents. Use `--self-check` to require strict kernel certification
+before a theorem/proof result is emitted. This option is **off by default**:
+without it, a `Theorem` result and emitted proof have not necessarily been
+accepted by the strict kernel. Rejected or inconclusive candidates fail closed
+when self-checking is enabled. See [Trust and verification](docs/reference/trust-and-verification.md)
+and the [certification status](docs/CERTIFICATION_STATUS.md).
+
+```bash
+mrs --self-check problem.p
+```
+
+The project also maintains an ongoing [Verus formalization of a supported subset
+of the proof kernel](formal/superposition-checker/ASSURANCE.md). Its current
+theorem covers a declared subset of inference replay and supported CNF proof
+DAGs over decoded intermediate representations. It does **not** verify
+the complete prover, all inference rules, or the TPTP parsing/lowering path; the
+Verus integration is explicit shadow or opt-in dual-checking, not a replacement
+for the default strict kernel check. The assurance note documents the supported
+rules and trusted boundary.
 
 ## Install
 

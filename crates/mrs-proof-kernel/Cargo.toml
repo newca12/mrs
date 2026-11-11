@@ -22,4 +22,4 @@ libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-mrs-proover = { path = "../mrs-proover" }
+mrs-proover = { workspace = true }

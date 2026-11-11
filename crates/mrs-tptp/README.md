@@ -26,7 +26,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mrs-tptp = "0.3"
+mrs-tptp = "0.4"
 ```
 
 ## Quick Start

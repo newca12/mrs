@@ -3,29 +3,29 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/newca12/mrs"
 rust-version = "1.99.1"
 
 [workspace.dependencies]
-mrs-core = { path = "crates/mrs-core" }
-mrs-szs = { path = "crates/mrs-szs" }
-mrs-tptp = { path = "crates/mrs-tptp" }
-mrs-unify = { path = "crates/mrs-unify" }
-mrs-cnf = { path = "crates/mrs-cnf" }
-mrs-calculus = { path = "crates/mrs-calculus" }
-mrs-index = { path = "crates/mrs-index" }
-mrs-proof = { path = "crates/mrs-proof" }
-mrs-search = { path = "crates/mrs-search" }
-mrs-proover = { path = "crates/mrs-proover" }
-mrs-prephase = { path = "crates/mrs-prephase" }
-mrs-proof-kernel = { path = "crates/mrs-proof-kernel" }
-mrs-cadical = { path = "crates/mrs-cadical" }
-mrs-cadical-sys = { path = "crates/mrs-cadical-sys" }
-mrs-arithmetic = { path = "crates/mrs-arithmetic" }
-mrs = { path = "." }
+mrs-core = { path = "crates/mrs-core", version = "0.3.0" }
+mrs-szs = { path = "crates/mrs-szs", version = "0.3.0" }
+mrs-tptp = { path = "crates/mrs-tptp", version = "0.4.0" }
+mrs-unify = { path = "crates/mrs-unify", version = "0.3.0" }
+mrs-cnf = { path = "crates/mrs-cnf", version = "0.3.0" }
+mrs-calculus = { path = "crates/mrs-calculus", version = "0.3.0" }
+mrs-index = { path = "crates/mrs-index", version = "0.3.0" }
+mrs-proof = { path = "crates/mrs-proof", version = "0.3.0" }
+mrs-search = { path = "crates/mrs-search", version = "0.3.0" }
+mrs-proover = { path = "crates/mrs-proover", version = "0.3.0" }
+mrs-prephase = { path = "crates/mrs-prephase", version = "0.3.0" }
+mrs-proof-kernel = { path = "crates/mrs-proof-kernel", version = "0.3.0" }
+mrs-cadical = { path = "crates/mrs-cadical", version = "0.3.0" }
+mrs-cadical-sys = { path = "crates/mrs-cadical-sys", version = "0.3.0" }
+mrs-arithmetic = { path = "crates/mrs-arithmetic", version = "0.3.0" }
+mrs = { path = ".", version = "0.3.0" }
 burn = { version = "0.22.1", default-features = false }
 winnow = { version = "1.0.5", features = ["simd"] }
 rustc-hash = "2.1.3"
@@ -76,7 +76,7 @@ strip = false
 name = "mrs"
 version.workspace = true
 edition.workspace = true
-description = "Automated theorem prover for TPTP problems using superposition calculus"
+description = "Proof-producing TPTP theorem prover with optional independent proof verification"
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
