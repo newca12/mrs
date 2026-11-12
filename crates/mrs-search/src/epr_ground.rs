@@ -3134,8 +3134,16 @@ fn extract_refutation(
     }
 }
 
-/// Turns a propositional BFS derivation over ground atoms into a first-order
-/// resolution proof, keeping only the steps the derivation depends on.
+/// Turns a propositional refutation over ground atoms into a first-order proof,
+/// keeping only the steps the derivation depends on.
+///
+/// The SAT abstraction is a set of propositional literals: it removes false
+/// reflexive disequalities, canonicalizes equality orientation, and deduplicates
+/// literals. Those operations must be present in the lifted TSTP proof too;
+/// otherwise a later `resolution` cites the original, unsimplified ground
+/// instance and is not its exact resolvent. The input-normalization steps below
+/// record equality resolution, symmetry, and condensation before that instance
+/// enters the propositional derivation.
 fn lift_bfs_refutation(
     ground: &GroundSet,
     id_gen: &mut ClauseIdGen,
@@ -3143,6 +3151,27 @@ fn lift_bfs_refutation(
     found: (Vec<Pc>, Vec<PSrc>, usize),
 ) -> (Option<SearchResult>, usize) {
     let (clauses, sources, _empty_idx) = found;
+
+    let mut needed_source_nodes = HashSet::default();
+    let mut needed_ground_inputs = HashSet::default();
+    let mut pending = vec![_empty_idx];
+    while let Some(idx) = pending.pop() {
+        if !needed_source_nodes.insert(idx) {
+            continue;
+        }
+        match sources.get(idx) {
+            Some(PSrc::Input(input_idx)) if *input_idx < ground.clauses.len() => {
+                needed_ground_inputs.insert(*input_idx);
+            }
+            Some(PSrc::Resolvent { left, right })
+                if *left < sources.len() && *right < sources.len() =>
+            {
+                pending.push(*left);
+                pending.push(*right);
+            }
+            _ => return (None, 0),
+        }
+    }
 
     // The instantiation steps name their input clause as a parent, so the store
     // needs the clause set the pre-pass was handed — not just the original
@@ -3194,7 +3223,23 @@ fn lift_bfs_refutation(
     for (idx, pc) in clauses.iter().enumerate() {
         match &sources[idx] {
             PSrc::Input(i) => {
-                id_of[idx] = Some(ground.clauses[*i].clause.id);
+                let Some(input) = ground.clauses.get(*i) else {
+                    return (None, 0);
+                };
+                let id = if needed_ground_inputs.contains(i) {
+                    let Some(id) =
+                        normalize_ground_input_for_lift(input, ground, id_gen, &mut derived)
+                    else {
+                        return (None, 0);
+                    };
+                    id
+                } else {
+                    input.clause.id
+                };
+                id_of[idx] = Some(id);
+                if idx == _empty_idx && pc.is_empty() {
+                    empty_id = Some(id);
+                }
             }
             PSrc::Resolvent { left, right } => {
                 let (Some(a), Some(b)) = (id_of[*left], id_of[*right]) else {
@@ -3261,6 +3306,108 @@ fn lift_bfs_refutation(
         return (None, 0);
     }
     (Some(SearchResult::Refutation(eid, tstp)), nodes)
+}
+
+/// Make a ground instance's TSTP node match the set of literals that was given
+/// to the SAT solver. Each simplification is a separately checkable inference;
+/// if the source cannot be normalized by these supported rules, refuse the
+/// LRAT lift and let the existing proof-extraction fallback run.
+fn normalize_ground_input_for_lift(
+    input: &GroundClause,
+    ground: &GroundSet,
+    id_gen: &mut ClauseIdGen,
+    derived: &mut Vec<Clause>,
+) -> Option<ClauseId> {
+    let mut current = input.clause.clone();
+
+    // `c != c` is false, so equality resolution removes it from a disjunction.
+    // The kernel checks one negative reflexive equality per inference.
+    while let Some(index) = current.literals.iter().position(GAtom::is_false) {
+        let mut literals = current.literals.clone();
+        literals.remove(index);
+        current = lifted_normalization_step(
+            id_gen,
+            literals.into_vec(),
+            "equality_resolution",
+            current.id,
+        );
+        derived.push(current.clone());
+    }
+
+    // The SAT atom for equality uses a canonical (SymbolId-sorted) pair. Make
+    // the same orientation explicit in the first-order proof before literals
+    // are compared or factored.
+    for index in 0..current.literals.len() {
+        let Atom::Eq(left, right) = &current.literals[index].atom else {
+            continue;
+        };
+        let (Some(left_symbol), Some(right_symbol)) = (constant_of(left), constant_of(right))
+        else {
+            return None;
+        };
+        if left_symbol > right_symbol {
+            let mut literals = current.literals.clone();
+            let Atom::Eq(left, right) = &literals[index].atom else {
+                unreachable!("equality literal checked above")
+            };
+            literals[index].atom = Atom::eq(right.clone(), left.clone());
+            current =
+                lifted_normalization_step(id_gen, literals.into_vec(), "symmetry", current.id);
+            derived.push(current.clone());
+        }
+    }
+
+    let mut propositional_literals: Vec<Literal> = input
+        .pc
+        .iter()
+        .map(|&literal| {
+            let atom = ground
+                .abs
+                .var_to_atom
+                .get(literal.unsigned_abs() as usize - 1)?;
+            Some(atom.to_literal(literal > 0))
+        })
+        .collect::<Option<_>>()?;
+    let current_set = canonical_ground_literal_set(&current.literals);
+    let propositional_set = canonical_ground_literal_set(&propositional_literals);
+    if current_set != propositional_set {
+        return None;
+    }
+
+    // The propositional abstraction drops duplicate literals. `condensation`
+    // is the kernel-replayable set-style inference for that operation,
+    // including duplicates that arose only after grounding.
+    if current.literals.len() > propositional_literals.len() {
+        propositional_literals.sort_by_key(|literal| format!("{literal:?}"));
+        current =
+            lifted_normalization_step(id_gen, propositional_literals, "condensation", current.id);
+        derived.push(current.clone());
+    }
+
+    Some(current.id)
+}
+
+fn lifted_normalization_step(
+    id_gen: &mut ClauseIdGen,
+    literals: Vec<Literal>,
+    rule: &'static str,
+    parent: ClauseId,
+) -> Clause {
+    Clause::new(
+        id_gen.next(),
+        literals,
+        ClauseSource::Inference {
+            rule,
+            parents: vec![parent].into(),
+        },
+    )
+}
+
+fn canonical_ground_literal_set(literals: &[Literal]) -> Vec<Literal> {
+    let mut literals = literals.to_vec();
+    literals.sort_by_key(|literal| format!("{literal:?}"));
+    literals.dedup();
+    literals
 }
 
 /// Refutes the ground instance set with the ordinary given-clause loop and
@@ -5025,6 +5172,165 @@ cnf('cClauseId(3)',axiom,~r(a)).\n";
             ),
             mrs_proof_kernel::KernelVerdict::Certified,
             "extracted proof must pass the strict kernel:\n{tstp}"
+        );
+    }
+
+    #[test]
+    fn lrat_lift_certifies_duplicate_and_reflexive_disequality_normalization() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let clauses = vec![
+            input(
+                ClauseId(0),
+                vec![
+                    pred(true, p, vec![Term::constant(a)]),
+                    pred(true, p, vec![Term::constant(a)]),
+                    Literal {
+                        positive: false,
+                        atom: Atom::eq(Term::constant(a), Term::constant(a)),
+                    },
+                ],
+            ),
+            input(ClauseId(1), vec![pred(false, p, vec![Term::constant(a)])]),
+        ];
+        let mut id_gen = ClauseIdGen::new();
+        id_gen.reserve_at_least(ClauseId(1));
+        let budget = EprBudget {
+            timeout: Duration::from_secs(5),
+            max_instances: 100,
+            byte_budget: 1 << 20,
+            memory_ceiling_mb: None,
+            max_rounds: 5,
+        };
+        let (result, telemetry) =
+            try_epr_ground_refutation(&clauses, &clauses, &mut id_gen, &symbols, budget);
+        let Some(SearchResult::Refutation(_, tstp)) = result else {
+            panic!("expected a refutation, got {result:?}");
+        };
+        assert!(
+            matches!(telemetry.extraction, "lrat_lift" | "bfs_lift"),
+            "telemetry {telemetry:?}"
+        );
+        assert!(tstp.contains("inference(equality_resolution"), "{tstp}");
+        assert!(tstp.contains("inference(condensation"), "{tstp}");
+
+        let problem = "cnf('cClauseId(0)',axiom,p(a) | p(a) | a != a).\n\
+cnf('cClauseId(1)',axiom,~p(a)).\n";
+        let parsed_problem = mrs_tptp::parse_tptp(problem).expect("problem parses");
+        let parsed_proof = mrs_tptp::parse_tptp(&tstp).expect("proof parses");
+        assert_eq!(
+            mrs_proof_kernel::verify_strict(
+                &parsed_problem,
+                &parsed_proof,
+                mrs_proof_kernel::VerificationLimits::default(),
+            ),
+            mrs_proof_kernel::KernelVerdict::Certified,
+            "the normalized EPR proof must replay strictly:\n{tstp}"
+        );
+    }
+
+    #[test]
+    fn lrat_lift_certifies_a_ground_clause_reduced_to_empty() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern("a");
+        let clauses = vec![input(
+            ClauseId(0),
+            vec![Literal {
+                positive: false,
+                atom: Atom::eq(Term::constant(a), Term::constant(a)),
+            }],
+        )];
+        let mut id_gen = ClauseIdGen::new();
+        id_gen.reserve_at_least(ClauseId(0));
+        let budget = EprBudget {
+            timeout: Duration::from_secs(5),
+            max_instances: 100,
+            byte_budget: 1 << 20,
+            memory_ceiling_mb: None,
+            max_rounds: 5,
+        };
+        let (result, _telemetry) =
+            try_epr_ground_refutation(&clauses, &clauses, &mut id_gen, &symbols, budget);
+        let Some(SearchResult::Refutation(_, tstp)) = result else {
+            panic!("expected a refutation, got {result:?}");
+        };
+        assert!(tstp.contains("inference(equality_resolution"), "{tstp}");
+
+        let problem = "cnf('cClauseId(0)',axiom,a != a).\n";
+        let parsed_problem = mrs_tptp::parse_tptp(problem).expect("problem parses");
+        let parsed_proof = mrs_tptp::parse_tptp(&tstp).expect("proof parses");
+        assert_eq!(
+            mrs_proof_kernel::verify_strict(
+                &parsed_problem,
+                &parsed_proof,
+                mrs_proof_kernel::VerificationLimits::default(),
+            ),
+            mrs_proof_kernel::KernelVerdict::Certified,
+            "the reduced empty ground instance must replay strictly:\n{tstp}"
+        );
+    }
+
+    #[test]
+    fn lrat_lift_certifies_canonicalization_of_equality_orientation() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let clauses = vec![
+            input(
+                ClauseId(0),
+                vec![
+                    Literal {
+                        positive: true,
+                        atom: Atom::eq(Term::constant(a), Term::constant(b)),
+                    },
+                    Literal {
+                        positive: true,
+                        atom: Atom::eq(Term::constant(b), Term::constant(a)),
+                    },
+                ],
+            ),
+            input(
+                ClauseId(1),
+                vec![Literal {
+                    positive: false,
+                    atom: Atom::eq(Term::constant(b), Term::constant(a)),
+                }],
+            ),
+        ];
+        let mut id_gen = ClauseIdGen::new();
+        id_gen.reserve_at_least(ClauseId(1));
+        let budget = EprBudget {
+            timeout: Duration::from_secs(5),
+            max_instances: 100,
+            byte_budget: 1 << 20,
+            memory_ceiling_mb: None,
+            max_rounds: 5,
+        };
+        let (result, telemetry) =
+            try_epr_ground_refutation(&clauses, &clauses, &mut id_gen, &symbols, budget);
+        let Some(SearchResult::Refutation(_, tstp)) = result else {
+            panic!("expected a refutation, got {result:?}");
+        };
+        assert!(
+            matches!(telemetry.extraction, "lrat_lift" | "bfs_lift"),
+            "telemetry {telemetry:?}"
+        );
+        assert!(tstp.contains("inference(symmetry"), "{tstp}");
+        assert!(tstp.contains("inference(condensation"), "{tstp}");
+
+        let problem = "cnf('cClauseId(0)',axiom,a = b | b = a).\n\
+cnf('cClauseId(1)',axiom,b != a).\n";
+        let parsed_problem = mrs_tptp::parse_tptp(problem).expect("problem parses");
+        let parsed_proof = mrs_tptp::parse_tptp(&tstp).expect("proof parses");
+        assert_eq!(
+            mrs_proof_kernel::verify_strict(
+                &parsed_problem,
+                &parsed_proof,
+                mrs_proof_kernel::VerificationLimits::default(),
+            ),
+            mrs_proof_kernel::KernelVerdict::Certified,
+            "the equality-normalized EPR proof must replay strictly:\n{tstp}"
         );
     }
 

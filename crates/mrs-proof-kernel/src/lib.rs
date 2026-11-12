@@ -378,8 +378,11 @@ fn verify_strict_with_source_internal(
         }
     }
 
-    let mut known_function_symbols: HashSet<String> = HashSet::new();
-    let mut known_non_skolem_function_symbols: HashSet<String> = HashSet::new();
+    // Symbols declared by the problem or introduced by a validated definition
+    // / Skolemization. Do not populate this from every proof conclusion: an
+    // arbitrary constant used to instantiate a universal may occur before the
+    // independent Skolemization step that introduces that same symbol.
+    let mut declared_function_symbols: HashSet<String> = HashSet::new();
     let mut known_symbols: HashSet<String> = HashSet::new();
     let mut signatures = HashMap::new();
     // Background AC axioms straight from the problem (commutativity /
@@ -397,8 +400,7 @@ fn verify_strict_with_source_internal(
         {
             return KernelVerdict::Inconclusive("strict verification deadline expired".into());
         }
-        collect_function_symbols(formula, &mut known_function_symbols);
-        collect_function_symbols(formula, &mut known_non_skolem_function_symbols);
+        collect_function_symbols(formula, &mut declared_function_symbols);
         collect_all_symbols(formula, &mut known_symbols);
         if !formula.role().is_type_declaration() {
             let lowered = match lower_annotated(&mut symbols, formula, limits) {
@@ -473,8 +475,7 @@ fn verify_strict_with_source_internal(
             }
             match verify_leaf(node, problem, expected_source, &mut symbols, limits) {
                 Ok(()) => {
-                    collect_function_symbols(node.formula, &mut known_function_symbols);
-                    collect_function_symbols(node.formula, &mut known_non_skolem_function_symbols);
+                    collect_function_symbols(node.formula, &mut declared_function_symbols);
                     collect_all_symbols(node.formula, &mut known_symbols);
                     continue;
                 }
@@ -490,7 +491,7 @@ fn verify_strict_with_source_internal(
                     match extract_skolem_axiom(
                         conclusion,
                         &symbols,
-                        &known_non_skolem_function_symbols,
+                        &declared_function_symbols,
                         limits,
                     ) {
                         Ok(axiom) => {
@@ -516,10 +517,7 @@ fn verify_strict_with_source_internal(
                 if !matches!(outcome, KernelVerdict::Certified) {
                     return outcome;
                 }
-                collect_function_symbols(node.formula, &mut known_function_symbols);
-                if !is_skolem_symbol_introduction(annotations) {
-                    collect_function_symbols(node.formula, &mut known_non_skolem_function_symbols);
-                }
+                collect_function_symbols(node.formula, &mut declared_function_symbols);
                 continue;
             }
             let outcome = match node.rule {
@@ -542,8 +540,6 @@ fn verify_strict_with_source_internal(
                     return KernelVerdict::Inconclusive(format!("node {}: {msg}", node.name));
                 }
             }
-            collect_function_symbols(node.formula, &mut known_function_symbols);
-            collect_function_symbols(node.formula, &mut known_non_skolem_function_symbols);
             collect_all_symbols(node.formula, &mut known_symbols);
             continue;
         }
@@ -650,7 +646,7 @@ fn verify_strict_with_source_internal(
                 conclusion,
                 SkolemVerificationContext {
                     symbols: &symbols,
-                    known_function_symbols: &known_function_symbols,
+                    declared_function_symbols: &declared_function_symbols,
                     skolem_axioms: &skolem_axioms,
                     certified_skolemisations: &mut certified_skolemisations,
                     limits,
@@ -907,9 +903,8 @@ fn verify_strict_with_source_internal(
                 branch_contexts.insert(idx, context);
             }
         }
-        collect_function_symbols(node.formula, &mut known_function_symbols);
-        if !matches!(rule, "skolemisation" | "skolemize") {
-            collect_function_symbols(node.formula, &mut known_non_skolem_function_symbols);
+        if matches!(rule, "skolemisation" | "skolemize") {
+            collect_function_symbols(node.formula, &mut declared_function_symbols);
         }
         collect_all_symbols(node.formula, &mut known_symbols);
     }
@@ -6864,7 +6859,7 @@ fn verify_skolemisation(
 ) -> KernelVerdict {
     let SkolemVerificationContext {
         symbols,
-        known_function_symbols,
+        declared_function_symbols,
         skolem_axioms,
         certified_skolemisations,
         limits,
@@ -6939,9 +6934,13 @@ fn verify_skolemisation(
     collect_function_symbols_formula(parent_formula, &mut parent_symbols);
     let mut step_symbols = HashSet::new();
     collect_function_symbols_formula(step_formula, &mut step_symbols);
+    // Freshness is relative to the problem and previously declared symbols,
+    // not every symbol that happened to occur in an earlier proof node. An
+    // independent instantiation may legally use an arbitrary constant before
+    // a separate Skolemization node introduces that same symbol.
     let fresh: HashSet<String> = step_symbols
         .difference(&parent_symbols)
-        .filter(|symbol| !known_function_symbols.contains(*symbol))
+        .filter(|symbol| !declared_function_symbols.contains(*symbol))
         .cloned()
         .collect();
     if fresh.is_empty() {
@@ -7037,7 +7036,7 @@ fn validate_skolem_annotation(annotation: &SkolemAnnotation, state: &SkolemMatch
 
 struct SkolemVerificationContext<'a> {
     symbols: &'a SymbolTable,
-    known_function_symbols: &'a HashSet<String>,
+    declared_function_symbols: &'a HashSet<String>,
     skolem_axioms: &'a HashMap<usize, OwnedSkolemAxiom>,
     certified_skolemisations: &'a mut HashSet<(String, String)>,
     limits: VerificationLimits,
@@ -7055,7 +7054,7 @@ struct OwnedSkolemAxiom {
 fn extract_skolem_axiom(
     formula: &Formula,
     symbols: &SymbolTable,
-    known_function_symbols: &HashSet<String>,
+    declared_function_symbols: &HashSet<String>,
     limits: VerificationLimits,
 ) -> Result<OwnedSkolemAxiom, KernelVerdict> {
     if formula_size(formula) > limits.max_formula_nodes {
@@ -7112,10 +7111,10 @@ fn extract_skolem_axiom(
     }
     if fresh_symbols
         .iter()
-        .any(|symbol| known_function_symbols.contains(symbols.resolve(*symbol)))
+        .any(|symbol| declared_function_symbols.contains(symbols.resolve(*symbol)))
     {
         return Err(KernelVerdict::Rejected(
-            "Skolem axiom reuses a problem function symbol".into(),
+            "Skolem axiom reuses an already-declared function symbol".into(),
         ));
     }
 
@@ -19977,7 +19976,7 @@ mod tests {
     #[test]
     fn certifies_associative_reordered_skolemization_matrix() {
         let problem = "fof(a, axiom, ?[X] : (p(X) | (q(X) | r(X)))).\n\
-                       fof(np, axiom, ~p(X)).\n\
+                      fof(np, axiom, ~p(X)).\n\
                        fof(nq, axiom, ~q(X)).\
                        fof(nr, axiom, ~r(X)).";
         let proof = "fof(a, axiom, ?[X] : (p(X) | (q(X) | r(X))), file('problem.p', a)).\
@@ -19988,6 +19987,30 @@ mod tests {
                      fof(last, plain, r(sk0), inference(resolution, [status(thm)], [mid,nq])).\
                      fof(nr, axiom, ~r(X), file('problem.p', nr)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [last,nr])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_skolemization_of_existentials_in_separate_disjuncts() {
+        // KRS168+1 c15->c16: three existential binders occur in separate
+        // disjuncts, and each is replaced by its own fresh constant. The same
+        // constants first occur as arbitrary instantiation terms in unrelated
+        // branches of the proof DAG. Such an occurrence is not a declaration
+        // and must not make the later Skolem symbols appear non-fresh.
+        let problem = "fof(src, axiom, ((?[X0] : (~p(X0) | q(X0)) | ?[X1] : ((r(X1) | ~s(X1)) & (~r(X1) | s(X1)))) | ?[X2] : ((u(X2) | v(X2)) & (~u(X2) | ~v(X2))))).\n\
+                       fof(u0, axiom, ![Y] : h(Y)).\n\
+                       fof(u1, axiom, ![Y] : k(Y)).\n\
+                       fof(a, axiom, z).\n\
+                       fof(n, axiom, ~z).";
+        let proof = "fof(src, axiom, ((?[X0] : (~p(X0) | q(X0)) | ?[X1] : ((r(X1) | ~s(X1)) & (~r(X1) | s(X1)))) | ?[X2] : ((u(X2) | v(X2)) & (~u(X2) | ~v(X2)))), file('problem.p', src)).\n\
+                      fof(u0, axiom, ![Y] : h(Y), file('problem.p', u0)).\n\
+                      fof(use0, plain, h(sk0), inference(instantiation, [status(thm)], [u0])).\n\
+                      fof(u1, axiom, ![Y] : k(Y), file('problem.p', u1)).\n\
+                      fof(use1, plain, k(sk1), inference(instantiation, [status(thm)], [u1])).\n\
+                      fof(sk, plain, (((~p(sk0) | q(sk0)) | ((r(sk1) | ~s(sk1)) & (~r(sk1) | s(sk1)))) | ((u(sk2) | v(sk2)) & (~u(sk2) | ~v(sk2)))), inference(skolemisation, [status(esa)], [src])).\n\
+                      fof(a, axiom, z, file('problem.p', a)).\n\
+                      fof(n, axiom, ~z, file('problem.p', n)).\n\
+                      fof(bot, plain, $false, inference(resolution, [status(thm)], [a, n])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
     }
 
