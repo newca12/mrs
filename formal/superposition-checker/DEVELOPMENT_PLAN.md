@@ -7,6 +7,21 @@ The bounded **M5 interchange and MRS integration implementation now exists**.
 The older milestone narrative below records the prototype's history; statements
 that no interchange or caller exists are superseded by this update.
 
+### 2026-11-13 supported DAG corpus adversarial-mutation checkpoint
+
+- **DONE (M4/M7 corpus gate):** the indexed four-case CNF smoke corpus still
+  requires both strict and Verus certification with exact node counts.
+- **DONE:** each case now also mutates the first cited parent to a different
+  existing input, replaces its first inference with an unsupported rule, and
+  adds a valid, disconnected input node to both the problem and proof. None of
+  these mutations may produce a certified result through the dual-check API;
+  the existing forged-nonempty-root mutation remains required.
+- **DONE:** the machine-readable support manifest records all four per-case
+  negative mutation classes.
+- **Scope:** this strengthens structural corpus regressions only. The fixtures
+  remain hand-authored, not an archived/representative competition corpus, and
+  the broader threat-model audit remains open.
+
 ### 2026-11-11 pinned runtime-artifact evidence checkpoint
 
 - **DONE (M0/M7 release-gate slice):** `verify.sh` and `build-runtime.sh` now
@@ -1625,9 +1640,9 @@ archived cases, and a versioned support declaration.
   not cross-host reproducibility.
 - **TODO — DIFFICULT:** expand beyond the current four-case hand-authored smoke
   corpus to a representative/archived proof set and obtain independent theorem
-  review. A support manifest is still not emitted per certification run because
-  no production checker adapter is integrated; cross-host artifact
-  reproducibility also remains open.
+  review. Per-call reports do not yet embed support-manifest identity (the
+  build sidecar records the manifest); cross-host artifact reproducibility also
+  remains open.
 
 **Deliverables**
 
@@ -1889,9 +1904,10 @@ satisfiability/model claims, and unrestricted full TSTP.
   typed syntax remains unsupported.
 - [x] Add a machine-readable supported-DAG smoke corpus and formal-CI harness for
   four complete TPTP proof artifacts, requiring strict-kernel and Verus
-  certification plus exact node counts, and reject a forged nonempty root for
-  each case. The corpus is explicitly not represented as archived competition
-  coverage.
+  certification plus exact node counts. Per case, reject a forged nonempty root,
+  a wrong existing cited parent, an unsupported rule, and an otherwise-valid
+  disconnected input. The corpus is explicitly not represented as archived
+  competition coverage; broader corpus and threat-model coverage remain TODO.
 - [x] Require verification/runtime-build commands to match the pinned Verus
   release and effective Rust toolchain, use the verification gate's SMT limit
   for runtime compilation, and record verifier identity, exact flags, artifact

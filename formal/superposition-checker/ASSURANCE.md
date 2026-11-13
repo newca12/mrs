@@ -30,8 +30,12 @@ local step through the subprocess boundary. Complete supported CNF DAGs,
 including an essential superposition plus exact-atom-resolution refutation,
 are checked against the actual artifact built and verified in formal CI.
 The indexed four-entry smoke corpus also exercises full parsed TPTP refutations
-through both strict and Verus paths with exact node-count checks; it is
-hand-authored regression coverage, not an archived competition corpus.
+through the strict/Verus dual-check path with exact node-count checks. For each
+case, formal CI mutates the first cited parent to a different existing input,
+replaces the first inference with an unsupported rule, adds an otherwise-valid
+but disconnected input node, and forges a nonempty root; none may produce a
+certified result. It is hand-authored regression coverage, not an archived
+competition corpus.
 Exact-atom resolution has a separate semantic theorem and executable checker;
 it removes one occurrence per parent with identical complementary atoms and
 does not implement pivot unification. The complete archived SWV406+1 proof is

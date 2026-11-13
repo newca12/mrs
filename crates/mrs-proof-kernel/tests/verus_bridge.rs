@@ -15,6 +15,51 @@ fn config() -> VerusConfig {
     }
 }
 
+fn first_input_name(tptp: &str) -> Option<&str> {
+    tptp.lines().find_map(|line| {
+        let declaration = line.trim().strip_prefix("cnf(")?;
+        let (name, rest) = declaration.split_once(',')?;
+        let (role, _) = rest.split_once(',')?;
+        matches!(role.trim(), "axiom" | "negated_conjecture").then_some(name.trim())
+    })
+}
+
+fn first_cited_parent_range(tptp: &str) -> Option<(usize, usize)> {
+    let inference_start = tptp.find("inference(")?;
+    let status_close = inference_start + tptp[inference_start..].find(']')?;
+    let parents_open = status_close + 1 + tptp[status_close + 1..].find('[')?;
+    let first_parent = parents_open + 1;
+    let first_parent = first_parent
+        + tptp[first_parent..]
+            .char_indices()
+            .find(|(_, character)| !character.is_whitespace())?
+            .0;
+    let parent_end = first_parent + tptp[first_parent..].find([',', ']'])?;
+    (first_parent < parent_end).then_some((first_parent, parent_end))
+}
+
+fn replace_first_cited_parent(tptp: &str, replacement: &str) -> String {
+    let (start, end) = first_cited_parent_range(tptp).expect("first inference has a cited parent");
+    format!("{}{}{}", &tptp[..start], replacement, &tptp[end..])
+}
+
+fn replace_first_inference_rule(tptp: &str, replacement: &str) -> String {
+    let rule_start = tptp
+        .find("inference(")
+        .map(|start| start + "inference(".len())
+        .expect("proof has an inference");
+    let rule_end = rule_start
+        + tptp[rule_start..]
+            .find([',', ')'])
+            .expect("inference has a rule");
+    format!(
+        "{}{}{}",
+        &tptp[..rule_start],
+        replacement,
+        &tptp[rule_end..]
+    )
+}
+
 #[test]
 #[ignore = "requires the pinned compiled Verus artifact; run by formal CI"]
 fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
@@ -724,6 +769,30 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
     let cfg = config();
     let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../formal/superposition-checker/fixtures");
+    let assert_mutation_rejected =
+        |name: &str, problem_text: &str, proof_text: &str, source: Option<&str>| {
+            let problem = mrs_tptp::parse_tptp(problem_text)
+                .unwrap_or_else(|error| panic!("{name} mutated problem did not parse: {error}"));
+            let proof = mrs_tptp::parse_tptp(proof_text)
+                .unwrap_or_else(|error| panic!("{name} mutated proof did not parse: {error}"));
+            let (verdict, report) = verify_with_verus_gate(
+                &problem,
+                &proof,
+                source,
+                VerificationLimits::default(),
+                &cfg,
+            );
+            assert_ne!(
+                verdict,
+                KernelVerdict::Certified,
+                "{name} mutation must not certify: {report:?}"
+            );
+            assert_ne!(
+                report.verdict,
+                ShadowVerdict::CertifiedDagIr,
+                "{name} mutation must not pass the Verus DAG gate: {report:?}"
+            );
+        };
     let load_fixture = |name: &str| {
         let path = std::path::Path::new(name);
         assert_eq!(path.components().count(), 1, "unsafe corpus path: {name}");
@@ -792,6 +861,62 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
             forged_report.verdict,
             ShadowVerdict::CertifiedDagIr,
             "{name} forged root: {forged_report:?}"
+        );
+
+        let unsupported_rule_proof =
+            replace_first_inference_rule(&proof_text, "unsupported_formal_corpus_rule");
+        assert_mutation_rejected(
+            &format!("{name} unsupported rule"),
+            &problem_text,
+            &unsupported_rule_proof,
+            source,
+        );
+
+        let (parent_start, parent_end) = first_cited_parent_range(&proof_text)
+            .unwrap_or_else(|| panic!("{name} has no cited inference parent"));
+        let original_parent = &proof_text[parent_start..parent_end];
+        let wrong_parent = proof_text
+            .lines()
+            .filter_map(first_input_name)
+            .find(|candidate| *candidate != original_parent)
+            .unwrap_or_else(|| panic!("{name} has no alternate input parent"));
+        let wrong_parent_proof = replace_first_cited_parent(&proof_text, wrong_parent);
+        assert_mutation_rejected(
+            &format!("{name} wrong parent"),
+            &problem_text,
+            &wrong_parent_proof,
+            source,
+        );
+
+        let disconnected_problem_line =
+            "cnf(mrs_formal_disconnected,axiom,mrs_formal_disconnected_pred).";
+        let disconnected_proof_line = format!(
+            "cnf(mrs_formal_disconnected,axiom,mrs_formal_disconnected_pred,file('{}',mrs_formal_disconnected)).",
+            source.unwrap_or("input")
+        );
+        assert!(
+            !problem_text.contains("mrs_formal_disconnected")
+                && !proof_text.contains("mrs_formal_disconnected"),
+            "{name} collides with the disconnected-node mutation"
+        );
+        let disconnected_problem = format!("{problem_text}\n{disconnected_problem_line}\n");
+        let first_inference = proof_text
+            .find("inference(")
+            .unwrap_or_else(|| panic!("{name} has no inference to anchor the inserted input"));
+        let insertion = proof_text[..first_inference]
+            .rfind('\n')
+            .map_or(0, |previous_line| previous_line + 1);
+        let disconnected_proof = format!(
+            "{}{}\n{}",
+            &proof_text[..insertion],
+            disconnected_proof_line,
+            &proof_text[insertion..]
+        );
+        assert_mutation_rejected(
+            &format!("{name} disconnected input"),
+            &disconnected_problem,
+            &disconnected_proof,
+            source,
         );
         cases += 1;
     }
