@@ -11,14 +11,19 @@
 #   --systems     <s1,s2,...>    Comma-separated system names (default: all in
 #                                crates/mrs-bench/systems/ EXCEPT `reference`)
 #   --divisions   <d1,d2,...>    Comma-separated division names
-#                                (default: fne,feq,epu,eps,ueq,icu)
+#                                (default: fne,feq,epu,eps,ueq,icu; CASC-J12
+#                                defaults to all of its divisions)
 #   --time        <secs>         Per-problem time limit for ALL divisions (default: 120)
 #                                Overridden per-division by --casc-times or --time-DIV.
 #   --schedule    <name>         Override the mrs named schedule (default: infer
 #                                casc_<division> in systems/mrs/invoke.sh)
-#   --casc-times                 Use official CASC-30 times per division:
+#   --casc-times                 Use official per-edition times:
 #                                  fne/feq/ueq → 240s, eps/epu → 120s,
 #                                  icu → 480s, slh → 15s
+#                                CASC-J13: fne/feq/ueq/fnn/fnq/tne/teq/prv → 180s
+#                                CASC-J12: tne/teq/tfi/tfe/tfn/fne/feq/ueq → 180s,
+#                                icu → 600s, slh → 30s (CPU budget approximated
+#                                as wall time; see run metadata and warning)
 #                                (overrides --time for the named divisions)
 #   --time-DIV    <secs>         Override time limit for a specific division, e.g.
 #                                --time-feq 120  --time-ueq 240
@@ -43,11 +48,12 @@
 #
 # Environment:
 #   CASC_PROBLEMS_ROOT  Override the problem corpus root (default:
-#                       crates/mrs-bench/problems/<edition>). Point it at a
-#                       full TPTP checkout to benchmark outside the vendored
-#                       corpus; division discovery accepts both EPS/ and
-#                       Problems/EPS/ layouts, and TPTP defaults to it for
-#                       %include resolution.
+#                       crates/mrs-bench/problems/<edition>). Division
+#                       discovery accepts both EPS/ and Problems/EPS/ layouts.
+#                       TPTP defaults to this root for %include resolution;
+#                       for CASC-J12, set TPTP separately to the full
+#                       TPTP-v9.0.0 root while keeping this pointed at the
+#                       official obfuscated selected-problem archive.
 #   CASC_ANSWERS_FILE   Override the reference-answers TSV (default:
 #                       systems/reference/answers_<edition>.tsv, fallback
 #                       answers.tsv). Needed when the corpus root holds
@@ -95,6 +101,7 @@ mrs_tools --help >/dev/null
 EDITION="casc-30"
 SYSTEMS=""          # empty = auto-discover
 DIVISIONS="fne,feq,epu,eps,ueq,icu"
+DIVISIONS_EXPLICIT=0
 TIME_LIMIT=120      # global fallback (seconds)
 JOBS=1
 OUTPUT=""
@@ -133,6 +140,22 @@ declare -A CASCJ13_TIMES=(
     [prv]=180   # PRV
 )
 
+# Official CASC-J12 limits. SLH is CPU-time limited by the competition, while
+# casc.sh currently enforces wall time. Its 30-second value is therefore an
+# explicit wall-time proxy, not a faithful reproduction of the SLH limit.
+declare -A CASCJ12_TIMES=(
+    [tne]=180   # THF, no equality
+    [teq]=180   # THF, with equality
+    [tfi]=180   # TFA, integer arithmetic
+    [tfe]=180   # TFA, real arithmetic
+    [tfn]=180   # typed first-order non-theorems
+    [fne]=180   # FOF, no equality
+    [feq]=180   # FOF, with equality
+    [ueq]=180   # unit equality
+    [slh]=30    # SLH CPU-time budget; wall-time proxy only
+    [icu]=600   # ICU
+)
+
 # Per-division overrides set via --time-DIV flags; populated during arg parsing.
 declare -A DIV_OVERRIDE=()
 
@@ -141,7 +164,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --edition)    EDITION="$2";    shift 2 ;;
         --systems)    SYSTEMS="$2";    shift 2 ;;
-        --divisions)  DIVISIONS="$2";  shift 2 ;;
+        --divisions)  DIVISIONS="$2"; DIVISIONS_EXPLICIT=1; shift 2 ;;
         --time)       TIME_LIMIT="$2"; shift 2 ;;
         --schedule)   MRS_SCHEDULE="$2"; export MRS_SCHEDULE; shift 2 ;;
         --casc-times) USE_CASC_TIMES=1; shift ;;
@@ -161,29 +184,68 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# CASC-J12's roster differs from both later editions. Keep the historical
+# defaults unchanged for existing users, but make an edition-only J12 run
+# cover every selected division rather than silently benchmarking the CASC-30
+# EPR portfolio.
+if [[ "${DIVISIONS_EXPLICIT}" -eq 0 && "${EDITION}" == "casc-j12" ]]; then
+    DIVISIONS="tne,teq,tfi,tfe,tfn,fne,feq,ueq,slh,icu"
+fi
+
+J12_SLH_CPU_APPROXIMATED=false
+if [[ "${EDITION}" == "casc-j12" && ",${DIVISIONS,,}," == *,slh,* ]]; then
+    J12_SLH_CPU_APPROXIMATED=true
+fi
+
+# The selected J12 problems are obfuscated and may include TPTP axiom files.
+# Refuse to benchmark against a missing or newer-by-default include root: a
+# partial input can still produce misleading coverage numbers.
+if [[ "${EDITION}" == "casc-j12" ]]; then
+    if [[ -z "${TPTP:-}" ]]; then
+        echo "CASC-J12 requires TPTP to point at the full TPTP-v9.0.0 root (with Problems/ and Axioms/)." >&2
+        echo "Set TPTP=/path/to/TPTP-v9.0.0 and retry." >&2
+        exit 2
+    fi
+    if [[ ! -d "${TPTP}/Problems" || ! -d "${TPTP}/Axioms" ]]; then
+        echo "Invalid TPTP root for CASC-J12: ${TPTP}" >&2
+        echo "Expected the full TPTP-v9.0.0 tree with Problems/ and Axioms/." >&2
+        exit 2
+    fi
+fi
+
 # ---------- resolve per-division time limit ----------
 # Priority (highest to lowest):
 #   1. --time-DIV N  (explicit per-division override)
-#   2. --casc-times  (official CASC wall-clock defaults for the active edition)
+#   2. --casc-times  (official per-edition limits for the active edition)
 #   3. --time N      (global fallback)
 div_time() {
     local div="$1"
     if [[ -n "${DIV_OVERRIDE[${div}]+x}" ]]; then
         echo "${DIV_OVERRIDE[${div}]}"
     elif [[ "${USE_CASC_TIMES}" -eq 1 ]]; then
-        if [[ "${EDITION}" == "casc-j13" ]]; then
-            if [[ -n "${CASCJ13_TIMES[${div}]+x}" ]]; then
-                echo "${CASCJ13_TIMES[${div}]}"
-            else
-                echo "${TIME_LIMIT}"
-            fi
-        else
-            if [[ -n "${CASC30_TIMES[${div}]+x}" ]]; then
-                echo "${CASC30_TIMES[${div}]}"
-            else
-                echo "${TIME_LIMIT}"
-            fi
-        fi
+        case "${EDITION}" in
+            casc-j12)
+                if [[ -n "${CASCJ12_TIMES[${div}]+x}" ]]; then
+                    echo "${CASCJ12_TIMES[${div}]}"
+                else
+                    echo "${TIME_LIMIT}"
+                fi
+                ;;
+            casc-j13)
+                if [[ -n "${CASCJ13_TIMES[${div}]+x}" ]]; then
+                    echo "${CASCJ13_TIMES[${div}]}"
+                else
+                    echo "${TIME_LIMIT}"
+                fi
+                ;;
+            *)
+                if [[ -n "${CASC30_TIMES[${div}]+x}" ]]; then
+                    echo "${CASC30_TIMES[${div}]}"
+                else
+                    echo "${TIME_LIMIT}"
+                fi
+                ;;
+        esac
     else
         echo "${TIME_LIMIT}"
     fi
@@ -291,6 +353,7 @@ cat <<EOF > "${OUTPUT}/run_meta.json"
   "jobs": ${JOBS},
   "default_time_limit": ${TIME_LIMIT},
   "use_casc_times": ${USE_CASC_TIMES},
+  "j12_slh_cpu_limit_approximated_as_wall": ${J12_SLH_CPU_APPROXIMATED},
   "prover_env": ${MRS_ENV_JSON_JSON},
   "host": {
     "hostname": "${HOSTNAME_STR}",
@@ -372,6 +435,25 @@ done
 # ---------- build job list ----------
 IFS=',' read -ra DIVISION_LIST <<< "${DIVISIONS}"
 
+# Resolve a listed problem in either a flat division directory or the J12
+# archive's <DIV>/<DIV>ProblemFiles layout. Keep a recursive fallback for
+# archives that add another directory wrapper.
+resolve_problem_path() {
+    local division_root="$1" div_upper="$2" div_lower="$3" problem="$4"
+    local candidate
+    for candidate in \
+        "${division_root}/${problem}.p" \
+        "${division_root}/${div_upper}ProblemFiles/${problem}.p" \
+        "${division_root}/${div_lower}ProblemFiles/${problem}.p"; do
+        if [[ -f "${candidate}" ]]; then
+            printf '%s' "${candidate}"
+            return 0
+        fi
+    done
+    find -L "${division_root}" -type f -name "${problem}.p" -print -quit 2>/dev/null || true
+}
+export -f resolve_problem_path
+
 # Reference answers file. Used inline by the worker to grade each
 # system run. Missing file → every verdict is `unknown`.
 ANSWERS="${CASC_ANSWERS_FILE:-${SCRIPT_DIR}/systems/reference/answers_${EDITION}.tsv}"
@@ -403,12 +485,15 @@ fi
 {
     echo "edition=${EDITION}"
     echo "problems_dir=${PROBLEMS_DIR}"
+    echo "tptp_root=${TPTP}"
+    echo "answers_file=${ANSWERS}"
     echo "divisions=${DIVISIONS}"
     echo "systems=${SYSTEMS}"
     echo "mrs_binary_path=${MRS_BIN}"
     echo "mrs_binary_sha256=${MRS_BIN_SHA256}"
     echo "time_limit=${TIME_LIMIT}"
     echo "use_casc_times=${USE_CASC_TIMES}"
+    echo "j12_slh_cpu_limit_approximated_as_wall=${J12_SLH_CPU_APPROXIMATED}"
     echo "mrs_schedule=${MRS_SCHEDULE:-auto}"
     echo "subset_file=${SUBSET_FILE}"
 } > "${OUTPUT}/run_meta.txt"
@@ -524,13 +609,9 @@ for div in "${DIVISION_LIST[@]}"; do
 
     if [[ -z "${list}" && -n "${division_root}" ]]; then
         list="${OUTPUT}/.generated-${div_lower}.list"
-        shopt -s nullglob
-        problem_files=("${division_root}"/*.p)
-        shopt -u nullglob
-        if ((${#problem_files[@]} > 0)); then
-            for problem_path in "${problem_files[@]}"; do
-                basename "${problem_path}" .p
-            done | LC_ALL=C sort > "${list}"
+        find -L "${division_root}" -type f -name "*.p" -exec basename {} .p \; \
+            | LC_ALL=C sort > "${list}"
+        if [[ -s "${list}" ]]; then
             echo "[casc] generated missing list for '${div}' from ${division_root}" >&2
         fi
     fi
@@ -543,13 +624,10 @@ for div in "${DIVISION_LIST[@]}"; do
     fi
 
     if [[ -n "${MANIFEST_OUT}" && ( -z "${list}" || ! -s "${list}" ) && -n "${division_root}" ]]; then
-        shopt -s nullglob
-        problem_files=("${division_root}"/*.p)
-        shopt -u nullglob
-        for problem_path in "${problem_files[@]}"; do
+        while IFS= read -r problem_path; do
             problem="$(basename "${problem_path}" .p)"
             MANIFEST_RESOLVED+=("${div}/${problem}")
-        done
+        done < <(find -L "${division_root}" -type f -name "*.p" -print | LC_ALL=C sort)
         continue
     fi
     if [[ -z "${list}" || ! -s "${list}" ]]; then
@@ -563,9 +641,9 @@ for div in "${DIVISION_LIST[@]}"; do
         if ! subset_wants "${div}" "${problem}"; then
             continue
         fi
-        prob_path="${division_root}/${problem}.p"
-        if [[ ! -f "${prob_path}" ]]; then
-            echo "WARNING: ${div}/${problem}: listed but ${prob_path} is missing" >&2
+        prob_path="$(resolve_problem_path "${division_root}" "${div_upper}" "${div_lower}" "${problem}")"
+        if [[ -z "${prob_path}" ]]; then
+            echo "WARNING: ${div}/${problem}: listed but no matching .p file exists under ${division_root}" >&2
             continue
         fi
         MANIFEST_RESOLVED+=("${div}/${problem%.p}")
@@ -640,11 +718,17 @@ echo "[casc] Systems:     ${SYSTEMS_LIST[*]}" >&2
 echo "[casc] Divisions:   ${DIVISION_LIST[*]}" >&2
 echo "[casc] Time limits: ${div_times_summary% }" >&2
 if [[ "${USE_CASC_TIMES}" -eq 1 ]]; then
-    if [[ "${EDITION}" == "casc-j13" ]]; then
-        echo "[casc] Mode:        --casc-times (official CASC-J13 wall-clock limits)" >&2
-    else
-        echo "[casc] Mode:        --casc-times (official CASC-30 wall-clock limits)" >&2
-    fi
+    case "${EDITION}" in
+        casc-j12)
+            echo "[casc] Mode:        --casc-times (official CASC-J12 budgets; SLH CPU limit is approximated as wall time)" >&2
+            ;;
+        casc-j13)
+            echo "[casc] Mode:        --casc-times (official CASC-J13 wall-clock limits)" >&2
+            ;;
+        *)
+            echo "[casc] Mode:        --casc-times (official CASC-30 wall-clock limits)" >&2
+            ;;
+    esac
 else
     echo "[casc] Mode:        --time ${TIME_LIMIT} (uniform, all divisions)" >&2
 fi
@@ -652,6 +736,10 @@ echo "[casc] Jobs:        ${JOBS} (parallel)" >&2
 echo "[casc] Output:      ${OUTPUT}" >&2
 echo "[casc] TPTP:        ${TPTP}" >&2
 echo "[casc] Total jobs:  ${total_problems}" >&2
+if [[ "${J12_SLH_CPU_APPROXIMATED}" == true ]]; then
+    slh_wall_limit="$(div_time slh)"
+    echo "[casc] WARNING: CASC-J12 SLH has a 30-second CPU limit; casc.sh enforces wall time, so SLH uses a ${slh_wall_limit}-second wall-time limit instead." >&2
+fi
 
 # ---------- worker function ----------
 # Arguments: div  problem  prob_path  sys  time_limit
@@ -685,6 +773,34 @@ run_one() {
     mkdir -p "${OUTPUT}/${raw_rel_dir}"
 
     local start_ms end_ms wall_s szs exit_code
+    local outer_timeout=$(( tlimit + 10 )) sim_factor=""
+
+    # casc-sim intentionally lets MRS search beyond the competition wall
+    # clock. Give that MRS child enough time to finish its configured
+    # simulation budget; the ordinary timeout+tolerance wrapper would kill it
+    # at the CASC limit and hide the resource-out diagnostics casc-sim exists
+    # to collect.
+    if [[ "${sys}" == "mrs" ]]; then
+        case "${MRS_HARDWARE:-}" in
+            casc-sim|casc_sim|sim)
+                sim_factor="${MRS_SIM_TIME_FACTOR:-2}"
+                case "${sim_factor,,}" in
+                    0|unbounded|none|inf)
+                        # mrs represents an unbounded simulation budget as one
+                        # year internally; leave a small outer grace period.
+                        outer_timeout=31536010
+                        ;;
+                    *)
+                        if [[ "${sim_factor}" =~ ^[0-9]+([.][0-9]*)?$ || "${sim_factor}" =~ ^[.][0-9]+$ ]] \
+                            && awk -v factor="${sim_factor}" 'BEGIN { exit !(factor > 0) }'; then
+                            outer_timeout="$(awk -v limit="${tlimit}" -v factor="${sim_factor}" \
+                                'BEGIN { scaled = limit * factor; print int(scaled) + (scaled > int(scaled)) + 10 }')"
+                        fi
+                        ;;
+                esac
+                ;;
+        esac
+    fi
     start_ms=$(date +%s%3N)
 
     # Locate GNU time binary
@@ -697,16 +813,17 @@ run_one() {
         time_bin="/run/current-system/sw/bin/time"
     fi
 
-    # Give the system tlimit seconds; add 10s grace for it to flush output.
+    # The internal prover deadline is the requested tlimit; the outer timeout
+    # allows the system 10s to flush output, or casc-sim's configured extension.
     if [[ -n "${time_bin}" ]]; then
         set +e
-        "${time_bin}" -o "${tmp_mem}" -f "%M" timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
+        "${time_bin}" -o "${tmp_mem}" -f "%M" timeout "${outer_timeout}" "${invoke}" "${prob_path}" "${tlimit}" \
             > "${tmp}" 2>"${tmp_err}"
         exit_code=$?
         set -e
     else
         set +e
-        timeout $(( tlimit + 10 )) "${invoke}" "${prob_path}" "${tlimit}" \
+        timeout "${outer_timeout}" "${invoke}" "${prob_path}" "${tlimit}" \
             > "${tmp}" 2>"${tmp_err}"
         exit_code=$?
         set -e
@@ -771,6 +888,23 @@ run_one() {
         else
             szs="GaveUp"
         fi
+    fi
+
+    # casc-sim's final answer may arrive after the official CASC wall clock.
+    # Preserve it in the archived streams and failure detail, but do not count
+    # it as a solve in the CASC-limited CSV verdict.
+    if [[ "${sys}" == "mrs" ]] \
+        && [[ "${MRS_HARDWARE:-}" == casc-sim || "${MRS_HARDWARE:-}" == casc_sim || "${MRS_HARDWARE:-}" == sim ]]; then
+        case "${szs}" in
+            Theorem|Unsatisfiable|ContradictoryAxioms|Satisfiable|CounterSatisfiable)
+                if (( $(echo "${actual_wall_s} > ${tlimit}" | bc -l) )); then
+                    local post_limit_status="${szs}"
+                    szs="Timeout"
+                    wall_s="$(printf '%.3f' "${tlimit}")"
+                    failure_detail="${failure_detail}${failure_detail:+ }casc_sim_post_limit_status=${post_limit_status}"
+                fi
+                ;;
+        esac
     fi
 
     # Extract MRS's reported peak virtual memory from stdout. MRS currently
@@ -867,7 +1001,7 @@ szs_class() {
     esac
 }
 export -f run_one szs_class
-export SCRIPT_DIR EDITION ANSWERS OUTPUT RAW_ROOT
+export SCRIPT_DIR EDITION CASC_EDITION="${EDITION}" ANSWERS OUTPUT RAW_ROOT
 
 # ---------- execute ----------
 

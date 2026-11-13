@@ -10,9 +10,23 @@ PROBLEM_PATH="${1:?Usage: invoke.sh <problem_path> <time_limit_secs>}"
 # $2 (time limit) intentionally ignored.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Deduce edition from problem path, e.g. .../problems/casc-j13/FEQ/PROB.p
-EDITION=$(basename "$(dirname "$(dirname "$PROBLEM_PATH")")")
-ANSWERS="${SCRIPT_DIR}/answers_${EDITION}.tsv"
+# casc.sh supplies the edition explicitly, which also works when an archive
+# nests the division under a Problems/ directory. Retain path-based discovery
+# for direct use of this wrapper.
+EDITION="${CASC_EDITION:-}"
+if [[ -z "${EDITION}" ]]; then
+    problem_dir="$(dirname "${PROBLEM_PATH}")"
+    if [[ "$(basename "${problem_dir,,}")" == *problemfiles ]]; then
+        problem_dir="$(dirname "${problem_dir}")"
+    fi
+    division_parent="$(basename "$(dirname "${problem_dir}")")"
+    if [[ "${division_parent,,}" == "problems" ]]; then
+        EDITION="$(basename "$(dirname "$(dirname "${problem_dir}")")")"
+    else
+        EDITION="${division_parent}"
+    fi
+fi
+ANSWERS="${CASC_ANSWERS_FILE:-${ANSWERS:-${SCRIPT_DIR}/answers_${EDITION}.tsv}}"
 if [[ ! -f "$ANSWERS" ]]; then
     ANSWERS="${SCRIPT_DIR}/answers.tsv"
 fi
