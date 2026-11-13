@@ -38,8 +38,12 @@ certified result. It is hand-authored regression coverage, not an archived
 competition corpus.
 Exact-atom resolution has a separate semantic theorem and executable checker;
 it removes one occurrence per parent with identical complementary atoms and
-does not implement pivot unification. The complete archived SWV406+1 proof is
-not present in the three-clause fixture and is not certified by these tests.
+does not implement pivot unification. The three-clause c502 fixture is not the
+complete MRS archived proof context and is not certified as a full proof.
+Separately, `fixtures/` preserves a complete public Leo-III THF TSTP solution for
+SWV406+1; the adapter parses it and returns `Unknown` at the unsupported-type
+guard before lowering. That is a negative fail-closed regression, not
+supported-proof coverage or certification.
 Loaded-job bridge tests also resolve selected and nested includes through the
 ProoVer loader, then require the same formal DAG gate to accept; introducing an
 unselected premise into the resolved problem is rejected by the adapter. Include

@@ -22,6 +22,8 @@ Reports from an invoked runtime are JSON and carry the full support manifest
 plus hashes for the manifest and matching build-evidence sidecar. Missing or
 mismatched sidecars fail closed; adapter preflight `Unknown` results may precede
 a runtime report. Sidecar metadata remains in the trusted computing base.
+The complete public Leo-III THF proof for SWV406+1 is retained separately as a
+negative-only unsupported-type regression, not as certified proof coverage.
 
 This is MRS's Verus superposition-checker project. It contains the original
 target-rigidity policy pilot, first-order substitution model, and an initial

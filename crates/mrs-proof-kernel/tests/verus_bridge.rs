@@ -1,8 +1,10 @@
 //! Executed against the artifact built by the formal verification job.
 use mrs_proof_kernel::verus::{
-    ShadowVerdict, VerusConfig, check_tptp_step, verify_with_shadow, verify_with_verus_gate,
+    ShadowVerdict, VerusConfig, check_tptp_dag, check_tptp_step, verify_with_shadow,
+    verify_with_verus_gate,
 };
 use mrs_proof_kernel::{KernelVerdict, VerificationLimits};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 fn config() -> VerusConfig {
@@ -758,6 +760,91 @@ fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
         check_tptp_step(fixture, "c27", "c39", "c502_candidate", &bad).verdict,
         ShadowVerdict::Unknown(_)
     ));
+}
+
+#[test]
+fn archived_swv406_leo_iii_thf_proof_fails_closed_before_lowering() {
+    const MANIFEST: &str = include_str!(
+        "../../../formal/superposition-checker/fixtures/archived-unsupported-proofs.tsv"
+    );
+    let rows = MANIFEST
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.len(),
+        1,
+        "archived unsupported-proof inventory changed"
+    );
+    let fields = rows[0].split_whitespace().collect::<Vec<_>>();
+    assert_eq!(fields.len(), 7, "malformed archived proof row");
+    let [
+        id,
+        proof_file,
+        source_url,
+        expected_sha256,
+        expected_formulas,
+        expected_types,
+        outcome,
+    ] = fields.as_slice()
+    else {
+        unreachable!("field count checked above")
+    };
+    assert_eq!(*id, "swv406-leo-iii");
+    assert!(source_url.starts_with("https://seetptp.tptp.org/"));
+    assert_eq!(*outcome, "type-declaration-fail-closed");
+
+    let path = std::path::Path::new(proof_file);
+    assert_eq!(path.components().count(), 1, "unsafe archive fixture path");
+    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../formal/superposition-checker/fixtures");
+    let proof_text = std::fs::read_to_string(fixture_dir.join(path)).unwrap();
+    let actual_sha256 = Sha256::digest(proof_text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(actual_sha256, *expected_sha256, "{id} source drifted");
+
+    let proof = mrs_tptp::parse_tptp(&proof_text)
+        .unwrap_or_else(|error| panic!("{id} archived proof did not parse: {error}"));
+    assert_eq!(
+        proof.formulas.len(),
+        expected_formulas.parse::<usize>().unwrap()
+    );
+    assert_eq!(
+        proof
+            .formulas
+            .iter()
+            .filter(|formula| formula.role().is_type_declaration())
+            .count(),
+        expected_types.parse::<usize>().unwrap()
+    );
+
+    // The full independent THF proof is deliberately rejected at the explicit
+    // typed-syntax boundary, before any input-leaf or inference lowering.
+    let empty_problem = mrs_tptp::parse_tptp("").unwrap();
+    let cfg = VerusConfig {
+        executable: "unused-checker".into(),
+        expected_sha256: "0".repeat(64),
+        timeout: Duration::from_secs(1),
+    };
+    let report = check_tptp_dag(
+        &empty_problem,
+        &proof,
+        None,
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert!(
+        matches!(&report.verdict, ShadowVerdict::Unknown(reason)
+            if reason.contains("type declarations in proofs are unsupported")),
+        "{id}: {report:?}"
+    );
+    assert_eq!(
+        report.artifact_sha256, None,
+        "{id} must fail before runtime"
+    );
 }
 
 #[test]

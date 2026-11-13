@@ -134,11 +134,14 @@ further bounded by the caller's limits. Target variables remain rigid, every
 cited equality must occur in the discovered chain, and the expanded DAG must
 still fit the 512-node ceiling. Unsupported or exhausted searches return Unknown.
 
-The archived artifact contains only c27/c39/c502, not the complete archived
-refutation. Its local step is translated and replayed; **full SWV406+1 proof
-certification remains outside this result**. CI also checks actual CNF complete
-refutations, including one with an essential superposition followed by exact
-unary-predicate resolution.
+The archived c502 artifact contains only c27/c39/c502, not the complete MRS
+refutation. Its local step is translated and replayed; **full MRS SWV406+1 proof
+certification remains outside this result**. A separate complete public
+Leo-III THF TSTP solution is preserved in
+`fixtures/archived-unsupported-proofs.tsv` and must fail closed at the unsupported
+type-declaration guard; it is not certified. CI also checks actual supported CNF
+complete refutations, including one with an essential superposition followed by
+exact unary-predicate resolution.
 
 ## Protocol grammar
 
