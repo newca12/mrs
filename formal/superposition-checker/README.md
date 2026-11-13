@@ -5,17 +5,19 @@
 The compiled checker now exposes bounded wire v1 for local steps and complete
 proof DAGs. `mrs-proof-kernel::verus` and `mrs-proover::strict` provide opt-in
 shadow and dual-check APIs; a CLI example and formal-CI integration tests run
-actual parsed CNF proofs, the seven-entry corpus in
+actual parsed CNF proofs, the eight-entry corpus in
 `fixtures/supported-dag-corpus.tsv`, and the archived c502 local-step fixture
 through the artifact. Each corpus entry also has wrong-parent, unsupported-rule,
 disconnected-input, and forged-root negative variants. The corpus contains four
-hand-authored smoke proofs, one synthetic MRS 0.3.0 Horn-chain proof, and two
+hand-authored smoke proofs, one synthetic MRS 0.3.0 Horn-chain proof, and three
 MRS 0.3.0 proofs generated from real TPTP v10.0.0 problems: the 28-node
-`PUZ001-1` Dreadbury Mansion refutation and the five-node `SYN343-1` refutation.
-The `PUZ001-1` proof has one literal-order normalization at `c54` to match the
-bounded interchange's exact ordered-resolvent contract. Both proof and original
-problem hashes are recorded. These are generated proofs, not archived
-competition-system proofs.
+`PUZ001-1` Dreadbury Mansion refutation, five-node `SYN343-1`, and 29-node
+`PUZ001-2` equality refutation. `PUZ001-1` has one literal-order normalization
+at `c54`; `PUZ001-2` expands a symmetric source equality into an explicit
+symmetry node before superposition, and exercises equality resolution,
+demodulation and subsumption resolution. Proof and original problem hashes are
+recorded.
+These are generated proofs, not archived competition-system proofs.
 See **[`INTERCHANGE.md`](INTERCHANGE.md)** for build/run commands, wire grammar,
 limits, support and provenance. The dual gate requires both the independent
 strict kernel and Verus IR certifier to accept. Wire-v1 structural decoding and
@@ -57,6 +59,14 @@ The verification gate detects the available CPU count and uses it for Verus
 verification threads and concurrent single-threaded mutation checks by default.
 Override those counts with `VERUS_THREADS` and `VERUS_MUTATION_WORKERS` when
 needed.
+
+**RHEL 8 note:** the 2026-11-13 local verification ran on RHEL 8.10 (glibc
+2.28), which cannot load the pinned Verus ELF requiring glibc 2.39. The local
+workaround used a temporary, interpreter/RPATH-adjusted copy of the
+checksum-verified Verus release and Ubuntu 24.04 runtime libraries. It did not
+modify the repository or original release install, and the resulting binary hash
+is not the official release hash. This was an ad-hoc verification workaround,
+not a supported installer path; see the checkpoint in `DEVELOPMENT_PLAN.md`.
 
 The installer checksum-verifies the pinned Linux x86_64 release, installs its
 required Rust toolchain selected by `verus-toolchain.json`, and stores Verus under

@@ -1084,7 +1084,7 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         );
         cases += 1;
     }
-    assert_eq!(cases, 7, "supported DAG corpus inventory changed");
+    assert_eq!(cases, 8, "supported DAG corpus inventory changed");
     assert_eq!(
         hand_authored_cases, 4,
         "hand-authored corpus inventory changed"
@@ -1094,7 +1094,7 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         "synthetic generated corpus inventory changed"
     );
     assert_eq!(
-        tptp_generated_cases, 2,
+        tptp_generated_cases, 3,
         "TPTP generated corpus inventory changed"
     );
     assert_eq!(
@@ -1108,6 +1108,10 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
     assert_eq!(
         corpus_manifest["limits"]["supported_dag_fixture_corpus_synthetic_generated_cases"],
         synthetic_generated_cases
+    );
+    assert_eq!(
+        corpus_manifest["limits"]["supported_dag_fixture_corpus_mrs_generated_cases"],
+        synthetic_generated_cases + tptp_generated_cases
     );
     assert_eq!(
         corpus_manifest["limits"]["supported_dag_fixture_corpus_real_tptp_generated_cases"],

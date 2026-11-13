@@ -29,21 +29,24 @@ The actual archived c502 fixture is now parsed, translated and accepted as a
 local step through the subprocess boundary. Complete supported CNF DAGs,
 including an essential superposition plus exact-atom-resolution refutation,
 are checked against the actual artifact built and verified in formal CI.
-The indexed seven-entry corpus also exercises full parsed TPTP refutations
+The indexed eight-entry corpus also exercises full parsed TPTP refutations
 through the strict/Verus dual-check path with exact node-count checks. It has
 four hand-authored smoke proofs, a seven-node synthetic MRS 0.3.0
-function-bearing Horn-resolution chain, and two MRS 0.3.0 proofs generated from
-real TPTP v10.0.0 CNF problems: a 28-node `PUZ001-1` Dreadbury Mansion proof
-using instantiation/resolution and a five-node `SYN343-1` proof using
-condensation/subsumption resolution. One `PUZ001-1` conclusion has its literal
-order normalized to the exact ordered-resolvent contract. Both vendored
-problems and generated proof texts match the SHA-256 and node-count records in
-`supported-rules.json`. For each case, formal CI mutates the first cited parent
-to a different existing input, replaces its first inference with an unsupported
-rule, adds an otherwise-valid but disconnected input node, and forges a
-nonempty root; none may produce a certified result. This is generated TPTP
-coverage, not an archived competition-system proof or a representative archive
-corpus.
+function-bearing Horn-resolution chain, and three MRS 0.3.0 proofs generated
+from real TPTP v10.0.0 CNF problems: a 28-node `PUZ001-1` Dreadbury Mansion
+proof using instantiation/resolution, a five-node `SYN343-1` proof using
+condensation/subsumption resolution, and a 29-node `PUZ001-2` equality proof
+using superposition, equality resolution, demodulation and subsumption
+resolution. The `PUZ001-2` proof expands a symmetric source equality into an
+explicit symmetry node before superposition. One `PUZ001-1` conclusion has its
+literal order normalized to the exact ordered-resolvent contract. All vendored
+problems and generated proof
+texts match their SHA-256 and node-count records in `supported-rules.json`. For
+each case, formal CI mutates the first cited parent to a different existing
+input, replaces its first inference with an unsupported rule, adds an
+otherwise-valid but disconnected input node, and forges a nonempty root; none
+may produce a certified result. This is generated TPTP coverage, not an archived
+competition-system proof or a representative archive corpus.
 Exact-atom resolution has a separate semantic theorem and executable checker;
 it removes one occurrence per parent with identical complementary atoms and
 does not implement pivot unification. The three-clause c502 fixture is not the

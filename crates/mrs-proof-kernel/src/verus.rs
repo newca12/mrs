@@ -3207,7 +3207,10 @@ fn dag_request(
                     } else if let Ok(c) = certificate(right, left, &raw, false, limits) {
                         (c, true)
                     } else {
-                        return Err("no supported superposition/paramodulation certificate".into());
+                        return Err(format!(
+                            "node `{}`: no supported superposition/paramodulation certificate",
+                            node.name
+                        ));
                     };
                     let conclusion = c.conclusion.clone();
                     let parents = if flipped {

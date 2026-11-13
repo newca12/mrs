@@ -353,13 +353,13 @@
     "supported_inference_requires_exact_binary_parents": true,
     "tptp_bridge_verified": false,
     "supported_dag_fixture_corpus_manifest": "fixtures/supported-dag-corpus.tsv",
-    "supported_dag_fixture_corpus_entries": 7,
+    "supported_dag_fixture_corpus_entries": 8,
     "supported_dag_fixture_corpus_hand_authored_cases": 4,
-    "supported_dag_fixture_corpus_mrs_generated_cases": 3,
+    "supported_dag_fixture_corpus_mrs_generated_cases": 4,
     "supported_dag_fixture_corpus_generated_proof_generator": "mrs 0.3.0",
     "supported_dag_fixture_corpus_synthetic_generated_cases": 1,
     "supported_dag_fixture_corpus_synthetic_proof_command": "cargo run --release --bin mrs -- --time 5 --workers 1 --schedule fast <problem>",
-    "supported_dag_fixture_corpus_real_tptp_generated_cases": 2,
+    "supported_dag_fixture_corpus_real_tptp_generated_cases": 3,
     "supported_dag_fixture_corpus_real_tptp_problems": {
       "PUZ001-1.p": {
         "problem": "PUZ001-1",
@@ -376,6 +376,14 @@
         "proof_sha256": "dc9f141fdba542694e8e3ee8c2d51cc1e90af358c3aef7ce31240fd3e7ac6c2c",
         "checked_nodes": 5,
         "proof_command": "target/release/mrs --time 5 --workers 1 --strategy 12 /mnt/sdd/TPTP-v10.0.0/Problems/SYN/SYN343-1.p"
+      },
+      "PUZ001-2.p": {
+        "problem": "PUZ001-2",
+        "tptp_release": "10.0.0",
+        "sha256": "c127b474a1f6d5c6a0e9e9483b41c07a8e28be8af4c6c2a116d4e5dd3dc8135c",
+        "proof_sha256": "8ad6e706170ad8d37cddb16dd245adedc4ed5270b0f85f6d44769bb9ab55bf96",
+        "checked_nodes": 29,
+        "proof_command": "target/release/mrs --time 5 --workers 1 --strategy 12 /mnt/sdd/TPTP-v10.0.0/Problems/PUZ/PUZ001-2.p"
       }
     },
     "supported_dag_fixture_corpus_strict_and_verus_checked": true,

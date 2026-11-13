@@ -263,19 +263,21 @@ request tests, then runs Rust integration tests against that exact temporary
 artifact/hash. Rust tests requiring the artifact are explicitly ignored in
 ordinary `cargo test`; they are mandatory in the formal CI job.
 The bridge suite also reads `fixtures/supported-dag-corpus.tsv` and requires all
-seven indexed full TPTP refutations to pass the strict/Verus dual-check path with
+eight indexed full TPTP refutations to pass the strict/Verus dual-check path with
 their recorded node counts. The set includes four hand-authored smoke proofs, a
-synthetic MRS 0.3.0 seven-node function-bearing Horn chain, and two MRS 0.3.0
-proofs generated from real TPTP v10.0.0 problems: a 28-node `PUZ001-1` proof
-using instantiation/resolution and a five-node `SYN343-1` proof using
-condensation/subsumption resolution. The `PUZ001-1` proof normalizes one
-conclusion's literal order to the exact ordered-resolvent contract. For every
-case it also changes the first cited parent to a different existing input,
-replaces the first inference with an unsupported rule, adds an otherwise-valid
-but disconnected input node, and mutates the root to a nonempty clause; neither
-the kernel verdict nor the formal report may certify these variants. The TPTP
-problem and proof SHA-256 values are retained in the support manifest. The
-generated regression set is not an archived competition-proof corpus.
+synthetic MRS 0.3.0 seven-node function-bearing Horn chain, and three MRS 0.3.0
+proofs generated from real TPTP v10.0.0 problems: `PUZ001-1` (28 nodes,
+instantiation/resolution), `SYN343-1` (5 nodes, condensation/subsumption
+resolution), and `PUZ001-2` (29 nodes, equality and superposition rules).
+`PUZ001-2` expands a symmetric source equality into an explicit symmetry node;
+`PUZ001-1` normalizes one conclusion's literal order to the exact ordered-
+resolvent contract. For every case, formal CI also changes the first cited
+parent to a different existing input, replaces the first inference with an
+unsupported rule, adds an otherwise-valid but disconnected input node, and
+mutates the root to a nonempty clause; neither checker may certify these
+variants. The TPTP problem and proof SHA-256 values are retained in the support
+manifest. The generated regression set is not an archived competition-proof
+corpus.
 Both `verify.sh` and `build-runtime.sh` reject a Verus executable whose reported
 release or effective Rust toolchain differs from `verus-toolchain.json`.
 The compiled-runtime mutation gate weakens the tokenizer's digit guard and maps
