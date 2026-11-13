@@ -31,6 +31,10 @@ Notes:
   whole machine and is wrong inside a cpuset, so it is no longer the default.
 - In `casc-sim` every job pins to the same 8 cores, so `--jobs N` means N problems
   sharing one CASC machine — which is what the archived `W8J2` runs did.
+- Through `casc.sh`, the outer watchdog follows `MRS_SIM_TIME_FACTOR` for MRS
+  runs. If MRS emits a definitive answer after the CASC wall limit, the CSV
+  records `Timeout` and retains the late status in `failure_detail` as
+  `casc_sim_post_limit_status=…`; the raw streams remain available for diagnosis.
 - When the host cannot represent the profile (fewer than 8 physical cores, less
   RAM than 128 GB) the run continues and says so, rather than silently
   downgrading to something that only looks like a CASC entry.
@@ -47,7 +51,7 @@ Notes:
 | `certification_campaign.sh` | Run an MRS benchmark, strictly audit its proofs, summarize certification outcomes, and archive the complete output directory as `<output>.tar.bz2` |
 | `perf_probe.sh` | Measure search throughput on this host with a fixed amount of work, then append the result to the bank in `docs/results/perf/` |
 | `throughput_probe.sh` / `throughput_probe_list.txt` | Compare two `mrs` builds on clauses retired out of a fixed per-problem budget; the corpus is a fixed stride over the checked-in editions, and each row records the binary sha |
-| `setup.sh` | Download and extract the CASC problem and axiom archives from tptp.org |
+| `setup.sh` | Download and extract supported CASC problem archives from tptp.org |
 | `systems/` | Per-system `invoke.sh` scripts (add a new directory here to register a competitor) |
 | `problems/` | Extracted TPTP problems and axioms (gitignored, populated by `setup.sh`) |
 | `results/` | CSV output from benchmark runs (gitignored) |
@@ -96,6 +100,60 @@ MRS_WORKERS=8 MRS_HARDWARE=casc \
 
 # 5. Summarise the latest run
 cargo run -p mrs-bench --bin bench_report -- crates/mrs-bench/results/casc-30/<timestamp>/run.csv
+```
+
+## Re-running CASC-J12
+
+CASC-J12 is the 2024 edition. Its official selected set has 2,730 problems in
+TNE, TEQ, TFI, TFE, TFN, FNE, FEQ, UEQ, SLH, and ICU. Use the official
+[selected-problem archive](https://tptp.org/CASC/J12/Problems.tgz), not the
+eligible-problems list. The archive is extracted under the gitignored
+`crates/mrs-bench/problems/casc-j12/` directory:
+
+```bash
+crates/mrs-bench/setup.sh --edition casc-j12
+```
+
+J12 used **TPTP v9.0.0**. Its CASC directory does not publish an
+`Axioms.tgz`; download and extract the full
+[TPTP-v9.0.0 distribution](https://tptp.org/TPTP/Distribution/TPTP-v9.0.0.tgz)
+separately (about 879 MB compressed / 9.8 GB expanded). Point the benchmark
+corpus at the exact J12 archive and the include resolver at that release:
+
+```bash
+export CASC_PROBLEMS_ROOT="$PWD/crates/mrs-bench/problems/casc-j12"
+export TPTP=/data/TPTP-v9.0.0
+
+# Generate a pinned expected-answer table; local v9.0.0 statuses are preferred.
+crates/mrs-bench/systems/reference/fetch_answers.sh \
+  --edition casc-j12 --tptp-root "$TPTP"
+
+# All ten selected divisions are the casc-j12 default.
+MRS_WORKERS=8 MRS_HARDWARE=casc \
+  crates/mrs-bench/casc.sh --edition casc-j12 --systems mrs \
+    --casc-times --jobs 1 \
+    --output crates/mrs-bench/results/casc-j12/mrs-all
+```
+
+`--casc-times` uses 180 s for TNE/TEQ/TFI/TFE/TFN/FNE/FEQ/UEQ, 600 s for ICU,
+and the official 30 s CPU budget for SLH as a **30 s wall-time proxy**. The
+local harness only enforces wall time, so J12 SLH rows are not directly
+comparable to official SLH timing. The run log and metadata record this
+limitation. The official time limits are documented in the
+[J12 design](https://tptp.org/CASC/J12/Design.html).
+
+This is a retrospective corpus benchmark, not an official CASC result. MRS has
+FOF/CNF search paths for FNE/FEQ/UEQ/ICU; its TFF support is partial, including
+type erasure, and TFN model finding is limited. THF lowering is not implemented,
+so TNE/TEQ and SLH are expected to give up rather than solve their problems.
+Report these divisions separately instead of presenting the full-roster count
+as full CASC-J12 coverage. A strict proof audit can be run after search with:
+
+```bash
+MRS_WORKERS=8 MRS_HARDWARE=casc \
+  crates/mrs-bench/certification_campaign.sh \
+    --edition casc-j12 --systems mrs --casc-times --jobs 1 \
+    --output crates/mrs-bench/results/casc-j12/mrs-all-certified
 ```
 
 ## `bench_report` binary

@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # crates/mrs-bench/setup.sh
-# Downloads and extracts the CASC-30 problem archive.
+# Downloads and extracts a CASC problem archive.
 #
-# Usage: crates/mrs-bench/setup.sh [--edition casc-30]
+# Usage: crates/mrs-bench/setup.sh [--edition casc-30|casc-j13|casc-j12]
 #
-# After running, the directory crates/mrs-bench/problems/casc-30/ will contain:
+# The extracted edition directory will contain:
 #   Problems/<Domain>/<Name>.p   (from Problems.tgz)
-#   Axioms/<Domain>/<Name>.ax    (from Axioms.tgz)
+#   Axioms/<Domain>/<Name>.ax    (when the edition publishes Axioms.tgz)
 #
-# Set TPTP=crates/mrs-bench/problems/casc-30 before running mrs so %include resolves.
+# CASC-J12 uses TPTP v9.0.0 and publishes no edition-local Axioms.tgz. Download
+# the full TPTP-v9.0.0 distribution separately and set TPTP to that extracted
+# root when running the benchmark, so %include directives resolve against the
+# same library release used by the competition.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,13 +32,23 @@ case "${EDITION}" in
     casc-j13)
         BASE_URL="https://tptp.org/CASC/J13"
         DEST="${SCRIPT_DIR}/problems/casc-j13"
+        DOWNLOAD_AXIOMS=1
+        ;;
+    casc-j12)
+        BASE_URL="https://tptp.org/CASC/J12"
+        DEST="${SCRIPT_DIR}/problems/casc-j12"
+        DOWNLOAD_AXIOMS=0
         ;;
     *)
         echo "Unknown edition: ${EDITION}" >&2
-        echo "Supported: casc-30, casc-j13" >&2
+        echo "Supported: casc-30, casc-j13, casc-j12" >&2
         exit 1
         ;;
 esac
+
+if [[ "${EDITION}" == "casc-30" ]]; then
+    DOWNLOAD_AXIOMS=1
+fi
 
 mkdir -p "${DEST}"
 
@@ -45,8 +58,9 @@ download_and_extract() {
     local archive="${DEST}/${name}.tgz"
     local dest_check
 
-    # Problems archive extracts directly into division dirs (no Problems/ subdir);
-    # Axioms archive extracts into Axioms/.
+    # Archives have used both direct division directories and a Problems/
+    # prefix. Count recursively so either layout is recognized as already
+    # installed.
     if [[ "${name}" == "Problems" ]]; then
         dest_check="${DEST}"
     else
@@ -56,11 +70,9 @@ download_and_extract() {
     local count=0
     if [[ -d "${dest_check}" ]]; then
         if [[ "${name}" == "Problems" ]]; then
-            # Since Problems are extracted directly under DEST as division subdirectories,
-            # we check for any .p files up to maxdepth 2 under DEST.
-            count=$(find -L "${dest_check}" -maxdepth 2 -name "*.p" 2>/dev/null | wc -l)
+            count=$(find -L "${dest_check}" -type f -name "*.p" 2>/dev/null | wc -l)
         else
-            count=$(find -L "${dest_check}" -maxdepth 2 -name "*.ax" 2>/dev/null | wc -l)
+            count=$(find -L "${dest_check}" -type f -name "*.ax" 2>/dev/null | wc -l)
         fi
     fi
 
@@ -91,34 +103,44 @@ download_and_extract() {
 }
 
 download_and_extract "Problems"
-download_and_extract "Axioms"
+if [[ "${DOWNLOAD_AXIOMS}" -eq 1 ]]; then
+    download_and_extract "Axioms"
+else
+    echo "[setup] CASC-J12 has no Axioms.tgz; use the full TPTP v9.0.0 library for includes."
+fi
 
-# Generate division list files dynamically if they are not already present or empty
-lists_present=0
-if [[ -d "${DEST}/lists" ]]; then
-    list_count=$(find -L "${DEST}/lists" -maxdepth 1 -name "*.list" 2>/dev/null | wc -l)
-    if [[ "${list_count}" -gt 0 ]]; then
-        lists_present=1
+# Generate any missing division lists. Supporting both <DEST>/<DIV> and
+# <DEST>/Problems/<DIV> matters for older CASC archives with a Problems/ prefix.
+mkdir -p "${DEST}/lists"
+shopt -s nullglob
+division_dirs=("${DEST}"/*/ "${DEST}"/Problems/*/)
+shopt -u nullglob
+for d_path in "${division_dirs[@]}"; do
+    [[ -d "${d_path}" ]] || continue
+    d="$(basename "${d_path%/}")"
+    case "${d}" in
+        Axioms|Problems|lists) continue ;;
+    esac
+
+    list_file="${DEST}/lists/${d,,}.list"
+    [[ -s "${list_file}" ]] && continue
+
+    find -L "${d_path}" -type f -name "*.p" -exec basename {} .p \; \
+        | LC_ALL=C sort > "${list_file}"
+    if [[ -s "${list_file}" ]]; then
+        echo "[setup] Generated list for division '${d,,}' with $(wc -l < "${list_file}") problems."
+    else
+        rm -f -- "${list_file}"
     fi
-fi
-
-if [[ "${lists_present}" -eq 0 ]]; then
-    echo "[setup] Generating lists directory at ${DEST}/lists..."
-    mkdir -p "${DEST}/lists"
-    # Find all directories directly under DEST (except Axioms and lists)
-    for d_path in "${DEST}"/*/; do
-        # Ignore wildcards if directory is empty
-        [[ -d "${d_path}" ]] || continue
-        d=$(basename "${d_path}")
-        if [[ "${d}" != "Axioms" && "${d}" != "lists" ]]; then
-            list_file="${DEST}/lists/${d,,}.list"
-            # Get sorted names of all .p files in the directory, removing .p extension
-            find -L "${d_path}" -maxdepth 1 -name "*.p" -exec basename {} .p \; | sort > "${list_file}"
-            echo "[setup] Generated list for division '${d,,}' with $(wc -l < "${list_file}") problems."
-        fi
-    done
-fi
+done
 
 echo ""
-echo "[setup] Done. Set TPTP=${DEST} before running mrs. "
-echo "        Example: TPTP=${DEST} crates/mrs-bench/casc.sh --systems mrs --divisions fne"
+echo "[setup] Done. Problem corpus: ${DEST}"
+if [[ "${EDITION}" == "casc-j12" ]]; then
+    echo "[setup] CASC-J12 used TPTP v9.0.0 (the full distribution expands to about 9.8 GB):"
+    echo "        https://tptp.org/TPTP/Distribution/TPTP-v9.0.0.tgz"
+    echo "        TPTP=/path/to/TPTP-v9.0.0 CASC_PROBLEMS_ROOT=${DEST} crates/mrs-bench/casc.sh --edition casc-j12 --systems mrs --casc-times --jobs 1"
+else
+    echo "[setup] Set TPTP=${DEST} before running mrs so %include resolves."
+    echo "        Example: TPTP=${DEST} crates/mrs-bench/casc.sh --systems mrs --divisions fne"
+fi

@@ -13,6 +13,7 @@ systems/mrs-proover/mrs-proover
 
 # Generated reference lookup table (run systems/reference/fetch_answers.sh to populate)
 systems/reference/answers.tsv
+systems/reference/answers_*.tsv
 
 
 # Cached Java path for the Nörgler wrapper (machine-specific)

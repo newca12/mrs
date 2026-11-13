@@ -76,7 +76,7 @@ SUBSET_FILE=""
 MANIFEST_OUT=""
 AUDIT_ONLY=""
 PORTFOLIO_ARG=""
-DIVISIONS="fne,feq,epu,eps,ueq,icu"
+DIVISIONS=""
 CASC_ARGS=()
 
 # `--edition` and the problems root must agree with what phase 1 actually ran
@@ -144,6 +144,17 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     esac
 done
 [[ -n "${OUT}" || -n "${AUDIT_ONLY}" ]] || { echo "campaign: --output DIR is required" >&2; exit 2; }
+
+# Match casc.sh's edition-specific default when an explicit portfolio is
+# validated without a --divisions option. In particular CASC-J12 has no EPS,
+# and its default roster includes the THF/TFA/TFN/SLH/ICU divisions.
+if [[ -z "${DIVISIONS}" ]]; then
+    if [[ "${EDITION}" == "casc-j12" ]]; then
+        DIVISIONS="tne,teq,tfi,tfe,tfn,fne,feq,ueq,slh,icu"
+    else
+        DIVISIONS="fne,feq,epu,eps,ueq,icu"
+    fi
+fi
 
 # Resolve explicit portfolio configuration before starting the expensive search.
 # An audit-only run does not search, so its result must not depend on the caller's
