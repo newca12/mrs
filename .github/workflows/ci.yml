@@ -75,3 +75,62 @@ jobs:
           name: superposition-verus-evidence
           path: ${{ runner.temp }}/superposition-verus.log
           if-no-files-found: ignore
+
+  formal-runtime-independent-runners:
+    name: Verus runtime build (${{ matrix.replica }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Build shared Rust tools
+        run: cargo build -p mrs-bench --bin mrs_tools
+      - name: Install pinned Verus toolchain
+        env:
+          VERUS_INSTALL_DIR: ${{ runner.temp }}/mrs-verus
+          RUSTUP_HOME: ${{ runner.temp }}/mrs-verus-rustup
+          MRS_TOOLS_BIN: ${{ github.workspace }}/target/debug/mrs_tools
+        run: formal/superposition-checker/install-verus.sh
+      - name: Build verified runtime
+        env:
+          VERUS_INSTALL_DIR: ${{ runner.temp }}/mrs-verus
+          RUSTUP_HOME: ${{ runner.temp }}/mrs-verus-rustup
+          MRS_TOOLS_BIN: ${{ github.workspace }}/target/debug/mrs_tools
+        run: |
+          verus_version="$(target/debug/mrs_tools verus-pin-field formal/superposition-checker/verus-toolchain.json verus)"
+          VERUS="${RUNNER_TEMP}/mrs-verus/${verus_version}/verus" \
+            formal/superposition-checker/build-runtime.sh "${RUNNER_TEMP}/superposition-checker"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verus-runtime-${{ matrix.replica }}
+          path: |
+            ${{ runner.temp }}/superposition-checker
+            ${{ runner.temp }}/superposition-checker.json
+          if-no-files-found: error
+          retention-days: 7
+
+  formal-runtime-reproducibility:
+    runs-on: ubuntu-24.04
+    needs: formal-runtime-independent-runners
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: verus-runtime-a
+          path: ${{ runner.temp }}/runtime-a
+      - uses: actions/download-artifact@v4
+        with:
+          name: verus-runtime-b
+          path: ${{ runner.temp }}/runtime-b
+      - name: Require byte-identical runtime and evidence
+        run: |
+          left="${RUNNER_TEMP}/runtime-a"
+          right="${RUNNER_TEMP}/runtime-b"
+          sha256sum "${left}/superposition-checker" "${right}/superposition-checker"
+          sha256sum "${left}/superposition-checker.json" "${right}/superposition-checker.json"
+          cmp "${left}/superposition-checker" "${right}/superposition-checker"
+          cmp "${left}/superposition-checker.json" "${right}/superposition-checker.json"

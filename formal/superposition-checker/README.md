@@ -118,9 +118,11 @@ its corresponding regression. The mutation runner enforces
 the expected counts, so deleting a gate cannot silently shrink the inventory.
 The structural preflight also has a fixed 128-unit superposition fixture (127 is
 rejected); its compiled mutant bypasses the cited-source comparison charge.
-Mutation jobs each use one Verus thread in a shared Rayon pool; set
-`VERUS_MUTATION_WORKERS` to adjust its size (default `2`), balancing CPU
-parallelism against memory use.
+The gate auto-detects available CPU parallelism for both Verus module checks and
+the single-threaded mutation-worker pool. `VERUS_THREADS` and
+`VERUS_MUTATION_WORKERS` are positive-integer overrides; each defaults to the
+available CPU count. Mutation jobs use one Verus thread apiece, so the worker
+setting controls their concurrency.
 Two verifier-negative congruence mutations also remove the unchanged binary-sibling
 and nested unary function-symbol checks; Verus must reject both.
 The
@@ -132,7 +134,11 @@ unique source anchor before execution.
 `mrs-tools verus-runtime-check` compiles the verified core and runs DAG regressions in a
 temporary directory. It performs the compile twice and requires byte-identical
 runtime artifacts before executing the regressions; this is a same-host
-determinism check, not a cross-host reproducible-build claim.
+determinism check. CI also builds the runtime and evidence sidecar on two
+independent GitHub-hosted Ubuntu 24.04 runners and compares both files byte for
+byte. That is a cross-host check within the same pinned OS/toolchain, not a
+cross-distribution reproducibility claim; the first successful CI comparison is
+still required before treating it as established evidence.
 The mutation gate first verifies a valid assumption probe without strict mode,
 then requires Verus `--no-cheating` to reject it. It also rejects the actual
 forbidden-image freshness mutation; removing a redundant check alone is not a

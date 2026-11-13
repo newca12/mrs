@@ -44,6 +44,16 @@ that no interchange or caller exists are superseded by this update.
   limits, proof semantics, or the statement that cumulative checker work units
   are not an instruction-count model.
 
+### 2026-11-13 independent-runner runtime reproducibility gate
+
+- **IMPLEMENTED, awaiting CI evidence (M7):** `.github/workflows/ci.yml` builds
+  the pinned verified runtime and its evidence sidecar on two independent
+  GitHub-hosted Ubuntu 24.04 runners, then requires byte-for-byte equality.
+- **Scope:** this tests independent hosts under the same OS image, Verus release
+  and Rust toolchain. It does not establish cross-distribution or reproducible
+  Verus-release builds; the manifest's `cross_host_artifact_reproducibility_checked`
+  remains false until the new CI comparison has passed.
+
 ### 2026-11-13 RHEL 8 Verus compatibility note
 
 - **DONE (local M0 verification environment):** this session ran on RHEL 8.10
@@ -882,7 +892,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition, positive-left/negative-right nullary/exact-atom resolution (including symmetric equality pivots), first-order binary resolution (including symmetric equality pivots), unary equality resolution, unary clause factoring, unary equality factoring, subsumption resolution, clause weakening, demodulation, instantiation, condensation, reflexivity, transitivity, symmetry, excluded middle, equality congruence, and clause tautology nodes. Reflexivity, excluded-middle, and tautology introductions accept zero-parent nodes. Accepted replay postconditions prove universal validity preservation; the generic induction consumes local entailment. The certified root is required empty by the semantic specification; each supported inference's declared parent arity is checked. Compiled refutations certify without empty inputs. Root-ancestor closure rejects disconnected nodes and returns `Unknown` on bounded traversal exhaustion. The certifier carries one shared work counter across structural preflight, closure and per-node validation; input-leaf membership charges both clauses for every repeated candidate comparison. For superposition, nullary/exact-atom and first-order resolution, equality resolution, clause factoring, equality factoring, subsumption resolution, weakening, instantiation, condensation, demodulation, reflexivity, transitivity, symmetry, excluded middle, congruence and tautology, `validate_dag_node_with_work` carries per-node parent/node-clause charges through cited-parent comparison and local replay. The certifier now shares one mutable meter across phases and nodes; a three-node exact cutoff and structural/closure/node reset mutants cover the handoffs. Checker-defined work-unit completeness is audited (see the completion checkpoint); instruction-level resource-cost refinement, verified TPTP input bridge refinement and broader fixtures remain. |
 | M5 — MRS integration | **PARTIAL: verified wire decoder, trusted TPTP bridge** | Wire v1 structural decoding and decimal byte tokenization with verified span correspondence are verified in Verus; bounded byte acquisition shim, CNF TPTP adapter, certificate discovery, kernel/ProoVer shadow and opt-in dual-check APIs, archived local c502 translation, complete supported DAG integration, artifact provenance and CI boundary tests exist. Problem/proof AST snapshots now reject formula-count or canonical syntax/annotation changes; this remains a trusted host-side guard. TPTP bridge refinement, independent review and default-enable gate remain. See `INTERCHANGE.md`. |
 | M6 — Broader rules | **PARTIAL** | Nullary-predicate, exact-atom (including symmetric equality pivots), first-order resolution with unifier (including symmetric equality pivots), equality resolution, clause factoring, equality factoring, subsumption resolution, clause weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology are verified and DAG-dispatched; AC, transformations, and AVATAR/LRAT remain unimplemented. |
-| M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, a CI audit for `assume`, `admit`, and external-body/allow escape hatches, per-call reports carrying the manifest plus artifact/evidence hashes, and one full archived THF proof rejected by the fail-closed typed-syntax guard. CI uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. A representative positive archive corpus, independent theorem review, cross-host reproducibility, and default-enable release gates remain. |
+| M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, a CI audit for `assume`, `admit`, and external-body/allow escape hatches, per-call reports carrying the manifest plus artifact/evidence hashes, and one full archived THF proof rejected by the fail-closed typed-syntax guard. CI uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. A two-runner Ubuntu 24.04 runtime/evidence byte-comparison job is configured, but has no successful CI evidence recorded yet. A representative positive archive corpus, independent theorem review, and default-enable release gates remain. |
 
 **M2–M4 resource-accounting completion (2026-11-07):** the source-level audit and
 the successful full verification/mutation gate discharge the table's earlier exact
@@ -1720,7 +1730,9 @@ archived cases, and a versioned support declaration.
 - **PARTIAL, reproducibility gate:** `mrs-tools verus-runtime-check` compiles the checked
   Verus core twice and requires byte-identical executable hashes before
   running the fixtures. This currently establishes same-host reproducibility,
-  not cross-host or release-artifact determinism.
+  not cross-host or release-artifact determinism. The new CI job builds on two
+  independent Ubuntu 24.04 runners and compares the runtime plus evidence
+  sidecar; no successful result from that job is yet recorded.
 - **DONE, pinned artifact provenance slice (2026-11-11):** verification and
   runtime-build commands reject Verus version/toolchain drift; the runtime
   sidecar records verifier, source and artifact hashes, pinned toolchain,

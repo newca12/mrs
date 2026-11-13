@@ -75,7 +75,9 @@ evidence that TPTP lowering is verified. On Unix, the child has a cleared
 environment, `/` cwd, a private process group, 60 s CPU, 768 MiB address-space,
 1 MiB file-size and zero core-dump limits; Linux also sets `NO_NEW_PRIVS`.
 Startup or rlimit failures cannot certify. Same-host double compilation is
-checked; cross-host reproducibility and verified TPTP lowering remain open.
+checked. A two-independent-runner same-image comparison is configured, but its
+result is pending; cross-distribution reproducibility and verified TPTP lowering
+remain open.
 
 The mutation inventory is now fifty-eight verifier-negative checks and forty-nine
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
@@ -296,7 +298,11 @@ uploads that log even when a later gate fails. Local verification does not
 retain a build artifact unless `VERUS_LOG` is set.
 `mrs-tools verus-runtime-check` also compiles the core twice and compares executable SHA-256
 values before running it; this currently checks byte reproducibility on one
-host and toolchain only.
+host and toolchain only. CI additionally builds the runtime and evidence sidecar
+on two independent GitHub-hosted Ubuntu 24.04 runners and requires byte equality
+for both artifacts. This checks independent-host reproducibility for the same
+pinned OS/toolchain, not cross-distribution reproducibility; it remains
+unestablished until that CI comparison passes.
 
 The verification gate enforces 58 verifier-negative mutations across inference
 replay, DAG dispatch and wire tokenization. Each mutated temporary source must
