@@ -381,7 +381,7 @@
         "problem": "PUZ001-2",
         "tptp_release": "10.0.0",
         "sha256": "c127b474a1f6d5c6a0e9e9483b41c07a8e28be8af4c6c2a116d4e5dd3dc8135c",
-        "proof_sha256": "8ad6e706170ad8d37cddb16dd245adedc4ed5270b0f85f6d44769bb9ab55bf96",
+        "proof_sha256": "267a6a00a494724b56b32e3d48a6376c8093cc2b44b150a3bccb93f9e51bfaac",
         "checked_nodes": 29,
         "proof_command": "target/release/mrs --time 5 --workers 1 --strategy 12 /mnt/sdd/TPTP-v10.0.0/Problems/PUZ/PUZ001-2.p"
       }
