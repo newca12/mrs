@@ -12,9 +12,11 @@ The command first requires the selected Verus binary to report the pinned Verus
 version and effective Rust toolchain, then compiles with `--no-cheating` and the
 same SMT resource limit as `verify.sh`. It prints the artifact SHA-256 and writes
 `OUTPUT.json` containing the artifact/source hashes, source commit/dirty state,
-Verus binary hash/version, toolchain, support manifest, verified build flags,
-and the verified versus unverified boundary. On ordinary Linux run the script
-with `bash` directly. Use an existing output directory. Verification never
+Verus binary hash/version, toolchain, support manifest and exact source hash,
+verified build flags, and the verified versus unverified boundary. The runtime
+bridge requires this adjacent sidecar to match the executable hash; a missing or
+inconsistent sidecar returns `Unknown`. On ordinary Linux run the script with
+`bash` directly. Use an existing output directory. Verification never
 downloads/builds a checker implicitly. The caller explicitly supplies the
 expected artifact SHA-256.
 
@@ -36,6 +38,11 @@ nix develop -c cargo run -p mrs-proover --bin mrs-proover -- \
 strict verdict. `--verus-gate PATH` suppresses `VerifiedGood` unless both checks
 accept. Both require `--verus-sha256 HASH`; `--time` sets the subprocess deadline
 (10 s default, capped at 60 s). Formal telemetry is written to stderr.
+Reports from an invoked runtime are serialized as JSON and include the
+supported-rule/limits manifest, manifest SHA-256 and build-evidence SHA-256.
+Adapter preflight `Unknown` results may precede any runtime report. These hashes
+and manifest are trusted build metadata, not additional verified theorem
+premises.
 
 APIs:
 

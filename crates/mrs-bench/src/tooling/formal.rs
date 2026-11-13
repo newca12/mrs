@@ -139,10 +139,21 @@ fn output_text(output: &ProcessOutput) -> String {
 }
 
 fn hash_file(path: &Path) -> ToolResult<String> {
-    Ok(Sha256::digest(fs::read(path)?)
+    Ok(hash_bytes(&fs::read(path)?))
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect())
+        .collect()
+}
+
+fn load_supported_rules(path: &Path) -> ToolResult<(Value, String, String)> {
+    let source = String::from_utf8(fs::read(path)?)?;
+    let rules = serde_json::from_str(&source)?;
+    let sha256 = hash_bytes(source.as_bytes());
+    Ok((rules, source, sha256))
 }
 
 fn contains_unchecked_proof_escape(line: &str) -> bool {
@@ -277,6 +288,11 @@ pub fn runtime_check(args: RuntimeCheckArgs) -> ToolResult<()> {
     }
     let digest = hash_file(&binary)?;
     println!("verified_runtime_sha256={digest}");
+    write_runtime_evidence(RuntimeEvidenceArgs {
+        root: workspace_root(),
+        binary: binary.clone(),
+        verus: verus.clone(),
+    })?;
     let runtime = run_capture(&mut Command::new(&binary), None, Duration::from_secs(30))?;
     if !runtime.status.success() {
         return Err(format!(
@@ -423,6 +439,16 @@ pub fn runtime_check(args: RuntimeCheckArgs) -> ToolResult<()> {
             )?;
             if !cli.status.success() || !String::from_utf8_lossy(&cli.stdout).contains(expected) {
                 return Err(format!("ProoVer Verus bridge failed: {}", output_text(&cli)).into());
+            }
+            if sha == digest.as_str()
+                && !String::from_utf8_lossy(&cli.stderr)
+                    .contains("\"checker_status\":\"prototype_non_certifying\"")
+            {
+                return Err(format!(
+                    "ProoVer Verus report omitted the support manifest: {}",
+                    output_text(&cli)
+                )
+                .into());
             }
         }
     }
@@ -765,7 +791,8 @@ pub fn write_runtime_evidence(args: RuntimeEvidenceArgs) -> ToolResult<()> {
     let toolchain: Value = serde_json::from_slice(&fs::read(&toolchain_path)?)?;
     let pin: VerusToolchainPin = serde_json::from_value(toolchain.clone())?;
     let (verus_identity, verus_version_output) = inspect_verus(&verus, &pin)?;
-    let supported_rules: Value = serde_json::from_slice(&fs::read(&rules_path)?)?;
+    let (supported_rules, supported_rules_json, supported_rules_sha256) =
+        load_supported_rules(&rules_path)?;
     let commit = Command::new("git")
         .args([
             "-C",
@@ -799,6 +826,8 @@ pub fn write_runtime_evidence(args: RuntimeEvidenceArgs) -> ToolResult<()> {
         "verus_version_output": verus_version_output.trim(),
         "toolchain": toolchain,
         "supported_rules": supported_rules,
+        "supported_rules_json": supported_rules_json,
+        "supported_rules_sha256": supported_rules_sha256,
         "verified_build_flags": [
             "--no-cheating",
             "--triggers-mode",
@@ -956,6 +985,19 @@ mod tests {
         );
         assert!(UNVERIFIED_RUNTIME_BOUNDARY.contains(&"wire request encoding"));
         assert!(UNVERIFIED_RUNTIME_BOUNDARY.contains(&"bounded caller-byte acquisition"));
+    }
+
+    #[test]
+    fn support_manifest_evidence_hashes_the_exact_json_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = directory.path().join("supported-rules.json");
+        let contents = b"{\"schema_version\":1,\"rules\":[],\"limits\":{}}\n";
+        fs::write(&manifest, contents).unwrap();
+
+        let (parsed, exact_text, sha256) = load_supported_rules(&manifest).unwrap();
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(exact_text.as_bytes(), contents);
+        assert_eq!(sha256, hash_bytes(contents));
     }
 
     #[test]

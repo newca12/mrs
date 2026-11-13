@@ -29,6 +29,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         VerificationLimits::default(),
         &config,
     );
-    println!("strict_kernel={kernel}\nverus_shadow={shadow:?}");
+    println!(
+        "strict_kernel={kernel}\nverus_shadow={}",
+        serde_json::to_string(&shadow)?
+    );
     Ok(())
 }

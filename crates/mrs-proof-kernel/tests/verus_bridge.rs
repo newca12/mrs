@@ -836,6 +836,30 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         );
         assert_eq!(report.checked_nodes, expected_nodes, "{name}: {report:?}");
         assert!(!report.production_certification);
+        let support_manifest = report
+            .support_manifest
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} report omitted support manifest: {report:?}"));
+        assert_eq!(support_manifest["schema_version"], 1, "{name}: {report:?}");
+        assert_eq!(
+            support_manifest["checker_status"], "prototype_non_certifying",
+            "{name}: {report:?}"
+        );
+        assert_eq!(
+            report.support_manifest_sha256.as_deref().map(str::len),
+            Some(64),
+            "{name}: {report:?}"
+        );
+        assert_eq!(
+            report.build_evidence_sha256.as_deref().map(str::len),
+            Some(64),
+            "{name}: {report:?}"
+        );
+        let serialized_report = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            serialized_report["support_manifest"]["checker_status"],
+            "prototype_non_certifying"
+        );
 
         assert_eq!(
             proof_text.matches("plain,$false").count(),

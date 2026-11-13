@@ -5,22 +5,26 @@
 //! evidence about the decoded IR only and never upgrades a kernel verdict.
 
 use super::*;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_NODES: usize = 512;
+const MAX_RUNTIME_EVIDENCE_BYTES: usize = 1024 * 1024;
 const WORK: u64 = 10_000_000;
 const CHILD_MEMORY_BYTES: u64 = 768 * 1024 * 1024;
 const CHILD_CPU_SECONDS: u64 = 60;
 const CHILD_FILE_BYTES: u64 = 1024 * 1024;
 static ARTIFACT_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
-/// Explicitly selected, hash-pinned artifact. No binary is downloaded or built
-/// by verification. Build with formal/superposition-checker/build-runtime.sh.
+/// Explicitly selected, hash-pinned artifact. Its adjacent `.json` evidence
+/// sidecar must match the binary hash and contain the support manifest. No
+/// binary is downloaded or built by verification; use
+/// `formal/superposition-checker/build-runtime.sh`.
 #[derive(Debug, Clone)]
 pub struct VerusConfig {
     pub executable: PathBuf,
@@ -29,7 +33,8 @@ pub struct VerusConfig {
 }
 
 /// Shadow results deliberately cannot be converted into `KernelVerdict`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum ShadowVerdict {
     AcceptedStepIr,
     CertifiedDagIr,
@@ -37,11 +42,17 @@ pub enum ShadowVerdict {
     Unknown(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct ShadowReport {
     pub verdict: ShadowVerdict,
     pub artifact_sha256: Option<String>,
     pub request_sha256: Option<String>,
+    /// Full declaration from the hash-checked build sidecar. This metadata is
+    /// not part of the Verus theorem and remains inside the trusted build TCB.
+    pub support_manifest: Option<serde_json::Value>,
+    pub support_manifest_sha256: Option<String>,
+    pub build_evidence_sha256: Option<String>,
     pub protocol_version: u32,
     pub checked_nodes: usize,
     /// All reports remain shadow-only while the input bridge is unverified.
@@ -53,6 +64,9 @@ fn unknown(reason: impl Into<String>) -> ShadowReport {
         verdict: ShadowVerdict::Unknown(reason.into()),
         artifact_sha256: None,
         request_sha256: None,
+        support_manifest: None,
+        support_manifest_sha256: None,
+        build_evidence_sha256: None,
         protocol_version: 1,
         checked_nodes: 0,
         production_certification: false,
@@ -64,6 +78,78 @@ fn digest(bytes: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+struct RuntimeEvidence {
+    support_manifest: serde_json::Value,
+    support_manifest_sha256: String,
+    build_evidence_sha256: String,
+}
+
+fn runtime_evidence_path(executable: &Path) -> PathBuf {
+    let mut sidecar = std::ffi::OsString::from(executable.as_os_str());
+    sidecar.push(".json");
+    PathBuf::from(sidecar)
+}
+
+fn read_runtime_evidence(
+    executable: &Path,
+    artifact_sha256: &str,
+) -> Result<RuntimeEvidence, String> {
+    let path = runtime_evidence_path(executable);
+    let mut bytes = Vec::new();
+    std::fs::File::open(&path)
+        .map_err(|error| format!("checker build evidence: {error}"))?
+        .take((MAX_RUNTIME_EVIDENCE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("checker build evidence: {error}"))?;
+    if bytes.len() > MAX_RUNTIME_EVIDENCE_BYTES {
+        return Err("checker build evidence exceeds size ceiling".into());
+    }
+    let evidence: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("checker build evidence is malformed: {error}"))?;
+    if evidence
+        .get("protocol_version")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+    {
+        return Err("checker build evidence protocol mismatch".into());
+    }
+    if evidence
+        .get("artifact_sha256")
+        .and_then(serde_json::Value::as_str)
+        != Some(artifact_sha256)
+    {
+        return Err("checker build evidence artifact hash mismatch".into());
+    }
+    let manifest_json = evidence
+        .get("supported_rules_json")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("checker build evidence has no raw support manifest")?;
+    let support_manifest_sha256 = evidence
+        .get("supported_rules_sha256")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("checker build evidence has no support manifest hash")?;
+    if digest(manifest_json.as_bytes()) != support_manifest_sha256 {
+        return Err("checker build evidence support manifest hash mismatch".into());
+    }
+    let support_manifest: serde_json::Value = serde_json::from_str(manifest_json)
+        .map_err(|error| format!("checker support manifest is malformed: {error}"))?;
+    if evidence.get("supported_rules") != Some(&support_manifest) {
+        return Err("checker build evidence support manifest copies disagree".into());
+    }
+    if support_manifest
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+    {
+        return Err("checker support manifest schema mismatch".into());
+    }
+    Ok(RuntimeEvidence {
+        support_manifest,
+        support_manifest_sha256: support_manifest_sha256.to_owned(),
+        build_evidence_sha256: digest(&bytes),
+    })
 }
 
 /// Hash and execute one private snapshot, never the mutable caller path. This
@@ -3874,6 +3960,10 @@ fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowR
         }
         let (artifact, hash) = snapshot_artifact(&config.executable)?;
         report.artifact_sha256 = Some(hash.clone());
+        let evidence = read_runtime_evidence(&config.executable, &hash)?;
+        report.support_manifest = Some(evidence.support_manifest);
+        report.support_manifest_sha256 = Some(evidence.support_manifest_sha256);
+        report.build_evidence_sha256 = Some(evidence.build_evidence_sha256);
         if config.expected_sha256.len() != 64 || hash != config.expected_sha256 {
             return Err("checker artifact hash mismatch".into());
         }
@@ -3956,6 +4046,75 @@ fn run(config: &VerusConfig, bytes: Vec<u8>, nodes: usize, dag: bool) -> ShadowR
     report
 }
 
+#[cfg(test)]
+mod runtime_evidence_tests {
+    use super::*;
+
+    fn write_evidence(executable: &Path, artifact: &[u8], manifest_json: &str) -> PathBuf {
+        let support_manifest: serde_json::Value =
+            serde_json::from_str(manifest_json).expect("test support manifest is valid JSON");
+        let evidence = serde_json::json!({
+            "protocol_version": 1,
+            "artifact_sha256": digest(artifact),
+            "supported_rules": support_manifest,
+            "supported_rules_json": manifest_json,
+            "supported_rules_sha256": digest(manifest_json.as_bytes()),
+        });
+        let path = runtime_evidence_path(executable);
+        std::fs::write(&path, serde_json::to_vec(&evidence).unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn runtime_evidence_is_hash_bound_and_carries_the_full_manifest() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("checker");
+        let artifact = b"verified checker artifact";
+        let manifest_json =
+            r#"{"schema_version":1,"rules":[{"id":"rule-a"}],"limits":{"max_nodes":512}}"#;
+        std::fs::write(&executable, artifact).unwrap();
+        let sidecar = write_evidence(&executable, artifact, manifest_json);
+        let sidecar_bytes = std::fs::read(&sidecar).unwrap();
+
+        let evidence = read_runtime_evidence(&executable, &digest(artifact)).unwrap();
+        assert_eq!(evidence.support_manifest["schema_version"], 1);
+        assert_eq!(evidence.support_manifest["rules"][0]["id"], "rule-a");
+        assert_eq!(
+            evidence.support_manifest_sha256,
+            digest(manifest_json.as_bytes())
+        );
+        assert_eq!(evidence.build_evidence_sha256, digest(&sidecar_bytes));
+        assert!(read_runtime_evidence(&executable, &digest(b"different artifact")).is_err());
+
+        let sidecar_json: serde_json::Value = serde_json::from_slice(&sidecar_bytes).unwrap();
+        let mut tampered = sidecar_json;
+        tampered["supported_rules_sha256"] = serde_json::json!("0".repeat(64));
+        std::fs::write(&sidecar, serde_json::to_vec(&tampered).unwrap()).unwrap();
+        assert!(read_runtime_evidence(&executable, &digest(artifact)).is_err());
+
+        let valid_sidecar = write_evidence(&executable, artifact, manifest_json);
+        let mut tampered_copy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&valid_sidecar).unwrap()).unwrap();
+        tampered_copy["supported_rules"]["rules"][0]["id"] = serde_json::json!("different-rule");
+        std::fs::write(&valid_sidecar, serde_json::to_vec(&tampered_copy).unwrap()).unwrap();
+        assert!(read_runtime_evidence(&executable, &digest(artifact)).is_err());
+    }
+
+    #[test]
+    fn runtime_evidence_is_required_for_a_checker_report() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("checker");
+        std::fs::write(&executable, b"artifact without sidecar").unwrap();
+        assert!(read_runtime_evidence(&executable, &digest(b"artifact without sidecar")).is_err());
+        std::fs::write(
+            runtime_evidence_path(&executable),
+            vec![b'x'; MAX_RUNTIME_EVIDENCE_BYTES + 1],
+        )
+        .unwrap();
+        assert!(read_runtime_evidence(&executable, &digest(b"artifact without sidecar")).is_err());
+    }
+}
+
 #[cfg(unix)]
 fn kill_process_group(child_id: u32) {
     // SAFETY: CommandExt assigned a fresh process group whose id is the child
@@ -4021,6 +4180,27 @@ mod process_tests {
 
     static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
+    fn write_test_evidence(executable: &Path, artifact: &[u8]) {
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "rules": [],
+            "limits": {},
+        });
+        let manifest_json = serde_json::to_string(&manifest).unwrap();
+        let evidence = serde_json::json!({
+            "protocol_version": 1,
+            "artifact_sha256": digest(artifact),
+            "supported_rules": manifest,
+            "supported_rules_json": manifest_json,
+            "supported_rules_sha256": digest(manifest_json.as_bytes()),
+        });
+        std::fs::write(
+            runtime_evidence_path(executable),
+            serde_json::to_vec(&evidence).unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn failed_malformed_and_hanging_peers_cannot_certify() {
         let shell = Command::new("sh")
@@ -4050,6 +4230,7 @@ mod process_tests {
             let script = format!("#!{}\n{body}\n", shell.trim());
             std::fs::write(&binary, &script).unwrap();
             std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            write_test_evidence(&binary, script.as_bytes());
             let config = VerusConfig {
                 executable: binary.clone(),
                 expected_sha256: digest(script.as_bytes()),
@@ -4061,6 +4242,7 @@ mod process_tests {
                 matches!(report.verdict, ShadowVerdict::Unknown(_)),
                 "body={body:?} {report:?}"
             );
+            assert!(report.support_manifest.is_some(), "{report:?}");
             assert!(start.elapsed() < Duration::from_secs(2));
         }
         std::fs::remove_dir_all(dir).unwrap();
@@ -4087,6 +4269,7 @@ mod process_tests {
         );
         std::fs::write(&binary, &script).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        write_test_evidence(&binary, script.as_bytes());
         let config = VerusConfig {
             executable: binary.clone(),
             expected_sha256: digest(script.as_bytes()),
@@ -4109,6 +4292,7 @@ mod process_tests {
             matches!(report.verdict, ShadowVerdict::Unknown(_)),
             "{report:?}"
         );
+        assert!(report.support_manifest.is_some(), "{report:?}");
         // The runner's stdout parser does not expose peer output. Execute the
         // bounded policy check directly in a clean environment as a harness
         // sanity check, then exercise an output that fails the exact protocol.

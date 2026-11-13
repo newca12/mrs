@@ -217,8 +217,10 @@ fn main() -> ExitCode {
                 &config,
             ) {
                 Ok((kernel, report)) => {
+                    let report_json = serde_json::to_string(&report)
+                        .expect("Verus shadow reports are JSON serializable");
                     eprintln!(
-                        "% Verus {}: {report:?}",
+                        "% Verus {}: {report_json}",
                         if gate { "dual-check gate" } else { "shadow" }
                     );
                     kernel

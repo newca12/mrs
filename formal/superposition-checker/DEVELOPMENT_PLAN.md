@@ -7,6 +7,19 @@ The bounded **M5 interchange and MRS integration implementation now exists**.
 The older milestone narrative below records the prototype's history; statements
 that no interchange or caller exists are superseded by this update.
 
+### 2026-11-13 per-call support-manifest evidence checkpoint
+
+- **DONE (M7 evidence slice):** every successful runtime bridge report now
+  contains the machine-readable supported-rules/limits manifest, its exact
+  source SHA-256, and the build-evidence sidecar SHA-256.
+- **DONE:** the report loader requires a bounded sidecar whose artifact hash
+  matches the exact executable snapshot. Missing, malformed, mismatched, or
+  inconsistent manifest evidence returns `Unknown`; formal CI creates the same
+  sidecar for its temporary verified runtime.
+- **DONE:** ProoVer's opt-in CLI and the `verus_shadow` example emit the report
+  as one-line JSON. The manifest and sidecar remain trusted build metadata, not
+  additional Verus theorem premises or proof of TPTP lowering.
+
 ### 2026-11-13 supported DAG corpus adversarial-mutation checkpoint
 
 - **DONE (M4/M7 corpus gate):** the indexed four-case CNF smoke corpus still
@@ -37,8 +50,7 @@ that no interchange or caller exists are superseded by this update.
 - **DONE:** tooling unit tests cover version/toolchain mismatch rejection and
   ensure the evidence boundary keeps wire decoding on the verified side.
 - **Scope:** this improves pinned-build provenance and claim accuracy only. It
-  does not verify TPTP parsing/lowering, establish cross-host bit reproducibility,
-  or add a per-certification-run manifest.
+  does not verify TPTP parsing/lowering or establish cross-host bit reproducibility.
 
 ### 2026-11-11 TPTP 10 type-role fail-closed regression checkpoint
 
@@ -794,7 +806,7 @@ the item itself is explicitly marked `ABANDONED`.
 | M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition, positive-left/negative-right nullary/exact-atom resolution (including symmetric equality pivots), first-order binary resolution (including symmetric equality pivots), unary equality resolution, unary clause factoring, unary equality factoring, subsumption resolution, clause weakening, demodulation, instantiation, condensation, reflexivity, transitivity, symmetry, excluded middle, equality congruence, and clause tautology nodes. Reflexivity, excluded-middle, and tautology introductions accept zero-parent nodes. Accepted replay postconditions prove universal validity preservation; the generic induction consumes local entailment. The certified root is required empty by the semantic specification; each supported inference's declared parent arity is checked. Compiled refutations certify without empty inputs. Root-ancestor closure rejects disconnected nodes and returns `Unknown` on bounded traversal exhaustion. The certifier carries one shared work counter across structural preflight, closure and per-node validation; input-leaf membership charges both clauses for every repeated candidate comparison. For superposition, nullary/exact-atom and first-order resolution, equality resolution, clause factoring, equality factoring, subsumption resolution, weakening, instantiation, condensation, demodulation, reflexivity, transitivity, symmetry, excluded middle, congruence and tautology, `validate_dag_node_with_work` carries per-node parent/node-clause charges through cited-parent comparison and local replay. The certifier now shares one mutable meter across phases and nodes; a three-node exact cutoff and structural/closure/node reset mutants cover the handoffs. Checker-defined work-unit completeness is audited (see the completion checkpoint); instruction-level resource-cost refinement, verified TPTP input bridge refinement and broader fixtures remain. |
 | M5 — MRS integration | **PARTIAL: verified wire decoder, trusted TPTP bridge** | Wire v1 structural decoding and decimal byte tokenization with verified span correspondence are verified in Verus; bounded byte acquisition shim, CNF TPTP adapter, certificate discovery, kernel/ProoVer shadow and opt-in dual-check APIs, archived local c502 translation, complete supported DAG integration, artifact provenance and CI boundary tests exist. Problem/proof AST snapshots now reject formula-count or canonical syntax/annotation changes; this remains a trusted host-side guard. TPTP bridge refinement, independent review and default-enable gate remain. See `INTERCHANGE.md`. |
 | M6 — Broader rules | **PARTIAL** | Nullary-predicate, exact-atom (including symmetric equality pivots), first-order resolution with unifier (including symmetric equality pivots), equality resolution, clause factoring, equality factoring, subsumption resolution, clause weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology are verified and DAG-dispatched; AC, transformations, and AVATAR/LRAT remain unimplemented. |
-| M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, and a CI audit for `assume`, `admit`, and external-body/allow escape hatches. CI now uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. Mutation corpus, supported proof corpus, reproducible production artifact, and release gates remain. |
+| M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, a CI audit for `assume`, `admit`, and external-body/allow escape hatches, and per-call reports carrying the manifest plus artifact/evidence hashes. CI uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. A representative/archived proof corpus, independent theorem review, cross-host reproducibility, and default-enable release gates remain. |
 
 **M2–M4 resource-accounting completion (2026-11-07):** the source-level audit and
 the successful full verification/mutation gate discharge the table's earlier exact
@@ -1638,11 +1650,14 @@ archived cases, and a versioned support declaration.
   sidecar records verifier, source and artifact hashes, pinned toolchain,
   support manifest and exact compile flags. This is stronger build identity,
   not cross-host reproducibility.
+- **DONE, per-call support-manifest slice (2026-11-13):** `ShadowReport` carries
+  the supported-rule/limits JSON, exact manifest-source SHA-256, and build
+  sidecar SHA-256. The bridge checks that the bounded sidecar names the actual
+  artifact hash and fails closed if its manifest copies disagree. This metadata
+  comes from the trusted build sidecar; it is not part of the IR soundness proof.
 - **TODO — DIFFICULT:** expand beyond the current four-case hand-authored smoke
   corpus to a representative/archived proof set and obtain independent theorem
-  review. Per-call reports do not yet embed support-manifest identity (the
-  build sidecar records the manifest); cross-host artifact reproducibility also
-  remains open.
+  review. Cross-host artifact reproducibility also remains open.
 
 **Deliverables**
 
@@ -1913,3 +1928,7 @@ satisfiability/model claims, and unrestricted full TSTP.
   for runtime compilation, and record verifier identity, exact flags, artifact
   provenance, and the accurate verified/unverified boundary in the sidecar.
   Unit tests reject version/toolchain drift and guard the wire-decoder claim.
+- [x] Include the machine-readable supported-rule/limits manifest and its
+  identity in every report from an invoked checker. Reject missing or mismatched
+  artifact sidecars; label the sidecar as trusted build metadata, not theorem
+  evidence. Adapter preflight `Unknown` reports precede runtime evidence.

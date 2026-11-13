@@ -18,6 +18,10 @@ TPTP lowering remain
 unverified, so this is a trusted-adapter integration rather than an
 end-to-end formally verified TPTP certifier. Older prototype limitations below
 that say no adapter/caller exists are superseded by this section.
+Reports from an invoked runtime are JSON and carry the full support manifest
+plus hashes for the manifest and matching build-evidence sidecar. Missing or
+mismatched sidecars fail closed; adapter preflight `Unknown` results may precede
+a runtime report. Sidecar metadata remains in the trusted computing base.
 
 This is MRS's Verus superposition-checker project. It contains the original
 target-rigidity policy pilot, first-order substitution model, and an initial

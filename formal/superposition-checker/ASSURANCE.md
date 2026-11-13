@@ -47,15 +47,20 @@ path resolution and selection filtering remain trusted loader behavior.
 
 Build evidence records source commit/dirty state/hash, artifact SHA-256, Verus
 binary SHA-256/version, effective Rust toolchain, support manifest and exact
-strict verification flags. The build rejects a Verus release or effective
-toolchain that differs from the checked-in pin. Artifact execution uses a private
-read-only byte snapshot of the hash-checked caller binary, reducing check/launch
-replacement risk. On Unix, the child has a cleared environment, `/` cwd, a private
-process group, 60 s CPU, 768 MiB address-space, 1 MiB file-size and zero core-dump
-limits; Linux also sets `NO_NEW_PRIVS`. Startup or rlimit failures cannot certify.
-Per-call reports record artifact
-and request hashes, protocol version and node count. Same-host double compilation
-is checked; cross-host reproducibility and verified TPTP lowering remain open.
+strict verification flags. The sidecar also records the exact support-manifest
+source hash. The build rejects a Verus release or effective toolchain that
+differs from the checked-in pin. Artifact execution uses a private read-only byte
+snapshot of the hash-checked caller binary, reducing check/launch replacement
+risk. The bridge requires the adjacent bounded sidecar to name that artifact
+hash and checks the manifest copy/hash before execution. Reports from an invoked
+runtime include the full supported-rules manifest and both manifest and
+build-evidence hashes; an adapter preflight `Unknown` may precede any runtime
+report. The sidecar is trusted build metadata, not part of the Verus theorem or
+evidence that TPTP lowering is verified. On Unix, the child has a cleared
+environment, `/` cwd, a private process group, 60 s CPU, 768 MiB address-space,
+1 MiB file-size and zero core-dump limits; Linux also sets `NO_NEW_PRIVS`.
+Startup or rlimit failures cannot certify. Same-host double compilation is
+checked; cross-host reproducibility and verified TPTP lowering remain open.
 
 The mutation inventory is now fifty-eight verifier-negative checks and forty-nine
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
