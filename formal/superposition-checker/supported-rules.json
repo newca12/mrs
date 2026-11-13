@@ -157,6 +157,9 @@
     "variable_arity_functions": false,
     "general_clause_replay": true,
     "first_order_core_smt_rlimit_per_query": 30,
+    "verus_verification_thread_policy": "auto_detect_available_cpus_or_VERUS_THREADS",
+    "verus_mutation_worker_policy": "auto_detect_available_cpus_or_VERUS_MUTATION_WORKERS",
+    "verus_mutation_solver_threads_per_worker": 1,
     "ordered_calculus_conditions": false,
     "ac_reasoning": false,
     "tstp_parser": false,
@@ -350,7 +353,31 @@
     "supported_inference_requires_exact_binary_parents": true,
     "tptp_bridge_verified": false,
     "supported_dag_fixture_corpus_manifest": "fixtures/supported-dag-corpus.tsv",
-    "supported_dag_fixture_corpus_entries": 4,
+    "supported_dag_fixture_corpus_entries": 7,
+    "supported_dag_fixture_corpus_hand_authored_cases": 4,
+    "supported_dag_fixture_corpus_mrs_generated_cases": 3,
+    "supported_dag_fixture_corpus_generated_proof_generator": "mrs 0.3.0",
+    "supported_dag_fixture_corpus_synthetic_generated_cases": 1,
+    "supported_dag_fixture_corpus_synthetic_proof_command": "cargo run --release --bin mrs -- --time 5 --workers 1 --schedule fast <problem>",
+    "supported_dag_fixture_corpus_real_tptp_generated_cases": 2,
+    "supported_dag_fixture_corpus_real_tptp_problems": {
+      "PUZ001-1.p": {
+        "problem": "PUZ001-1",
+        "tptp_release": "10.0.0",
+        "sha256": "ded0756eaa76228bdff450588f5ad553ee1eff8e14d611b5325e4004822e4aba",
+        "proof_sha256": "afe3e9dba6481a4421840dd4479e1f652a8c746491ef4955664f79ecc6c5b8af",
+        "checked_nodes": 28,
+        "proof_command": "target/release/mrs --time 5 --workers 1 --strategy 12 /mnt/sdd/TPTP-v10.0.0/Problems/PUZ/PUZ001-1.p"
+      },
+      "SYN343-1.p": {
+        "problem": "SYN343-1",
+        "tptp_release": "10.0.0",
+        "sha256": "1a810c7b105d3722330ff49771ed3c01350c048b93b7c1c51b6403222101fcb8",
+        "proof_sha256": "dc9f141fdba542694e8e3ee8c2d51cc1e90af358c3aef7ce31240fd3e7ac6c2c",
+        "checked_nodes": 5,
+        "proof_command": "target/release/mrs --time 5 --workers 1 --strategy 12 /mnt/sdd/TPTP-v10.0.0/Problems/SYN/SYN343-1.p"
+      }
+    },
     "supported_dag_fixture_corpus_strict_and_verus_checked": true,
     "supported_dag_fixture_corpus_forged_root_mutations_checked": true,
     "supported_dag_fixture_corpus_wrong_parent_mutations_checked": true,

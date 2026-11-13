@@ -1,5 +1,8 @@
-# id problem proof strict_source checked_nodes
-superposition-resolution superposition-refutation-problem.p superposition-refutation-proof.p superposition-refutation-problem.p 5
-first-order-resolution first-order-resolution-problem.p first-order-resolution-proof.p input 5
-unit-demodulation unit-demodulation-problem.p unit-demodulation-proof.p input 5
-equality-transitivity equality-transitivity-problem.p equality-transitivity-proof.p input 5
+# id origin problem proof strict_source checked_nodes
+superposition-resolution hand-authored superposition-refutation-problem.p superposition-refutation-proof.p superposition-refutation-problem.p 5
+first-order-resolution hand-authored first-order-resolution-problem.p first-order-resolution-proof.p input 5
+unit-demodulation hand-authored unit-demodulation-problem.p unit-demodulation-proof.p input 5
+equality-transitivity hand-authored equality-transitivity-problem.p equality-transitivity-proof.p input 5
+generated-horn-chain mrs-generated-synthetic-0.3.0 generated-horn-chain-problem.p generated-horn-chain-proof.p generated-horn-chain-problem.p 7
+generated-puz001 mrs-generated-tptp-v10.0.0 PUZ001-1.p PUZ001-1-mrs-proof.p PUZ001-1.p 28
+generated-syn343 mrs-generated-tptp-v10.0.0 SYN343-1.p SYN343-1-mrs-proof.p SYN343-1.p 5

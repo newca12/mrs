@@ -3283,7 +3283,10 @@ fn dag_request(
                             vec![parents[1], parents[0]],
                         )
                     } else {
-                        return Err("no supported first-order resolution certificate".into());
+                        return Err(format!(
+                            "node `{}`: no supported first-order resolution certificate",
+                            node.name
+                        ));
                     }
                 }
                 Some("subsumption_resolution") => {

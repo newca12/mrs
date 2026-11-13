@@ -31,6 +31,12 @@ const UNVERIFIED_RUNTIME_BOUNDARY: [&str; 6] = [
     "subprocess supervision and response handling",
 ];
 
+fn available_thread_count() -> usize {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+}
+
 #[derive(Args, Debug)]
 pub struct AuditSourceArgs {
     /// Defaults to formal/superposition-checker in the current workspace.
@@ -253,6 +259,18 @@ fn run_wire(binary: &Path, payload: &[u8], expected: &[u8]) -> ToolResult<()> {
 pub fn runtime_check(args: RuntimeCheckArgs) -> ToolResult<()> {
     let verus = args.verus.canonicalize()?;
     let source = args.source.canonicalize()?;
+    let verus_threads = match std::env::var("VERUS_NUM_THREADS") {
+        Ok(value) => match value.parse::<usize>() {
+            Ok(threads) if threads > 0 => threads,
+            _ => {
+                return Err(
+                    format!("VERUS_NUM_THREADS must be a positive integer, got {value:?}").into(),
+                );
+            }
+        },
+        Err(_) => available_thread_count(),
+    }
+    .to_string();
     let scratch = tempfile::tempdir()?;
     let binary = scratch.path().join("first-order-core");
     let reference = scratch.path().join("first-order-core.reference");
@@ -265,8 +283,10 @@ pub fn runtime_check(args: RuntimeCheckArgs) -> ToolResult<()> {
                     "silent",
                     "--rlimit",
                     CORE_SMT_RLIMIT,
-                    "--compile",
                 ])
+                .arg("--num-threads")
+                .arg(&verus_threads)
+                .arg("--compile")
                 .arg(&source)
                 .arg("-o")
                 .arg(&binary),
@@ -710,7 +730,7 @@ pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|workers| *workers > 0)
-        .unwrap_or(2);
+        .unwrap_or_else(available_thread_count);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
         .build()?;

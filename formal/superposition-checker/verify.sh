@@ -16,6 +16,35 @@ TOOLCHAIN_HOME="${RUSTUP_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/mrs-verus/rustup}
 export RUSTUP_HOME="$TOOLCHAIN_HOME"
 export RUSTUP_TOOLCHAIN="$(mrs_tools verus-pin-field "$(dirname "$0")/verus-toolchain.json" rust_toolchain)"
 CORE_SMT_RLIMIT=30
+detect_available_threads() {
+  local count
+  if command -v nproc >/dev/null 2>&1; then
+    count="$(nproc)"
+  elif command -v getconf >/dev/null 2>&1; then
+    count="$(getconf _NPROCESSORS_ONLN)"
+  else
+    count=1
+  fi
+  if [[ ! "$count" =~ ^[1-9][0-9]*$ ]]; then
+    count=1
+  fi
+  printf '%s' "$count"
+}
+
+DETECTED_THREADS="$(detect_available_threads)"
+VERUS_THREADS="${VERUS_THREADS:-$DETECTED_THREADS}"
+VERUS_MUTATION_WORKERS="${VERUS_MUTATION_WORKERS:-$DETECTED_THREADS}"
+for setting in VERUS_THREADS VERUS_MUTATION_WORKERS; do
+  value="${!setting}"
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "$setting must be a positive integer, got: $value" >&2
+    exit 2
+  fi
+done
+export VERUS_NUM_THREADS="$VERUS_THREADS"
+export VERUS_MUTATION_WORKERS
+printf 'available_cpu_threads=%s verus_threads=%s mutation_workers=%s\n' \
+  "$DETECTED_THREADS" "$VERUS_THREADS" "$VERUS_MUTATION_WORKERS"
 
 run_check() {
   if [[ -n "${VERUS_LOG:-}" ]]; then
@@ -42,17 +71,24 @@ if [[ -n "${VERUS_LOG:-}" ]]; then
   printf 'rust_toolchain_requested=%s\n' "$(requested_rust_toolchain)" | tee -a "$VERUS_LOG"
   printf 'rust_toolchain_effective=%s\n' "$(effective_rust_toolchain)" | tee -a "$VERUS_LOG"
   printf 'first_order_core_smt_rlimit=%s\n' "$CORE_SMT_RLIMIT" | tee -a "$VERUS_LOG"
+  printf 'available_cpu_threads=%s\n' "$DETECTED_THREADS" | tee -a "$VERUS_LOG"
+  printf 'verus_num_threads=%s\n' "$VERUS_THREADS" | tee -a "$VERUS_LOG"
+  printf 'verus_mutation_workers=%s\n' "$VERUS_MUTATION_WORKERS" | tee -a "$VERUS_LOG"
 fi
 
 run_check "$VERUS_BIN" --version
 run_check mrs_tools verus-check-version "$(dirname "$0")/verus-toolchain.json" "$VERUS_BIN"
 run_check mrs_tools audit-verus-source --source-dir "$(dirname "$0")"
 run_check mrs_tools validate-json "$(dirname "$0")/supported-rules.json"
-run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/target_rigidity.rs"
-run_check "$VERUS_BIN" --no-cheating --triggers-mode silent --rlimit "$CORE_SMT_RLIMIT" \
+run_check "$VERUS_BIN" --no-cheating --triggers-mode silent --num-threads "$VERUS_THREADS" \
+  "$(dirname "$0")/target_rigidity.rs"
+run_check "$VERUS_BIN" --no-cheating --triggers-mode silent --num-threads "$VERUS_THREADS" \
+  --rlimit "$CORE_SMT_RLIMIT" \
   "$(dirname "$0")/first_order_core.rs"
-run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/superposition_checker.rs"
-run_check "$VERUS_BIN" --no-cheating --triggers-mode silent "$(dirname "$0")/variable_superposition.rs"
+run_check "$VERUS_BIN" --no-cheating --triggers-mode silent --num-threads "$VERUS_THREADS" \
+  "$(dirname "$0")/superposition_checker.rs"
+run_check "$VERUS_BIN" --no-cheating --triggers-mode silent --num-threads "$VERUS_THREADS" \
+  "$(dirname "$0")/variable_superposition.rs"
 run_check mrs_tools verus-runtime-check "$VERUS_BIN" \
   "$(dirname "$0")/first_order_core.rs"
 run_check mrs_tools verus-mutation-check "$VERUS_BIN" \

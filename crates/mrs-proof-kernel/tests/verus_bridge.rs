@@ -887,19 +887,72 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
             .unwrap_or_else(|error| panic!("failed to read corpus fixture {name}: {error}"))
     };
 
+    let corpus_manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../formal/superposition-checker/supported-rules.json"
+    ))
+    .expect("supported-rules manifest should be valid JSON");
     let mut cases = 0;
+    let mut hand_authored_cases = 0;
+    let mut synthetic_generated_cases = 0;
+    let mut tptp_generated_cases = 0;
     for (line_number, line) in CORPUS.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let fields = line.split_whitespace().collect::<Vec<_>>();
-        assert_eq!(fields.len(), 5, "malformed corpus row {}", line_number + 1);
-        let [name, problem_file, proof_file, source, expected_nodes] = fields.as_slice() else {
+        assert_eq!(fields.len(), 6, "malformed corpus row {}", line_number + 1);
+        let [
+            name,
+            origin,
+            problem_file,
+            proof_file,
+            source,
+            expected_nodes,
+        ] = fields.as_slice()
+        else {
             unreachable!("field count checked above")
         };
+        match *origin {
+            "hand-authored" => hand_authored_cases += 1,
+            "mrs-generated-synthetic-0.3.0" => synthetic_generated_cases += 1,
+            "mrs-generated-tptp-v10.0.0" => tptp_generated_cases += 1,
+            other => panic!("{name} has unrecognized corpus origin {other:?}"),
+        }
         let problem_text = load_fixture(problem_file);
         let proof_text = load_fixture(proof_file);
+        if *origin == "mrs-generated-tptp-v10.0.0" {
+            let tptp_case = &corpus_manifest["limits"]["supported_dag_fixture_corpus_real_tptp_problems"]
+                [*problem_file];
+            let expected_sha256 = tptp_case["sha256"]
+                .as_str()
+                .expect("manifest should pin each generated TPTP problem hash");
+            let actual_sha256 = Sha256::digest(problem_text.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(
+                actual_sha256, expected_sha256,
+                "{name} problem source drifted"
+            );
+            let expected_proof_sha256 = tptp_case["proof_sha256"]
+                .as_str()
+                .expect("manifest should pin each generated TPTP proof hash");
+            let actual_proof_sha256 = Sha256::digest(proof_text.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(
+                actual_proof_sha256, expected_proof_sha256,
+                "{name} generated proof source drifted"
+            );
+            assert_eq!(tptp_case["tptp_release"], "10.0.0", "{name}");
+            assert_eq!(
+                tptp_case["checked_nodes"],
+                expected_nodes.parse::<usize>().unwrap(),
+                "{name} node-count manifest drifted"
+            );
+        }
         let problem = mrs_tptp::parse_tptp(&problem_text)
             .unwrap_or_else(|error| panic!("{name} problem did not parse: {error}"));
         let proof = mrs_tptp::parse_tptp(&proof_text)
@@ -1031,7 +1084,35 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         );
         cases += 1;
     }
-    assert_eq!(cases, 4, "supported DAG corpus inventory changed");
+    assert_eq!(cases, 7, "supported DAG corpus inventory changed");
+    assert_eq!(
+        hand_authored_cases, 4,
+        "hand-authored corpus inventory changed"
+    );
+    assert_eq!(
+        synthetic_generated_cases, 1,
+        "synthetic generated corpus inventory changed"
+    );
+    assert_eq!(
+        tptp_generated_cases, 2,
+        "TPTP generated corpus inventory changed"
+    );
+    assert_eq!(
+        corpus_manifest["limits"]["supported_dag_fixture_corpus_entries"],
+        cases
+    );
+    assert_eq!(
+        corpus_manifest["limits"]["supported_dag_fixture_corpus_hand_authored_cases"],
+        hand_authored_cases
+    );
+    assert_eq!(
+        corpus_manifest["limits"]["supported_dag_fixture_corpus_synthetic_generated_cases"],
+        synthetic_generated_cases
+    );
+    assert_eq!(
+        corpus_manifest["limits"]["supported_dag_fixture_corpus_real_tptp_generated_cases"],
+        tptp_generated_cases
+    );
 }
 
 #[test]

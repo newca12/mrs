@@ -5,11 +5,17 @@
 The compiled checker now exposes bounded wire v1 for local steps and complete
 proof DAGs. `mrs-proof-kernel::verus` and `mrs-proover::strict` provide opt-in
 shadow and dual-check APIs; a CLI example and formal-CI integration tests run
-actual parsed CNF proofs, the four-entry smoke corpus in
+actual parsed CNF proofs, the seven-entry corpus in
 `fixtures/supported-dag-corpus.tsv`, and the archived c502 local-step fixture
 through the artifact. Each corpus entry also has wrong-parent, unsupported-rule,
-disconnected-input, and forged-root negative variants. The smoke corpus is
-hand-authored, not a competition archive.
+disconnected-input, and forged-root negative variants. The corpus contains four
+hand-authored smoke proofs, one synthetic MRS 0.3.0 Horn-chain proof, and two
+MRS 0.3.0 proofs generated from real TPTP v10.0.0 problems: the 28-node
+`PUZ001-1` Dreadbury Mansion refutation and the five-node `SYN343-1` refutation.
+The `PUZ001-1` proof has one literal-order normalization at `c54` to match the
+bounded interchange's exact ordered-resolvent contract. Both proof and original
+problem hashes are recorded. These are generated proofs, not archived
+competition-system proofs.
 See **[`INTERCHANGE.md`](INTERCHANGE.md)** for build/run commands, wire grammar,
 limits, support and provenance. The dual gate requires both the independent
 strict kernel and Verus IR certifier to accept. Wire-v1 structural decoding and
@@ -46,6 +52,11 @@ On ordinary Linux x86_64 hosts with the workspace Rust toolchain, Cargo, `rustup
 formal/superposition-checker/install-verus.sh  # once per pinned version
 formal/superposition-checker/verify.sh
 ```
+
+The verification gate detects the available CPU count and uses it for Verus
+verification threads and concurrent single-threaded mutation checks by default.
+Override those counts with `VERUS_THREADS` and `VERUS_MUTATION_WORKERS` when
+needed.
 
 The installer checksum-verifies the pinned Linux x86_64 release, installs its
 required Rust toolchain selected by `verus-toolchain.json`, and stores Verus under
