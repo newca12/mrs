@@ -415,6 +415,22 @@
     "mrs_integration": true,
     "mrs_integration_modes": ["shadow", "opt_in_dual_check_trusted_adapter"],
     "archived_c502_tptp_local_step_translation": true,
+    "archived_c502_context_fixture": "fixtures/SWV406+1-c502-proof-context.p",
+    "archived_c502_context_fixture_sha256": "5710ac765546ac4f889430dc4fe9bbfdf0cb15cc24e3340e38ce4420959baaf4",
+    "archived_c502_context_source": "/mnt/sdd/SWV406+1.stdout",
+    "archived_c502_context_source_sha256": "5a8ea239cc6ef13d630bdfdfaa319c48b10785fad58e0238178ce5675646e822",
+    "archived_c502_context_source_bytes": 169922819,
+    "archived_c502_context_source_lines": 657464,
+    "archived_c502_context_mrs_version": "0.2.3",
+    "archived_c502_context_elapsed_ms": 171746,
+    "archived_c502_context_peak_memory_mb": 21130,
+    "archived_c502_context_formula_count": 9,
+    "archived_c502_context_source_lines_retained": [9, 11, 43, 45, 77, 79, 113, 115, 152],
+    "archived_c502_context_is_complete_ancestor_closure": true,
+    "archived_c502_context_local_step_tested": true,
+    "archived_c502_context_ancestor_inferences_formally_checked": false,
+    "archived_c502_context_official_competition_provenance_verified": false,
+    "archived_c502_full_refutation_certified": false,
     "c502_verdict": "accepted_as_sound_local_superposition_step"
   }
 }

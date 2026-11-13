@@ -50,7 +50,15 @@ competition-system proof or a representative archive corpus.
 Exact-atom resolution has a separate semantic theorem and executable checker;
 it removes one occurrence per parent with identical complementary atoms and
 does not implement pivot unification. The three-clause c502 fixture is not the
-complete MRS archived proof context and is not certified as a full proof.
+complete MRS refutation. A supplied MRS 0.2.3 stdout transcript is recorded by
+SHA-256, with its nine-node c502 ancestor closure retained as
+`fixtures/SWV406+1-c502-proof-context.p`. The bridge runs the exact archived
+c27/c39/c502 step through `check_tptp_step` and rejects a forged conclusion.
+The transcript's reported local benchmark path does not independently establish
+official competition provenance.
+This does not formally check the FOF NNF/skolemisation/CNF ancestry of c27 and
+c39 or certify the complete refutation; the full transcript includes AVATAR/SAT
+rules outside the verified whitelist.
 Separately, `fixtures/` preserves a complete public Leo-III THF TSTP solution for
 SWV406+1; the adapter parses it and returns `Unknown` at the unsupported-type
 guard before lowering. That is a negative fail-closed regression, not

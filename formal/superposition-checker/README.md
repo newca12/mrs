@@ -308,11 +308,17 @@ general executable checker now reconstructs the archived `c27`, `c39`, and
 `c502` clauses with independent standardization-apart maps, the supplied
 whole-parent unifier, the nested target path, and exact ordered conclusion.
 `executable_c502_certificate_example` accepts that step and rejects a forged
-conclusion. This is a local step verdict from the verified IR, not a full TSTP
-translation or proof-DAG certification of `SWV406+1`; the regression manually
-encodes the IR certificate rather than parsing the archived TPTP fixture.
-The compiled runtime suite also accepts a distinct certificate that binds a
-freshened source variable to a ground target subterm.
+conclusion. The supplied 657,464-line MRS 0.2.3 output is recorded by SHA-256;
+its complete nine-node ancestor slice for c502 is preserved in
+[`fixtures/SWV406+1-c502-proof-context.p`](fixtures/SWV406+1-c502-proof-context.p).
+Its reported `/DATA/ai/.../casc-j13/FEQ/` path is not independent campaign
+provenance, so this is not counted as an official competition proof.
+Formal CI parses that context and runs the actual `c27`/`c39`/`c502` clauses
+through `check_tptp_step`, including a forged-conclusion rejection. This remains
+a local-step verdict: the adapter does not certify the FOF NNF/skolemisation/CNF
+ancestry, nor the full refutation, whose final proof uses unsupported AVATAR/SAT
+rules. The compiled runtime suite also accepts a distinct certificate that
+binds a freshened source variable to a ground target subterm.
 
 Verus `0.2026.10.18.7d82994` is pinned in
 [`verus-toolchain.json`](verus-toolchain.json); CI downloads and checksum-checks

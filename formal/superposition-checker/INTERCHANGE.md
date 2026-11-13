@@ -134,10 +134,18 @@ further bounded by the caller's limits. Target variables remain rigid, every
 cited equality must occur in the discovered chain, and the expanded DAG must
 still fit the 512-node ceiling. Unsupported or exhausted searches return Unknown.
 
-The archived c502 artifact contains only c27/c39/c502, not the complete MRS
-refutation. Its local step is translated and replayed; **full MRS SWV406+1 proof
-certification remains outside this result**. A separate complete public
-Leo-III THF TSTP solution is preserved in
+The full supplied MRS 0.2.3 stdout transcript is recorded by SHA-256 in
+`supported-rules.json`; the repository keeps only the nine-node ancestor slice
+for c502 in `fixtures/SWV406+1-c502-proof-context.p`. It contains the exact
+input/NNF/skolemisation/CNF chains `c24 -> c25 -> c26 -> c27` and
+`c36 -> c37 -> c38 -> c39`, followed by the archived `c27,c39 -> c502` step.
+CI parses the slice and replays c502 through `check_tptp_step`, rejecting a forged
+conclusion. This local-step adapter treats c27 and c39 as supplied clauses; it
+does not certify their transformation ancestry or the full refutation. The
+complete stdout ends in an AVATAR SAT refutation, whose branch/splitting rules
+are outside the whitelist, so **full SWV406+1 proof certification remains
+unsupported**. The transcript's reported CASC-J13 path is not independent
+campaign provenance. A separate complete public Leo-III THF TSTP solution is preserved in
 `fixtures/archived-unsupported-proofs.tsv` and must fail closed at the unsupported
 type-declaration guard; it is not certified. CI also checks actual supported CNF
 complete refutations, including one with an essential superposition followed by

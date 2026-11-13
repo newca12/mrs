@@ -66,6 +66,59 @@ fn replace_first_inference_rule(tptp: &str, replacement: &str) -> String {
 #[ignore = "requires the pinned compiled Verus artifact; run by formal CI"]
 fn archived_step_and_real_tptp_dags_traverse_compiled_checker() {
     let cfg = config();
+    let archived_context = include_str!(
+        "../../../formal/superposition-checker/fixtures/SWV406+1-c502-proof-context.p"
+    );
+    let archived_context_sha256 = Sha256::digest(archived_context.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        archived_context_sha256, "5710ac765546ac4f889430dc4fe9bbfdf0cb15cc24e3340e38ce4420959baaf4",
+        "archived c502 context fixture changed"
+    );
+    let support_manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../formal/superposition-checker/supported-rules.json"
+    ))
+    .unwrap();
+    let limits = &support_manifest["limits"];
+    assert_eq!(
+        limits["archived_c502_context_fixture_sha256"].as_str(),
+        Some(archived_context_sha256.as_str())
+    );
+    assert_eq!(
+        limits["archived_c502_context_source_sha256"].as_str(),
+        Some("5a8ea239cc6ef13d630bdfdfaa319c48b10785fad58e0238178ce5675646e822")
+    );
+    let parsed_context = mrs_tptp::parse_tptp(archived_context).unwrap();
+    assert_eq!(parsed_context.formulas.len(), 9);
+    let context_names: Vec<_> = parsed_context
+        .formulas
+        .iter()
+        .map(|formula| formula.name())
+        .collect();
+    assert_eq!(
+        context_names,
+        [
+            "c24", "c36", "c25", "c37", "c26", "c38", "c27", "c39", "c502"
+        ]
+    );
+    let archived_report = check_tptp_step(archived_context, "c27", "c39", "c502", &cfg);
+    assert_eq!(
+        archived_report.verdict,
+        ShadowVerdict::AcceptedStepIr,
+        "{archived_report:?}"
+    );
+    assert!(!archived_report.production_certification);
+    let forged_context = archived_context.replace(
+        "X2 = X5 | remove_slb(remove_slb",
+        "X2 = bogus | remove_slb(remove_slb",
+    );
+    assert!(matches!(
+        check_tptp_step(&forged_context, "c27", "c39", "c502", &cfg).verdict,
+        ShadowVerdict::Unknown(_)
+    ));
+
     let fixture =
         include_str!("../../../formal/superposition-checker/fixtures/SWV406+1-c502-clauses.p");
     let report = check_tptp_step(fixture, "c27", "c39", "c502_candidate", &cfg);
