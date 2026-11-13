@@ -16,6 +16,8 @@ that no interchange or caller exists are superseded by this update.
   matches the exact executable snapshot. Missing, malformed, mismatched, or
   inconsistent manifest evidence returns `Unknown`; formal CI creates the same
   sidecar for its temporary verified runtime.
+- **DONE:** a positive-response peer without a sidecar is rejected before the
+  process can certify, directly testing the missing-evidence fail-closed path.
 - **DONE:** ProoVer's opt-in CLI and the `verus_shadow` example emit the report
   as one-line JSON. The manifest and sidecar remain trusted build metadata, not
   additional Verus theorem premises or proof of TPTP lowering.
@@ -1930,5 +1932,6 @@ satisfiability/model claims, and unrestricted full TSTP.
   Unit tests reject version/toolchain drift and guard the wire-decoder claim.
 - [x] Include the machine-readable supported-rule/limits manifest and its
   identity in every report from an invoked checker. Reject missing or mismatched
-  artifact sidecars; label the sidecar as trusted build metadata, not theorem
-  evidence. Adapter preflight `Unknown` reports precede runtime evidence.
+  artifact sidecars; a positive fake peer without evidence cannot certify.
+  Label the sidecar as trusted build metadata, not theorem evidence. Adapter
+  preflight `Unknown` reports precede runtime evidence.

@@ -362,6 +362,7 @@
     "run_report_manifest_sha256_hashes_exact_source_bytes": true,
     "run_report_includes_build_evidence_sha256": true,
     "run_report_requires_matching_artifact_evidence_sidecar": true,
+    "run_report_missing_sidecar_positive_peer_rejected": true,
     "run_report_evidence_sidecar_is_theorem_evidence": false,
     "loaded_job_include_selections_applied": true,
     "include_resolver_verified": false,

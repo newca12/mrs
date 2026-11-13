@@ -4202,6 +4202,37 @@ mod process_tests {
     }
 
     #[test]
+    fn missing_evidence_sidecar_cannot_accept_a_positive_peer() {
+        let shell = Command::new("sh")
+            .args(["-c", "command -v sh"])
+            .output()
+            .unwrap();
+        assert!(shell.status.success());
+        let shell = String::from_utf8(shell.stdout).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("peer");
+        let script = format!(
+            "#!{}\nwhile IFS= read -r line; do :; done\nprintf 'MRS_VERUS 1 CertifiedIR\\n'\n",
+            shell.trim()
+        );
+        std::fs::write(&binary, &script).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = VerusConfig {
+            executable: binary,
+            expected_sha256: digest(script.as_bytes()),
+            timeout: Duration::from_secs(2),
+        };
+
+        let report = run(&config, b"1 2 1000".to_vec(), 3, true);
+        assert!(
+            matches!(report.verdict, ShadowVerdict::Unknown(_)),
+            "{report:?}"
+        );
+        assert!(report.artifact_sha256.is_some(), "{report:?}");
+        assert!(report.support_manifest.is_none(), "{report:?}");
+    }
+
+    #[test]
     fn failed_malformed_and_hanging_peers_cannot_certify() {
         let shell = Command::new("sh")
             .args(["-c", "command -v sh"])
