@@ -994,11 +994,7 @@ fn resolution_certificate_with_fuel(
             if expected.len() != goal.len() {
                 continue;
             }
-            let (mut forward, mut backward) = (HashMap::new(), HashMap::new());
-            if !expected.iter().zip(goal).all(|(a, b)| {
-                a.positive == b.positive
-                    && atom_alpha_equiv(&a.atom, &b.atom, &mut forward, &mut backward)
-            }) {
+            if !clause_alpha_permutation_match_with_fuel(&expected, goal, fuel)? {
                 continue;
             }
             let mut unifier: Vec<_> = subst
@@ -2644,7 +2640,19 @@ fn clause_alpha_permutation_match(
     right: &[Literal],
     limits: VerificationLimits,
 ) -> Result<bool, String> {
-    match cnf_alpha_equiv(&clause_as_formula(left), &clause_as_formula(right), limits) {
+    let mut fuel = limits.max_comparison_steps;
+    clause_alpha_permutation_match_with_fuel(left, right, &mut fuel)
+}
+
+fn clause_alpha_permutation_match_with_fuel(
+    left: &[Literal],
+    right: &[Literal],
+    fuel: &mut usize,
+) -> Result<bool, String> {
+    let (result, remaining) =
+        cnf_alpha_equiv_with_budget(&clause_as_formula(left), &clause_as_formula(right), *fuel);
+    *fuel = remaining;
+    match result {
         MatchOutcome::Match => Ok(true),
         MatchOutcome::Differ => Ok(false),
         MatchOutcome::Undecided => Err("clause alpha/permutation comparison ceiling".into()),
@@ -4223,6 +4231,27 @@ mod dag_boundary_tests {
         )
         .unwrap();
         assert_eq!(node_count, 7);
+        assert!(!request.is_empty());
+    }
+
+    #[test]
+    fn archived_prover9_puz001_clause_dag_lowers_to_exact_input_ir() {
+        let problem = mrs_tptp::parse_tptp(include_str!(
+            "../../../formal/superposition-checker/fixtures/PUZ001-1.p"
+        ))
+        .unwrap();
+        let proof = mrs_tptp::parse_tptp(include_str!(
+            "../../../formal/superposition-checker/fixtures/PUZ001-1-Prover9-2026-6A.s"
+        ))
+        .unwrap();
+        let (request, node_count) = dag_request(
+            &problem,
+            &proof,
+            Some("theBenchmark.p"),
+            VerificationLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(node_count, 31);
         assert!(!request.is_empty());
     }
 }

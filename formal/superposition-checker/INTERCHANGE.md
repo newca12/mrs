@@ -96,8 +96,9 @@ literals. Existentials, other connectives, FOF sequents, defined/system symbols,
 interpreted functions, numbers, distinct objects, larger arities, typed
 declarations, unimplemented rules and conjecture transformations return
 Unknown. Literal order and multiplicity are preserved except at the explicitly
-checked input/clausify normalization described below. No unsupported literal is
-silently dropped. A shared signature check rejects inconsistent symbol arities.
+checked input, clausify and resolution normalization described below. No
+unsupported literal is silently dropped. A shared signature check rejects
+inconsistent symbol arities.
 
 Input leaves require `file(...)` provenance and a strict-kernel match on source,
 formula name, compatible role and formula. A producer may label a source
@@ -107,11 +108,14 @@ leaf to the exact supplied input clause under universal closure, variable
 alpha-renaming and literal permutation. A `clausify` edge is supported only
 when its restricted FOF clause and CNF conclusion are the same under those
 equivalences; the emitted IR edge is an identity instance, while the strict
-kernel independently checks the original clausification annotation. These
-normalizations remain in the unverified adapter boundary. Proof names must be
-unique; missing parents, cycles, nonempty roots and disconnected nodes cannot
-obtain a formal positive result. The whole DAG is transmitted; unused proof
-nodes are not silently deleted to obtain closure.
+kernel independently checks the original clausification annotation. A
+`resolve` conclusion can also be normalized to the exact parent-order resolvent
+after a bounded, shared-fuel alpha/permutation comparison; the strict kernel
+checks the unmodified TSTP step. These normalizations remain in the unverified
+adapter boundary. Proof names must be unique; missing parents, cycles, nonempty
+roots and disconnected nodes cannot obtain a formal positive result. The whole
+DAG is transmitted; unused proof nodes are not silently deleted to obtain
+closure.
 
 Rules include ordinary superposition; exact complementary-atom resolution;
 standardized-apart first-order resolution; equality resolution; clause and
@@ -160,14 +164,13 @@ campaign provenance. A separate complete public Leo-III THF TSTP solution is pre
 `fixtures/archived-unsupported-proofs.tsv` and must fail closed at the unsupported
 type-declaration guard; it is not certified. CI also checks actual supported CNF
 complete refutations, including one with an essential superposition followed by
-exact unary-predicate resolution. The nine-entry dual-check corpus now includes
-one complete public Prover9 2026-6A proof for `SYN343-1`; its archive header names
-TPTP v9.3.1, and its exact seven-node proof is checked against the vendored
-TPTP v10.0.0 problem fixture. The vendored proof removes only trailing
-horizontal whitespace; the raw archive and normalized fixture hashes are both
-recorded in the support manifest. This is one archived positive example, not a
-representative competition corpus or evidence that the FOF-to-clause adapter is
-verified.
+exact unary-predicate resolution. The ten-entry dual-check corpus now includes
+two complete public Prover9 2026-6A proofs: seven-node `SYN343-1` and 31-node
+`PUZ001-1`. Both archive headers name TPTP v9.3.1; each is checked against its
+vendored TPTP v10.0.0 problem fixture. The vendored proofs remove only trailing
+horizontal whitespace; raw archive and normalized fixture hashes are both
+recorded in the support manifest. These examples do not form a representative
+competition corpus or verify the FOF-to-clause adapter.
 
 ## Protocol grammar
 
@@ -289,12 +292,13 @@ request tests, then runs Rust integration tests against that exact temporary
 artifact/hash. Rust tests requiring the artifact are explicitly ignored in
 ordinary `cargo test`; they are mandatory in the formal CI job.
 The bridge suite also reads `fixtures/supported-dag-corpus.tsv` and requires all
-nine indexed full TPTP refutations to pass the strict/Verus dual-check path with
+ten indexed full TPTP refutations to pass the strict/Verus dual-check path with
 their recorded node counts. The set includes four hand-authored smoke proofs, a
 synthetic MRS 0.3.0 seven-node function-bearing Horn chain, three MRS 0.3.0
 proofs generated from real TPTP v10.0.0 problems, and one complete archived
-Prover9 2026-6A `SYN343-1` proof. The Prover9 archive header names TPTP v9.3.1;
-its seven-node proof is checked against the vendored v10.0.0 problem fixture.
+proof from each of Prover9 2026-6A on `SYN343-1` (7 nodes) and `PUZ001-1`
+(31 nodes). Both Prover9 archive headers name TPTP v9.3.1; their proof nodes are
+checked against the vendored v10.0.0 problem fixtures.
 The generated cases are `PUZ001-1` (28 nodes,
 instantiation/resolution), `SYN343-1` (5 nodes, condensation/subsumption
 resolution), and `PUZ001-2` (29 nodes, equality and superposition rules).

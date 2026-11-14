@@ -360,17 +360,19 @@
     "tptp_fof_proof_clause_requires_outer_universal_disjunction_of_literals": true,
     "tptp_fof_proof_clauses_allow_unbound_variables": false,
     "tptp_fof_clausify_requires_clause_alpha_permutation_equivalence": true,
+    "tptp_resolution_conclusion_alpha_permutation_normalization_trusted": true,
+    "tptp_resolution_order_normalization_uses_shared_search_fuel": true,
     "tptp_input_leaf_alpha_permutation_normalization_trusted": true,
     "strict_leaf_premise_role_may_match_exact_negated_conjecture": true,
     "supported_dag_fixture_corpus_manifest": "fixtures/supported-dag-corpus.tsv",
-    "supported_dag_fixture_corpus_entries": 9,
+    "supported_dag_fixture_corpus_entries": 10,
     "supported_dag_fixture_corpus_hand_authored_cases": 4,
     "supported_dag_fixture_corpus_mrs_generated_cases": 4,
     "supported_dag_fixture_corpus_generated_proof_generator": "mrs 0.3.0",
     "supported_dag_fixture_corpus_synthetic_generated_cases": 1,
     "supported_dag_fixture_corpus_synthetic_proof_command": "cargo run --release --bin mrs -- --time 5 --workers 1 --schedule fast <problem>",
     "supported_dag_fixture_corpus_real_tptp_generated_cases": 3,
-    "supported_dag_fixture_corpus_archived_positive_cases": 1,
+    "supported_dag_fixture_corpus_archived_positive_cases": 2,
     "supported_dag_fixture_corpus_archived_positive_proofs": {
       "SYN343-1-Prover9-2026-6A.s": {
         "problem_file": "SYN343-1.p",
@@ -383,7 +385,29 @@
         "system": "Prover9",
         "system_version": "2026-6A",
         "proof_metadata_tptp_release": "9.3.1",
-        "checked_nodes": 7
+        "checked_nodes": 7,
+        "adapter_normalizations": [
+          "input_clause_alpha_literal_permutation",
+          "clausify_clause_permutation"
+        ]
+      },
+      "PUZ001-1-Prover9-2026-6A.s": {
+        "problem_file": "PUZ001-1.p",
+        "problem_sha256": "ded0756eaa76228bdff450588f5ad553ee1eff8e14d611b5325e4004822e4aba",
+        "problem_fixture_tptp_release": "10.0.0",
+        "archive_sha256": "64ad5924638b8b900b9d4d453d5a9b32fa92891688b7eed5cf5f2b746f964be0",
+        "fixture_sha256": "f7fbcbb08f6def7461d899c3ab948ec200ab1badabb5c1c9c0de8f1434720e66",
+        "fixture_normalization": "remove_trailing_ascii_horizontal_whitespace_per_line",
+        "proof_url": "https://seetptp.tptp.org/file/TPTPWorld/TSTP/Solutions/PUZ/PUZ001-1/Prover9---2026-6A.UNS-CRf.s",
+        "system": "Prover9",
+        "system_version": "2026-6A",
+        "proof_metadata_tptp_release": "9.3.1",
+        "checked_nodes": 31,
+        "adapter_normalizations": [
+          "input_clause_alpha_literal_permutation",
+          "clausify_clause_permutation",
+          "resolution_resolvent_literal_permutation"
+        ]
       }
     },
     "supported_dag_fixture_corpus_real_tptp_problems": {

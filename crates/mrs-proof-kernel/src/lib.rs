@@ -3781,6 +3781,10 @@ fn leaf_formula_equiv(
 }
 
 fn cnf_alpha_equiv(a: &Formula, b: &Formula, limits: VerificationLimits) -> MatchOutcome {
+    cnf_alpha_equiv_with_budget(a, b, limits.max_comparison_steps).0
+}
+
+fn cnf_alpha_equiv_with_budget(a: &Formula, b: &Formula, budget: usize) -> (MatchOutcome, usize) {
     fn universal_body(mut formula: &Formula) -> &Formula {
         while let Formula::Forall(_, body) = formula {
             formula = body;
@@ -3804,14 +3808,15 @@ fn cnf_alpha_equiv(a: &Formula, b: &Formula, limits: VerificationLimits) -> Matc
     clause_literals(universal_body(a), &mut left);
     clause_literals(universal_body(b), &mut right);
     if left.len() != right.len() {
-        return MatchOutcome::Differ;
+        return (MatchOutcome::Differ, budget);
     }
     let mut state = CnfAlphaState {
         left_to_right: HashMap::new(),
         right_to_left: HashMap::new(),
-        budget: Rc::new(Cell::new(limits.max_comparison_steps)),
+        budget: Rc::new(Cell::new(budget)),
     };
-    state.match_literals(&left, &right, 0, &mut vec![false; right.len()])
+    let result = state.match_literals(&left, &right, 0, &mut vec![false; right.len()]);
+    (result, state.budget.get())
 }
 
 /// Clause comparison for TPTP CNF leaves. Unlike binder-depth comparison,
