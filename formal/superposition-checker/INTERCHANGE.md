@@ -96,7 +96,8 @@ literals. Existentials, other connectives, FOF sequents, defined/system symbols,
 interpreted functions, numbers, distinct objects, larger arities, typed
 declarations, unimplemented rules and conjecture transformations return
 Unknown. Literal order and multiplicity are preserved except at the explicitly
-checked input, clausify and resolution normalization described below. No
+checked input, clausify, resolution and superposition normalizations described
+below. No
 unsupported literal is silently dropped. A shared signature check rejects
 inconsistent symbol arities.
 
@@ -109,13 +110,16 @@ alpha-renaming and literal permutation. A `clausify` edge is supported only
 when its restricted FOF clause and CNF conclusion are the same under those
 equivalences; the emitted IR edge is an identity instance, while the strict
 kernel independently checks the original clausification annotation. A
-`resolve` conclusion can also be normalized to the exact parent-order resolvent
-after a bounded, shared-fuel alpha/permutation comparison; the strict kernel
-checks the unmodified TSTP step. These normalizations remain in the unverified
-adapter boundary. Proof names must be unique; missing parents, cycles, nonempty
-roots and disconnected nodes cannot obtain a formal positive result. The whole
-DAG is transmitted; unused proof nodes are not silently deleted to obtain
-closure.
+`resolve` and superposition/`paramod` conclusions can be normalized to the exact
+parent-order inference result after a bounded, shared-fuel alpha/permutation
+comparison; the strict kernel checks the unmodified TSTP step. The `paramod`
+alias searches both equality orientations and then uses verified superposition
+replay. A `copy` edge is limited to clause identity modulo alpha/literal
+permutation or one equality-symmetry step with unchanged context. These
+normalizations remain in the unverified adapter boundary. Proof
+names must be unique; missing parents, cycles, nonempty roots and disconnected
+nodes cannot obtain a formal positive result. The whole DAG is transmitted;
+unused proof nodes are not silently deleted to obtain closure.
 
 Rules include ordinary superposition; exact complementary-atom resolution;
 standardized-apart first-order resolution; equality resolution; clause and
@@ -125,14 +129,15 @@ equality transitivity; equality symmetry; clause excluded middle; equality congr
 certificate and its exact cited parents and conclusion. Superposition and
 first-order resolution discovery independently freshen the parents and find a
 bounded syntactic unifier. Superposition preserves both complete contexts and
-compares ordered conclusions up to a bijective variable renaming. The local
-superposition adapter can orient the selected source equality in either
-direction; whole-DAG lowering currently requires the original left-to-right
-orientation so its certificate still matches its cited parent exactly.
-Alpha-normalized superposition conclusions become the representation used by
-subsequent nodes. These trusted transformations are not advertised as
-Verus-refined lowering. AC reasoning, ordered-calculus conditions and broader
-transformations remain unsupported.
+the wire certificate uses its exact ordered conclusion. The trusted adapter
+matches a raw conclusion modulo literal permutation and a bijective variable
+renaming before emitting that exact order. The `paramod` TPTP alias may orient
+the selected source equality in either direction; ordinary whole-DAG
+`superposition` still requires its original left-to-right orientation.
+Alpha-normalized conclusions become the representation used by subsequent
+nodes. These trusted transformations are not advertised as Verus-refined
+lowering. AC reasoning, ordered-calculus conditions and broader transformations
+remain unsupported.
 
 Exact and standardized first-order resolution accept equality pivots in either
 ordered or swapped orientation. Multi-parent Horn, consequence and contrapositive
@@ -164,13 +169,14 @@ campaign provenance. A separate complete public Leo-III THF TSTP solution is pre
 `fixtures/archived-unsupported-proofs.tsv` and must fail closed at the unsupported
 type-declaration guard; it is not certified. CI also checks actual supported CNF
 complete refutations, including one with an essential superposition followed by
-exact unary-predicate resolution. The ten-entry dual-check corpus now includes
-two complete public Prover9 2026-6A proofs: seven-node `SYN343-1` and 31-node
-`PUZ001-1`. Both archive headers name TPTP v9.3.1; each is checked against its
-vendored TPTP v10.0.0 problem fixture. The vendored proofs remove only trailing
-horizontal whitespace; raw archive and normalized fixture hashes are both
-recorded in the support manifest. These examples do not form a representative
-competition corpus or verify the FOF-to-clause adapter.
+exact unary-predicate resolution. The eleven-entry dual-check corpus now includes
+three complete public Prover9 2026-6A proofs: seven-node `SYN343-1`, 31-node
+`PUZ001-1`, and 42-node equality `PUZ001-2`. Their archive headers name TPTP
+v9.3.1; each is checked against its vendored TPTP v10.0.0 problem fixture. The
+vendored proofs remove only trailing horizontal whitespace; raw archive and
+normalized fixture hashes are both recorded in the support manifest. These
+examples do not form a representative competition corpus or verify the
+FOF-to-clause adapter.
 
 ## Protocol grammar
 
@@ -292,13 +298,14 @@ request tests, then runs Rust integration tests against that exact temporary
 artifact/hash. Rust tests requiring the artifact are explicitly ignored in
 ordinary `cargo test`; they are mandatory in the formal CI job.
 The bridge suite also reads `fixtures/supported-dag-corpus.tsv` and requires all
-ten indexed full TPTP refutations to pass the strict/Verus dual-check path with
+eleven indexed full TPTP refutations to pass the strict/Verus dual-check path with
 their recorded node counts. The set includes four hand-authored smoke proofs, a
 synthetic MRS 0.3.0 seven-node function-bearing Horn chain, three MRS 0.3.0
-proofs generated from real TPTP v10.0.0 problems, and one complete archived
-proof from each of Prover9 2026-6A on `SYN343-1` (7 nodes) and `PUZ001-1`
-(31 nodes). Both Prover9 archive headers name TPTP v9.3.1; their proof nodes are
-checked against the vendored v10.0.0 problem fixtures.
+proofs generated from real TPTP v10.0.0 problems, and three complete archived
+Prover9 2026-6A proofs: `SYN343-1` (7 nodes), `PUZ001-1` (31 nodes) and
+`PUZ001-2` (42 nodes). Their archive headers name TPTP v9.3.1; their proof nodes
+are checked against the vendored v10.0.0 problem fixtures. The equality proof
+exercises the restricted `copy` symmetry and `paramod` adapter paths.
 The generated cases are `PUZ001-1` (28 nodes,
 instantiation/resolution), `SYN343-1` (5 nodes, condensation/subsumption
 resolution), and `PUZ001-2` (29 nodes, equality and superposition rules).
@@ -310,8 +317,8 @@ unsupported rule, adds an otherwise-valid but disconnected input node, and
 mutates the root to a nonempty clause; neither checker may certify these
 variants. The TPTP problem and proof SHA-256 values are retained in the support
 manifest. This is a small fixture set, not a representative competition archive;
-one archived TSTP solution does not establish campaign provenance or archived
-corpus coverage.
+three archived TSTP solutions do not establish campaign provenance or
+representative archived coverage.
 Both `verify.sh` and `build-runtime.sh` reject a Verus executable whose reported
 release or effective Rust toolchain differs from `verus-toolchain.json`.
 The compiled-runtime mutation gate weakens the tokenizer's digit guard and maps

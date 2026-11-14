@@ -9,3 +9,4 @@ generated-syn343 mrs-generated-tptp-v10.0.0 SYN343-1.p SYN343-1-mrs-proof.p SYN3
 generated-puz001-equality mrs-generated-tptp-v10.0.0 PUZ001-2.p PUZ001-2-mrs-proof.p PUZ001-2.p 29
 archived-prover9-syn343 tptp-archive-prover9-2026-6a SYN343-1.p SYN343-1-Prover9-2026-6A.s theBenchmark.p 7
 archived-prover9-puz001 tptp-archive-prover9-2026-6a PUZ001-1.p PUZ001-1-Prover9-2026-6A.s theBenchmark.p 31
+archived-prover9-puz001-equality tptp-archive-prover9-2026-6a PUZ001-2.p PUZ001-2-Prover9-2026-6A.s theBenchmark.p 42

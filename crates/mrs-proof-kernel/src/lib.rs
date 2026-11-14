@@ -734,7 +734,7 @@ fn verify_strict_with_source_internal(
                 &background_commutative,
                 &background_associative,
             ),
-            "paramodulation" | "paramodulate" => verify_paramodulation(
+            "paramodulation" | "paramodulate" | "paramod" => verify_paramodulation(
                 &parents,
                 conclusion,
                 limits,
@@ -1017,7 +1017,8 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "ac_superposition"
         | "ac_resolution"
         | "paramodulation"
-        | "paramodulate" => Some("thm"),
+        | "paramodulate"
+        | "paramod" => Some("thm"),
         _ => None,
     }
 }

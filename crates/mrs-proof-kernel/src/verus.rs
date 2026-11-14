@@ -758,16 +758,13 @@ fn certificate(
                             })
                             .collect::<Result<Vec<_>, _>>()?,
                     );
-                    // Bounded ordered alpha matching: permutations, contraction,
-                    // and folded demodulation are outside this bridge's scope.
+                    // Bound the trusted bridge's conclusion normalization by
+                    // the same search fuel used for unification and replay.
+                    // Contraction and folded demodulation remain unsupported.
                     if expected.len() != goal.len() {
                         continue;
                     }
-                    let (mut forward, mut backward) = (HashMap::new(), HashMap::new());
-                    if !expected.iter().zip(goal).all(|(a, b)| {
-                        a.positive == b.positive
-                            && atom_alpha_equiv(&a.atom, &b.atom, &mut forward, &mut backward)
-                    }) {
+                    if !clause_alpha_permutation_match_with_fuel(&expected, goal, &mut fuel)? {
                         continue;
                     }
                     let mut unifier: Vec<_> = subst
@@ -2659,6 +2656,34 @@ fn clause_alpha_permutation_match_with_fuel(
     }
 }
 
+fn clause_single_equality_symmetry(parent: &[Literal], conclusion: &[Literal]) -> bool {
+    if parent.len() != conclusion.len() || parent.is_empty() {
+        return false;
+    }
+    let mut reversed = false;
+    for (before, after) in parent.iter().zip(conclusion) {
+        if before == after {
+            continue;
+        }
+        if reversed || before.positive != after.positive {
+            return false;
+        }
+        let (Atom::Eq(left, right), Atom::Eq(after_left, after_right)) =
+            (&before.atom, &after.atom)
+        else {
+            return false;
+        };
+        if (left == after_right && right == after_left)
+            || (left == after_left && right == after_right)
+        {
+            reversed = true;
+        } else {
+            return false;
+        }
+    }
+    reversed
+}
+
 /// Parse actual TPTP parents/conclusion and check one archived/local step.
 /// This makes no proof-DAG or problem-provenance claim.
 pub fn check_tptp_step(
@@ -3399,11 +3424,21 @@ fn dag_request(
         } else if parents.len() == 2 {
             let (left, right) = (&nodes[parents[0]].clause, &nodes[parents[1]].clause);
             match node.rule {
-                Some("superposition") | Some("paramodulation") | Some("paramodulate") => {
-                    let (c, flipped) = if let Ok(c) = certificate(left, right, &raw, false, limits)
+                Some("superposition")
+                | Some("paramodulation")
+                | Some("paramodulate")
+                | Some("paramod") => {
+                    let allow_reverse_source = matches!(
+                        node.rule,
+                        Some("paramodulation" | "paramodulate" | "paramod")
+                    );
+                    let (c, flipped) = if let Ok(c) =
+                        certificate(left, right, &raw, allow_reverse_source, limits)
                     {
                         (c, false)
-                    } else if let Ok(c) = certificate(right, left, &raw, false, limits) {
+                    } else if let Ok(c) =
+                        certificate(right, left, &raw, allow_reverse_source, limits)
+                    {
                         (c, true)
                     } else {
                         return Err(format!(
@@ -3660,9 +3695,19 @@ fn dag_request(
                     let conclusion = c.conclusion.clone();
                     (Kind::Weakening(c), conclusion, parents)
                 }
+                Some("copy") => {
+                    if clause_alpha_permutation_match(parent, &raw, limits)? {
+                        let c = instantiation_certificate(parent, parent, limits)?;
+                        let conclusion = c.conclusion.clone();
+                        (Kind::Instantiation(c), conclusion, parents)
+                    } else if clause_single_equality_symmetry(parent, &raw) {
+                        (Kind::Symmetry, raw.clone(), parents)
+                    } else {
+                        return Err("copy conclusion is not an allowed clause identity".into());
+                    }
+                }
                 Some("instantiate")
                 | Some("instantiation")
-                | Some("copy")
                 | Some("rename")
                 | Some("variable_rename")
                 | Some("rename_variable")
@@ -4252,6 +4297,27 @@ mod dag_boundary_tests {
         )
         .unwrap();
         assert_eq!(node_count, 31);
+        assert!(!request.is_empty());
+    }
+
+    #[test]
+    fn archived_prover9_puz001_equality_dag_lowers_to_exact_input_ir() {
+        let problem = mrs_tptp::parse_tptp(include_str!(
+            "../../../formal/superposition-checker/fixtures/PUZ001-2.p"
+        ))
+        .unwrap();
+        let proof = mrs_tptp::parse_tptp(include_str!(
+            "../../../formal/superposition-checker/fixtures/PUZ001-2-Prover9-2026-6A.s"
+        ))
+        .unwrap();
+        let (request, node_count) = dag_request(
+            &problem,
+            &proof,
+            Some("theBenchmark.p"),
+            VerificationLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(node_count, 42);
         assert!(!request.is_empty());
     }
 }

@@ -5,7 +5,7 @@
 The compiled checker now exposes bounded wire v1 for local steps and complete
 proof DAGs. `mrs-proof-kernel::verus` and `mrs-proover::strict` provide opt-in
 shadow and dual-check APIs; a CLI example and formal-CI integration tests run
-actual parsed supported proof artifacts, the ten-entry corpus in
+actual parsed supported proof artifacts, the eleven-entry corpus in
 `fixtures/supported-dag-corpus.tsv`, and the archived c502 local-step fixture
 through the artifact. Each corpus entry also has wrong-parent, unsupported-rule,
 disconnected-input, and forged-root negative variants. The corpus contains four
@@ -16,11 +16,12 @@ MRS 0.3.0 proofs generated from real TPTP v10.0.0 problems: the 28-node
 at `c54`; `PUZ001-2` expands a symmetric source equality into an explicit
 symmetry node before superposition, and exercises equality resolution,
 demodulation and subsumption resolution. It also includes complete public
-Prover9 2026-6A archive proofs for `SYN343-1` and `PUZ001-1`. Their metadata
-names TPTP v9.3.1; the strict/Verus gate checks them against the vendored v10.0.0
-problem fixtures using the restricted FOF-clause proof input. The PUZ001 proof
-also exercises bounded resolution-literal-order normalization. Raw archive,
-normalized proof fixture and problem hashes are recorded. These two archived
+Prover9 2026-6A archive proofs for `SYN343-1`, `PUZ001-1`, and `PUZ001-2`.
+Their metadata names TPTP v9.3.1; the strict/Verus gate checks them against the
+vendored v10.0.0 problem fixtures using restricted FOF-clause proof input. The
+`PUZ001-1` proof exercises resolution-order normalization; the equality proof
+also covers Prover9 `paramod` and equality-symmetry `copy`. Raw archive,
+normalized proof fixture and problem hashes are recorded. These three archived
 solutions do not constitute a representative competition corpus.
 See **[`INTERCHANGE.md`](INTERCHANGE.md)** for build/run commands, wire grammar,
 limits, support and provenance. The dual gate requires both the independent

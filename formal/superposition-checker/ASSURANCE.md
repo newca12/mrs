@@ -29,7 +29,7 @@ The actual archived c502 fixture is now parsed, translated and accepted as a
 local step through the subprocess boundary. Complete supported CNF DAGs,
 including an essential superposition plus exact-atom-resolution refutation,
 are checked against the actual artifact built and verified in formal CI.
-The indexed ten-entry corpus also exercises full parsed TPTP refutations
+The indexed eleven-entry corpus also exercises full parsed TPTP refutations
 through the strict/Verus dual-check path with exact node-count checks. It has
 four hand-authored smoke proofs, a seven-node synthetic MRS 0.3.0
 function-bearing Horn-resolution chain, and three MRS 0.3.0 proofs generated
@@ -40,17 +40,19 @@ using superposition, equality resolution, demodulation and subsumption
 resolution. The `PUZ001-2` proof expands a symmetric source equality into an
 explicit symmetry node before superposition. One `PUZ001-1` conclusion has its
 literal order normalized to the exact ordered-resolvent contract. The corpus
-also includes archived Prover9 2026-6A proofs for `SYN343-1` and `PUZ001-1`
-from the public TPTP solution archive. Their v9.3.1 proofs are checked against
-the vendored v10.0.0 problems after strict source/formula validation and bounded
-adapter normalization of FOF universal clauses and resolution literal order.
-All vendored problems and proof fixtures match their
+also includes three archived Prover9 2026-6A proofs from the public TPTP
+solution archive: `SYN343-1` (7 nodes), `PUZ001-1` (31 nodes), and
+`PUZ001-2` (42 nodes, equality/paramodulation). Their v9.3.1 proofs are checked
+against the vendored v10.0.0 problems after strict source/formula validation and
+bounded adapter normalization of FOF universal clauses, equality symmetry in
+`copy`, Prover9 `paramod`, and resolution/superposition literal order. All vendored
+problems and proof fixtures match their
 SHA-256 and node-count records in `supported-rules.json`. For
 each case, formal CI mutates the first cited parent to a different existing
 input, replaces its first inference with an unsupported rule, adds an
 otherwise-valid but disconnected input node, and forges a nonempty root; none
 may produce a certified result. The corpus is not a representative competition
-archive; these two external Prover9 solutions do not establish campaign
+archive; these three external Prover9 solutions do not establish campaign
 provenance or representative archived coverage.
 Exact-atom resolution has a separate semantic theorem and executable checker;
 it removes one occurrence per parent with identical complementary atoms and

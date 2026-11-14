@@ -161,6 +161,41 @@ fn archived_prover9_puz001_proof_certifies_in_the_strict_kernel() {
 }
 
 #[test]
+fn archived_prover9_puz001_equality_proof_certifies_in_the_strict_kernel() {
+    let problem_text = include_str!("../../../formal/superposition-checker/fixtures/PUZ001-2.p");
+    let proof_text =
+        include_str!("../../../formal/superposition-checker/fixtures/PUZ001-2-Prover9-2026-6A.s");
+    let actual_sha256 = Sha256::digest(proof_text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../formal/superposition-checker/supported-rules.json"
+    ))
+    .unwrap();
+    let archive_case = &manifest["limits"]["supported_dag_fixture_corpus_archived_positive_proofs"]
+        ["PUZ001-2-Prover9-2026-6A.s"];
+    assert_eq!(
+        archive_case["fixture_sha256"].as_str(),
+        Some(actual_sha256.as_str())
+    );
+    assert_eq!(
+        archive_case["archive_sha256"],
+        "abfd0d5bfb9139930972d6aac3e391f25db7269841ba3799cb82b22abe2cb3be"
+    );
+    assert!(proof_text.contains("% Archive SHA-256 before repository normalization:"));
+    let problem = mrs_tptp::parse_tptp(problem_text).unwrap();
+    let proof = mrs_tptp::parse_tptp(proof_text).unwrap();
+    let verdict = verify_strict_with_source(
+        &problem,
+        &proof,
+        Some("theBenchmark.p"),
+        VerificationLimits::default(),
+    );
+    assert_eq!(verdict, KernelVerdict::Certified);
+}
+
+#[test]
 fn strict_leaf_role_mapping_accepts_negated_conjectures_but_not_goals() {
     let proof = mrs_tptp::parse_tptp(
         "cnf(a,axiom,p,file('input',a)). \
@@ -1149,6 +1184,10 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
                     "64ad5924638b8b900b9d4d453d5a9b32fa92891688b7eed5cf5f2b746f964be0",
                     "https://seetptp.tptp.org/file/TPTPWorld/TSTP/Solutions/PUZ/PUZ001-1/Prover9---2026-6A.UNS-CRf.s",
                 ),
+                "PUZ001-2-Prover9-2026-6A.s" => (
+                    "abfd0d5bfb9139930972d6aac3e391f25db7269841ba3799cb82b22abe2cb3be",
+                    "https://seetptp.tptp.org/file/TPTPWorld/TSTP/Solutions/PUZ/PUZ001-2/Prover9---2026-6A.UNS-CRf.s",
+                ),
                 other => panic!("{name} has no pinned archive source for {other}"),
             };
             let expected_normalizations: &[&str] = match *proof_file {
@@ -1159,6 +1198,13 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
                 "PUZ001-1-Prover9-2026-6A.s" => &[
                     "input_clause_alpha_literal_permutation",
                     "clausify_clause_permutation",
+                    "resolution_resolvent_literal_permutation",
+                ],
+                "PUZ001-2-Prover9-2026-6A.s" => &[
+                    "input_clause_alpha_literal_permutation",
+                    "clausify_clause_permutation",
+                    "copy_equality_symmetry",
+                    "paramod_alias_to_superposition",
                     "resolution_resolvent_literal_permutation",
                 ],
                 _ => unreachable!("archive file was validated above"),
@@ -1369,7 +1415,7 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         );
         cases += 1;
     }
-    assert_eq!(cases, 10, "supported DAG corpus inventory changed");
+    assert_eq!(cases, 11, "supported DAG corpus inventory changed");
     assert_eq!(
         hand_authored_cases, 4,
         "hand-authored corpus inventory changed"
@@ -1383,7 +1429,7 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         "TPTP generated corpus inventory changed"
     );
     assert_eq!(
-        archived_positive_cases, 2,
+        archived_positive_cases, 3,
         "archived positive inventory changed"
     );
     assert_eq!(
