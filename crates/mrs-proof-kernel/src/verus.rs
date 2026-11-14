@@ -3264,10 +3264,12 @@ fn dag_request(
             } else {
                 verify_leaf(node, problem, source, &mut symbols, limits)
                     .map_err(|v| v.to_string())?;
-                // The strict leaf check binds this proof formula to its named,
-                // provenance-bearing problem formula. Normalize the resulting
-                // IR leaf to that clause's exact order/variable IDs so the
-                // verified DAG membership test remains syntactic.
+                // The strict leaf check binds this proof formula to an
+                // eligible source-bound problem premise. For an `unknown`
+                // formula identifier that requires a bounded complete-formula
+                // match, not a guess from the source path. Normalize the
+                // resulting IR leaf to that clause's exact order/variable IDs
+                // so the verified DAG membership test remains syntactic.
                 let mut canonical = None;
                 for input in &inputs {
                     if clause_alpha_permutation_match(&raw, input, limits)? {

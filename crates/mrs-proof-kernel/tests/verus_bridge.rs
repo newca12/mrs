@@ -196,6 +196,145 @@ fn archived_prover9_puz001_equality_proof_certifies_in_the_strict_kernel() {
 }
 
 #[test]
+fn archived_spass_syn343_proof_fails_closed_on_lowercase_tptp_constants() {
+    const MANIFEST: &str = include_str!(
+        "../../../formal/superposition-checker/fixtures/archived-unsupported-proofs.tsv"
+    );
+    const SCREEN: &str = include_str!("../../../formal/superposition-checker/supported-rules.json");
+
+    let problem_text = include_str!("../../../formal/superposition-checker/fixtures/SYN343-1.p");
+    let proof_text =
+        include_str!("../../../formal/superposition-checker/fixtures/SYN343-1-SPASS-3.9.s");
+    let rows = MANIFEST
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.len(),
+        2,
+        "archived unsupported-proof inventory changed"
+    );
+    let fields = rows
+        .iter()
+        .copied()
+        .find(|row| row.starts_with("spass-syn343 "))
+        .expect("SPASS negative archive is indexed")
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    assert_eq!(fields.len(), 7, "malformed archived proof row");
+    assert_eq!(fields[0], "spass-syn343");
+    assert_eq!(fields[1], "SYN343-1-SPASS-3.9.s");
+    assert_eq!(
+        fields[2],
+        "https://seetptp.tptp.org/file/TPTPWorld/TSTP/Solutions/SYN/SYN343-1/SPASS---3.9.UNS-Ref.s"
+    );
+    assert_eq!(
+        fields[3],
+        "cd59bc9a093e83fb9547716a46a3f90fd6e44c4dae0a345750d6a9f9cbf55d09"
+    );
+    assert_eq!(fields[4], "5");
+    assert_eq!(fields[5], "0");
+    assert_eq!(fields[6], "tptp-lowercase-constant-mismatch-fail-closed");
+
+    let actual_sha256 = Sha256::digest(proof_text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(actual_sha256, fields[3]);
+    assert!(proof_text.contains(
+        "% Archive SHA-256 before repository normalization: cd932cd27d76ab28ffcbacbf8ecb0941965e60aef524aeac6e1a4c83f23ce436"
+    ));
+
+    let manifest: serde_json::Value = serde_json::from_str(SCREEN).unwrap();
+    let screen = &manifest["limits"]["archived_spass_syn343_fail_closed_screen"];
+    assert_eq!(manifest["limits"]["archived_unsupported_proof_entries"], 2);
+    assert_eq!(screen["problem_file"], "SYN343-1.p");
+    assert_eq!(
+        screen["problem_sha256"],
+        "1a810c7b105d3722330ff49771ed3c01350c048b93b7c1c51b6403222101fcb8"
+    );
+    assert_eq!(
+        screen["archive_sha256"],
+        "cd932cd27d76ab28ffcbacbf8ecb0941965e60aef524aeac6e1a4c83f23ce436"
+    );
+    assert_eq!(
+        screen["fixture_sha256"].as_str(),
+        Some(actual_sha256.as_str())
+    );
+    assert_eq!(screen["system"], "SPASS");
+    assert_eq!(screen["system_version"], "3.9");
+    assert_eq!(screen["proof_metadata_tptp_release"], "8.1.0");
+    assert_eq!(screen["checked_nodes"], 5);
+    assert_eq!(
+        screen["adapter_normalizations"].as_array().unwrap().len(),
+        0
+    );
+    assert!(!screen["strict_kernel_certified"].as_bool().unwrap());
+    assert!(!screen["formal_dual_gate_certified"].as_bool().unwrap());
+
+    let problem = mrs_tptp::parse_tptp(problem_text).unwrap();
+    let proof = mrs_tptp::parse_tptp(proof_text).unwrap();
+    let actual_problem_sha256 = Sha256::digest(problem_text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(actual_problem_sha256, screen["problem_sha256"]);
+    assert_eq!(proof.formulas.len(), 5);
+    let first = proof.formulas[0]
+        .as_cnf()
+        .expect("SPASS archived clause parses as CNF");
+    let mrs_tptp::CNFStatement::Logical(body) = &first.formula;
+    let body = match body {
+        mrs_tptp::CNFFormula::Parens(inner) => inner.as_ref(),
+        other => other,
+    };
+    let mrs_tptp::CNFFormula::Disjunction(literals) = body else {
+        panic!("SPASS archived clause must be a disjunction")
+    };
+    let mrs_tptp::CNFLiteral::Positive(mrs_tptp::CNFAtomicFormula::Plain(_, terms)) = &literals[0]
+    else {
+        panic!("first SPASS literal must be a positive plain predicate")
+    };
+    let mrs_tptp::FOFTerm::Function(name, arguments) = &terms[1] else {
+        panic!("lowercase TPTP word `u` must parse as a function term")
+    };
+    assert_eq!(name.as_str(), "u");
+    assert!(
+        arguments.is_empty(),
+        "lowercase `u` is parsed as a constant"
+    );
+    let strict = verify_strict_with_source(
+        &problem,
+        &proof,
+        Some("SYN343-1.p"),
+        VerificationLimits::default(),
+    );
+    assert!(
+        matches!(&strict, KernelVerdict::Rejected(reason) if reason.contains("anonymous provenance")),
+        "the raw TPTP proof must not treat lowercase constants as variables: {strict:?}"
+    );
+
+    let cfg = VerusConfig {
+        executable: "unused-checker".into(),
+        expected_sha256: "0".repeat(64),
+        timeout: Duration::from_secs(1),
+    };
+    let report = check_tptp_dag(
+        &problem,
+        &proof,
+        Some("SYN343-1.p"),
+        VerificationLimits::default(),
+        &cfg,
+    );
+    assert!(
+        matches!(&report.verdict, ShadowVerdict::Unknown(reason) if reason.contains("leaf")),
+        "the adapter must reject before invoking Verus: {report:?}"
+    );
+    assert_eq!(report.artifact_sha256, None);
+}
+
+#[test]
 fn strict_leaf_role_mapping_accepts_negated_conjectures_but_not_goals() {
     let proof = mrs_tptp::parse_tptp(
         "cnf(a,axiom,p,file('input',a)). \
@@ -992,10 +1131,15 @@ fn archived_swv406_leo_iii_thf_proof_fails_closed_before_lowering() {
         .collect::<Vec<_>>();
     assert_eq!(
         rows.len(),
-        1,
+        2,
         "archived unsupported-proof inventory changed"
     );
-    let fields = rows[0].split_whitespace().collect::<Vec<_>>();
+    let row = rows
+        .iter()
+        .copied()
+        .find(|row| row.starts_with("swv406-leo-iii "))
+        .expect("archived Leo-III negative proof is indexed");
+    let fields = row.split_whitespace().collect::<Vec<_>>();
     assert_eq!(fields.len(), 7, "malformed archived proof row");
     let [
         id,
@@ -1415,9 +1559,9 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         );
         cases += 1;
     }
-    assert_eq!(cases, 11, "supported DAG corpus inventory changed");
+    assert_eq!(cases, 12, "supported DAG corpus inventory changed");
     assert_eq!(
-        hand_authored_cases, 4,
+        hand_authored_cases, 5,
         "hand-authored corpus inventory changed"
     );
     assert_eq!(

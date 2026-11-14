@@ -1,3 +1,4 @@
 # id proof_file source_url sha256 formulas type_declarations expected_outcome
 # TSTP preformatted body; trailing whitespace normalized in the local snapshot.
 swv406-leo-iii SWV406+1-Leo-III-1.8.0.THM-Ref.s https://seetptp.tptp.org/file/TPTPWorld/TSTP/Solutions/SWV/SWV406+1/Leo-III---1.8.0.THM-Ref.s e07b4ed2877f2fd9d2c48a979818c5f92df5f73fabe8dd1ea9c2909203724b94 113 27 type-declaration-fail-closed
+spass-syn343 SYN343-1-SPASS-3.9.s https://seetptp.tptp.org/file/TPTPWorld/TSTP/Solutions/SYN/SYN343-1/SPASS---3.9.UNS-Ref.s cd59bc9a093e83fb9547716a46a3f90fd6e44c4dae0a345750d6a9f9cbf55d09 5 0 tptp-lowercase-constant-mismatch-fail-closed

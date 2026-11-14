@@ -102,7 +102,12 @@ unsupported literal is silently dropped. A shared signature check rejects
 inconsistent symbol arities.
 
 Input leaves require `file(...)` provenance and a strict-kernel match on source,
-formula name, compatible role and formula. A producer may label a source
+compatible role and formula. Named sources must also match the problem formula
+name. If a producer writes the formula name as `unknown`, the complete leaf
+formula must instead match at least one role-compatible premise under bounded
+leaf equivalence; the source path alone never identifies a premise. This accepts
+equivalent anonymous leaves, not one-way premise instances or a reinterpretation
+of TPTP constants as variables. A producer may label a source
 `negated_conjecture` clause as an axiom/premise; an unnegated `conjecture` is
 never admitted as a premise. The trusted adapter then normalizes a matching
 leaf to the exact supplied input clause under universal closure, variable
@@ -169,14 +174,18 @@ campaign provenance. A separate complete public Leo-III THF TSTP solution is pre
 `fixtures/archived-unsupported-proofs.tsv` and must fail closed at the unsupported
 type-declaration guard; it is not certified. CI also checks actual supported CNF
 complete refutations, including one with an essential superposition followed by
-exact unary-predicate resolution. The eleven-entry dual-check corpus now includes
-three complete public Prover9 2026-6A proofs: seven-node `SYN343-1`, 31-node
+exact unary-predicate resolution. The twelve-entry dual-check corpus now includes
+an exact anonymous-leaf case and three complete public Prover9 2026-6A proofs:
+seven-node `SYN343-1`, 31-node
 `PUZ001-1`, and 42-node equality `PUZ001-2`. Their archive headers name TPTP
 v9.3.1; each is checked against its vendored TPTP v10.0.0 problem fixture. The
 vendored proofs remove only trailing horizontal whitespace; raw archive and
 normalized fixture hashes are both recorded in the support manifest. These
 examples do not form a representative competition corpus or verify the
 FOF-to-clause adapter.
+The SPASS 3.9 `SYN343-1` archive is separately retained as a negative screen:
+under standard TPTP parsing, its lowercase `u` and `v` are constants, and the
+proof is rejected without source-specific recasing.
 
 ## Protocol grammar
 
@@ -298,9 +307,10 @@ request tests, then runs Rust integration tests against that exact temporary
 artifact/hash. Rust tests requiring the artifact are explicitly ignored in
 ordinary `cargo test`; they are mandatory in the formal CI job.
 The bridge suite also reads `fixtures/supported-dag-corpus.tsv` and requires all
-eleven indexed full TPTP refutations to pass the strict/Verus dual-check path with
-their recorded node counts. The set includes four hand-authored smoke proofs, a
-synthetic MRS 0.3.0 seven-node function-bearing Horn chain, three MRS 0.3.0
+twelve indexed full TPTP refutations to pass the strict/Verus dual-check path
+with their recorded node counts. The set includes five hand-authored smoke proofs
+(one with exact anonymous input leaves), a synthetic MRS 0.3.0 seven-node
+function-bearing Horn chain, three MRS 0.3.0
 proofs generated from real TPTP v10.0.0 problems, and three complete archived
 Prover9 2026-6A proofs: `SYN343-1` (7 nodes), `PUZ001-1` (31 nodes) and
 `PUZ001-2` (42 nodes). Their archive headers name TPTP v9.3.1; their proof nodes

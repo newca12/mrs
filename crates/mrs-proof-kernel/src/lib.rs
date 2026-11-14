@@ -3639,12 +3639,7 @@ fn verify_leaf<'a>(
         .annotations()
         .and_then(|annotations| annotations.file_source())
         .ok_or_else(|| KernelVerdict::Inconclusive("leaf has no file provenance".into()))?;
-    if annotation.1 == "unknown" {
-        return Err(KernelVerdict::Inconclusive(format!(
-            "leaf `{}` has anonymous provenance",
-            node.name
-        )));
-    }
+    let anonymous_name = annotation.1 == "unknown";
     if let Some(expected_source) = expected_source
         && annotation.0 != expected_source
     {
@@ -3653,10 +3648,54 @@ fn verify_leaf<'a>(
             node.name, annotation.0
         )));
     }
-    // Existential over same-named problem formulas: includes may define
-    // one name twice (see above), so a leaf is substantiated when ANY of
-    // them matches in role and formula.
     let proof_formula = lower_annotated(symbols, node.formula, limits)?;
+    if anonymous_name {
+        // Some archived provers preserve the source path but serialize the
+        // formula identifier as `unknown`. Do not guess an input from that
+        // token: accept only when the complete formula matches a supplied
+        // premise under the same bounded leaf-equivalence relation used for
+        // named sources. This is equivalence, not one-way instantiation or
+        // subsumption. The expected source-path check above still applies.
+        let mut role_match = false;
+        let mut undecided = false;
+        for expected in &problem.formulas {
+            if !roles_compatible(node.role, expected.role()) {
+                continue;
+            }
+            role_match = true;
+            let expected_formula = lower_annotated(symbols, expected, limits)?;
+            match leaf_formula_equiv(
+                node.formula,
+                expected,
+                &proof_formula,
+                &expected_formula,
+                limits,
+            ) {
+                MatchOutcome::Match => return Ok(()),
+                MatchOutcome::Undecided => undecided = true,
+                MatchOutcome::Differ => {}
+            }
+        }
+        if undecided {
+            return Err(KernelVerdict::Inconclusive(format!(
+                "leaf `{}` anonymous-source comparison exceeded the strict comparison-step limit of {}",
+                node.name, limits.max_comparison_steps
+            )));
+        }
+        if !role_match {
+            return Err(KernelVerdict::Rejected(format!(
+                "leaf `{}` has no premise-compatible problem formula for anonymous provenance",
+                node.name
+            )));
+        }
+        return Err(KernelVerdict::Rejected(format!(
+            "leaf `{}` with anonymous provenance matches no problem premise",
+            node.name
+        )));
+    }
+    // Existential over same-named problem formulas: includes may define one
+    // name twice (see above), so a leaf is substantiated when ANY of them
+    // matches in role and formula.
     let mut role_match = false;
     // A comparison that ran out of budget has not decided anything, so it must
     // not be allowed to fall through to the `does not match` rejection below:
@@ -17967,14 +18006,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_anonymous_leaf_provenance() {
-        let input = "fof(a, axiom, p(a)).";
+    fn certifies_anonymous_leaf_when_formula_matches_a_problem_premise() {
+        let input = "fof(a, axiom, p(a)).\nfof(b, axiom, ~p(a)).";
         let proof = "fof(a, axiom, p(a), file('problem.p', unknown)).\n\
-                     fof(s, plain, $false, inference(consequence, [status(thm)], [a])).";
-        assert!(matches!(
-            check(input, proof),
-            KernelVerdict::Inconclusive(_)
-        ));
+                     fof(b, axiom, ~p(a), file('problem.p', unknown)).\n\
+                     fof(s, plain, $false, inference(resolution, [status(thm)], [a,b])).";
+        assert_eq!(check(input, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_anonymous_leaf_that_matches_no_problem_premise() {
+        let input = "fof(a, axiom, p(a)).\nfof(b, axiom, ~p(a)).";
+        let proof = "fof(a, axiom, p(b), file('problem.p', unknown)).\n\
+                     fof(b, axiom, ~p(a), file('problem.p', unknown)).\n\
+                     fof(s, plain, $false, inference(resolution, [status(thm)], [a,b])).";
+        assert!(matches!(check(input, proof), KernelVerdict::Rejected(_)));
     }
 
     #[test]

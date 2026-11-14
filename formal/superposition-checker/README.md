@@ -5,11 +5,12 @@
 The compiled checker now exposes bounded wire v1 for local steps and complete
 proof DAGs. `mrs-proof-kernel::verus` and `mrs-proover::strict` provide opt-in
 shadow and dual-check APIs; a CLI example and formal-CI integration tests run
-actual parsed supported proof artifacts, the eleven-entry corpus in
+actual parsed supported proof artifacts, the twelve-entry corpus in
 `fixtures/supported-dag-corpus.tsv`, and the archived c502 local-step fixture
 through the artifact. Each corpus entry also has wrong-parent, unsupported-rule,
-disconnected-input, and forged-root negative variants. The corpus contains four
-hand-authored smoke proofs, one synthetic MRS 0.3.0 Horn-chain proof, and three
+disconnected-input, and forged-root negative variants. The corpus contains five
+hand-authored smoke proofs (including exact anonymous input leaves), one
+synthetic MRS 0.3.0 Horn-chain proof, and three
 MRS 0.3.0 proofs generated from real TPTP v10.0.0 problems: the 28-node
 `PUZ001-1` Dreadbury Mansion refutation, five-node `SYN343-1`, and 29-node
 `PUZ001-2` equality refutation. `PUZ001-1` has one literal-order normalization
@@ -23,6 +24,9 @@ vendored v10.0.0 problem fixtures using restricted FOF-clause proof input. The
 also covers Prover9 `paramod` and equality-symmetry `copy`. Raw archive,
 normalized proof fixture and problem hashes are recorded. These three archived
 solutions do not constitute a representative competition corpus.
+The separately archived SPASS 3.9 `SYN343-1` proof is retained as a fail-closed
+negative: its lowercase `u`/`v` are TPTP constants, so no variable recasing or
+positive SPASS claim is made.
 See **[`INTERCHANGE.md`](INTERCHANGE.md)** for build/run commands, wire grammar,
 limits, support and provenance. The dual gate requires both the independent
 strict kernel and Verus IR certifier to accept. Wire-v1 structural decoding and

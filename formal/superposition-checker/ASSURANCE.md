@@ -29,9 +29,10 @@ The actual archived c502 fixture is now parsed, translated and accepted as a
 local step through the subprocess boundary. Complete supported CNF DAGs,
 including an essential superposition plus exact-atom-resolution refutation,
 are checked against the actual artifact built and verified in formal CI.
-The indexed eleven-entry corpus also exercises full parsed TPTP refutations
+The indexed twelve-entry corpus also exercises full parsed TPTP refutations
 through the strict/Verus dual-check path with exact node-count checks. It has
-four hand-authored smoke proofs, a seven-node synthetic MRS 0.3.0
+five hand-authored smoke proofs, including exact anonymous input-leaf matching,
+a seven-node synthetic MRS 0.3.0
 function-bearing Horn-resolution chain, and three MRS 0.3.0 proofs generated
 from real TPTP v10.0.0 CNF problems: a 28-node `PUZ001-1` Dreadbury Mansion
 proof using instantiation/resolution, a five-node `SYN343-1` proof using
@@ -70,6 +71,12 @@ Separately, `fixtures/` preserves a complete public Leo-III THF TSTP solution fo
 SWV406+1; the adapter parses it and returns `Unknown` at the unsupported-type
 guard before lowering. That is a negative fail-closed regression, not
 supported-proof coverage or certification.
+The public SPASS 3.9 `SYN343-1` archive is also retained as an unsupported negative
+screen with both raw-archive and normalized-fixture hashes. Its lowercase `u` and
+`v` parse as TPTP constants, so anonymous leaves do not match the supplied clauses
+under the accepted equivalence, and its contraction steps receive no source-specific
+recasing. The adapter rejects before invoking the Verus runtime; this is not a
+positive SPASS proof or evidence for a SPASS variable convention.
 Loaded-job bridge tests also resolve selected and nested includes through the
 ProoVer loader, then require the same formal DAG gate to accept; introducing an
 unselected premise into the resolved problem is rejected by the adapter. Include
