@@ -88,19 +88,30 @@ certifier. Its positive result requires the independently implemented strict
 kernel. Shadow results always carry `production_certification=false` to prevent
 mistaking them for an independent formal certification of the original proof.
 
-Supported TPTP inputs are CNF, uninterpreted first-order predicates/functions of
+Problem inputs remain CNF with uninterpreted first-order predicates/functions of
 arity at most two, equality, variables and a singleton positive `$false` empty
-clause. Literal order and multiplicity are preserved. Interpreted functions,
-numbers, distinct objects, larger arities, non-CNF dialects, type/datatype/
-codatatype declarations, unimplemented rules and conjecture transformations
-return Unknown. No unsupported literal is silently dropped. A shared signature
-check rejects inconsistent symbol arities.
+clause. Proof nodes may also use a restricted FOF clause representation: an outer
+universal prefix followed by a disjunction of ordinary predicate/equality
+literals. Existentials, other connectives, FOF sequents, defined/system symbols,
+interpreted functions, numbers, distinct objects, larger arities, typed
+declarations, unimplemented rules and conjecture transformations return
+Unknown. Literal order and multiplicity are preserved except at the explicitly
+checked input/clausify normalization described below. No unsupported literal is
+silently dropped. A shared signature check rejects inconsistent symbol arities.
 
-Input leaves require `file(...)` provenance, matching role/source in the strict
-kernel and exact lowered membership in the supplied premise clauses. Proof
-names must be unique; missing parents, cycles, nonempty roots and disconnected
-nodes cannot obtain a formal positive result. The whole DAG is transmitted;
-unused proof nodes are not silently deleted to obtain closure.
+Input leaves require `file(...)` provenance and a strict-kernel match on source,
+formula name, compatible role and formula. A producer may label a source
+`negated_conjecture` clause as an axiom/premise; an unnegated `conjecture` is
+never admitted as a premise. The trusted adapter then normalizes a matching
+leaf to the exact supplied input clause under universal closure, variable
+alpha-renaming and literal permutation. A `clausify` edge is supported only
+when its restricted FOF clause and CNF conclusion are the same under those
+equivalences; the emitted IR edge is an identity instance, while the strict
+kernel independently checks the original clausification annotation. These
+normalizations remain in the unverified adapter boundary. Proof names must be
+unique; missing parents, cycles, nonempty roots and disconnected nodes cannot
+obtain a formal positive result. The whole DAG is transmitted; unused proof
+nodes are not silently deleted to obtain closure.
 
 Rules include ordinary superposition; exact complementary-atom resolution;
 standardized-apart first-order resolution; equality resolution; clause and
@@ -149,7 +160,14 @@ campaign provenance. A separate complete public Leo-III THF TSTP solution is pre
 `fixtures/archived-unsupported-proofs.tsv` and must fail closed at the unsupported
 type-declaration guard; it is not certified. CI also checks actual supported CNF
 complete refutations, including one with an essential superposition followed by
-exact unary-predicate resolution.
+exact unary-predicate resolution. The nine-entry dual-check corpus now includes
+one complete public Prover9 2026-6A proof for `SYN343-1`; its archive header names
+TPTP v9.3.1, and its exact seven-node proof is checked against the vendored
+TPTP v10.0.0 problem fixture. The vendored proof removes only trailing
+horizontal whitespace; the raw archive and normalized fixture hashes are both
+recorded in the support manifest. This is one archived positive example, not a
+representative competition corpus or evidence that the FOF-to-clause adapter is
+verified.
 
 ## Protocol grammar
 
@@ -271,10 +289,13 @@ request tests, then runs Rust integration tests against that exact temporary
 artifact/hash. Rust tests requiring the artifact are explicitly ignored in
 ordinary `cargo test`; they are mandatory in the formal CI job.
 The bridge suite also reads `fixtures/supported-dag-corpus.tsv` and requires all
-eight indexed full TPTP refutations to pass the strict/Verus dual-check path with
+nine indexed full TPTP refutations to pass the strict/Verus dual-check path with
 their recorded node counts. The set includes four hand-authored smoke proofs, a
-synthetic MRS 0.3.0 seven-node function-bearing Horn chain, and three MRS 0.3.0
-proofs generated from real TPTP v10.0.0 problems: `PUZ001-1` (28 nodes,
+synthetic MRS 0.3.0 seven-node function-bearing Horn chain, three MRS 0.3.0
+proofs generated from real TPTP v10.0.0 problems, and one complete archived
+Prover9 2026-6A `SYN343-1` proof. The Prover9 archive header names TPTP v9.3.1;
+its seven-node proof is checked against the vendored v10.0.0 problem fixture.
+The generated cases are `PUZ001-1` (28 nodes,
 instantiation/resolution), `SYN343-1` (5 nodes, condensation/subsumption
 resolution), and `PUZ001-2` (29 nodes, equality and superposition rules).
 `PUZ001-2` expands a symmetric source equality into an explicit symmetry node;
@@ -284,8 +305,9 @@ parent to a different existing input, replaces the first inference with an
 unsupported rule, adds an otherwise-valid but disconnected input node, and
 mutates the root to a nonempty clause; neither checker may certify these
 variants. The TPTP problem and proof SHA-256 values are retained in the support
-manifest. The generated regression set is not an archived competition-proof
-corpus.
+manifest. This is a small fixture set, not a representative competition archive;
+one archived TSTP solution does not establish campaign provenance or archived
+corpus coverage.
 Both `verify.sh` and `build-runtime.sh` reject a Verus executable whose reported
 release or effective Rust toolchain differs from `verus-toolchain.json`.
 The compiled-runtime mutation gate weakens the tokenizer's digit guard and maps

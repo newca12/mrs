@@ -2384,13 +2384,14 @@ fn supported_clause(
     formula: &AnnotatedFormula<'_>,
     limits: VerificationLimits,
 ) -> Result<Vec<Literal>, String> {
-    if !formula.is_cnf() {
-        return Err("only CNF clauses are supported by the shadow bridge".into());
+    if !formula.is_cnf() && !formula.is_fof() {
+        return Err("only CNF clauses and restricted FOF clause proofs are supported".into());
     }
     fn term(
         t: &FOFTerm<'_>,
         symbols: &mut SymbolTable,
         vars: &mut HashMap<String, VarId>,
+        bound_vars: Option<&HashSet<String>>,
         depth: usize,
         work: &mut usize,
     ) -> Result<Term, String> {
@@ -2400,13 +2401,16 @@ fn supported_clause(
         }
         match t {
             FOFTerm::Variable(name) => {
+                if bound_vars.is_some_and(|bound| !bound.contains(*name)) {
+                    return Err("unbound FOF proof variable is unsupported".into());
+                }
                 let next = u32::try_from(vars.len()).map_err(|_| "variable ceiling")?;
                 Ok(Term::Var(*vars.entry((*name).into()).or_insert(next)))
             }
             FOFTerm::Function(name, args) if args.len() <= 2 => Ok(Term::App(
                 symbols.intern(name.as_str()),
                 args.iter()
-                    .map(|t| term(t, symbols, vars, depth + 1, work))
+                    .map(|t| term(t, symbols, vars, bound_vars, depth + 1, work))
                     .collect::<Result<_, _>>()?,
             )),
             _ => {
@@ -2414,62 +2418,237 @@ fn supported_clause(
             }
         }
     }
-    let AnnotatedFormula::CNF(f) = formula else {
-        unreachable!()
-    };
-    let CNFStatement::Logical(body) = &f.formula;
-    let mut body = body;
-    let mut depth = 0;
-    while let CNFFormula::Parens(inner) = body {
-        depth += 1;
-        if depth >= 64 {
-            return Err("clause parentheses depth ceiling".into());
-        }
-        body = inner;
-    }
-    let CNFFormula::Disjunction(literals) = body else {
-        unreachable!()
-    };
-    if literals.len() > limits.max_clause_literals.min(64) {
-        return Err("clause width ceiling".into());
-    }
     let mut vars = HashMap::new();
     let mut work = limits.max_formula_nodes.min(100_000);
     let mut clause = Vec::new();
-    for literal in literals {
-        let (positive, atom) = match literal {
-            CNFLiteral::Positive(mrs_tptp::CNFAtomicFormula::False) if literals.len() == 1 => {
-                continue;
-            }
-            CNFLiteral::Positive(mrs_tptp::CNFAtomicFormula::Plain(name, args))
-            | CNFLiteral::Negative(mrs_tptp::CNFAtomicFormula::Plain(name, args)) => {
-                if args.len() > 2 {
-                    return Err("predicate arity ceiling".into());
+    match formula {
+        AnnotatedFormula::CNF(f) => {
+            let CNFStatement::Logical(body) = &f.formula;
+            let mut body = body;
+            let mut depth = 0;
+            while let CNFFormula::Parens(inner) = body {
+                depth += 1;
+                if depth >= 64 {
+                    return Err("clause parentheses depth ceiling".into());
                 }
-                (
-                    matches!(literal, CNFLiteral::Positive(_)),
-                    Atom::Pred(
-                        symbols.intern(name.as_str()),
-                        args.iter()
-                            .map(|t| term(t, symbols, &mut vars, 0, &mut work))
-                            .collect::<Result<_, _>>()?,
-                    ),
-                )
+                body = inner;
             }
-            CNFLiteral::Equality(a, b) | CNFLiteral::Inequality(a, b) => (
-                matches!(literal, CNFLiteral::Equality(_, _)),
-                Atom::Eq(
-                    term(a, symbols, &mut vars, 0, &mut work)?,
-                    term(b, symbols, &mut vars, 0, &mut work)?,
-                ),
-            ),
-            _ => return Err("unsupported CNF atom; no literal may be silently dropped".into()),
-        };
-        clause.push(Literal { positive, atom });
+            let CNFFormula::Disjunction(literals) = body else {
+                unreachable!()
+            };
+            if literals.len() > limits.max_clause_literals.min(64) {
+                return Err("clause width ceiling".into());
+            }
+            for literal in literals {
+                let (positive, atom) = match literal {
+                    CNFLiteral::Positive(mrs_tptp::CNFAtomicFormula::False)
+                        if literals.len() == 1 =>
+                    {
+                        continue;
+                    }
+                    CNFLiteral::Positive(mrs_tptp::CNFAtomicFormula::Plain(name, args))
+                    | CNFLiteral::Negative(mrs_tptp::CNFAtomicFormula::Plain(name, args)) => {
+                        if args.len() > 2 {
+                            return Err("predicate arity ceiling".into());
+                        }
+                        (
+                            matches!(literal, CNFLiteral::Positive(_)),
+                            Atom::Pred(
+                                symbols.intern(name.as_str()),
+                                args.iter()
+                                    .map(|t| term(t, symbols, &mut vars, None, 0, &mut work))
+                                    .collect::<Result<_, _>>()?,
+                            ),
+                        )
+                    }
+                    CNFLiteral::Equality(a, b) | CNFLiteral::Inequality(a, b) => (
+                        matches!(literal, CNFLiteral::Equality(_, _)),
+                        Atom::Eq(
+                            term(a, symbols, &mut vars, None, 0, &mut work)?,
+                            term(b, symbols, &mut vars, None, 0, &mut work)?,
+                        ),
+                    ),
+                    _ => {
+                        return Err(
+                            "unsupported CNF atom; no literal may be silently dropped".into()
+                        );
+                    }
+                };
+                clause.push(Literal { positive, atom });
+            }
+        }
+        AnnotatedFormula::FOF(f) => {
+            struct FofClauseLowering<'a> {
+                symbols: &'a mut SymbolTable,
+                vars: &'a mut HashMap<String, VarId>,
+                bound_vars: &'a HashSet<String>,
+                clause: &'a mut Vec<Literal>,
+                work: &'a mut usize,
+                literal_limit: usize,
+            }
+
+            impl FofClauseLowering<'_> {
+                fn charge(&mut self) -> Result<(), String> {
+                    *self.work = self.work.checked_sub(1).ok_or("syntax work ceiling")?;
+                    Ok(())
+                }
+
+                fn push(&mut self, positive: bool, atom: Atom) -> Result<(), String> {
+                    if self.clause.len() >= self.literal_limit {
+                        return Err("clause width ceiling".into());
+                    }
+                    self.clause.push(Literal { positive, atom });
+                    Ok(())
+                }
+
+                fn term(&mut self, value: &FOFTerm<'_>) -> Result<Term, String> {
+                    term(
+                        value,
+                        self.symbols,
+                        self.vars,
+                        Some(self.bound_vars),
+                        0,
+                        self.work,
+                    )
+                }
+
+                fn append(
+                    &mut self,
+                    formula: &FOFFormula<'_>,
+                    positive: bool,
+                    depth: usize,
+                ) -> Result<(), String> {
+                    self.charge()?;
+                    if depth >= 64 {
+                        return Err("FOF clause depth ceiling".into());
+                    }
+                    match formula {
+                        FOFFormula::Parens(inner) => self.append(inner, positive, depth + 1),
+                        FOFFormula::Negation(inner) => self.append(inner, !positive, depth + 1),
+                        FOFFormula::Binary {
+                            left,
+                            connective: BinaryConnective::Or,
+                            right,
+                        } if positive => {
+                            self.append(left, true, depth + 1)?;
+                            self.append(right, true, depth + 1)
+                        }
+                        FOFFormula::Atomic(FOFAtomicFormula::Plain(name, args)) => {
+                            if args.len() > 2 {
+                                return Err("predicate arity ceiling".into());
+                            }
+                            let predicate = self.symbols.intern(name.as_str());
+                            let args = args
+                                .iter()
+                                .map(|arg| self.term(arg))
+                                .collect::<Result<_, _>>()?;
+                            self.push(positive, Atom::Pred(predicate, args))
+                        }
+                        FOFFormula::Equality(a, b) => {
+                            let left = self.term(a)?;
+                            let right = self.term(b)?;
+                            self.push(positive, Atom::Eq(left, right))
+                        }
+                        FOFFormula::Inequality(a, b) => {
+                            let left = self.term(a)?;
+                            let right = self.term(b)?;
+                            self.push(!positive, Atom::Eq(left, right))
+                        }
+                        FOFFormula::Atomic(FOFAtomicFormula::False) if positive => Ok(()),
+                        FOFFormula::Atomic(FOFAtomicFormula::True) if !positive => Ok(()),
+                        FOFFormula::Atomic(FOFAtomicFormula::True | FOFAtomicFormula::False) => {
+                            Err("tautological FOF truth literal is unsupported".into())
+                        }
+                        _ => Err("FOF proof formula is not a restricted clause".into()),
+                    }
+                }
+            }
+
+            let FOFStatement::Logical(body) = &f.formula else {
+                return Err("FOF sequents are unsupported clause proofs".into());
+            };
+            let mut body = body;
+            let mut bound_vars = HashSet::new();
+            let mut prefix_depth = 0;
+            loop {
+                work = work.checked_sub(1).ok_or("syntax work ceiling")?;
+                if prefix_depth >= 64 {
+                    return Err("FOF clause prefix depth ceiling".into());
+                }
+                match body {
+                    FOFFormula::Parens(inner) => {
+                        body = inner.as_ref();
+                        prefix_depth += 1;
+                    }
+                    FOFFormula::Quantified {
+                        quantifier: Quantifier::Forall,
+                        variables,
+                        formula,
+                    } => {
+                        for variable in variables {
+                            let name = (*variable).to_owned();
+                            if !bound_vars.insert(name.clone()) {
+                                return Err("shadowed FOF clause variable is unsupported".into());
+                            }
+                            let id = u32::try_from(vars.len()).map_err(|_| "variable ceiling")?;
+                            vars.insert(name, id);
+                        }
+                        body = formula.as_ref();
+                        prefix_depth += 1;
+                    }
+                    FOFFormula::Quantified {
+                        quantifier: Quantifier::Exists,
+                        ..
+                    } => return Err("existential FOF clauses are unsupported".into()),
+                    _ => break,
+                }
+            }
+            FofClauseLowering {
+                symbols,
+                vars: &mut vars,
+                bound_vars: &bound_vars,
+                clause: &mut clause,
+                work: &mut work,
+                literal_limit: limits.max_clause_literals.min(64),
+            }
+            .append(body, true, prefix_depth)?;
+        }
+        _ => unreachable!("dialect checked above"),
     }
     // Check all constructors before certificate discovery traverses them.
     Wire::new(0).clause(&clause)?;
     Ok(clause)
+}
+
+fn clause_as_formula(clause: &[Literal]) -> Formula {
+    if clause.is_empty() {
+        return Formula::False;
+    }
+    Formula::or(
+        clause
+            .iter()
+            .map(|literal| {
+                let atom = Formula::atom(literal.atom.clone());
+                if literal.positive {
+                    atom
+                } else {
+                    Formula::neg(atom)
+                }
+            })
+            .collect(),
+    )
+}
+
+fn clause_alpha_permutation_match(
+    left: &[Literal],
+    right: &[Literal],
+    limits: VerificationLimits,
+) -> Result<bool, String> {
+    match cnf_alpha_equiv(&clause_as_formula(left), &clause_as_formula(right), limits) {
+        MatchOutcome::Match => Ok(true),
+        MatchOutcome::Differ => Ok(false),
+        MatchOutcome::Undecided => Err("clause alpha/permutation comparison ceiling".into()),
+    }
 }
 
 /// Parse actual TPTP parents/conclusion and check one archived/local step.
@@ -2975,6 +3154,9 @@ fn dag_request(
         if !f.role().is_premise() && f.role() != FormulaRole::NegatedConjecture {
             return Err("unsupported problem role or conjecture transformation".into());
         }
+        if !f.is_cnf() {
+            return Err("only CNF problem clauses are supported by the Verus bridge".into());
+        }
         let clause = supported_clause(&mut symbols, f, limits)?;
         for l in &clause {
             register_signatures(&Formula::Atom(l.atom.clone()), &mut signatures)?;
@@ -3010,7 +3192,7 @@ fn dag_request(
                 return Err("nested/annotated inference parents require explicit replay".into());
             }
         }
-        let raw = supported_clause(&mut symbols, node_formula, limits)?;
+        let mut raw = supported_clause(&mut symbols, node_formula, limits)?;
         for l in &raw {
             register_signatures(&Formula::Atom(l.atom.clone()), &mut signatures)?;
         }
@@ -3049,10 +3231,19 @@ fn dag_request(
             } else {
                 verify_leaf(node, problem, source, &mut symbols, limits)
                     .map_err(|v| v.to_string())?;
-                // Exact raw syntax, no AC/alpha leaf relaxation in this bridge.
-                if !inputs.contains(&raw) {
-                    return Err("leaf differs from exact problem clause".into());
+                // The strict leaf check binds this proof formula to its named,
+                // provenance-bearing problem formula. Normalize the resulting
+                // IR leaf to that clause's exact order/variable IDs so the
+                // verified DAG membership test remains syntactic.
+                let mut canonical = None;
+                for input in &inputs {
+                    if clause_alpha_permutation_match(&raw, input, limits)? {
+                        canonical = Some(input.clone());
+                        break;
+                    }
                 }
+                let canonical = canonical.ok_or("leaf differs from every problem clause")?;
+                raw = canonical;
                 (Kind::Input, raw, parents)
             }
         } else if (matches!(
@@ -3418,7 +3609,7 @@ fn dag_request(
                         return Err("no supported equality resolution certificate".into());
                     }
                 }
-                Some("factoring") => {
+                Some("factoring") | Some("factor") => {
                     let c = factoring_certificate(parent, &raw, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::Factoring(c), conclusion, parents)
@@ -3479,6 +3670,18 @@ fn dag_request(
                 | Some("fof_simplification")
                 | Some("flattening") => {
                     let c = instantiation_certificate(parent, &raw, limits)?;
+                    let conclusion = c.conclusion.clone();
+                    (Kind::Instantiation(c), conclusion, parents)
+                }
+                Some("clausify") => {
+                    if !clause_alpha_permutation_match(parent, &raw, limits)? {
+                        return Err("clausify conclusion is not the same universal clause".into());
+                    }
+                    // This adapter slice only accepts clausification that
+                    // preserves the clause. Store the parent's exact ordered
+                    // representation; the independent strict kernel checks
+                    // the original FOF-to-CNF annotation.
+                    let c = instantiation_certificate(parent, parent, limits)?;
                     let conclusion = c.conclusion.clone();
                     (Kind::Instantiation(c), conclusion, parents)
                 }
@@ -3953,6 +4156,74 @@ mod dag_boundary_tests {
             error.contains("type declarations in proofs are unsupported"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn restricted_universal_fof_clause_proofs_lower_and_fail_closed() {
+        let parsed = mrs_tptp::parse_tptp("fof(c,axiom,![X,Y]:(~p(X)|q(f(Y)))).").unwrap();
+        let mut symbols = SymbolTable::new();
+        let clause = supported_clause(
+            &mut symbols,
+            &parsed.formulas[0],
+            VerificationLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(clause.len(), 2);
+        assert!(!clause[0].positive);
+        assert!(clause[1].positive);
+
+        for unsupported in [
+            "fof(conj,axiom,![X]:(p(X)&q(X))).",
+            "fof(exists,axiom,?[X]:p(X)).",
+            "fof(free,axiom,p(X)).",
+            "fof(defined,axiom,$less(1,2)).",
+        ] {
+            let parsed = mrs_tptp::parse_tptp(unsupported).unwrap();
+            let error = supported_clause(
+                &mut symbols,
+                &parsed.formulas[0],
+                VerificationLimits::default(),
+            )
+            .unwrap_err();
+            assert!(!error.is_empty(), "{unsupported} unexpectedly lowered");
+        }
+
+        let fof_problem = mrs_tptp::parse_tptp("fof(a,axiom,p).").unwrap();
+        let cnf_proof = mrs_tptp::parse_tptp(
+            "cnf(a,axiom,p,file('input',a)). \
+             cnf(b,axiom,~p,file('input',b)). \
+             cnf(bot,plain,$false,inference(resolution,[status(thm)],[a,b])).",
+        )
+        .unwrap();
+        let error = dag_request(
+            &fof_problem,
+            &cnf_proof,
+            Some("input"),
+            VerificationLimits::default(),
+        )
+        .unwrap_err();
+        assert!(error.contains("only CNF problem clauses"), "{error}");
+    }
+
+    #[test]
+    fn archived_prover9_syn343_clause_dag_lowers_to_exact_input_ir() {
+        let problem = mrs_tptp::parse_tptp(include_str!(
+            "../../../formal/superposition-checker/fixtures/SYN343-1.p"
+        ))
+        .unwrap();
+        let proof = mrs_tptp::parse_tptp(include_str!(
+            "../../../formal/superposition-checker/fixtures/SYN343-1-Prover9-2026-6A.s"
+        ))
+        .unwrap();
+        let (request, node_count) = dag_request(
+            &problem,
+            &proof,
+            Some("theBenchmark.p"),
+            VerificationLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(node_count, 7);
+        assert!(!request.is_empty());
     }
 }
 

@@ -2,7 +2,7 @@
 
 ## Integration boundary (2026-10-20)
 
-The bounded wire-v1 checker and CNF TPTP adapter are implemented; see
+The bounded wire-v1 checker and CNF-problem/restricted-FOF-clause proof adapter are implemented; see
 [`INTERCHANGE.md`](INTERCHANGE.md). `mrs-proof-kernel::verus` and
 `mrs-proover::strict` call the compiled artifact in explicit shadow or opt-in
 dual-check mode. The latter certifies only when both independent paths accept.
@@ -29,7 +29,7 @@ The actual archived c502 fixture is now parsed, translated and accepted as a
 local step through the subprocess boundary. Complete supported CNF DAGs,
 including an essential superposition plus exact-atom-resolution refutation,
 are checked against the actual artifact built and verified in formal CI.
-The indexed eight-entry corpus also exercises full parsed TPTP refutations
+The indexed nine-entry corpus also exercises full parsed TPTP refutations
 through the strict/Verus dual-check path with exact node-count checks. It has
 four hand-authored smoke proofs, a seven-node synthetic MRS 0.3.0
 function-bearing Horn-resolution chain, and three MRS 0.3.0 proofs generated
@@ -39,14 +39,18 @@ condensation/subsumption resolution, and a 29-node `PUZ001-2` equality proof
 using superposition, equality resolution, demodulation and subsumption
 resolution. The `PUZ001-2` proof expands a symmetric source equality into an
 explicit symmetry node before superposition. One `PUZ001-1` conclusion has its
-literal order normalized to the exact ordered-resolvent contract. All vendored
-problems and generated proof
-texts match their SHA-256 and node-count records in `supported-rules.json`. For
+literal order normalized to the exact ordered-resolvent contract. The corpus
+also includes the archived Prover9 2026-6A `SYN343-1` proof from the public
+TPTP solution archive. Its v9.3.1 proof is checked against the vendored v10.0.0
+problem after strict source/formula validation and bounded adapter normalization
+of FOF universal clauses. All vendored problems and proof texts match their
+SHA-256 and node-count records in `supported-rules.json`. For
 each case, formal CI mutates the first cited parent to a different existing
 input, replaces its first inference with an unsupported rule, adds an
 otherwise-valid but disconnected input node, and forges a nonempty root; none
-may produce a certified result. This is generated TPTP coverage, not an archived
-competition-system proof or a representative archive corpus.
+may produce a certified result. The corpus is not a representative competition
+archive; its one external Prover9 solution is coverage of one archived derivation
+only and does not establish campaign provenance.
 Exact-atom resolution has a separate semantic theorem and executable checker;
 it removes one occurrence per parent with identical complementary atoms and
 does not implement pivot unification. The three-clause c502 fixture is not the

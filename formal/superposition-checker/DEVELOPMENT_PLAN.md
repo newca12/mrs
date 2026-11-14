@@ -7,6 +7,31 @@ The bounded **M5 interchange and MRS integration implementation now exists**.
 The older milestone narrative below records the prototype's history; statements
 that no interchange or caller exists are superseded by this update.
 
+### 2026-11-14 archived Prover9 positive-proof checkpoint
+
+- **DONE (M4/M5/M7 corpus slice):** add the complete public TPTP solution
+  `Prover9---2026-6A.UNS-CRf.s` for `SYN343-1` to the strict/Verus dual-check
+  corpus. The 7-node archive artifact, source URL, raw-archive and normalized-
+  fixture SHA-256 values, system version and problem-release metadata are pinned
+  in `supported-rules.json`; trailing horizontal whitespace alone is removed
+  from the vendored fixture. The per-case
+  forged-root, wrong-parent, unsupported-rule and disconnected-input mutations
+  apply unchanged.
+- **DONE:** the archive expresses two input clauses and their `clausify` steps
+  as restricted FOF formulas. The host bridge accepts only outer-universal
+  disjunctions of ordinary literals for proof formulas, leaves problem input
+  syntax CNF-only, requires strict source/name/formula plus compatible-role
+  matching, and
+  normalizes accepted leaves/clausify edges to the exact input-clause IR.
+  The strict kernel independently checks the original FOF/CNF proof artifact.
+- **Version note:** the archived proof header identifies TPTP v9.3.1; the
+  checked-in `SYN343-1` problem is TPTP v10.0.0. The archive clauses are
+  validated against that vendored input by the strict kernel. Do not describe
+  these as byte-identical release artifacts.
+- **Scope:** this is one public archived positive derivation, not a
+  representative competition corpus, verified TPTP lowering, formal proof of
+  the host normalizer, independent theorem review, or default certification.
+
 ### 2026-11-13 MRS-generated TPTP proof checkpoint
 
 - **DONE (M4/M7 generated positive slice):** run MRS 0.3.0 on real TPTP v10.0.0
@@ -143,8 +168,8 @@ that no interchange or caller exists are superseded by this update.
   the existing forged-nonempty-root mutation remains required.
 - **DONE:** the machine-readable support manifest records all four per-case
   negative mutation classes.
-- **Scope:** this strengthens structural corpus regressions only. The fixtures
-  remain hand-authored, not an archived/representative competition corpus, and
+- **Scope:** this strengthens structural mutation coverage of the four-case
+  hand-authored smoke corpus only. The wider corpus is not representative, and
   the broader threat-model audit remains open.
 
 ### 2026-11-11 pinned runtime-artifact evidence checkpoint
@@ -918,9 +943,9 @@ the item itself is explicitly marked `ABANDONED`.
 | M2 — Replay primitives | **PARTIAL** | Recursive substitution, term/atom/literal/clause replay and term-position replacement are refined. Collector exactness now composes with independent freshening-scan postconditions to prove variable-valued images throughout each parent, and accepted certificates expose `renames_variables_on` for every parent literal. One standalone superposition counter spans structure, preflight and replay work: clause-variable collection, coverage/membership, domain uniqueness, binding lookups/copies, avoid scans, injectivity, freshened-clause materialization, both-parent substitution, target replacement, conclusion construction/comparison, path equality, selected-term lookup and unifier application/comparison. Nullary/exact-atom and first-order resolution meters include DAG node/parent work, resolvent construction and conclusion comparison. Reflexivity meters its term-equality test; transitivity shares work across changed-literal matching, orientation candidates and equality-term comparisons; symmetry meters candidate orientation and unchanged-literal matching; excluded middle meters polarity and atom equality. Equality resolution and clause factoring share local replay meters through substitution, pivot checks, deletion and conclusion comparison. Equality factoring meters selected-term applications/comparison, clause substitution, conclusion construction and comparison. Subsumption resolution meters collection, active-parent freshening, unifier application, pivot and mapped-literal comparisons, deletion and conclusion comparison. Weakening meters inclusion-literal matching; instantiation and condensation meter substitution/inclusion and exact conclusion checks; demodulation meters freshening, term application, selected-position matching, replacement and exact conclusion comparison; congruence meters recursive orientation checks, sibling comparisons and clause scanning; tautology meters reflexive-equality and complementary-literal scans, also in structural preflight. These inference DAG paths pass per-node checks into local replay meters. The per-node validator's superposition parent checks also flow through its replay meter. Adversarial unifier conflict/match, var-to-var, subterm variable and parent avoid-set cases are verified. Remaining: larger-arity generalization, other inference-family helpers, and other unifier callers; the checker-defined cumulative work accounting audit is complete. |
 | M3 — Superposition checker | **PARTIAL: general replay soundness proved** | `check_superposition_and_replay` postconditions both exact ordered conclusion equality and universal validity preservation for accepted general certificates. `replay_semantic_premises` connects checked source equality, selected target occurrence, unifier equation and replacement to `standardized_superposition_sound`. Context deletion/substitution and exact conclusion-order composition are proved. Bounded executable certificates accept archived `SWV406+1:c502` and a source-variable binding case, rejecting forged conclusions. The supported CNF adapter and proof-DAG bridge are exercised by integration fixtures; full MRS archived SWV406+1 TSTP translation/proof-DAG replay, broader equivalence modulo literal order/renaming, instruction-level resource-cost refinement, and independent calculus review remain. A separate complete Leo-III THF artifact is tested only as unsupported negative input.
 | M4 — Proof-DAG validation | **PARTIAL** | `certify_dag` returns `Certified` with `dag_inputs_unsatisfiable`, proving no well-formed interpretation satisfies the supplied universally closed IR inputs. DAG dispatch supports input, superposition, positive-left/negative-right nullary/exact-atom resolution (including symmetric equality pivots), first-order binary resolution (including symmetric equality pivots), unary equality resolution, unary clause factoring, unary equality factoring, subsumption resolution, clause weakening, demodulation, instantiation, condensation, reflexivity, transitivity, symmetry, excluded middle, equality congruence, and clause tautology nodes. Reflexivity, excluded-middle, and tautology introductions accept zero-parent nodes. Accepted replay postconditions prove universal validity preservation; the generic induction consumes local entailment. The certified root is required empty by the semantic specification; each supported inference's declared parent arity is checked. Compiled refutations certify without empty inputs. Root-ancestor closure rejects disconnected nodes and returns `Unknown` on bounded traversal exhaustion. The certifier carries one shared work counter across structural preflight, closure and per-node validation; input-leaf membership charges both clauses for every repeated candidate comparison. For superposition, nullary/exact-atom and first-order resolution, equality resolution, clause factoring, equality factoring, subsumption resolution, weakening, instantiation, condensation, demodulation, reflexivity, transitivity, symmetry, excluded middle, congruence and tautology, `validate_dag_node_with_work` carries per-node parent/node-clause charges through cited-parent comparison and local replay. The certifier now shares one mutable meter across phases and nodes; a three-node exact cutoff and structural/closure/node reset mutants cover the handoffs. Checker-defined work-unit completeness is audited (see the completion checkpoint); instruction-level resource-cost refinement, verified TPTP input bridge refinement and broader fixtures remain. |
-| M5 — MRS integration | **PARTIAL: verified wire decoder, trusted TPTP bridge** | Wire v1 structural decoding and decimal byte tokenization with verified span correspondence are verified in Verus; bounded byte acquisition shim, CNF TPTP adapter, certificate discovery, kernel/ProoVer shadow and opt-in dual-check APIs, archived local c502 translation, complete supported DAG integration, artifact provenance and CI boundary tests exist. Problem/proof AST snapshots now reject formula-count or canonical syntax/annotation changes; this remains a trusted host-side guard. TPTP bridge refinement, independent review and default-enable gate remain. See `INTERCHANGE.md`. |
+| M5 — MRS integration | **PARTIAL: verified wire decoder, trusted TPTP bridge** | Wire v1 structural decoding and decimal byte tokenization with verified span correspondence are verified in Verus; bounded byte acquisition shim, CNF-problem/restricted-FOF-clause proof adapter, certificate discovery, kernel/ProoVer shadow and opt-in dual-check APIs, archived local c502 translation, complete supported DAG integration, artifact provenance and CI boundary tests exist. The restricted FOF path accepts one archived Prover9 proof; problem/proof AST snapshots and clause normalization remain trusted host-side guards. TPTP bridge refinement, independent review and default-enable gate remain. See `INTERCHANGE.md`. |
 | M6 — Broader rules | **PARTIAL** | Nullary-predicate, exact-atom (including symmetric equality pivots), first-order resolution with unifier (including symmetric equality pivots), equality resolution, clause factoring, equality factoring, subsumption resolution, clause weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology are verified and DAG-dispatched; AC, transformations, and AVATAR/LRAT remain unimplemented. |
-| M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, a CI audit for `assume`, `admit`, and external-body/allow escape hatches, per-call reports carrying the manifest plus artifact/evidence hashes, and one full archived THF proof rejected by the fail-closed typed-syntax guard. CI uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. A two-runner Ubuntu 24.04 runtime/evidence byte-comparison job is configured, but has no successful CI evidence recorded yet. A representative positive archive corpus, independent theorem review, and default-enable release gates remain. |
+| M7 — Assurance/release gates | **PARTIAL** | Added a machine-readable supported-rule/limits manifest, a TCB/re-audit note, a CI audit for `assume`, `admit`, and external-body/allow escape hatches, per-call reports carrying the manifest plus artifact/evidence hashes, one full archived THF proof rejected by the fail-closed typed-syntax guard, and one complete archived Prover9 proof accepted through the strict/Verus dual-check corpus. CI uploads a Verus evidence log with source commit, binary hash, toolchain, and proof output. A two-runner Ubuntu 24.04 runtime/evidence byte-comparison job is configured, but has no successful CI evidence recorded yet. A representative positive archive corpus, independent theorem review, and default-enable release gates remain. |
 
 **M2–M4 resource-accounting completion (2026-11-07):** the source-level audit and
 the successful full verification/mutation gate discharge the table's earlier exact
@@ -938,8 +963,9 @@ outside this Verus directory remains open.
 passes all four Verus files (currently `5`, `570`, `5`, and `5` verified functions
 respectively), the compiled runtime fixtures pass, and all mutation gates pass.
 The general replay accepts the manually encoded local c502 step with its semantic
-validity-preservation theorem. These results establish the implemented bounded
-artifacts, not a parsed TSTP proof or production-integrated certificate.
+validity-preservation theorem. The trusted adapter also parses and dual-checks the
+indexed TSTP fixtures; this does not verify TPTP parsing/lowering or establish a
+default production certification path.
 
 The detailed milestone text below is the target specification. A milestone is
 not complete merely because a related prototype exists; update this ledger and
@@ -1779,11 +1805,11 @@ archived cases, and a versioned support declaration.
   artifact hash and fails closed if its manifest copies disagree. This metadata
   comes from the trusted build sidecar; it is not part of the IR soundness proof.
 - **TODO — DIFFICULT:** expand the accepted corpus beyond the four-case
-  hand-authored smoke set, one synthetic MRS proof and three MRS-generated proofs
-  from real TPTP inputs to representative/archived positive proofs, and obtain
-  independent theorem review. One complete archived Leo-III THF proof is now a
-  negative-only unsupported-syntax regression. Cross-host artifact
-  reproducibility also remains open.
+  hand-authored smoke set, one synthetic MRS proof, three MRS-generated proofs
+  from real TPTP inputs and one archived Prover9 proof to representative
+  archived positive proofs, and obtain independent theorem review. One complete
+  archived Leo-III THF proof is a negative-only unsupported-syntax regression.
+  Cross-host artifact reproducibility also remains open.
 
 **Deliverables**
 
@@ -2074,3 +2100,11 @@ satisfiability/model claims, and unrestricted full TSTP.
   problem files and problem/proof SHA-256 values, and add all three proofs to the
   strict/Verus dual-check corpus with the existing per-case mutations. This is
   real-input generated coverage, not archived output from independent provers.
+- [x] Add the complete public Prover9 2026-6A `SYN343-1` TSTP solution as a
+  first archived positive corpus case. Pin the source URL, proof/problem hashes,
+  archive and vendored problem releases, and exact node count; require strict and
+  Verus dual certification plus forged-root, wrong-parent, unsupported-rule and
+  disconnected-input mutations. Support only restricted outer-universal FOF
+  proof clauses and clause-preserving `clausify`; problem input remains CNF.
+  This is one archive-derived fixture, not representative competition coverage,
+  verified TPTP lowering, or completion of independent theorem review.

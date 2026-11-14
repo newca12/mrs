@@ -652,7 +652,7 @@ fn verify_strict_with_source_internal(
                     limits,
                 },
             ),
-            "cnf_transformation" => verify_cnf_transformation(
+            "cnf_transformation" | "clausify" => verify_cnf_transformation(
                 node.name,
                 &parents,
                 conclusion,
@@ -670,7 +670,7 @@ fn verify_strict_with_source_internal(
                 &background_associative,
             ),
             "subsumption_resolution" => verify_subsumption_resolution(&parents, conclusion, limits),
-            "factoring" => verify_factoring(&parents, conclusion, limits),
+            "factoring" | "factor" => verify_factoring(&parents, conclusion, limits),
             "equality_resolution" | "destructive_equality_resolution" => {
                 verify_equality_resolution(&parents, conclusion, limits)
             }
@@ -997,10 +997,12 @@ fn expected_status(rule: &str) -> Option<&'static str> {
         | "conjunction"
         | "split_conjunct"
         | "cnf_transformation"
+        | "clausify"
         | "resolution"
         | "resolve"
         | "subsumption_resolution"
         | "factoring"
+        | "factor"
         | "equality_resolution"
         | "destructive_equality_resolution"
         | "equality_factoring"
@@ -4020,7 +4022,10 @@ impl CnfAlphaState {
 
 fn roles_compatible(proof: FormulaRole, problem: FormulaRole) -> bool {
     if proof == FormulaRole::Plain || proof.is_premise() {
-        problem.is_premise()
+        // A refutation producer may re-label a supplied negated-conjecture
+        // clause as an axiom. Both are assumptions in the clause problem; the
+        // source/name/formula checks still bind the leaf to that exact clause.
+        problem.is_premise() || problem == FormulaRole::NegatedConjecture
     } else {
         proof == problem
     }

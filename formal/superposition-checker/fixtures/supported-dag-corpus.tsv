@@ -7,3 +7,4 @@ generated-horn-chain mrs-generated-synthetic-0.3.0 generated-horn-chain-problem.
 generated-puz001 mrs-generated-tptp-v10.0.0 PUZ001-1.p PUZ001-1-mrs-proof.p PUZ001-1.p 28
 generated-syn343 mrs-generated-tptp-v10.0.0 SYN343-1.p SYN343-1-mrs-proof.p SYN343-1.p 5
 generated-puz001-equality mrs-generated-tptp-v10.0.0 PUZ001-2.p PUZ001-2-mrs-proof.p PUZ001-2.p 29
+archived-prover9-syn343 tptp-archive-prover9-2026-6a SYN343-1.p SYN343-1-Prover9-2026-6A.s theBenchmark.p 7

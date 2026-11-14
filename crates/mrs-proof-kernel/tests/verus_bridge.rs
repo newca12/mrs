@@ -3,7 +3,7 @@ use mrs_proof_kernel::verus::{
     ShadowVerdict, VerusConfig, check_tptp_dag, check_tptp_step, verify_with_shadow,
     verify_with_verus_gate,
 };
-use mrs_proof_kernel::{KernelVerdict, VerificationLimits};
+use mrs_proof_kernel::{KernelVerdict, VerificationLimits, verify_strict_with_source};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
@@ -19,10 +19,34 @@ fn config() -> VerusConfig {
 
 fn first_input_name(tptp: &str) -> Option<&str> {
     tptp.lines().find_map(|line| {
-        let declaration = line.trim().strip_prefix("cnf(")?;
+        let declaration = line
+            .trim()
+            .strip_prefix("cnf(")
+            .or_else(|| line.trim().strip_prefix("fof("))?;
         let (name, rest) = declaration.split_once(',')?;
         let (role, _) = rest.split_once(',')?;
         matches!(role.trim(), "axiom" | "negated_conjecture").then_some(name.trim())
+    })
+}
+
+fn is_empty_cnf_clause(formula: &mrs_tptp::AnnotatedFormula<'_>) -> bool {
+    fn empty_body(formula: &mrs_tptp::CNFFormula<'_>) -> bool {
+        match formula {
+            mrs_tptp::CNFFormula::Parens(inner) => empty_body(inner),
+            mrs_tptp::CNFFormula::Disjunction(literals) => {
+                literals.len() == 1
+                    && matches!(
+                        literals.first(),
+                        Some(mrs_tptp::CNFLiteral::Positive(
+                            mrs_tptp::CNFAtomicFormula::False
+                        ))
+                    )
+            }
+        }
+    }
+
+    formula.as_cnf().is_some_and(|cnf| match &cnf.formula {
+        mrs_tptp::CNFStatement::Logical(body) => empty_body(body),
     })
 }
 
@@ -60,6 +84,77 @@ fn replace_first_inference_rule(tptp: &str, replacement: &str) -> String {
         replacement,
         &tptp[rule_end..]
     )
+}
+
+#[test]
+fn archived_prover9_syn343_proof_certifies_in_the_strict_kernel() {
+    let problem_text = include_str!("../../../formal/superposition-checker/fixtures/SYN343-1.p");
+    let proof_text =
+        include_str!("../../../formal/superposition-checker/fixtures/SYN343-1-Prover9-2026-6A.s");
+    let actual_sha256 = Sha256::digest(proof_text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../formal/superposition-checker/supported-rules.json"
+    ))
+    .unwrap();
+    let archive_case = &manifest["limits"]["supported_dag_fixture_corpus_archived_positive_proofs"]
+        ["SYN343-1-Prover9-2026-6A.s"];
+    assert_eq!(
+        archive_case["fixture_sha256"].as_str(),
+        Some(actual_sha256.as_str())
+    );
+    assert_eq!(
+        archive_case["archive_sha256"],
+        "a39372f9b113e504401adb071a32940660919e7f0f86ddd1423004e8ae890df9"
+    );
+    assert_eq!(
+        archive_case["fixture_normalization"],
+        "remove_trailing_ascii_horizontal_whitespace_per_line"
+    );
+    assert!(proof_text.contains("% Archive SHA-256 before repository normalization:"));
+    let problem = mrs_tptp::parse_tptp(problem_text).unwrap();
+    let proof = mrs_tptp::parse_tptp(proof_text).unwrap();
+    let verdict = verify_strict_with_source(
+        &problem,
+        &proof,
+        Some("theBenchmark.p"),
+        VerificationLimits::default(),
+    );
+    assert_eq!(verdict, KernelVerdict::Certified);
+}
+
+#[test]
+fn strict_leaf_role_mapping_accepts_negated_conjectures_but_not_goals() {
+    let proof = mrs_tptp::parse_tptp(
+        "cnf(a,axiom,p,file('input',a)). \
+         cnf(b,axiom,~p,file('input',b)). \
+         cnf(bot,plain,$false,inference(resolve,[status(thm)],[a,b])).",
+    )
+    .unwrap();
+    let negated_conjecture =
+        mrs_tptp::parse_tptp("cnf(a,negated_conjecture,p). cnf(b,axiom,~p).").unwrap();
+    assert_eq!(
+        verify_strict_with_source(
+            &negated_conjecture,
+            &proof,
+            Some("input"),
+            VerificationLimits::default(),
+        ),
+        KernelVerdict::Certified
+    );
+
+    let conjecture = mrs_tptp::parse_tptp("cnf(a,conjecture,p). cnf(b,axiom,~p).").unwrap();
+    assert_ne!(
+        verify_strict_with_source(
+            &conjecture,
+            &proof,
+            Some("input"),
+            VerificationLimits::default(),
+        ),
+        KernelVerdict::Certified
+    );
 }
 
 #[test]
@@ -948,6 +1043,7 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
     let mut hand_authored_cases = 0;
     let mut synthetic_generated_cases = 0;
     let mut tptp_generated_cases = 0;
+    let mut archived_positive_cases = 0;
     for (line_number, line) in CORPUS.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -970,6 +1066,7 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
             "hand-authored" => hand_authored_cases += 1,
             "mrs-generated-synthetic-0.3.0" => synthetic_generated_cases += 1,
             "mrs-generated-tptp-v10.0.0" => tptp_generated_cases += 1,
+            "tptp-archive-prover9-2026-6a" => archived_positive_cases += 1,
             other => panic!("{name} has unrecognized corpus origin {other:?}"),
         }
         let problem_text = load_fixture(problem_file);
@@ -1004,6 +1101,56 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
                 tptp_case["checked_nodes"],
                 expected_nodes.parse::<usize>().unwrap(),
                 "{name} node-count manifest drifted"
+            );
+        } else if *origin == "tptp-archive-prover9-2026-6a" {
+            let archive_case = &corpus_manifest["limits"]["supported_dag_fixture_corpus_archived_positive_proofs"]
+                [*proof_file];
+            let actual_problem_sha256 = Sha256::digest(problem_text.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let actual_proof_sha256 = Sha256::digest(proof_text.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(archive_case["problem_file"], *problem_file, "{name}");
+            assert_eq!(
+                archive_case["problem_sha256"], actual_problem_sha256,
+                "{name}"
+            );
+            assert_eq!(
+                archive_case["fixture_sha256"], actual_proof_sha256,
+                "{name}"
+            );
+            assert_eq!(
+                archive_case["archive_sha256"],
+                "a39372f9b113e504401adb071a32940660919e7f0f86ddd1423004e8ae890df9",
+                "{name} raw archive hash drifted"
+            );
+            assert_eq!(
+                archive_case["fixture_normalization"],
+                "remove_trailing_ascii_horizontal_whitespace_per_line",
+                "{name} fixture normalization drifted"
+            );
+            assert_eq!(archive_case["system"], "Prover9", "{name}");
+            assert_eq!(archive_case["system_version"], "2026-6A", "{name}");
+            assert_eq!(
+                archive_case["proof_metadata_tptp_release"], "9.3.1",
+                "{name}"
+            );
+            assert_eq!(
+                archive_case["problem_fixture_tptp_release"], "10.0.0",
+                "{name}"
+            );
+            assert_eq!(
+                archive_case["checked_nodes"],
+                expected_nodes.parse::<usize>().unwrap(),
+                "{name} node-count manifest drifted"
+            );
+            assert_eq!(
+                archive_case["proof_url"],
+                "https://seetptp.tptp.org/file/TPTPWorld/TSTP/Solutions/SYN/SYN343-1/Prover9---2026-6A.UNS-CRf.s",
+                "{name} archive provenance drifted"
             );
         }
         let problem = mrs_tptp::parse_tptp(&problem_text)
@@ -1054,12 +1201,23 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
             "prototype_non_certifying"
         );
 
+        let empty_roots = proof
+            .formulas
+            .iter()
+            .filter(|formula| {
+                formula.role() == mrs_tptp::FormulaRole::Plain && is_empty_cnf_clause(formula)
+            })
+            .count();
         assert_eq!(
-            proof_text.matches("plain,$false").count(),
-            1,
+            empty_roots, 1,
             "{name} must have exactly one empty-clause root"
         );
-        let forged_root_text = proof_text.replacen("plain,$false", "plain,p", 1);
+        assert_eq!(
+            proof_text.matches("$false").count(),
+            1,
+            "{name} must have a unique textual empty-clause token for mutation"
+        );
+        let forged_root_text = proof_text.replacen("$false", "p", 1);
         let forged_root = mrs_tptp::parse_tptp(&forged_root_text)
             .unwrap_or_else(|error| panic!("{name} forged root did not parse: {error}"));
         let (forged_verdict, forged_report) = verify_with_verus_gate(
@@ -1120,9 +1278,20 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         let first_inference = proof_text
             .find("inference(")
             .unwrap_or_else(|| panic!("{name} has no inference to anchor the inserted input"));
-        let insertion = proof_text[..first_inference]
-            .rfind('\n')
-            .map_or(0, |previous_line| previous_line + 1);
+        let insertion = [
+            proof_text[..first_inference]
+                .rfind("\ncnf(")
+                .map(|start| start + 1)
+                .or_else(|| proof_text.starts_with("cnf(").then_some(0)),
+            proof_text[..first_inference]
+                .rfind("\nfof(")
+                .map(|start| start + 1)
+                .or_else(|| proof_text.starts_with("fof(").then_some(0)),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or_else(|| panic!("{name} has no annotated formula before its first inference"));
         let disconnected_proof = format!(
             "{}{}\n{}",
             &proof_text[..insertion],
@@ -1137,7 +1306,7 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         );
         cases += 1;
     }
-    assert_eq!(cases, 8, "supported DAG corpus inventory changed");
+    assert_eq!(cases, 9, "supported DAG corpus inventory changed");
     assert_eq!(
         hand_authored_cases, 4,
         "hand-authored corpus inventory changed"
@@ -1149,6 +1318,10 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
     assert_eq!(
         tptp_generated_cases, 3,
         "TPTP generated corpus inventory changed"
+    );
+    assert_eq!(
+        archived_positive_cases, 1,
+        "archived positive inventory changed"
     );
     assert_eq!(
         corpus_manifest["limits"]["supported_dag_fixture_corpus_entries"],
@@ -1169,6 +1342,14 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
     assert_eq!(
         corpus_manifest["limits"]["supported_dag_fixture_corpus_real_tptp_generated_cases"],
         tptp_generated_cases
+    );
+    assert_eq!(
+        corpus_manifest["limits"]["supported_dag_fixture_corpus_archived_positive_cases"],
+        archived_positive_cases
+    );
+    assert_eq!(
+        corpus_manifest["limits"]["supported_dag_fixture_corpus_has_external_archived_positive"],
+        true
     );
 }
 
