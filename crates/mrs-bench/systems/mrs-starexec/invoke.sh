@@ -15,14 +15,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../../../../" && pwd)"
 MRS_SYSTEM_DIR="${SCRIPT_DIR}/../mrs"
 
-# Ensure the compiled release binary exists next to starexec_run_default
-if [[ ! -f "${MRS_SYSTEM_DIR}/mrs" ]]; then
-    if [[ -f "${WORKSPACE_ROOT}/target/release/mrs" ]]; then
-        cp "${WORKSPACE_ROOT}/target/release/mrs" "${MRS_SYSTEM_DIR}/mrs"
-    else
-        echo "% SZS status Error (mrs binary not found; run: cargo build --release)"
-        exit 1
-    fi
+# Ensure the current compiled release binary is next to starexec_run_default.
+# certification_campaign.sh rebuilds target/release/mrs before search; refresh
+# this local StarExec package copy when that build is newer, rather than silently
+# measuring a previously copied binary.
+SOURCE_BINARY="${MRS_BINARY:-${WORKSPACE_ROOT}/target/release/mrs}"
+if [[ "${SOURCE_BINARY}" != /* ]]; then
+    SOURCE_BINARY="${PWD}/${SOURCE_BINARY}"
+fi
+INSTALLED_BINARY="${MRS_SYSTEM_DIR}/mrs"
+if [[ ! -x "${SOURCE_BINARY}" ]]; then
+    echo "% SZS status Error (mrs binary not found; run: cargo build --release)"
+    exit 1
+fi
+if [[ ! -x "${INSTALLED_BINARY}" || "${SOURCE_BINARY}" -nt "${INSTALLED_BINARY}" ]]; then
+    cp -- "${SOURCE_BINARY}" "${INSTALLED_BINARY}"
 fi
 
 # Simulate StarExec environment variables

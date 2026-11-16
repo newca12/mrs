@@ -1057,17 +1057,32 @@ fn find_problem(root: &Path, division: &str, problem: &str) -> Option<PathBuf> {
     } else {
         format!("{problem}.p")
     };
-    [
-        root.join(division).join(&filename),
-        root.join(division.to_ascii_uppercase()).join(&filename),
-        root.join(division.to_ascii_lowercase()).join(&filename),
-        root.join("Problems").join(division).join(&filename),
-        root.join("Problems")
-            .join(division.to_ascii_uppercase())
-            .join(&filename),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
+    let division_upper = division.to_ascii_uppercase();
+    let division_lower = division.to_ascii_lowercase();
+    let division_roots = [
+        root.join(division),
+        root.join(&division_upper),
+        root.join(&division_lower),
+        root.join("Problems").join(division),
+        root.join("Problems").join(&division_upper),
+        root.join("Problems").join(&division_lower),
+    ];
+
+    let mut candidates = Vec::with_capacity(division_roots.len() * 3);
+    for division_root in division_roots {
+        candidates.push(division_root.join(&filename));
+        candidates.push(
+            division_root
+                .join(format!("{division_upper}ProblemFiles"))
+                .join(&filename),
+        );
+        candidates.push(
+            division_root
+                .join(format!("{division_lower}ProblemFiles"))
+                .join(&filename),
+        );
+    }
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 fn normalize_proof(text: &str, problem_filename: &str) -> String {
@@ -1663,6 +1678,26 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn finds_j12_problemfiles_layout_from_edition_root() {
+        let root = tempfile::tempdir().unwrap();
+        let problem = root.path().join("Problems/UEQ/UEQProblemFiles/ALG245-1.p");
+        fs::create_dir_all(problem.parent().unwrap()).unwrap();
+        fs::write(&problem, "cnf(test, axiom, p).\n").unwrap();
+
+        assert_eq!(find_problem(root.path(), "ueq", "ALG245-1"), Some(problem));
+    }
+
+    #[test]
+    fn finds_j12_problemfiles_layout_when_root_is_problems_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let problem = root.path().join("TFN/TFNProblemFiles/ITP302_10.p");
+        fs::create_dir_all(problem.parent().unwrap()).unwrap();
+        fs::write(&problem, "tff(test, type, p: $o).\n").unwrap();
+
+        assert_eq!(find_problem(root.path(), "tfn", "ITP302_10"), Some(problem));
+    }
 
     /// The stdout `mrs` writes when it drops an over-budget proof. Taken from a
     /// real run (`MGT079+1`, `campaign-feq-W8C16J2-20260930`).

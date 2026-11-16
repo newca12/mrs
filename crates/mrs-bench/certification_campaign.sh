@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full-corpus self-certification campaign.
+# Competition-mode search and strict self-certification campaign.
 #
 # The fast gate (`certification_gate.sh`) answers "did anything regress" on the
 # committed corpora. This is the expensive question: over a whole CASC edition,
@@ -8,9 +8,9 @@
 #
 # Two phases, because they have very different costs:
 #
-#   search  run the normal competition route (`casc.sh`) so the proofs are the
-#           ones a competition run would produce — no `--self-check`, so the
-#           prover is not distorted by certification;
+#   search  by default, run the competition entry point through
+#           `mrs-starexec` with CASC time limits and hardware settings. No
+#           `--self-check` is used, so certification does not distort search;
 #   audit   replay the archived proofs through the strict kernel
 #           (`audit_casc_proofs --checks strict`) and summarise the outcome per
 #           division with a reason histogram.
@@ -18,8 +18,12 @@
 # The reason histogram is the point: "18 demodulation steps could not be
 # replayed" is actionable, "certification is 89%" is not.
 #
+# By default this selects `--systems mrs-starexec` and `--casc-times`. Use
+# `--systems mrs` with `--schedule` or `--portfolio` for local portfolio
+# experiments; those are not the competition entry-point measurement.
+#
 # Usage:
-#   crates/mrs-bench/certification_campaign.sh [--portfolio IDS] <casc-args...>
+#   crates/mrs-bench/certification_campaign.sh <casc-args...>
 #
 # For a pinned local corpus, `--manifest-out FILE` to `casc.sh` writes the
 # division/name inventory without running any systems. Pass that inventory as
@@ -30,7 +34,8 @@
 # already exists. Phase 1 is the expensive half (every problem, full wall
 # clock); re-running a campaign to reach the audit repeats all of it.
 #
-# `--portfolio IDS` selects one base strategy per portfolio worker (IDs 1..15).
+# `--portfolio IDS` selects one base strategy per portfolio worker (IDs 1..15)
+# when using the local `mrs` adapter.
 # It is checked against `MRS_WORKERS` (default 8), except EPS with certification
 # enabled, where one base slot is reserved for the certifier and the portfolio
 # needs `MRS_WORKERS-1` IDs. An explicit portfolio cannot cover EPS and other
@@ -41,20 +46,22 @@
 # Every successful run archives its complete output directory as a sibling
 # `<output>.tar.bz2`. `--audit-only` archives the audited run directory too.
 #
-# Examples (8-core competition hardware, two jobs of four workers):
-#   MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=500 \
+# Examples:
+#   # Default: competition entry point, CASC limits, 8 workers, one job.
 #   crates/mrs-bench/certification_campaign.sh \
-#       --edition casc-j13 --systems mrs --divisions fne,feq,ueq \
-#       --portfolio 11,4,12,1,6,8,2,3 --casc-times --jobs 2 \
+#       --edition casc-j13 --divisions fne,feq,ueq \
 #       --output results/cert-j13
+#
+#   # Explicit local portfolio experiment (not the competition entry point).
 #   MRS_WORKERS=8 MRS_SHARED_POOL_INTERVAL=0 \
 #   crates/mrs-bench/certification_campaign.sh \
 #       --edition casc-30 --systems mrs --divisions feq --portfolio 12,11,10,6,8,1,4,13 \
-#       --casc-times --jobs 1 --output results/coop-feq-no-sharing
+#       --time-feq 240 --jobs 1 --output results/coop-feq-no-sharing
 #   crates/mrs-bench/certification_campaign.sh --audit-only results/cert-j13
 #
 # Environment:
 #   MRS_WORKERS             worker count for mrs (default 8)
+#   MRS_HARDWARE            hardware profile (default casc)
 #   MRS_PORTFOLIO           explicit portfolio (alternative to --portfolio)
 #   MRS_EPS_CERTIFY         EPS certification track toggle (default 1)
 #   MRS_SHARED_POOL_INTERVAL equality-sharing poll interval (default 0)
@@ -77,6 +84,11 @@ MANIFEST_OUT=""
 AUDIT_ONLY=""
 PORTFOLIO_ARG=""
 DIVISIONS=""
+SYSTEMS=""
+SYSTEMS_EXPLICIT=0
+SCHEDULE_EXPLICIT=0
+CASC_TIMES_EXPLICIT=0
+GLOBAL_TIME_EXPLICIT=0
 CASC_ARGS=()
 
 # `--edition` and the problems root must agree with what phase 1 actually ran
@@ -102,6 +114,29 @@ for ((i = 0; i < ${#args[@]}; i++)); do
             [[ -n "${args[i + 1]}" ]] || { echo "campaign: --portfolio requires strategy IDs" >&2; exit 2; }
             [[ -z "${PORTFOLIO_ARG}" ]] || { echo "campaign: --portfolio may be specified only once" >&2; exit 2; }
             PORTFOLIO_ARG="${args[i + 1]}"
+            i=$((i + 1))
+            ;;
+        --systems)
+            ((i + 1 < ${#args[@]})) || { echo "campaign: --systems requires a value" >&2; exit 2; }
+            SYSTEMS="${args[i + 1]}"
+            SYSTEMS_EXPLICIT=1
+            CASC_ARGS+=("--systems" "${args[i + 1]}")
+            i=$((i + 1))
+            ;;
+        --schedule)
+            ((i + 1 < ${#args[@]})) || { echo "campaign: --schedule requires a value" >&2; exit 2; }
+            SCHEDULE_EXPLICIT=1
+            CASC_ARGS+=("--schedule" "${args[i + 1]}")
+            i=$((i + 1))
+            ;;
+        --casc-times)
+            CASC_TIMES_EXPLICIT=1
+            CASC_ARGS+=("--casc-times")
+            ;;
+        --time)
+            ((i + 1 < ${#args[@]})) || { echo "campaign: --time requires a value" >&2; exit 2; }
+            GLOBAL_TIME_EXPLICIT=1
+            CASC_ARGS+=("--time" "${args[i + 1]}")
             i=$((i + 1))
             ;;
         --edition)
@@ -145,6 +180,37 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 done
 [[ -n "${OUT}" || -n "${AUDIT_ONLY}" ]] || { echo "campaign: --output DIR is required" >&2; exit 2; }
 
+# The default search is the same entry point shipped to StarExec. A caller
+# explicitly asking for a named schedule or portfolio is running an experiment;
+# use the local `mrs` adapter for that path because the competition wrapper
+# intentionally always selects by content with --auto-schedule.
+CUSTOM_ROUTING=0
+if [[ -n "${PORTFOLIO_ARG}" || -n "${MRS_PORTFOLIO:-}" || \
+      "${SCHEDULE_EXPLICIT}" -eq 1 || -n "${MRS_SCHEDULE:-}" ]]; then
+    CUSTOM_ROUTING=1
+fi
+if [[ -z "${AUDIT_ONLY}" ]]; then
+    if [[ "${SYSTEMS_EXPLICIT}" -eq 0 ]]; then
+        if [[ "${CUSTOM_ROUTING}" -eq 1 ]]; then
+            SYSTEMS="mrs"
+            echo "campaign: custom schedule/portfolio requested; using local --systems mrs"
+            echo "campaign: this search is a portfolio experiment, not the competition entry point"
+        else
+            SYSTEMS="mrs-starexec"
+            echo "campaign: defaulting to the competition entry point (--systems mrs-starexec)"
+        fi
+        CASC_ARGS+=("--systems" "${SYSTEMS}")
+    elif [[ "${CUSTOM_ROUTING}" -eq 1 && ",${SYSTEMS,,}," != *",mrs,"* ]]; then
+        echo "campaign: --schedule/--portfolio overrides require --systems mrs; mrs-starexec always uses --auto-schedule" >&2
+        exit 2
+    fi
+
+    if [[ "${CASC_TIMES_EXPLICIT}" -eq 0 && "${GLOBAL_TIME_EXPLICIT}" -eq 0 ]]; then
+        CASC_ARGS+=("--casc-times")
+        echo "campaign: defaulting to per-edition CASC time limits"
+    fi
+fi
+
 # Match casc.sh's edition-specific default when an explicit portfolio is
 # validated without a --divisions option. In particular CASC-J12 has no EPS,
 # and its default roster includes the THF/TFA/TFN/SLH/ICU divisions.
@@ -160,13 +226,14 @@ fi
 # An audit-only run does not search, so its result must not depend on the caller's
 # current prover environment.
 if [[ -z "${AUDIT_ONLY}" ]]; then
-    # The prover defaults to eight workers in systems/mrs/invoke.sh, so use the
-    # same default here when checking one strategy per portfolio worker.
+    # Both the competition entry point and local mrs adapter default to eight
+    # workers; use the same value when checking one strategy per portfolio slot.
     if [[ -n "${PORTFOLIO_ARG}" ]]; then
         MRS_PORTFOLIO="${PORTFOLIO_ARG}"
     fi
     MRS_WORKERS="${MRS_WORKERS:-8}"
     MRS_SHARED_POOL_INTERVAL="${MRS_SHARED_POOL_INTERVAL:-0}"
+    MRS_HARDWARE="${MRS_HARDWARE:-casc}"
     if ! [[ "${MRS_WORKERS}" =~ ^[1-9][0-9]*$ ]]; then
         echo "campaign: MRS_WORKERS must be a positive integer" >&2
         exit 2
@@ -215,15 +282,16 @@ if [[ -z "${AUDIT_ONLY}" ]]; then
         fi
         export MRS_PORTFOLIO
     fi
-    export MRS_WORKERS MRS_SHARED_POOL_INTERVAL ${MRS_PROOF_BYTES_LIMIT:+MRS_PROOF_BYTES_LIMIT}
+    export MRS_WORKERS MRS_SHARED_POOL_INTERVAL MRS_HARDWARE ${MRS_PROOF_BYTES_LIMIT:+MRS_PROOF_BYTES_LIMIT}
 fi
 command -v tar >/dev/null 2>&1 || { echo "campaign: tar is required to archive the run" >&2; exit 2; }
 
-# Always build (cargo no-ops when up to date). Building only when the binary is
-# *missing* is not enough: the audit is a measurement of the current kernel, and
-# a stale binary silently applies yesterday's rules. That happened here -- a
-# campaign re-audited with a pre-fix `audit_casc_proofs` and reported every
-# model as invalid, which is indistinguishable from "the prover emitted none".
+# Build the competition binary and audit tool before the campaign. Building only
+# when a binary is *missing* is not enough: stale executables silently measure
+# yesterday's prover or checker. Cargo is a no-op when each target is current.
+if [[ -z "${AUDIT_ONLY}" ]]; then
+    (cd "${ROOT}" && cargo build --release --bin mrs)
+fi
 AUDIT_BIN="${ROOT}/target/release/audit_casc_proofs"
 (cd "${ROOT}" && cargo build --release -p mrs-bench --bin audit_casc_proofs)
 [[ -x "${AUDIT_BIN}" ]] || { echo "campaign: ${AUDIT_BIN} not built" >&2; exit 2; }
@@ -284,12 +352,10 @@ if [[ ! -d "${PROBLEMS_DIR}" ]]; then
     echo "campaign: use the run's recorded corpus root, --edition, or CASC_PROBLEMS_ROOT." >&2
     exit 2
 fi
-shopt -s nullglob
-CORPUS_PROBLEMS=("${PROBLEMS_DIR}"/*/*.p "${PROBLEMS_DIR}"/Problems/*/*.p)
-shopt -u nullglob
-if (( ${#CORPUS_PROBLEMS[@]} == 0 )); then
+CORPUS_PROBLEM="$(find -L "${PROBLEMS_DIR}" -type f -name '*.p' -print -quit 2>/dev/null || true)"
+if [[ -z "${CORPUS_PROBLEM}" ]]; then
     echo "campaign: no .p files under '${PROBLEMS_DIR}'; refusing to audit" >&2
-    echo "           ${#JOBS} job(s) of proofs against an empty corpus." >&2
+    echo "           refusing to audit proofs against an empty corpus." >&2
     exit 2
 fi
 echo "audit problems root: ${PROBLEMS_DIR}"

@@ -147,13 +147,16 @@ FOF/CNF search paths for FNE/FEQ/UEQ/ICU; its TFF support is partial, including
 type erasure, and TFN model finding is limited. THF lowering is not implemented,
 so TNE/TEQ and SLH are expected to give up rather than solve their problems.
 Report these divisions separately instead of presenting the full-roster count
-as full CASC-J12 coverage. A strict proof audit can be run after search with:
+as full CASC-J12 coverage. `certification_campaign.sh` defaults to the
+competition entry point (`mrs-starexec`) and edition-specific CASC time limits;
+its strict proof audit runs after search and does not change the search results.
+For a local division-schedule experiment, explicitly pass `--systems mrs`.
+Run the default competition-mode campaign with:
 
 ```bash
-MRS_WORKERS=8 MRS_HARDWARE=casc \
-  crates/mrs-bench/certification_campaign.sh \
-    --edition casc-j12 --systems mrs --casc-times --jobs 1 \
-    --output crates/mrs-bench/results/casc-j12/mrs-all-certified
+crates/mrs-bench/certification_campaign.sh \
+  --edition casc-j12 --jobs 1 \
+  --output crates/mrs-bench/results/casc-j12/mrs-all-certified
 ```
 
 ## `bench_report` binary
