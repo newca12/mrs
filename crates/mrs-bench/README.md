@@ -150,6 +150,14 @@ Report these divisions separately instead of presenting the full-roster count
 as full CASC-J12 coverage. `certification_campaign.sh` defaults to the
 competition entry point (`mrs-starexec`) and edition-specific CASC time limits;
 its strict proof audit runs after search and does not change the search results.
+The November 17, 2026 UEQ-only campaign and its include-resolution audit issue
+are documented in the
+[CASC-J12 UEQ report](../../docs/reports/benchmarks/cert-j12-ueq-2026-11-17.md);
+its 147 raw answers should not be quoted as 147 certified proofs.
+The separate November 17 FNE campaign produced 46 raw theorems; its fixed local
+replay certified 40 of 46 under TPTP v10.0.0. This is not an exact J12 v9.0.0
+audit or canonical score; see the
+[CASC-J12 FNE report](../../docs/reports/benchmarks/cert-j12-fne-2026-11-17.md).
 For a local division-schedule experiment, explicitly pass `--systems mrs`.
 Run the default competition-mode campaign with:
 

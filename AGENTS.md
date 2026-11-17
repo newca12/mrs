@@ -381,7 +381,33 @@ The question is whether those division schedules are optimal for 8 cores.
 > snapshots and supplies no corrected score (see UI-1 in
 > `docs/policies/unresolved-issues.md`, `docs/CERTIFICATION_STATUS.md`, and
 > `docs/reports/benchmarks/ueq-soundness-regression-2026-10.md`). The latest
-> full CASC-J13 campaign observation (2026-11-03) is **143/400 UEQ**, all 143
+> CASC-J12 UEQ-only observation (2026-11-17) returned 147/300 raw
+> `Unsatisfiable`, but its archived strict audit has 97 `VerifiedGood` and 50
+> `Unknown` due to missing TPTP `Axioms/` includes. At producer commit `9c10581`
+> the audit child overrode `TPTP` with the selected-problem directory; commit
+> `637f396` fixes the override. An initial replay with another verifier and
+> TPTP v9.3.1 verified 49/50; investigation isolated `LAT171-1` c379 to a
+> missing associative-subset fallback. A regression-tested kernel fallback now
+> replays all 50 as `VerifiedGood` with a fresh local checker and TPTP v9.3.1.
+> This is not an exact v9.0.0 re-audit or a canonical score: the producer tree
+> was dirty, and the 16-physical-core host had 108,816 MB effective memory. Do
+> not treat this replay as an updated campaign certification count; replace the
+> archived count only with a fixed audit against the exact J12 corpus and TPTP
+> v9.0.0. See
+> `docs/reports/benchmarks/cert-j12-ueq-2026-11-17.md`. This separate J12 result
+> does not replace the CASC-J13 observations below.
+> **Separate CASC-J12 FNE observation (2026-11-17):** the 75-row run produced
+> 46 raw `Theorem` answers. The archived audit had 9 `VerifiedGood` and 37
+> `Unknown` because the audit child lost its `TPTP` library root; commit
+> `637f396` removes that override. A replay with a newly built verifier under
+> local TPTP v10.0.0 has 40/46 `VerifiedGood`, 6 `Unknown`, and 0 `VerifiedBad`.
+> Five remaining Unknowns are arithmetic evaluation resource limits and one is
+> a CNF definition-matching failure. This is not an exact J12 v9.0.0 audit or a
+> canonical score: the producer was dirty, and its 16-physical-core host had
+> 54,198 MB effective memory against the 128 GiB allowance. See
+> `docs/reports/benchmarks/cert-j12-fne-2026-11-17.md`; the raw November 13 vs.
+> November 17 solve-time comparison is not a matched speedup measurement. The
+> latest full CASC-J13 campaign observation (2026-11-03) is **143/400 UEQ**, all 143
 > kernel-certified `VerifiedGood`, within **253/800** strictly verified
 > refutations across FEQ/FNE/UEQ. This is a single run from a dirty producer
 > tree on an 8-core host with 95,979 MB RAM (81,582 MB reported effective

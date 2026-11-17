@@ -1305,6 +1305,52 @@ worker-count preflight checks to the campaign and invocation scripts, with a
 regression test for this mismatch; that guard does not change the archived
 results. See the [second-run details](reports/benchmarks/eps-2026-09.md#second-casc-30-eps-run-with-portfolio-validation-failures-2026-11-06-supplemental).
 
+### CASC-J12 UEQ campaign (2026-11-17; archived audit needs rerun)
+
+The UEQ-only run returned **147/300 raw `Unsatisfiable` answers**. Its archived
+strict audit reports **97 `VerifiedGood`, 50 `Unknown`, and 0 `VerifiedBad`**.
+All 50 `Unknown` results are missing-`Axioms/` include errors. At producer
+commit `9c10581`, the audit child overrode the recorded
+`TPTP=/DATA/ai/TPTP-v9.0.0` with the selected-problem directory, which has no
+`Axioms/` tree. The saved audit predates commit `637f396` (19:47 vs. 17:54),
+which removes that override; the archived result has not yet been rerun with the
+fix.
+
+A first local replay of those 50 proofs used a different `mrs-proover` binary
+and TPTP v9.3.1: 49 returned `VerifiedGood`, while `LAT171-1` remained `Unknown`
+on an incomplete AC-superposition replay. The kernel now has a regression-tested
+associative fallback for that AC subset shape; a fresh local build verifies all
+50 on TPTP v9.3.1. This remains diagnostic, not an exact v9.0.0 re-audit, and
+must not be combined with the archived 97 as an updated certification count.
+Re-audit with the fixed tool, exact J12 problem corpus, and TPTP v9.0.0 before
+publishing a revised number.
+
+The producer tree was dirty. The run used eight workers on a 16-physical-core
+host with 108,816 MB effective memory against the 131,072 MB allowance. It is a
+single raw campaign observation, **not** a canonical CASC measurement, a
+certified 147-solve score, or a schedule comparison. See the [full J12 UEQ
+report](reports/benchmarks/cert-j12-ueq-2026-11-17.md) for run details, hashes,
+family counts, and the diagnostic replay command.
+
+### CASC-J12 FNE campaign (2026-11-17; fixed replay used TPTP v10.0.0)
+
+The 75-row FNE campaign produced **46 raw `Theorem` answers**. Its original
+strict audit reported 9 `VerifiedGood`, 37 `Unknown`, and 0 `VerifiedBad`; 36
+Unknowns were missing-`Axioms/` include errors. At producer commit `9c10581`,
+the audit child replaced the recorded TPTP root with the selected-problem
+directory. Commit `637f396` removes that override.
+
+A fixed replay of the same `run.csv` and problem-corpus digests, using local
+TPTP v10.0.0 and a newly built verifier, reports **40/46 `VerifiedGood`, 6
+`Unknown`, and 0 `VerifiedBad`**. Five remaining Unknowns hit arithmetic
+evaluation resource limits; `LCL660+1.005` has an unresolved CNF definition
+matching issue. This is not an exact J12 TPTP v9.0.0 audit: the library tree
+used for replay is not hash-bound by the audit identity. Do not treat 40/46 as
+a canonical J12 score. The producer tree was dirty, and its 16-physical-core
+host reported 54,198 MB effective memory against the 128 GiB allowance. See the
+[FNE report](reports/benchmarks/cert-j12-fne-2026-11-17.md) for the full
+provenance, failure details, and non-matched comparison caveat.
+
 ### CASC-30 complete all-division campaign (2026-11-07–10)
 
 The archive `~/crates/mrs-bench/results/campaign-casc30-full-W8CASCHJ1-99-20261107`

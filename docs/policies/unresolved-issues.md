@@ -31,7 +31,7 @@ what is blocked on hardware rather than on knowledge.
 
 ## UI-1 — Ordinary superposition recovery and incomplete AC replay
 
-### Current finding (updated 2026-11-04; supersedes the historical diagnosis below)
+### Current finding (updated 2026-11-17; supersedes the historical diagnosis below)
 
 Target-variable binding is not inherently unsound. The blanket rigidity guard
 had disabled valid ordinary superposition. The producer now first tries
@@ -77,6 +77,24 @@ matching certifies `c11506` as `VerifiedGood`. The older
 diagnosis and experiments below are retained as history, **not current rule
 semantics or established proofs of unsoundness**. In particular, statements
 below calling c26, c502, or the small lattice test invalid are superseded.
+
+A later CASC-J12 UEQ replay exposed a different completeness gap at
+`LAT171-1` c379. The valid step uses c41's
+`X0 = meet(X0, join(X0, X1))` to rewrite c341's right side, with the source
+substitution `X0 = meet(Y1, Y5)` and `X1 = join(V, W)`, where
+`V = meet(Y1, meet(Y2, meet(Y5, join(Y1, Y5))))` and `W = meet(Y2, Y5)`;
+associativity alone matches the contiguous `Y1, Y5` operands. The exact AC
+matcher rejects the unequal flattened operand counts, while the AC subset
+matcher previously paired each pattern operand with only one target operand and
+skipped the associative sequence fallback for commutative symbols.
+`match_ac_operand_subset` now tries that fallback after AC subset matching
+fails. Regression
+`certifies_ac_subset_superposition_with_source_variable_absorbing_operands`
+certifies the cited shape and rejects a forged conclusion. A fresh local replay
+now verifies all 50 previously unresolved J12 proofs with TPTP v9.3.1, but this
+does not replace the archived audit: the required TPTP v9.0.0 audit is still
+pending, and this one case does not establish coverage of every AC shape. See
+the [J12 UEQ campaign report](../reports/benchmarks/cert-j12-ueq-2026-11-17.md).
 
 The November 3 full CASC-J13 campaign emitted 143 UEQ refutations, all 143
 `VerifiedGood`, and 253 strictly verified refutations across FEQ/FNE/UEQ. It

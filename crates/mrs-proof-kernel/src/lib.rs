@@ -11612,10 +11612,7 @@ fn match_ac_operand_subset(
     if pattern_operands.len() < 2 {
         return Some(None);
     }
-    if commutative.contains(&symbol) {
-        if pattern_operands.len() > target_operands.len() {
-            return Some(None);
-        }
+    if commutative.contains(&symbol) && pattern_operands.len() <= target_operands.len() {
         let mut used = vec![false; target_operands.len()];
         let mut chosen = Vec::with_capacity(pattern_operands.len());
         let mut substitution = HashMap::new();
@@ -11632,36 +11629,63 @@ fn match_ac_operand_subset(
             budget,
         ) {
             chosen.sort_unstable();
-            Some(Some((substitution, chosen)))
-        } else {
-            Some(None)
+            return Some(Some((substitution, chosen)));
         }
-    } else {
-        for start in 0..target_operands.len() {
-            for end in start + 2..=target_operands.len() {
-                if !budget.consume() {
-                    return None;
-                }
-                let mut substitution = HashMap::new();
-                if match_assoc_exact(
-                    symbol,
-                    &pattern_operands,
-                    &target_operands[start..end],
-                    &mut substitution,
-                    rigid,
-                    commutative,
-                    associative,
-                    budget,
-                ) {
-                    return Some(Some((substitution, (start..end).collect())));
-                }
-                if budget.exhausted.get() {
-                    return None;
-                }
+        if budget.exhausted.get() {
+            return None;
+        }
+        // AC subset matching above pairs each pattern operand with one target
+        // operand. It cannot, for example, bind a repeated source variable X
+        // to `meet(a,b)` when the target's flattened meet operands are `a,b,...`.
+        // Associative matching is a sound subset of AC matching, so the common
+        // contiguous case also works when the symbol is known to be AC.
+    }
+
+    match_associative_operand_subset(
+        &pattern_operands,
+        &target_operands,
+        symbol,
+        rigid,
+        commutative,
+        associative,
+        budget,
+    )
+}
+
+#[allow(clippy::type_complexity)]
+fn match_associative_operand_subset(
+    pattern_operands: &[&Term],
+    target_operands: &[&Term],
+    symbol: mrs_core::SymbolId,
+    rigid: &HashSet<VarId>,
+    commutative: &HashSet<mrs_core::SymbolId>,
+    associative: &HashSet<mrs_core::SymbolId>,
+    budget: &AcUnifierBudget,
+) -> Option<Option<(HashMap<VarId, Term>, Vec<usize>)>> {
+    for start in 0..target_operands.len() {
+        for end in start + 2..=target_operands.len() {
+            if !budget.consume() {
+                return None;
+            }
+            let mut substitution = HashMap::new();
+            if match_assoc_exact(
+                symbol,
+                pattern_operands,
+                &target_operands[start..end],
+                &mut substitution,
+                rigid,
+                commutative,
+                associative,
+                budget,
+            ) {
+                return Some(Some((substitution, (start..end).collect())));
+            }
+            if budget.exhausted.get() {
+                return None;
             }
         }
-        Some(None)
     }
+    Some(None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -15812,6 +15836,107 @@ mod tests {
             ),
             KernelVerdict::Certified
         );
+    }
+
+    #[test]
+    fn certifies_ac_subset_superposition_with_source_variable_absorbing_operands() {
+        let mut symbols = SymbolTable::new();
+        let meet = symbols.intern("lat171_meet");
+        let join = symbols.intern("lat171_join");
+        let app2 = |symbol, left, right| Term::app(symbol, vec![left, right]);
+
+        // c41: X0 = meet(X0, join(X0, X1)).
+        let source_x0 = Term::var(0);
+        let source_x1 = Term::var(1);
+        let source = Formula::atom(Atom::eq(
+            source_x0.clone(),
+            app2(meet, source_x0.clone(), app2(join, source_x0, source_x1)),
+        ));
+
+        // c341's right side contains, modulo associativity,
+        // meet(U, join(U, join(V, W))) where U = meet(Y1, Y5). Replaying c41
+        // therefore requires its source variable X0 to absorb two flattened
+        // meet operands while remaining distinct from the target variables.
+        let y1 = Term::var(0);
+        let y2 = Term::var(1);
+        let y5 = Term::var(2);
+        let u = app2(meet, y1.clone(), y5.clone());
+        let v = app2(
+            meet,
+            y1.clone(),
+            app2(
+                meet,
+                y2.clone(),
+                app2(meet, y5.clone(), app2(join, y1.clone(), y5.clone())),
+            ),
+        );
+        let w = app2(meet, y2.clone(), y5.clone());
+        let target = Formula::atom(Atom::eq(
+            app2(join, v.clone(), u.clone()),
+            app2(meet, y1, app2(meet, y5, app2(join, u, app2(join, v, w)))),
+        ));
+
+        // c379, alpha-renamed from the target variables.
+        let x3 = Term::var(0);
+        let x4 = Term::var(1);
+        let x7 = Term::var(2);
+        let goal_left = app2(
+            join,
+            app2(
+                meet,
+                x3.clone(),
+                app2(
+                    meet,
+                    x4.clone(),
+                    app2(meet, x7.clone(), app2(join, x3.clone(), x7.clone())),
+                ),
+            ),
+            app2(meet, x3.clone(), x7.clone()),
+        );
+        let goal_right = app2(meet, x3.clone(), x7.clone());
+        let goal = Formula::atom(Atom::eq(goal_left.clone(), goal_right));
+
+        let meet_comm = Formula::atom(Atom::eq(
+            app2(meet, Term::var(0), Term::var(1)),
+            app2(meet, Term::var(1), Term::var(0)),
+        ));
+        let join_comm = Formula::atom(Atom::eq(
+            app2(join, Term::var(0), Term::var(1)),
+            app2(join, Term::var(1), Term::var(0)),
+        ));
+        let meet_assoc = Formula::atom(Atom::eq(
+            app2(meet, app2(meet, Term::var(0), Term::var(1)), Term::var(2)),
+            app2(meet, Term::var(0), app2(meet, Term::var(1), Term::var(2))),
+        ));
+        let join_assoc = Formula::atom(Atom::eq(
+            app2(join, app2(join, Term::var(0), Term::var(1)), Term::var(2)),
+            app2(join, Term::var(0), app2(join, Term::var(1), Term::var(2))),
+        ));
+        let parents = [source, target, meet_comm, join_comm, meet_assoc, join_assoc];
+
+        assert_eq!(
+            verify_ac_superposition(
+                &parents,
+                &goal,
+                VerificationLimits::default(),
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Certified,
+            "the source variable must absorb the contiguous meet operands Y1 and Y5"
+        );
+
+        let forged = Formula::atom(Atom::eq(goal_left, app2(meet, x3, x4)));
+        assert!(matches!(
+            verify_ac_superposition(
+                &parents,
+                &forged,
+                VerificationLimits::default(),
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            KernelVerdict::Rejected(_) | KernelVerdict::Inconclusive(_)
+        ));
     }
 
     #[test]
