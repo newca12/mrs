@@ -918,7 +918,10 @@ fn run_check(
         Check::Ladder => (args.ladder_time, args.ladder_workers),
     };
     let mut command = Command::new(&args.proover);
-    command.env("TPTP", &args.problems_dir);
+    // `--problems-dir` below points at the staged competition problem, while
+    // TPTP points at the library used by its `%include` directives. Preserve
+    // the caller's TPTP environment instead of redirecting it to the problem
+    // corpus, which may not contain `Axioms/`.
     command.arg("--problems-dir").arg(proof_dir);
     command.arg("--workers").arg(workers.to_string());
     command.arg("--time").arg(limit.to_string());
