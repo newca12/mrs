@@ -1214,6 +1214,26 @@ impl<'a> Display for THFFormula<'a> {
             THFFormula::Let { definitions, body } => {
                 write!(f, "$let(")?;
                 if definitions.len() == 1 {
+                    let definition = &definitions[0];
+                    write!(f, "{}", definition.symbol)?;
+                    if let Some(typ) = &definition.typ {
+                        write!(f, ": {}", typ)?;
+                    }
+                } else {
+                    write!(f, "[")?;
+                    for (i, def) in definitions.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", def.symbol)?;
+                        if let Some(typ) = &def.typ {
+                            write!(f, ": {}", typ)?;
+                        }
+                    }
+                    write!(f, "]")?;
+                }
+                write!(f, ", ")?;
+                if definitions.len() == 1 {
                     write!(f, "{}", definitions[0])?;
                 } else {
                     write!(f, "[")?;
@@ -1347,24 +1367,11 @@ impl<'a> Display for THFAtomicFormula<'a> {
 impl<'a> Display for THFLetDef<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.symbol)?;
-        if !self.type_args.is_empty() || !self.params.is_empty() {
-            write!(f, "(")?;
-            let mut first = true;
-            for ta in &self.type_args {
-                if !first {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{}", ta)?;
-                first = false;
-            }
-            for p in &self.params {
-                if !first {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{}", p)?;
-                first = false;
-            }
-            write!(f, ")")?;
+        for type_arg in &self.type_args {
+            write!(f, " @ {}", type_arg)?;
+        }
+        for param in &self.params {
+            write!(f, " @ {}", param)?;
         }
         write!(f, " := {}", self.definition)
     }

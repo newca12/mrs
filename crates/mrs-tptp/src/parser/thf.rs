@@ -7,8 +7,8 @@ use winnow::token::one_of;
 
 use crate::ast::thf::{
     LogicProperty, LogicSpecification, LogicValue, NonClassicalOperator, THFAtomicFormula,
-    THFBinaryConnective, THFDefinedType, THFFormula, THFQuantifier, THFStatement, THFType,
-    THFTypedSymbol, THFTyping, THFVariable,
+    THFBinaryConnective, THFDefinedType, THFFormula, THFLetDef, THFQuantifier, THFStatement,
+    THFType, THFTypedSymbol, THFTyping, THFVariable,
 };
 use crate::lexer::{
     PResult, atomic_word, check_cancel, defined_word, distinct_object, keyword, number,
@@ -844,22 +844,121 @@ fn thf_conditional<'a>(input: &mut &'a str) -> PResult<THFFormula<'a>> {
 
 fn thf_let<'a>(input: &mut &'a str) -> PResult<THFFormula<'a>> {
     "$let".parse_next(input)?;
-    ws.parse_next(input)?;
-    '('.parse_next(input)?;
-    ws.parse_next(input)?;
+    let result = (|| {
+        ws.parse_next(input)?;
+        '('.parse_next(input)?;
+        ws.parse_next(input)?;
 
-    // Simplified: just parse the body for now
-    // TODO: implement proper let definition parsing
-    let defs = vec![];
+        let type_specs = alt((
+            thf_let_type_spec.map(|spec| vec![spec]),
+            delimited(
+                ('[', ws),
+                separated(1.., thf_let_type_spec, (ws, ',', ws)),
+                (ws, ']'),
+            ),
+        ))
+        .parse_next(input)?;
 
-    let body = thf_formula.parse_next(input)?;
-    ws.parse_next(input)?;
-    ')'.parse_next(input)?;
+        ws.parse_next(input)?;
+        ','.parse_next(input)?;
+        ws.parse_next(input)?;
 
-    Ok(THFFormula::Let {
-        definitions: defs,
-        body: Box::new(body),
+        let bindings = alt((
+            thf_let_binding.map(|binding| vec![binding]),
+            delimited(
+                ('[', ws),
+                separated(1.., thf_let_binding, (ws, ',', ws)),
+                (ws, ']'),
+            ),
+        ))
+        .parse_next(input)?;
+
+        ws.parse_next(input)?;
+        ','.parse_next(input)?;
+        ws.parse_next(input)?;
+
+        let body = thf_formula.parse_next(input)?;
+        ws.parse_next(input)?;
+        ')'.parse_next(input)?;
+
+        if type_specs.len() != bindings.len()
+            || type_specs.iter().zip(&bindings).any(
+                |((declared_symbol, _), (defined_symbol, _, _))| declared_symbol != defined_symbol,
+            )
+        {
+            return Err(winnow::error::ErrMode::Cut(
+                winnow::error::ContextError::new(),
+            ));
+        }
+
+        let definitions = type_specs
+            .into_iter()
+            .zip(bindings)
+            .map(
+                |((symbol, typ), (_defined_symbol, params, definition))| THFLetDef {
+                    symbol,
+                    type_args: Vec::new(),
+                    params,
+                    typ: Some(typ),
+                    definition,
+                },
+            )
+            .collect();
+
+        Ok(THFFormula::Let {
+            definitions,
+            body: Box::new(body),
+        })
+    })();
+
+    // Once `$let` has been recognized, malformed type/binding lists must not
+    // fall through and be reinterpreted as an ordinary `$let(...)` application.
+    result.map_err(|error| match error {
+        winnow::error::ErrMode::Backtrack(error) => winnow::error::ErrMode::Cut(error),
+        other => other,
     })
+}
+
+fn thf_let_type_spec<'a>(
+    input: &mut &'a str,
+) -> PResult<(crate::ast::common::AtomicWord<'a>, THFType<'a>)> {
+    let symbol = atomic_word.parse_next(input)?;
+    ws.parse_next(input)?;
+    ':'.parse_next(input)?;
+    ws.parse_next(input)?;
+    let typ = thf_top_level_type.parse_next(input)?;
+    Ok((symbol, typ))
+}
+
+fn thf_let_binding<'a>(
+    input: &mut &'a str,
+) -> PResult<(
+    crate::ast::common::AtomicWord<'a>,
+    Vec<THFVariable<'a>>,
+    THFFormula<'a>,
+)> {
+    let symbol = atomic_word.parse_next(input)?;
+    let mut params = Vec::new();
+
+    loop {
+        let checkpoint = *input;
+        ws.parse_next(input)?;
+        if !input.starts_with('@') || input.starts_with("@@") || input.starts_with("@=") {
+            *input = checkpoint;
+            break;
+        }
+
+        '@'.parse_next(input)?;
+        ws.parse_next(input)?;
+        params.push(thf_typed_variable.parse_next(input)?);
+    }
+
+    ws.parse_next(input)?;
+    ":=".parse_next(input)?;
+    ws.parse_next(input)?;
+    let definition = thf_formula.parse_next(input)?;
+
+    Ok((symbol, params, definition))
 }
 
 fn thf_tuple<'a>(input: &mut &'a str) -> PResult<THFFormula<'a>> {

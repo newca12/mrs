@@ -1,7 +1,8 @@
 //! Display/reparse fidelity and TPTP 10 syntax coverage.
 
 use mrs_tptp::{
-    AnnotatedFormula, FormulaRole, Name, TFFAtomicFormula, TFFFormula, TFFStatement, parse_tptp,
+    AnnotatedFormula, FormulaRole, Name, TFFAtomicFormula, TFFFormula, TFFStatement, THFFormula,
+    THFStatement, parse_tptp,
 };
 
 /// Parse `input`, then check that every formula and include displays to text
@@ -146,6 +147,59 @@ fn conditional_terms_are_parsed_as_conditionals() {
     let debug = format!("{:?}", problem.formulas[0]);
     assert!(debug.contains("Conditional"));
     assert!(!debug.contains("DefinedWord(\"ite\")"));
+}
+
+#[test]
+fn thf_let_definitions_are_preserved_and_display_round_trips() {
+    let input = r#"
+        thf(let_single, axiom,
+            $let(ff: $i > $i,
+                 ff @ X := f @ X,
+                 p @ (ff @ a))).
+        thf(let_multiple, axiom,
+            $let([ff: $i > $i, gg: $i > $i],
+                 [ff @ X := f @ X, gg @ Y := g @ Y],
+                 p @ (ff @ (gg @ a)))).
+        thf(let_nested, axiom,
+            $let(ff: $i > $i,
+                 ff @ X := f @ X,
+                 $let(gg: $i > $i,
+                      gg @ Y := ff @ Y,
+                      p @ (gg @ a)))).
+    "#;
+
+    let problem = parse_tptp(input).expect("THF let formulas should parse");
+    assert_eq!(problem.formulas.len(), 3);
+
+    let AnnotatedFormula::THF(single) = &problem.formulas[0] else {
+        panic!("expected a THF formula");
+    };
+    let THFStatement::Logical(THFFormula::Let { definitions, .. }) = &single.formula else {
+        panic!("single let must be represented as THFFormula::Let");
+    };
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].symbol.as_str(), "ff");
+    assert!(definitions[0].typ.is_some());
+    assert_eq!(definitions[0].params.len(), 1);
+    assert_eq!(definitions[0].params[0].name, "X");
+
+    let AnnotatedFormula::THF(multiple) = &problem.formulas[1] else {
+        panic!("expected a THF formula");
+    };
+    let THFStatement::Logical(THFFormula::Let { definitions, .. }) = &multiple.formula else {
+        panic!("multiple let must be represented as THFFormula::Let");
+    };
+    assert_eq!(definitions.len(), 2);
+    assert_eq!(definitions[0].symbol.as_str(), "ff");
+    assert_eq!(definitions[1].symbol.as_str(), "gg");
+
+    assert_roundtrip(input);
+}
+
+#[test]
+fn thf_let_rejects_mismatched_declarations_and_bindings() {
+    assert!(parse_tptp("thf(bad, axiom, $let(ff: $i, gg := a, p)).").is_err());
+    assert!(parse_tptp("thf(bad, axiom, $let([ff: $i, gg: $i], ff := a, p)).").is_err());
 }
 
 #[test]

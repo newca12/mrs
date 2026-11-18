@@ -267,6 +267,8 @@ pub struct THFLetDef<'a> {
     pub symbol: AtomicWord<'a>,
     pub type_args: Vec<&'a str>,
     pub params: Vec<THFVariable<'a>>,
+    /// Optional type specification declared for this local symbol.
+    pub typ: Option<THFType<'a>>,
     pub definition: THFFormula<'a>,
 }
 
