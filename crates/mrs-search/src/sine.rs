@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use mrs_core::clause::{Clause, ClauseSource};
@@ -195,6 +196,19 @@ pub struct SineApplication<T> {
     pub seeds: usize,
 }
 
+/// A SInE decision that borrows the original items when the filter is refused.
+/// Portfolio workers use this form to avoid cloning a large clause set just to
+/// return it unchanged.
+#[derive(Debug)]
+pub struct BorrowedSineApplication<'a, T: Clone> {
+    pub items: Cow<'a, [T]>,
+    pub applied: bool,
+    pub skip: Option<SineSkip>,
+    pub before: usize,
+    pub kept: usize,
+    pub seeds: usize,
+}
+
 /// Counts the conjecture clauses, which SInE seeds from.
 fn seed_count<T: SineItem>(items: &[T]) -> usize {
     items.iter().filter(|item| item.is_conjecture()).count()
@@ -212,10 +226,28 @@ pub fn apply_sine_filter<T: SineItem + Clone>(
     depth_limit: Option<usize>,
     policy: &SinePolicy,
 ) -> SineApplication<T> {
+    let application = apply_sine_filter_borrowed(items, tolerance, depth_limit, policy);
+    SineApplication {
+        items: application.items.into_owned(),
+        applied: application.applied,
+        skip: application.skip,
+        before: application.before,
+        kept: application.kept,
+        seeds: application.seeds,
+    }
+}
+
+/// Applies the SInE filter while borrowing `items` when policy refuses it.
+pub fn apply_sine_filter_borrowed<'a, T: SineItem + Clone>(
+    items: &'a [T],
+    tolerance: f64,
+    depth_limit: Option<usize>,
+    policy: &SinePolicy,
+) -> BorrowedSineApplication<'a, T> {
     let before = items.len();
     let seeds = seed_count(items);
-    let refuse = |skip, kept| SineApplication {
-        items: items.to_vec(),
+    let refuse = |skip, kept| BorrowedSineApplication {
+        items: Cow::Borrowed(items),
         applied: false,
         skip: Some(skip),
         before,
@@ -251,8 +283,8 @@ pub fn apply_sine_filter<T: SineItem + Clone>(
         return refuse(SineSkip::Starved, kept);
     }
 
-    SineApplication {
-        items: filtered,
+    BorrowedSineApplication {
+        items: Cow::Owned(filtered),
         applied: true,
         skip: None,
         before,
@@ -467,6 +499,20 @@ mod tests {
         assert_eq!(application.seeds, 1);
         // A refusal hands back the whole clause set, unfiltered.
         assert_eq!(application.items.len(), clauses.len());
+    }
+
+    #[test]
+    fn borrowed_sine_refusal_reuses_the_original_clause_slice() {
+        let mut syms = SymbolTable::new();
+        let clauses = unlinked_problem(&mut syms, 300);
+        let application =
+            apply_sine_filter_borrowed(&clauses, 1.5, Some(3), &SinePolicy::default());
+
+        assert!(!application.applied);
+        assert!(matches!(
+            application.items,
+            Cow::Borrowed(items) if std::ptr::eq(items.as_ptr(), clauses.as_ptr())
+        ));
     }
 
     /// A clause set below `min_clauses` is not worth restricting whatever the

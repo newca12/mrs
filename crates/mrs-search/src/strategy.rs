@@ -29,6 +29,13 @@ fn remaining_schedule_budget(total_budget: Duration, elapsed: Duration) -> Optio
     (!remaining.is_zero()).then_some(remaining)
 }
 
+fn is_process_wide_memory_limit(result: &SearchResult) -> bool {
+    matches!(
+        result,
+        SearchResult::ResourceOut(crate::ResourceReason::Memory { .. })
+    )
+}
+
 fn epr_budget_with_remaining_time(
     mut budget: crate::EprBudget,
     remaining: Duration,
@@ -70,6 +77,7 @@ fn condensed_detachment_env_bound(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
@@ -839,7 +847,7 @@ pub fn run_schedule_with_candidate_receiver(
         actual_configs.push(actual_config);
     }
 
-    let clauses_owned = clauses.to_vec();
+    let clauses_owned: Arc<[Clause]> = Arc::from(clauses.to_vec());
 
     let total_budget: Duration = actual_configs.iter().map(|c| c.time_limit).sum();
     let schedule_total_budget = total_budget;
@@ -1423,19 +1431,26 @@ pub fn run_schedule_with_candidate_receiver(
         }
     }
 
+    // Run strategies in parallel. Each worker builds a private term bank and
+    // indexes, but the immutable legacy inputs are shared. Cloning the full
+    // input and provenance vectors per worker multiplied peak memory on large
+    // theories before any inference was generated.
+    let provenance_owned: Arc<[Clause]> = Arc::from(provenance.to_vec());
+
     // Run strategies in parallel.  Each non-zero strategy runs for the full
     // remaining budget instead of only its proportional slice — with N threads
     // running simultaneously the wall-clock time is bounded by the total budget
     // while we explore N different search directions at once.
     //
     // A shared stop-flag is set by the first thread that finds a Refutation or
-    // a genuine Saturation; every other thread notices it on its next time-check
-    // iteration and returns Timeout.
+    // a genuine Saturation. A process-wide memory limit also stops siblings:
+    // one worker reaching it means the portfolio as a whole has exhausted its
+    // memory allowance, not just that worker's private budget.
     //
     // SearchState (and the mrs_cadical::Solver it contains) is Send, but TermBank
     // is heavily thread-local (interning IDs are only valid locally). So each
-    // thread constructs its own SearchState from the cloned clause data, but
-    // we share a pool of globally discovered unit equalities via an RwLock.
+    // thread constructs its own SearchState from the shared input slices, while
+    // the interned terms and indexes remain worker-local.
     let stop_flag = Arc::new(AtomicBool::new(false));
     if let Some(ref r) = candidate_receiver {
         r.register_stop_flag(Arc::clone(&stop_flag));
@@ -1502,8 +1517,8 @@ pub fn run_schedule_with_candidate_receiver(
             let pool = Arc::clone(&shared_pool);
             let tx = tx.clone();
             let next_strategy = Arc::clone(&next_strategy);
-            let clauses_for_thread = clauses_owned.clone();
-            let provenance_for_thread = provenance.to_vec();
+            let clauses_for_thread = Arc::clone(&clauses_owned);
+            let provenance_for_thread = Arc::clone(&provenance_owned);
             let id_gen_thread = id_gen.clone();
             let config_thread = Arc::clone(&default_config);
             let symbols_thread = symbols_arc.clone();
@@ -1565,10 +1580,11 @@ pub fn run_schedule_with_candidate_receiver(
                         sc.use_avatar = false;
                     }
 
-                    let mut thread_clauses = clauses_for_thread.clone();
+                    let mut thread_clauses: Cow<'_, [Clause]> =
+                        Cow::Borrowed(clauses_for_thread.as_ref());
                     if let Some(tolerance) = sc.sine_tolerance {
-                        let application = crate::sine::apply_sine_filter(
-                            &thread_clauses,
+                        let application = crate::sine::apply_sine_filter_borrowed(
+                            clauses_for_thread.as_ref(),
                             tolerance,
                             sc.sine_depth_limit,
                             &crate::sine::SinePolicy::from_env(),
@@ -1590,10 +1606,11 @@ pub fn run_schedule_with_candidate_receiver(
                                     .map_or("none", |s| s.as_str()),
                             );
                         }
-                        if !application.applied {
+                        if application.applied {
+                            thread_clauses = application.items;
+                        } else {
                             sc.sine_tolerance = None;
                         }
-                        thread_clauses = application.items;
                     }
 
                     // Per-worker ML premise pruning: only the LAST
@@ -1609,11 +1626,21 @@ pub fn run_schedule_with_candidate_receiver(
                     // how much coverage is put at risk.
                     if let Some(keep) = &premise_keep_thread
                         && is_ml_prune_slot(strategy_idx, actual_configs_ref.len())
+                        && thread_clauses
+                            .iter()
+                            .any(|clause| !keep.contains(&clause.id))
                     {
-                        thread_clauses.retain(|c| keep.contains(&c.id));
+                        thread_clauses = Cow::Owned(
+                            thread_clauses
+                                .iter()
+                                .filter(|clause| keep.contains(&clause.id))
+                                .cloned()
+                                .collect(),
+                        );
                     }
 
-                    let mut thread_provenance = provenance_for_thread.clone();
+                    let mut thread_provenance: Cow<'_, [Clause]> =
+                        Cow::Borrowed(provenance_for_thread.as_ref());
                     let mut thread_symbols = (*symbols_thread).clone();
                     // IDs are local to a strategy. Sharing the atomic counter
                     // makes age/weight tie-breaking depend on sibling timing.
@@ -1622,14 +1649,16 @@ pub fn run_schedule_with_candidate_receiver(
 
                     if let Some(mode) = sc.goal_transformation {
                         let res = mrs_cnf::goal_transform::transform_goal_clauses(
-                            &thread_clauses,
+                            thread_clauses.as_ref(),
                             &mut thread_symbols,
                             &mut thread_id_gen,
                             mode,
                         );
                         if res.transformed {
-                            thread_clauses = res.clauses;
-                            thread_provenance.extend(res.provenance);
+                            thread_clauses = Cow::Owned(res.clauses);
+                            let mut combined_provenance = provenance_for_thread.to_vec();
+                            combined_provenance.extend(res.provenance);
+                            thread_provenance = Cow::Owned(combined_provenance);
                         }
                     }
 
@@ -1637,9 +1666,9 @@ pub fn run_schedule_with_candidate_receiver(
                         TermOrdering::CustomKBO(cfg) | TermOrdering::CustomLPO(cfg) => cfg.clone(),
                         _ => config_thread.clone(),
                     };
-                    let mut state = SearchState::new_with_ml(
-                        thread_clauses,
-                        thread_provenance,
+                    let mut state = SearchState::new_with_ml_from_refs(
+                        thread_clauses.as_ref(),
+                        thread_provenance.as_ref(),
                         thread_id_gen,
                         thread_sym_config,
                         Arc::new(thread_symbols),
@@ -1861,7 +1890,9 @@ pub fn run_schedule_with_candidate_receiver(
                         } else {
                             stop.store(true, Ordering::Relaxed);
                         }
-                    } else if matches!(result, SearchResult::Saturated(_)) {
+                    } else if matches!(result, SearchResult::Saturated(_))
+                        || is_process_wide_memory_limit(&result)
+                    {
                         stop.store(true, Ordering::Relaxed);
                     }
 
@@ -2059,6 +2090,22 @@ mod tests {
         assert!(!epr_ground_prepass_should_run(true, false, false));
         assert!(epr_ground_prepass_should_run(true, true, false));
         assert!(epr_ground_prepass_should_run(true, false, true));
+    }
+
+    #[test]
+    fn process_memory_resource_out_stops_portfolio_siblings() {
+        assert!(is_process_wide_memory_limit(&SearchResult::ResourceOut(
+            crate::ResourceReason::Memory {
+                limit_mb: 1024,
+                rss_mb: 1025,
+            }
+        )));
+        assert!(!is_process_wide_memory_limit(&SearchResult::ResourceOut(
+            crate::ResourceReason::MaxProcessed {
+                limit: 100,
+                processed: 100,
+            }
+        )));
     }
 
     #[test]

@@ -1725,8 +1725,29 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 processed: state.stats.processed,
             });
         }
+        if iteration.is_multiple_of(10) && iteration >= 10 {
+            // Memory is process-wide across the portfolio. Sample more often
+            // than the queue/term ceilings so one fast allocation burst is
+            // less likely to cross the host's limit before a worker notices.
+            if let Some(limit_mb) = config.resource_limits.max_memory_mb
+                && let Some(current_mb) = crate::current_memory_mb()
+                && current_mb >= limit_mb
+            {
+                if std::env::var("TRACE_SEARCH").is_ok() {
+                    eprintln!(
+                        "[WATCHDOG] Memory limit exceeded: {} MB >= {} MB",
+                        current_mb, limit_mb
+                    );
+                }
+                return SearchResult::ResourceOut(crate::ResourceReason::Memory {
+                    limit_mb,
+                    rss_mb: current_mb,
+                });
+            }
+        }
+
         if iteration.is_multiple_of(100) && iteration >= 100 {
-            // --- Resource Containment Ceilings & Memory Watchdog ---
+            // --- Resource Containment Ceilings ---
             if let Some(limit) = config.resource_limits.max_passive {
                 let passive_count = state.unprocessed.active_count() as u64;
                 if passive_count >= limit {
@@ -1755,21 +1776,6 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 return SearchResult::ResourceOut(crate::ResourceReason::TermBank {
                     limit,
                     len: state.term_bank.len(),
-                });
-            }
-            if let Some(limit_mb) = config.resource_limits.max_memory_mb
-                && let Some(current_mb) = crate::current_memory_mb()
-                && current_mb >= limit_mb
-            {
-                if std::env::var("TRACE_SEARCH").is_ok() {
-                    eprintln!(
-                        "[WATCHDOG] Memory limit exceeded: {} MB >= {} MB",
-                        current_mb, limit_mb
-                    );
-                }
-                return SearchResult::ResourceOut(crate::ResourceReason::Memory {
-                    limit_mb,
-                    rss_mb: current_mb,
                 });
             }
         }

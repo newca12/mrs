@@ -62,6 +62,12 @@ fn run_time_budget(mode: mrs_search::HardwareMode, seconds: u64, factor: f64) ->
     Duration::from_secs((seconds as f64 * factor).ceil() as u64)
 }
 
+fn casc_sim_address_space_budget_mb(requested_mb: Option<u64>, effective_mb: Option<u64>) -> u64 {
+    effective_mb
+        .or(requested_mb)
+        .unwrap_or(mrs_search::CASC_MEMORY_MB)
+}
+
 #[cfg(test)]
 mod budget_tests {
     use super::*;
@@ -83,6 +89,22 @@ mod budget_tests {
         assert_eq!(
             run_time_budget(HardwareMode::CascSim, 30, 0.0),
             Duration::from_secs(31_536_000)
+        );
+    }
+
+    #[test]
+    fn casc_sim_address_space_uses_enforceable_host_budget() {
+        assert_eq!(
+            casc_sim_address_space_budget_mb(Some(131_072), Some(108_816)),
+            108_816
+        );
+        assert_eq!(
+            casc_sim_address_space_budget_mb(Some(131_072), None),
+            131_072
+        );
+        assert_eq!(
+            casc_sim_address_space_budget_mb(None, None),
+            mrs_search::CASC_MEMORY_MB
         );
     }
 
@@ -762,9 +784,13 @@ fn run() {
         None
     };
     let _address_space_limit = if hardware_mode == mrs_search::HardwareMode::CascSim {
-        let address_space_budget_mb = hardware_profile
-            .memory_budget_mb
-            .unwrap_or(mrs_search::CASC_MEMORY_MB);
+        // Keep the address-space backstop at what the host can supply, not the
+        // nominal CASC allowance. Otherwise an undersized host can OOM-kill the
+        // process before either this limit or the RSS watchdog catches it.
+        let address_space_budget_mb = casc_sim_address_space_budget_mb(
+            hardware_profile.memory_budget_mb,
+            hardware_profile.effective_memory_mb,
+        );
         match mrs_search::limit_address_space_mb(address_space_budget_mb) {
             Ok(limit) => {
                 let applied = limit.applied_mb();

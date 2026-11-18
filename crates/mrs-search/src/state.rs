@@ -187,6 +187,37 @@ impl SearchState {
         ml_log_csv: bool,
         weight_fn: crate::ClauseWeightFn,
     ) -> Self {
+        Self::new_with_ml_from_refs(
+            &initial_clauses,
+            &provenance,
+            id_gen,
+            config,
+            symbols,
+            use_avatar,
+            log_ml_data,
+            ml_log_csv,
+            weight_fn,
+        )
+    }
+
+    /// Build a search state from borrowed immutable problem data.
+    ///
+    /// Portfolio workers use this entry point so their private term banks and
+    /// indexes can be built without first cloning the full legacy clause and
+    /// proof-provenance vectors. The borrowed clauses are consumed into the
+    /// worker-local term bank before this function returns.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_ml_from_refs(
+        initial_clauses: &[Clause],
+        provenance: &[Clause],
+        id_gen: ClauseIdGen,
+        config: Arc<SymbolConfig>,
+        symbols: Arc<mrs_core::SymbolTable>,
+        use_avatar: bool,
+        log_ml_data: Option<String>,
+        ml_log_csv: bool,
+        weight_fn: crate::ClauseWeightFn,
+    ) -> Self {
         // AVATAR marker symbols are interned lazily when a split actually
         // allocates the corresponding SAT variable.  Keeping this Arc allows
         // strategy states to share the immutable input table until the first
@@ -201,7 +232,7 @@ impl SearchState {
 
         // Pre-compute relational goal-distance reachability map from input clauses.
         let goal_map = Arc::new(crate::goal_distance::GoalDistanceMap::compute(
-            &initial_clauses,
+            initial_clauses,
         ));
         let goal_symbols = goal_map.conjecture_symbols().clone();
 
@@ -210,7 +241,7 @@ impl SearchState {
                 clause.formula.is_none(),
                 "formula provenance must be supplied separately from initial search clauses"
             );
-            let id_clause = term_bank.clause_from_legacy(&clause);
+            let id_clause = term_bank.clause_from_legacy(clause);
             let goal_dist = goal_map.clause_goal_distance(&id_clause, &term_bank);
             let w = crate::weight::clause_weight_fn(
                 &id_clause, &term_bank, &config, &weight_fn, &goal_map,
@@ -257,7 +288,7 @@ impl SearchState {
                 let id_step = term_bank.formula_step_from_legacy(&formula_step);
                 formula_store.insert(id_step.id, id_step);
             }
-            let id_clause = term_bank.clause_from_legacy(&clause);
+            let id_clause = term_bank.clause_from_legacy(clause);
             clause_store.insert(id_clause.id, id_clause);
         }
 

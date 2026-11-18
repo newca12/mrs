@@ -113,7 +113,7 @@ the latest full-campaign evidence is in the
 
 | | |
 |---|---|
-| Status | **AC matcher defect identified; sound UEQ coverage recovery open** — the old assoc/comm fallback could report a substitution without unifying the selected terms |
+| Historical status | **Superseded by the current finding above.** The old assoc/comm fallback could report a substitution without unifying the selected terms; current producer/kernel fixes and the remaining audit gate are summarized above. |
 | Severity | Historical `ac_superposition` conclusions could be **not entailed by the cited parents**; a blanket target-rigidity guard prevents malformed matches but also rejects valid standardized-apart MGUs |
 | Soundness | The leading suspicion (`clause_store` / `LiteralIndex` divergence) is **ruled out**. The defect is in AC unification and its replay, not in target-variable bindings as a category |
 | Blocks | Sound UEQ coverage recovery; proof-audit and campaign measurements are recorded in [the October UEQ report](../reports/benchmarks/ueq-soundness-regression-2026-10.md) |
@@ -1667,7 +1667,7 @@ changing defaults or drawing coverage conclusions.
 
 | | |
 |---|---|
-| Status | Bounded-NNF kernel check verified in campaign; 44 non-decisive references and `CSI008+1` memory-kill behavior remain |
+| Status | Bounded-NNF kernel check verified in campaign; 44 non-decisive references remain. Memory-containment hardening landed on 2026-11-19, but `CSI008+1` has not been rerun with it. |
 | Severity | 2026-10-19 run strictly certifies 4/4 refutations (100%); 44 reference answers remain GaveUp |
 | Soundness | No unsound result is reported; the CSV's `ok` label is not a certificate. |
 
@@ -1760,7 +1760,8 @@ This addresses the kernel's bounded-NNF decision path. In the October 19 campaig
 cleanly as **`VerifiedGood`** (taking 0.49 s and 1.92 s, respectively). This
 confirms the bounded-NNF check resolves the formula-size ceiling under full
 campaign execution. The remaining aspects of UI-6 are the 44 non-decisive
-references and early memory protection for multi-million axiom problems.
+references and campaign validation of memory containment for multi-million-axiom
+problems.
 
 ### One OS OOM kill despite the reported adaptive memory budget
 
@@ -1773,11 +1774,11 @@ separately from rows with MRS-reported VmPeak; those sources are not homogeneous
 
 `adaptive` does not install the `casc-sim` address-space limit; however, it is
 not entirely unenforced. The given-clause loop samples RSS and returns a memory
-`ResourceOut` when the configured limit is reached (`given_clause.rs:1576-1588`).
-The check is periodic, not on each allocation, so a large allocation can
-overshoot before sampling and the OS OOM killer can win the race. The row is
-evidence of such an overshoot, not proof that adaptive memory limits have no
-enforcement.
+`ResourceOut` when the configured limit is reached. Since 2026-11-19, it samples
+every 10 given-clause iterations rather than every 100, but not on each
+allocation: a single large allocation can still overshoot before sampling and
+the OS OOM killer can win the race. The row is evidence of such an overshoot,
+not proof that adaptive memory limits have no enforcement.
 
 The archived run reports `CSI008+1` at **2 004 866 clauses**, 73% of the
 division's total 2 750 576. Its reported peak is the only ICU memory value above
@@ -1798,6 +1799,23 @@ adaptive-mode artifact above, this campaign's `run.csv` says
 termination. The campaign nevertheless continued and recorded all 101 ICU
 rows. This adds a complete-run observation, not a diagnosis or evidence that
 `CSI008+1` is solvable within 480 s. See the [full CASC-30 report](../reports/benchmarks/cert-30-2026-11-07.md).
+
+### 2026-11-19 containment implementation (campaign recheck pending)
+
+The portfolio now shares immutable input/provenance clause arrays between
+workers and uses copy-on-write for strategy-specific filtering and goal
+transforms, avoiding redundant deep copies before worker-local term banks are
+built. RSS is sampled every 10 given-clause iterations rather than every 100,
+and a worker that reaches the process-wide memory ceiling stops its portfolio
+siblings. `casc-sim` now caps `RLIMIT_AS` at the profile's effective host
+budget, rather than a larger nominal allowance the host cannot supply.
+
+These are containment changes, not a confirmed resolution of the archived
+`CSI008+1` failure. The exact problem file is not available in the local
+workspace, and the 2026-11-07 artifact reports a cause-unconfirmed SIGKILL.
+Re-run the same problem on the campaign host and inspect its completed stage,
+resource reason, and memory telemetry before changing this issue's status to
+resolved.
 
 ---
 

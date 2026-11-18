@@ -1446,20 +1446,22 @@ input format remain outside the current support claim.
   target-literal`. The current checker compares this literal sequence exactly;
   clause permutation and alpha-equivalence normalization are unsupported rather
   than silently assumed.
-- **PARTIAL:** the proposed unifier checker and executable term/literal/clause path operations
-  are refined. Verified examples now cover a successful substitution, a wrong
-  instance, a symbol-shape mismatch, a duplicate domain, and a cyclic RHS under
-  the documented simultaneous one-step semantics. The checker validates a
-  supplied substitution rather than computing an MGU; characterize the negative
-  result further, lift path replay to
-  the entire inference certificate, and implement standardization-apart.
+- **DONE for the bounded certificate path:** the proposed-unifier checker and
+  executable term/literal/clause operations are refined through complete
+  superposition replay, including checked standardization-apart. Verified
+  examples cover successful and forged substitutions, symbol-shape mismatch,
+  duplicate domains, and cyclic RHS terms under the documented simultaneous
+  one-step semantics. The checker validates a supplied substitution rather than
+  computing an MGU; broader clause-equivalence support and independent review of
+  the calculus boundary remain open.
 
 **Deliverables**
 
 - Bounded executable term traversal: variable collection, occurrence checks,
   subterm-at-position, replacement-at-position, and selected-position
-  validation. Executable lookup/replacement refinement exists; variable
-  collection, occurrence checks, and hard resource ceilings remain TODO.
+  validation. Variable collection, occurrence checks, and hard resource ceilings
+  are implemented; cumulative checker-defined work accounting was completed in
+  the 2026-11-07 M2–M4 audit below.
 - A finite substitution representation with explicit duplicate-key policy,
   lookup, application to terms/atoms/literals/clauses, and a well-formedness
   predicate (including acyclicity or a clearly specified one-step/idempotent
@@ -1798,9 +1800,10 @@ front-end or a separately justified premise transformation.
   clause weakening, demodulation (unit equality rewriting), clause instantiation,
   clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology are specified, proved sound for universal validity preservation,
   have bounded exact executable checkers, and are dispatched in the verified proof DAG with wire v1 protocol decoding.
-- **TODO:** equality simplification (ground equality normalization, rewrite traces),
-  associative/commutative reasoning, formula/proof transformations, AVATAR/LRAT, and
-  additional rules.
+- **PARTIAL / TODO:** bounded unit-equality demodulation, including multi-step
+  rewriting expanded into checked binary nodes, is implemented. Broader equality
+  simplification and rewrite-trace forms, associative/commutative reasoning,
+  formula/proof transformations, AVATAR/LRAT, and additional rules remain open.
 
 Only expand after M1–M5 are stable. Each family gets a written rule contract,
 semantic theorem, verified executable replay, positive/negative mutations,
