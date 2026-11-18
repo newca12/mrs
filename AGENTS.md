@@ -399,12 +399,17 @@ The question is whether those division schedules are optimal for 8 cores.
 > **Separate CASC-J12 FNE observation (2026-11-17):** the 75-row run produced
 > 46 raw `Theorem` answers. The archived audit had 9 `VerifiedGood` and 37
 > `Unknown` because the audit child lost its `TPTP` library root; commit
-> `637f396` removes that override. A replay with a newly built verifier under
-> local TPTP v10.0.0 has 40/46 `VerifiedGood`, 6 `Unknown`, and 0 `VerifiedBad`.
-> Five remaining Unknowns are arithmetic evaluation resource limits and one is
-> a CNF definition-matching failure. This is not an exact J12 v9.0.0 audit or a
-> canonical score: the producer was dirty, and its 16-physical-core host had
-> 54,198 MB effective memory against the 128 GiB allowance. See
+> `637f396` removes that override. The first local TPTP v10.0.0 replay had
+> 40/46 `VerifiedGood`, with `LCL660+1.005` still Unknown on CNF definition
+> matching. The mode-major fold let the smaller `c28` definition mask the
+> overlapping `c21` body needed by `c162`. The kernel's goal-rooted dependency
+> fold plus bounded citation-order fallbacks now certifies that step; the final
+> replay has 41/46 `VerifiedGood`, 5 `Unknown` (all arithmetic evaluation
+> resource limits), and 0 `VerifiedBad`; it also retains `LCL642+1.010` and
+> `SYN938+1` as `VerifiedGood`. This is not an exact J12 v9.0.0 audit
+> or a canonical score: the
+> producer was dirty, and its 16-physical-core host had 54,198 MB effective
+> memory against the 128 GiB allowance. See
 > `docs/reports/benchmarks/cert-j12-fne-2026-11-17.md`; the raw November 13 vs.
 > November 17 solve-time comparison is not a matched speedup measurement. The
 > latest full CASC-J13 campaign observation (2026-11-03) is **143/400 UEQ**, all 143

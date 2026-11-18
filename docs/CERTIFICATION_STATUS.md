@@ -1340,16 +1340,22 @@ Unknowns were missing-`Axioms/` include errors. At producer commit `9c10581`,
 the audit child replaced the recorded TPTP root with the selected-problem
 directory. Commit `637f396` removes that override.
 
-A fixed replay of the same `run.csv` and problem-corpus digests, using local
-TPTP v10.0.0 and a newly built verifier, reports **40/46 `VerifiedGood`, 6
-`Unknown`, and 0 `VerifiedBad`**. Five remaining Unknowns hit arithmetic
-evaluation resource limits; `LCL660+1.005` has an unresolved CNF definition
-matching issue. This is not an exact J12 TPTP v9.0.0 audit: the library tree
-used for replay is not hash-bound by the audit identity. Do not treat 40/46 as
-a canonical J12 score. The producer tree was dirty, and its 16-physical-core
-host reported 54,198 MB effective memory against the 128 GiB allowance. See the
-[FNE report](reports/benchmarks/cert-j12-fne-2026-11-17.md) for the full
-provenance, failure details, and non-matched comparison caveat.
+A first fixed replay of the same `run.csv` and problem-corpus digests, using
+local TPTP v10.0.0 and a newly built verifier, reported 40/46 `VerifiedGood`, 6
+`Unknown`, and 0 `VerifiedBad`; `LCL660+1.005` remained Unknown on CNF definition
+matching. Investigation found that the mode-major citation-order fold let a
+smaller overlapping definition consume a block before the target's larger
+definition reached its permutation fallback. A goal-rooted dependency fold
+with bounded per-definition and citation-order fallbacks now certifies c162 and
+retains the previously certified `LCL642+1.010` and `SYN938+1`. The final full
+replay reports **41/46 `VerifiedGood`, 5 `Unknown`, and 0 `VerifiedBad`**; all
+five remaining Unknowns are arithmetic evaluation resource limits. This is not
+an exact J12 TPTP v9.0.0 audit: the local library tree used for replay is not
+hash-bound by the audit identity. Do not treat 41/46 as a canonical J12 score.
+The producer tree was dirty, and its 16-physical-core host reported 54,198 MB
+effective memory against the 128 GiB allowance. See the [FNE
+report](reports/benchmarks/cert-j12-fne-2026-11-17.md) for the c162 root cause,
+fix details, final audit identity, and non-matched comparison caveat.
 
 ### CASC-30 complete all-division campaign (2026-11-07–10)
 

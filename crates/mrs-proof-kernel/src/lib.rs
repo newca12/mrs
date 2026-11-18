@@ -1420,6 +1420,13 @@ fn verify_cnf_transformation(
     let Some(goal) = clause_from_formula(conclusion, limits) else {
         return KernelVerdict::Inconclusive("CNF conclusion is not a supported clause".into());
     };
+    let preferred_definitions = goal
+        .iter()
+        .filter_map(|literal| match &literal.atom {
+            Atom::Pred(symbol, _) => Some(*symbol),
+            Atom::Eq(_, _) => None,
+        })
+        .collect::<Vec<_>>();
 
     let source_var_names = proof_var_names
         .get(&parent_indices[source_position])
@@ -1527,7 +1534,13 @@ fn verify_cnf_transformation(
         // LCL642+1.010 c3 before failing. Skip it outright.
         Some(source.clone())
     } else {
-        match replace_definition_subformulas(source, &source_var_names, &definitions, limits) {
+        match replace_definition_subformulas(
+            source,
+            &source_var_names,
+            &definitions,
+            &preferred_definitions,
+            limits,
+        ) {
             Some((rewritten, matched)) => {
                 all_definitions_matched = matched.iter().all(|hit| *hit);
                 Some(rewritten)
@@ -2091,68 +2104,244 @@ fn replace_definition_subformulas(
     source: &Formula,
     source_var_names: &HashMap<VarId, String>,
     definitions: &[CoreDefinition],
+    preferred_definitions: &[mrs_core::SymbolId],
     limits: VerificationLimits,
 ) -> Option<(Formula, Vec<bool>)> {
+    let goal_order = definition_fold_order(definitions, preferred_definitions);
+    let parent_order = (0..definitions.len()).collect::<Vec<_>>();
+    let mut remaining_steps = limits.max_definition_steps;
+
+    let preferred = fold_definitions_in_order(
+        source,
+        source_var_names,
+        definitions,
+        &goal_order,
+        false,
+        &mut remaining_steps,
+    )?;
+    if preferred.1.iter().all(|hit| *hit) {
+        return Some(preferred);
+    }
+
+    let mut best = preferred;
+    if goal_order != parent_order {
+        let parent_ordered = fold_definitions_in_order(
+            source,
+            source_var_names,
+            definitions,
+            &parent_order,
+            false,
+            &mut remaining_steps,
+        )?;
+        if parent_ordered.1.iter().all(|hit| *hit) {
+            return Some(parent_ordered);
+        }
+        if parent_ordered.1.iter().filter(|hit| **hit).count()
+            > best.1.iter().filter(|hit| **hit).count()
+        {
+            best = parent_ordered;
+        }
+    }
+
+    // Keep the exact pre-change mode-major citation-order fold as a final
+    // bounded fallback. Some older proofs rely on its particular greedy match
+    // among ambiguous blocks; the goal-first fold is needed for overlapping
+    // bodies such as LCL660+1.005 c162. Certification still requires every
+    // cited definition to match in one complete fold.
+    let legacy = fold_definitions_in_order(
+        source,
+        source_var_names,
+        definitions,
+        &parent_order,
+        true,
+        &mut remaining_steps,
+    )?;
+    if legacy.1.iter().all(|hit| *hit) {
+        return Some(legacy);
+    }
+    if legacy.1.iter().filter(|hit| **hit).count() > best.1.iter().filter(|hit| **hit).count() {
+        best = legacy;
+    }
+    Some(best)
+}
+
+fn fold_definitions_in_order(
+    source: &Formula,
+    source_var_names: &HashMap<VarId, String>,
+    definitions: &[CoreDefinition],
+    fold_order: &[usize],
+    mode_major: bool,
+    remaining_steps: &mut usize,
+) -> Option<(Formula, Vec<bool>)> {
     let mut current = source.clone();
-    // Hoisting is only a matching aid (the normalizer re-prenexes
-    // anyway), so it gets its own small budget: wide sources such as
-    // LCL642+1.010 c3 otherwise keep hoisting without ever reaching
-    // replacement. Replacement keeps the full shared budget and the two
-    // stay interleaved, since folding can expose further hoists.
     let mut hoist_passes = 0;
-    let mut steps = 0;
-    // Per-definition record of "this body was found in the source at least
-    // once". A definition that never matched is the signal that the expansion
-    // is not the prover's clause set; see the caller's guard.
-    //
-    let mut matched: Vec<bool> = vec![false; definitions.len()];
+    let mut matched = vec![false; definitions.len()];
+    // Hoisting is only a matching aid (the normalizer re-prenexes anyway), so
+    // it has its own small budget. The definition-step budget is shared across
+    // the preferred and citation-order attempts below.
     loop {
-        if steps >= limits.max_definition_steps {
+        if *remaining_steps == 0 {
             return None;
         }
-        steps += 1;
+        *remaining_steps -= 1;
         let mut changed = false;
-        // Hoist quantifiers that bind nothing outside their conjunct /
-        // disjunct: the prover generalises definition bodies across
-        // quantifier boundaries (`(A & ![x]B(x))` with body `(A & B(x))`,
-        // e.g. SYO606+1 `def_nc5_11`), so the source block only matches
-        // after the vacuous placement is floated outward.
         if hoist_passes < 16 {
             hoist_passes += 1;
             let (moved, moved_changed) = pull_vacuous_quantifiers_once(&current);
             current = moved;
             changed |= moved_changed;
         }
-        // Canonical sites (order-preserving AND variable-identity preserving)
-        // first, then order-preserving, then variable-identity preserving,
-        // then general permuting fallback.
-        //
-        // Matching both operand order and variable names distinguishes structurally
-        // identical definition bodies over distinct source variables (e.g. GEO331+1
-        // c355, GEO343+1 c286, GEO299+1 c522, GEO300+1 c285, ITP019+5 c700) where
-        // two definitions have identical bodies modulo variable renaming.
-        // It also keeps mirror-image definitions apart (GEO331+1 c211, GEO343+1 c155).
-        for mode in [
+        // Try canonical sites (order-preserving and variable-identity
+        // preserving) before the general permuting fallback. The preferred
+        // pass tries every mode for one definition before the next; the final
+        // compatibility pass preserves the historical mode-major behavior.
+        let modes = [
             CoreMatchMode::OrderedIdentity,
             CoreMatchMode::Ordered,
             CoreMatchMode::Identity,
             CoreMatchMode::Permuting,
-        ] {
-            for (index, definition) in definitions.iter().enumerate() {
-                let (next, replaced) =
-                    replace_one_definition(&current, definition, mode, source_var_names);
-                if replaced && let Some(slot) = matched.get_mut(index) {
-                    *slot = true;
+        ];
+        if mode_major {
+            for mode in modes {
+                for &index in fold_order {
+                    let definition = &definitions[index];
+                    let (next, replaced) =
+                        replace_one_definition(&current, definition, mode, source_var_names);
+                    if replaced {
+                        matched[index] = true;
+                        changed = true;
+                    }
+                    current = next;
+                    if matched.iter().all(|hit| *hit) {
+                        return Some((current, matched));
+                    }
                 }
-                current = next;
-                changed |= replaced;
             }
-            if matched.iter().all(|hit| *hit) {
-                return Some((current, matched));
+        } else {
+            for &index in fold_order {
+                let definition = &definitions[index];
+                for mode in modes {
+                    let (next, replaced) =
+                        replace_one_definition(&current, definition, mode, source_var_names);
+                    if replaced {
+                        matched[index] = true;
+                        changed = true;
+                    }
+                    current = next;
+                    if matched.iter().all(|hit| *hit) {
+                        return Some((current, matched));
+                    }
+                }
             }
         }
-        if !changed || matched.iter().all(|hit| *hit) {
+        if !changed {
             return Some((current, matched));
+        }
+    }
+}
+
+/// Definitions in TSTP are often listed in clause-generation order rather than
+/// in a source-fold order. Start from definitions named in the conclusion,
+/// fold their dependencies first, and preserve the order of those dependencies
+/// in each body. This keeps a broad definition from being consumed by an
+/// overlapping, unrelated subformula definition (LCL660+1.005 c162).
+fn definition_fold_order(
+    definitions: &[CoreDefinition],
+    preferred_definitions: &[mrs_core::SymbolId],
+) -> Vec<usize> {
+    let mut order = Vec::with_capacity(definitions.len());
+    let mut heads = HashMap::with_capacity(definitions.len());
+    for (index, definition) in definitions.iter().enumerate() {
+        if let Atom::Pred(symbol, _) = &definition.head {
+            heads.insert(*symbol, index);
+        }
+    }
+
+    fn visit(
+        index: usize,
+        definitions: &[CoreDefinition],
+        heads: &HashMap<mrs_core::SymbolId, usize>,
+        state: &mut [u8],
+        order: &mut Vec<usize>,
+    ) -> bool {
+        match state[index] {
+            1 => return false,
+            2 => return true,
+            _ => {}
+        }
+        state[index] = 1;
+
+        let mut symbols = Vec::new();
+        let mut seen = HashSet::new();
+        collect_core_predicate_symbols_ordered(&definitions[index].rhs, &mut symbols, &mut seen);
+        for symbol in symbols {
+            if let Some(&dependency) = heads.get(&symbol)
+                && dependency != index
+                && !visit(dependency, definitions, heads, state, order)
+            {
+                return false;
+            }
+        }
+
+        state[index] = 2;
+        order.push(index);
+        true
+    }
+
+    let mut state = vec![0; definitions.len()];
+    for symbol in preferred_definitions {
+        if let Some(&index) = heads.get(symbol)
+            && !visit(index, definitions, &heads, &mut state, &mut order)
+        {
+            return (0..definitions.len()).collect();
+        }
+    }
+
+    // Definitions not needed by this conclusion still may be useful for other
+    // parts of the source clause set. Include them deterministically after the
+    // goal's dependency closure, preferring larger bodies before subformula
+    // aliases when no dependency orders them.
+    let mut remaining = (0..definitions.len())
+        .filter(|index| state[*index] == 0)
+        .collect::<Vec<_>>();
+    remaining.sort_by_key(|index| {
+        (
+            std::cmp::Reverse(formula_size(&definitions[*index].rhs)),
+            *index,
+        )
+    });
+    for index in remaining {
+        if !visit(index, definitions, &heads, &mut state, &mut order) {
+            return (0..definitions.len()).collect();
+        }
+    }
+
+    order
+}
+
+fn collect_core_predicate_symbols_ordered(
+    formula: &Formula,
+    symbols: &mut Vec<mrs_core::SymbolId>,
+    seen: &mut HashSet<mrs_core::SymbolId>,
+) {
+    match formula {
+        Formula::Atom(Atom::Pred(symbol, _)) => {
+            if seen.insert(*symbol) {
+                symbols.push(*symbol);
+            }
+        }
+        Formula::Atom(Atom::Eq(_, _)) | Formula::True | Formula::False => {}
+        Formula::Neg(inner) | Formula::Forall(_, inner) | Formula::Exists(_, inner) => {
+            collect_core_predicate_symbols_ordered(inner, symbols, seen);
+        }
+        Formula::And(parts) | Formula::Or(parts) => {
+            for part in parts {
+                collect_core_predicate_symbols_ordered(part, symbols, seen);
+            }
+        }
+        Formula::Implies(left, right) | Formula::Iff(left, right) => {
+            collect_core_predicate_symbols_ordered(left, symbols, seen);
+            collect_core_predicate_symbols_ordered(right, symbols, seen);
         }
     }
 }
@@ -5190,8 +5379,19 @@ fn verify_definition_renaming(
     }
 
     // 1. Fast path: forward replacement (exact substitution of definition RHS in source)
-    let forward_res =
-        replace_definition_subformulas(source, &source_var_names, &definitions, limits);
+    let mut preferred_definitions = Vec::new();
+    collect_core_predicate_symbols_ordered(
+        conclusion,
+        &mut preferred_definitions,
+        &mut HashSet::new(),
+    );
+    let forward_res = replace_definition_subformulas(
+        source,
+        &source_var_names,
+        &definitions,
+        &preferred_definitions,
+        limits,
+    );
     if let Some((expected, _matched)) = &forward_res
         && !alpha_equiv(expected, source)
         && alpha_equiv(expected, conclusion)
@@ -18625,6 +18825,50 @@ mod tests {
                      cnf(p_again, plain, p(a), inference(resolution, [status(thm)], [d_clause,d_atom])).\n\
                      cnf(bot, plain, $false, inference(resolution, [status(thm)], [p_again,np])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn folds_goal_definition_before_overlapping_subformula_definition() {
+        // The small definition matches an inner block of the large definition
+        // as well as a separate source block. The large definition's body is
+        // reordered and uses a differently named variable, so it only matches
+        // in the permuting mode. Force the expansion path rather than allowing
+        // the independent goal-directed fast path to decide the CNF step.
+        fn verify_case(goal: &str, direction: &str, parents: &str) -> KernelVerdict {
+            let source = "![X] : (((p(X) & q(X)) & r(X)) & (p(X) & q(X)))";
+            let problem =
+                format!("fof(src, axiom, {source}).\nfof(neg, axiom, ![X] : ~{direction}(X)).");
+            let proof = format!(
+                "fof(src, axiom, {source}, file('problem.p', src)).\n\
+                 fof(neg, axiom, ![X] : ~{direction}(X), file('problem.p', neg)).\n\
+                 fof(d_small, definition, ![X] : (d_small(X) <=> (p(X) & q(X))), introduced(definition, [new_symbols(definition, [d_small])])).\n\
+                 fof(d_large, definition, ![Y] : (d_large(Y) <=> (r(Y) & (q(Y) & p(Y)))), introduced(definition, [new_symbols(definition, [d_large])])).\n\
+                 cnf(goal, plain, {goal}(X), inference(cnf_transformation, [status(thm)], [{parents}])).\n\
+                 cnf(direction, plain, ~{goal}(X) | {direction}(X), inference(cnf_transformation, [status(thm)], [{parents}])).\n\
+                 cnf(neg_goal, plain, ~{goal}(X), inference(resolution, [status(thm)], [direction,neg])).\n\
+                 cnf(bot, plain, $false, inference(resolution, [status(thm)], [goal,neg_goal]))."
+            );
+            let problem = parse_tptp(&problem).expect("problem parses");
+            let proof = parse_tptp(&proof).expect("proof parses");
+            let limits = VerificationLimits {
+                max_residue_steps: 0,
+                ..VerificationLimits::default()
+            };
+            verify_strict(&problem, &proof, limits)
+        }
+
+        // Goal-first order protects the large body although the smaller
+        // subformula definition is listed first in the inference parents.
+        assert_eq!(
+            verify_case("d_large", "r", "src,d_small,d_large"),
+            KernelVerdict::Certified
+        );
+        // If goal-first order itself consumes the only small block needed by
+        // another head, citation order is retried as a bounded fallback.
+        assert_eq!(
+            verify_case("d_small", "p", "src,d_large,d_small"),
+            KernelVerdict::Certified
+        );
     }
 
     #[test]

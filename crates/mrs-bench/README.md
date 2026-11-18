@@ -154,9 +154,11 @@ The November 17, 2026 UEQ-only campaign and its include-resolution audit issue
 are documented in the
 [CASC-J12 UEQ report](../../docs/reports/benchmarks/cert-j12-ueq-2026-11-17.md);
 its 147 raw answers should not be quoted as 147 certified proofs.
-The separate November 17 FNE campaign produced 46 raw theorems; its fixed local
-replay certified 40 of 46 under TPTP v10.0.0. This is not an exact J12 v9.0.0
-audit or canonical score; see the
+The separate November 17 FNE campaign produced 46 raw theorems; its latest
+fixed local replay certified 41 of 46 under TPTP v10.0.0, with five arithmetic
+resource-limit Unknowns and no `VerifiedBad`. The CNF definition-matching gap
+at `LCL660+1.005` is fixed in the current kernel work. This is not an exact J12
+v9.0.0 audit or canonical score; see the
 [CASC-J12 FNE report](../../docs/reports/benchmarks/cert-j12-fne-2026-11-17.md).
 For a local division-schedule experiment, explicitly pass `--systems mrs`.
 Run the default competition-mode campaign with:
