@@ -200,13 +200,13 @@ pub struct SineApplication<T> {
 /// Portfolio workers use this form to avoid cloning a large clause set just to
 /// return it unchanged.
 #[derive(Debug)]
-pub struct BorrowedSineApplication<'a, T: Clone> {
-    pub items: Cow<'a, [T]>,
-    pub applied: bool,
-    pub skip: Option<SineSkip>,
-    pub before: usize,
-    pub kept: usize,
-    pub seeds: usize,
+pub(crate) struct BorrowedSineApplication<'a, T: Clone> {
+    pub(crate) items: Cow<'a, [T]>,
+    pub(crate) applied: bool,
+    pub(crate) skip: Option<SineSkip>,
+    pub(crate) before: usize,
+    pub(crate) kept: usize,
+    pub(crate) seeds: usize,
 }
 
 /// Counts the conjecture clauses, which SInE seeds from.
@@ -238,7 +238,7 @@ pub fn apply_sine_filter<T: SineItem + Clone>(
 }
 
 /// Applies the SInE filter while borrowing `items` when policy refuses it.
-pub fn apply_sine_filter_borrowed<'a, T: SineItem + Clone>(
+pub(crate) fn apply_sine_filter_borrowed<'a, T: SineItem + Clone>(
     items: &'a [T],
     tolerance: f64,
     depth_limit: Option<usize>,
