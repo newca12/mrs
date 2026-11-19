@@ -87,6 +87,9 @@ gate remains a trusted-adapter dual-check, not an end-to-end verified TPTP
 certifier. Its positive result requires the independently implemented strict
 kernel. Shadow results always carry `production_certification=false` to prevent
 mistaking them for an independent formal certification of the original proof.
+The ProoVer loader bounds proof, problem, and individual included-source files
+to 32 MiB each and their combined source bytes to 128 MiB per job. Those trusted
+host limits do not prove parser/AST memory use or include-path correctness.
 
 Problem inputs remain CNF with uninterpreted first-order predicates/functions of
 arity at most two, equality, variables and a singleton positive `$false` empty

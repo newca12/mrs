@@ -2,21 +2,25 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use mrs_tptp::owned::{OwnedTPTPProblem, parse_tptp_file};
+use mrs_tptp::owned::{OwnedTPTPProblem, parse_tptp_owned};
 use mrs_tptp::proover::proof_header_link;
 
-// Bound recursion and retained include ASTs for one verification job. These
-// limits do not bound the bytes or parse memory of an individual file.
+// Bound source bytes as well as include depth/count. These are source-size
+// limits, not an exact bound on parser/AST memory amplification.
 const MAX_INCLUDE_DEPTH: usize = 64;
 const MAX_INCLUDE_FILES: usize = 1024;
+const MAX_INPUT_FILE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_INPUT_TOTAL_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Default)]
 struct IncludeResolutionState {
     active_paths: HashSet<PathBuf>,
     active_depth: usize,
     files_read: usize,
+    total_bytes_read: usize,
 }
 
 /// All inputs for one verification job.
@@ -77,10 +81,11 @@ impl std::fmt::Display for LoadError {
 /// not found next to the proof. This mirrors the typical competition layout:
 /// proofs live in one folder and `Problems/foo.p` siblings live in another.
 pub fn load(proof_path: &Path, problems_root: Option<&Path>) -> Result<LoadedJob, LoadError> {
-    let proof_text =
-        fs::read_to_string(proof_path).map_err(|e| LoadError::ReadProof(e.to_string()))?;
+    let proof_text = read_tptp_file(proof_path, MAX_INPUT_FILE_BYTES)
+        .map_err(|e| LoadError::ReadProof(e.to_string()))?;
 
-    let proof = parse_tptp_file(proof_path).map_err(|e| LoadError::ParseProof(e.to_string()))?;
+    let proof =
+        parse_tptp_owned(proof_text.clone()).map_err(|e| LoadError::ParseProof(e.to_string()))?;
 
     let header = proof_header_link(&proof_text);
 
@@ -90,11 +95,19 @@ pub fn load(proof_path: &Path, problems_root: Option<&Path>) -> Result<LoadedJob
             resolve_problem_path_with_base(proof_path, problems_root, Path::new("."), rel);
         match candidate {
             Some(path) => {
-                let parsed = parse_tptp_file(&path)
+                let problem_limit = MAX_INPUT_FILE_BYTES
+                    .min(MAX_INPUT_TOTAL_BYTES.saturating_sub(proof_text.len()));
+                let problem_source = read_tptp_file(&path, problem_limit)
+                    .map_err(|e| LoadError::ReadProblem(e.to_string(), path.clone()))?;
+                let mut include_state = IncludeResolutionState {
+                    total_bytes_read: proof_text.len(),
+                    ..IncludeResolutionState::default()
+                };
+                record_job_bytes(&mut include_state, &path, problem_source.len())?;
+                let parsed = parse_tptp_owned(problem_source)
                     .map_err(|e| LoadError::ParseProblem(e.to_string(), path.clone()))?;
 
                 let base_dir = path.parent().unwrap_or(Path::new("."));
-                let mut include_state = IncludeResolutionState::default();
                 let canonical_problem_path = fs::canonicalize(&path).map_err(|error| {
                     LoadError::ReadProblem(
                         format!("cannot canonicalize linked problem file: {error}"),
@@ -146,13 +159,34 @@ pub fn load_text(
     proof_text: String,
     include_root: &Path,
 ) -> Result<LoadedJob, LoadError> {
-    let proof = mrs_tptp::owned::parse_tptp_owned(proof_text.clone())
-        .map_err(|e| LoadError::ParseProof(e.to_string()))?;
-    let mut problem = mrs_tptp::owned::parse_tptp_owned(problem_text)
-        .map_err(|e| LoadError::ParseProblem(e.to_string(), include_root.join("stdin.p")))?;
-    let virtual_proof_path = include_root.join("stdin.p");
+    let problem_path = include_root.join("stdin.p");
+    validate_input_lengths(proof_text.len(), problem_text.len()).map_err(|reason| {
+        if proof_text.len() > MAX_INPUT_FILE_BYTES {
+            LoadError::ReadProof(reason.to_owned())
+        } else {
+            LoadError::ReadProblem(reason.to_owned(), problem_path.clone())
+        }
+    })?;
+
+    let initial_bytes = proof_text
+        .len()
+        .checked_add(problem_text.len())
+        .ok_or_else(|| {
+            LoadError::ReadProblem(
+                "verification job input byte count overflow".into(),
+                problem_path.clone(),
+            )
+        })?;
+    let proof =
+        parse_tptp_owned(proof_text.clone()).map_err(|e| LoadError::ParseProof(e.to_string()))?;
+    let mut problem = parse_tptp_owned(problem_text)
+        .map_err(|e| LoadError::ParseProblem(e.to_string(), problem_path.clone()))?;
+    let virtual_proof_path = problem_path;
     let mut problem_includes = Vec::new();
-    let mut include_state = IncludeResolutionState::default();
+    let mut include_state = IncludeResolutionState {
+        total_bytes_read: initial_bytes,
+        ..IncludeResolutionState::default()
+    };
     resolve_includes_recursive(
         &virtual_proof_path,
         Some(include_root),
@@ -383,9 +417,144 @@ mod include_selection_tests {
             limits["include_resolution_cycle_detection"],
             "canonicalized_active_paths"
         );
-        assert_eq!(limits["include_resolution_file_bytes_bounded"], false);
+        assert_eq!(
+            limits["include_resolution_max_file_bytes"],
+            MAX_INPUT_FILE_BYTES
+        );
+        assert_eq!(
+            limits["include_resolution_max_total_bytes"],
+            MAX_INPUT_TOTAL_BYTES
+        );
+        assert_eq!(limits["include_resolution_file_bytes_bounded"], true);
+        assert_eq!(
+            limits["include_resolution_total_bytes_includes_proof"],
+            true
+        );
         assert_eq!(limits["include_resolver_verified"], false);
     }
+
+    #[test]
+    fn bounded_tptp_reader_rejects_an_oversized_file_before_parsing() {
+        let root =
+            std::env::temp_dir().join(format!("mrs_bounded_tptp_reader_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("oversized.p");
+        std::fs::write(&path, "123456789").unwrap();
+
+        let error = read_tptp_file(&path, 8).unwrap_err();
+        assert!(error.to_string().contains("byte limit"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn include_bytes_share_the_job_wide_budget() {
+        let path = PathBuf::from("large-include.p");
+        let mut state = IncludeResolutionState {
+            total_bytes_read: MAX_INPUT_TOTAL_BYTES - 1,
+            ..IncludeResolutionState::default()
+        };
+
+        assert!(record_job_bytes(&mut state, &path, 1).is_ok());
+        assert!(
+            record_job_bytes(&mut state, &path, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("total input byte limit")
+        );
+    }
+
+    #[test]
+    fn initial_problem_and_proof_bytes_are_bounded_before_parsing() {
+        assert!(validate_input_lengths_with_limits(8, 8, 8, 16).is_ok());
+        assert!(
+            validate_input_lengths_with_limits(8, 8, 8, 15)
+                .unwrap_err()
+                .contains("total input byte limit")
+        );
+        assert!(
+            validate_input_lengths(MAX_INPUT_FILE_BYTES + 1, 0)
+                .unwrap_err()
+                .contains("proof file")
+        );
+        assert!(
+            validate_input_lengths(0, MAX_INPUT_FILE_BYTES + 1)
+                .unwrap_err()
+                .contains("problem file")
+        );
+    }
+}
+
+fn read_tptp_file(path: &Path, max_bytes: usize) -> io::Result<String> {
+    let mut source = String::new();
+    fs::File::open(path)?
+        .take((max_bytes as u64).saturating_add(1))
+        .read_to_string(&mut source)?;
+    if source.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("TPTP source exceeds byte limit ({max_bytes})"),
+        ));
+    }
+    Ok(source)
+}
+
+fn validate_input_lengths(proof_bytes: usize, problem_bytes: usize) -> Result<usize, String> {
+    validate_input_lengths_with_limits(
+        proof_bytes,
+        problem_bytes,
+        MAX_INPUT_FILE_BYTES,
+        MAX_INPUT_TOTAL_BYTES,
+    )
+}
+
+fn validate_input_lengths_with_limits(
+    proof_bytes: usize,
+    problem_bytes: usize,
+    max_file_bytes: usize,
+    max_total_bytes: usize,
+) -> Result<usize, String> {
+    if proof_bytes > max_file_bytes {
+        return Err(format!("proof file exceeds byte limit ({max_file_bytes})"));
+    }
+    if problem_bytes > max_file_bytes {
+        return Err(format!(
+            "problem file exceeds byte limit ({max_file_bytes})"
+        ));
+    }
+    let total_bytes = proof_bytes
+        .checked_add(problem_bytes)
+        .ok_or_else(|| "verification job input byte count overflow".to_owned())?;
+    if total_bytes > max_total_bytes {
+        return Err(format!(
+            "verification job exceeds total input byte limit ({max_total_bytes})"
+        ));
+    }
+    Ok(total_bytes)
+}
+
+fn record_job_bytes(
+    state: &mut IncludeResolutionState,
+    path: &Path,
+    additional_bytes: usize,
+) -> Result<(), LoadError> {
+    let total_bytes = state
+        .total_bytes_read
+        .checked_add(additional_bytes)
+        .ok_or_else(|| {
+            LoadError::ReadProblem(
+                "verification job input byte count overflow".into(),
+                path.to_path_buf(),
+            )
+        })?;
+    if total_bytes > MAX_INPUT_TOTAL_BYTES {
+        return Err(LoadError::ReadProblem(
+            format!("verification job exceeds total input byte limit ({MAX_INPUT_TOTAL_BYTES})"),
+            path.to_path_buf(),
+        ));
+    }
+    state.total_bytes_read = total_bytes;
+    Ok(())
 }
 
 fn resolve_includes_recursive(
@@ -426,7 +595,12 @@ fn resolve_includes_recursive(
             }
             state.files_read += 1;
 
-            let mut parsed = parse_tptp_file(&path)
+            let file_limit = MAX_INPUT_FILE_BYTES
+                .min(MAX_INPUT_TOTAL_BYTES.saturating_sub(state.total_bytes_read));
+            let source = read_tptp_file(&path, file_limit)
+                .map_err(|e| LoadError::ReadProblem(e.to_string(), path.clone()))?;
+            record_job_bytes(state, &path, source.len())?;
+            let mut parsed = parse_tptp_owned(source)
                 .map_err(|e| LoadError::ParseProblem(e.to_string(), path.clone()))?;
 
             state.active_paths.insert(canonical_path.clone());
