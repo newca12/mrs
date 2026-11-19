@@ -2093,7 +2093,7 @@ mod tests {
     }
 
     #[test]
-    fn process_memory_resource_out_stops_portfolio_siblings() {
+    fn memory_resource_out_is_a_process_wide_limit() {
         assert!(is_process_wide_memory_limit(&SearchResult::ResourceOut(
             crate::ResourceReason::Memory {
                 limit_mb: 1024,
@@ -2106,6 +2106,59 @@ mod tests {
                 processed: 100,
             }
         )));
+    }
+
+    #[test]
+    fn memory_resource_out_stops_remaining_portfolio_strategies() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("memory_stop_p");
+        let f = symbols.intern("memory_stop_f");
+        let a = symbols.intern("memory_stop_a");
+        let mut id_gen = ClauseIdGen::new();
+        let clause = input_clause(
+            &mut id_gen,
+            vec![Literal::pos(Atom::pred(
+                p,
+                vec![Term::app(f, vec![Term::constant(a)])],
+            ))],
+            "non_epr_memory_stop",
+        );
+        let constrained = SearchConfig {
+            time_limit: Duration::from_secs(1),
+            use_avatar: false,
+            resource_limits: crate::ResourceLimits {
+                max_memory_mb: Some(0),
+                ..crate::ResourceLimits::default()
+            },
+            ..SearchConfig::default()
+        };
+        let following = SearchConfig {
+            time_limit: Duration::from_secs(1),
+            use_avatar: false,
+            ..SearchConfig::default()
+        };
+        let schedule = StrategySchedule {
+            strategies: vec![
+                (constrained, Duration::from_secs(1)),
+                (following, Duration::from_secs(1)),
+            ],
+        };
+
+        let (result, report) = run_schedule(
+            &[clause],
+            &[],
+            id_gen,
+            &schedule,
+            &symbols,
+            MlOptions::default(),
+            Some(1),
+        );
+
+        assert!(matches!(
+            result,
+            SearchResult::ResourceOut(crate::ResourceReason::Memory { limit_mb: 0, .. })
+        ));
+        assert_eq!(report.strategies.len(), 1);
     }
 
     #[test]
