@@ -1,8 +1,8 @@
 //! Display/reparse fidelity and TPTP 10 syntax coverage.
 
 use mrs_tptp::{
-    AnnotatedFormula, FormulaRole, Name, TFFAtomicFormula, TFFFormula, TFFStatement, THFFormula,
-    THFStatement, parse_tptp,
+    AnnotatedFormula, FormulaRole, Name, TFFAtomicFormula, TFFFormula, TFFStatement,
+    THFAtomicFormula, THFFormula, THFStatement, parse_tptp,
 };
 
 /// Parse `input`, then check that every formula and include displays to text
@@ -200,6 +200,19 @@ fn thf_let_definitions_are_preserved_and_display_round_trips() {
 fn thf_let_rejects_mismatched_declarations_and_bindings() {
     assert!(parse_tptp("thf(bad, axiom, $let(ff: $i, gg := a, p)).").is_err());
     assert!(parse_tptp("thf(bad, axiom, $let([ff: $i, gg: $i], ff := a, p)).").is_err());
+}
+
+#[test]
+fn thf_let_keyword_does_not_capture_longer_defined_words() {
+    let problem = parse_tptp("thf(a, axiom, $let_extra).").expect("defined word should parse");
+    assert!(matches!(
+        &problem.formulas[0],
+        AnnotatedFormula::THF(formula)
+            if matches!(
+                &formula.formula,
+                THFStatement::Logical(THFFormula::Atomic(THFAtomicFormula::Defined(_, _)))
+            )
+    ));
 }
 
 #[test]

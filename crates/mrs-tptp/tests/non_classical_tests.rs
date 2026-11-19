@@ -47,6 +47,31 @@ fn test_ncl_correct_specifications() {
 }
 
 #[test]
+fn correct_specifications_fixture_keeps_the_semantics_examples() {
+    let path = get_non_classical_resources_path().join("CorrectSpecifications.p");
+    let content = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read file {}: {}", path.display(), e));
+    let problem = parse_tptp(&content).expect("modal specification examples should parse");
+    let names: std::collections::HashSet<_> = problem
+        .formulas
+        .iter()
+        .map(|formula| formula.name())
+        .collect();
+
+    for name in [
+        "standard_s5_example",
+        "constants_example",
+        "domain_options_example",
+        "global_axiom",
+        "local_goal",
+        "global_goal",
+        "multiple_modalities_example",
+    ] {
+        assert!(names.contains(name), "missing semantics example {name}");
+    }
+}
+
+#[test]
 fn test_ncl_krs272_1() {
     parse_and_print("KRS272~1.p");
 }

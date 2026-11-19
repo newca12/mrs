@@ -1593,10 +1593,11 @@ freshness conditions must also be justified by the calculus contract.
   This verifies the c502 local inference only; the FOF NNF/skolemisation/CNF
   ancestry is parsed but not checked by the Verus IR, and c502 is not the empty
   root of the complete refutation.
-- **TODO:** certify the source-to-c27/c39 ancestry under explicitly supported
-  transformation rules, or retain it as a clearly trusted input boundary; do
-  not infer full SWV406+1 proof certification from the local-step result. The
+- **SCOPE DECISION (2026-11-19):** retain the source-to-c27/c39 ancestry as a
+  clearly trusted input boundary for this bounded checker. The verified result
+  is the local c502 step only; it is not full SWV406+1 proof certification. The
   full archived proof also uses AVATAR/SAT rules outside the verified whitelist.
+  Reopen this item only when expanding the supported transformation/SAT scope.
 - **DONE, source-variable substitution fixture:** the compiled runtime regression
   accepts a step whose unifier binds a standardized source variable to a target
   ground term. Equivalent conclusion literal permutations and alpha-equivalence
@@ -1963,7 +1964,8 @@ satisfiability/model claims, and unrestricted full TSTP.
   detached clean worktree; the recursive source audit requires every formal
   `.rs` module in `verify.sh`, and the `--no-cheating` gate rejects
   verifier-recognized escape hatches, including a negative self-test for
-  `assume_specification`; proof corpus and broader mutation audits remain TODO).
+  `assume_specification`; representative-corpus and broader mutation gates remain
+  open under M7).
 - [x] Implement and verify the restricted ground unit-superposition checker,
   soundness lemma, and forged-field examples (M3 partial).
 - [x] Preserve the archived c502 clauses as a fixture and verify a manually
@@ -2127,7 +2129,7 @@ satisfiability/model claims, and unrestricted full TSTP.
   replacing selected-position lookup, dropping replayed context, skipping local
   or DAG replay, bypassing cited parents/conclusions, and forging DAG structural
   guards. The compiled-runtime root-closure mutation is also required to fail.
-  Broader corpus and threat-model coverage remain TODO.
+  Broader corpus and threat-model coverage remain open under M7.
 - [x] Make the TPTP 10 type-declaration guard a dual-check integration regression
   for all five parser roles, in both problem and proof inputs. The formal report
   must remain `Unknown` and the opt-in gate must not certify any of the ten cases;
@@ -2137,7 +2139,8 @@ satisfiability/model claims, and unrestricted full TSTP.
   certification plus exact node counts. Per case, reject a forged nonempty root,
   a wrong existing cited parent, an unsupported rule, and an otherwise-valid
   disconnected input. The corpus is explicitly not represented as archived
-  competition coverage; broader corpus and threat-model coverage remain TODO.
+  competition coverage; broader corpus and threat-model coverage remain open
+  under M7.
 - [x] Require verification/runtime-build commands to match the pinned Verus
   release and effective Rust toolchain, use the verification gate's SMT limit
   for runtime compilation, and record verifier identity, exact flags, artifact

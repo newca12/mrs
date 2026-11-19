@@ -843,7 +843,7 @@ fn thf_conditional<'a>(input: &mut &'a str) -> PResult<THFFormula<'a>> {
 }
 
 fn thf_let<'a>(input: &mut &'a str) -> PResult<THFFormula<'a>> {
-    "$let".parse_next(input)?;
+    keyword("$let").parse_next(input)?;
     let result = (|| {
         ws.parse_next(input)?;
         '('.parse_next(input)?;
