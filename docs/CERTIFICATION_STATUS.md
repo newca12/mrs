@@ -1337,6 +1337,26 @@ the canonical eight-physical-core/full-memory CASC machine. See the [full J12
 UEQ report](reports/benchmarks/cert-j12-ueq-2026-11-17.md) for both audit
 identities, archive hashes, run details, and the diagnostic replay command.
 
+### Separate CASC-J12 UEQ campaign (2026-11-18)
+
+The next-day, separate UEQ campaign returned **144/300 raw `Unsatisfiable`**
+answers. Its bundled strict audit reports **144 `VerifiedGood`, 0
+`VerifiedBad`, and 0 `Unknown`**. One additional row, `LAT183-10`, ended as
+`ResourceOut` at the host's 54,198 MB effective-memory limit. `run.log` confirms
+the official 180-second UEQ limit despite the metadata's 120-second default.
+
+This is not a matched replication of the November 17 campaign: both used eight
+workers and the same `casc_ueq` order with sharing disabled, but the producer
+trees and hosts differ. The solve sets share 143 problems (four November 17-only
+and one November 18-only); these single-run differences do not establish a
+source or schedule effect. The November 18 host had 16 physical cores and
+54,198 MB effective memory against the 131,072 MB allowance. Its strict audit
+records TPTP v10.0.0, not the J12 v9.0.0 release used for the exact November 17
+re-audit, and the TPTP library tree is not hash-bound. Treat this as a separate
+strictly audited observation, not an official score or a replacement for the
+November 17 result. See the [November 18 report](reports/benchmarks/cert-j12-ueq-2026-11-18.md)
+for status changes, memory caveats, hashes, and full provenance.
+
 ### CASC-J12 FNE campaign (2026-11-17; fixed replay used TPTP v10.0.0)
 
 The 75-row FNE campaign produced **46 raw `Theorem` answers**. Its original

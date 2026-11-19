@@ -380,24 +380,32 @@ The question is whether those division schedules are optimal for 8 cores.
 > `VerifiedBad`; this does not audit the specific `codex.db` 257/400 or 222/300
 > snapshots and supplies no corrected score (see UI-1 in
 > `docs/policies/unresolved-issues.md`, `docs/CERTIFICATION_STATUS.md`, and
-> `docs/reports/benchmarks/ueq-soundness-regression-2026-10.md`). The latest
-> CASC-J12 UEQ-only observation (2026-11-17) returned 147/300 raw
-> `Unsatisfiable`, but its archived strict audit has 97 `VerifiedGood` and 50
-> `Unknown` due to missing TPTP `Axioms/` includes. At producer commit `9c10581`
+> `docs/reports/benchmarks/ueq-soundness-regression-2026-10.md`). **CASC-J12
+> UEQ observations:** the 2026-11-17 campaign returned 147/300 raw
+> `Unsatisfiable`; its original strict audit had 97 `VerifiedGood` and 50
+> `Unknown` from missing TPTP `Axioms/` includes. At producer commit `9c10581`
 > the audit child overrode `TPTP` with the selected-problem directory; commit
-> `637f396` fixes the override. An initial replay with another verifier and
-> TPTP v9.3.1 verified 49/50; investigation isolated `LAT171-1` c379 to a
-> missing associative-subset fallback. A regression-tested kernel fallback now
-> replays all 50 as `VerifiedGood` with a fresh local checker and TPTP v9.3.1.
-> The fixed audit was then rerun on 2026-11-19 against the exact J12 problem
-> corpus and TPTP v9.0.0: all **147/147** emitted refutations are now
-> `VerifiedGood`, with 0 `VerifiedBad`, 0 `Unknown`, and 0 verifier timeouts.
-> The audit identity's run-CSV and problem-corpus digests match the archived
-> identity. This verifies the proofs emitted by that archived run, not a new
-> solve campaign or a canonical CASC score: the producer tree was dirty and its
-> 16-physical-core host had 108,816 MB effective memory. See
-> `docs/reports/benchmarks/cert-j12-ueq-2026-11-17.md`. This separate J12 result
-> does not replace the CASC-J13 observations below.
+> `637f396` fixes the override. A kernel fallback also closed the `LAT171-1`
+> c379 replay gap: an initial TPTP v9.3.1 replay verified 49/50, then a fresh
+> checker replayed all 50 after the regression-tested fallback. The fixed audit
+> was rerun on 2026-11-19 against the exact J12 corpus and TPTP v9.0.0: all
+> **147/147** proofs are `VerifiedGood`, with 0 `VerifiedBad`, 0 `Unknown`, and
+> 0 verifier timeouts. Its identity's run-CSV and problem-corpus digests match
+> the archived run.
+>
+> A separate 2026-11-18 UEQ run returned **144/300 raw `Unsatisfiable`**, and
+> its bundled strict audit reports **144/144 `VerifiedGood`**, 0 `VerifiedBad`,
+> and 0 `Unknown`. It had one `ResourceOut` (`LAT183-10`) at 54,198 MB effective
+> memory. The audit used TPTP v10.0.0 (the library tree is not hash-bound), not
+> an exact J12 v9.0.0 re-audit. Compared with November 17, 143 solves are
+> common, four are November 17-only, and one is November 18-only; the six row
+> status changes are an unpaired observation, not a schedule or source effect.
+> Both producer trees were dirty and both 16-physical-core hosts were below the
+> 131,072 MB allowance: November 17 had 108,816 MB effective memory, while
+> November 18 had 54,198 MB. Neither campaign is a canonical CASC score. See
+> `docs/reports/benchmarks/cert-j12-ueq-2026-11-17.md` and
+> `docs/reports/benchmarks/cert-j12-ueq-2026-11-18.md`. These separate J12
+> observations do not replace the CASC-J13 observations below.
 > **Separate CASC-J12 FNE observation (2026-11-17):** the 75-row run produced
 > 46 raw `Theorem` answers. The archived audit had 9 `VerifiedGood` and 37
 > `Unknown` because the audit child lost its `TPTP` library root; commit
