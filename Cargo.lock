@@ -4309,7 +4309,6 @@ name = "mrs-proof"
 version = "0.3.0"
 dependencies = [
  "mrs-core",
- "mrs-szs",
  "mrs-unify",
  "rustc-hash 2.1.3",
  "smallvec",

@@ -810,7 +810,7 @@ fn parse_csv_line(line: &str) -> Vec<String> {
                 chars.next();
                 current.push('"');
             } else {
-                in_quotes = !in_quotes;
+                in_quotes.toggle();
             }
         } else if c == ',' && !in_quotes {
             fields.push(current.trim().to_string());
@@ -2429,7 +2429,7 @@ fn main() {
     let mut pending_files = Vec::new();
     for entry in WalkDir::new(folder).into_iter().filter_map(|e| e.ok()) {
         if entry.path().is_file() && entry.path().extension().is_some_and(|ext| ext == "p") {
-            let relative_path = entry.path().strip_prefix(folder).unwrap_or(entry.path());
+            let relative_path = entry.path().trim_prefix(folder);
             let problem_name =
                 scoped_problem_name(&corpus, is_competition, &relative_path.to_string_lossy());
 

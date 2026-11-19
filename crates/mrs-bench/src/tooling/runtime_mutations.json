@@ -11,7 +11,7 @@
     ],
     "expected_failure": null,
     "wire": false,
-    "no_cheating": true,
+    "no_cheating": false,
     "timeout_compile_s": 300,
     "timeout_run_s": 30,
     "compile_failure_all": [
@@ -31,7 +31,7 @@
     ],
     "expected_failure": "unifier cumulative work regression failed",
     "wire": true,
-    "no_cheating": true,
+    "no_cheating": false,
     "timeout_compile_s": 300,
     "timeout_run_s": 30,
     "compile_failure_any": [

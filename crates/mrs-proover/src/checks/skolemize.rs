@@ -490,7 +490,7 @@ fn find_existential_binder<'p>(
     loop {
         match cur {
             FOFFormula::Negation(inner) => {
-                polarity = !polarity;
+                polarity.toggle();
                 cur = strip_parens(inner);
             }
             FOFFormula::Quantified {
@@ -1762,7 +1762,7 @@ fn collect_all_universals<'p>(f: &'p FOFFormula<'p>, vars: &mut Vec<&'p str>) {
     loop {
         match cur {
             FOFFormula::Negation(inner) => {
-                polarity = !polarity;
+                polarity.toggle();
                 cur = strip_parens(inner);
             }
             FOFFormula::Quantified {

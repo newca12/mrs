@@ -737,7 +737,7 @@ fn classify_problem(
 }
 
 fn extract_domain(name: &str) -> String {
-    let clean = name.strip_prefix("Problems/").unwrap_or(name);
+    let clean = name.trim_prefix("Problems/");
     let filename = std::path::Path::new(clean)
         .file_name()
         .and_then(|s| s.to_str())

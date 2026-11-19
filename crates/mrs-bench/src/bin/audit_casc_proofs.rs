@@ -1492,7 +1492,7 @@ fn parse_csv_line(line: &str) -> Vec<String> {
                 chars.next();
                 current.push('"');
             }
-            '"' => quoted = !quoted,
+            '"' => quoted.toggle(),
             ',' if !quoted => {
                 fields.push(current.trim().to_string());
                 current.clear();

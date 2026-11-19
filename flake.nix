@@ -93,7 +93,7 @@
         };
 
         # Verus uses its own Rust toolchain, isolated from the workspace's
-        # pinned Rust 1.99 toolchain. Use `nix develop .#verus -c ...` for
+        # pinned Rust 1.100.0 toolchain. Use `nix develop .#verus -c ...` for
         # Verus install/verification so rustup cannot change the main shell.
         devShells.verus = pkgs.mkShell {
           packages = with pkgs; [

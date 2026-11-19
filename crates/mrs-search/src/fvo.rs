@@ -1194,7 +1194,7 @@ mod tests {
                 let u = insts.unit();
                 let mut negated = u.clone();
                 for lit in &mut negated {
-                    lit.2 = !lit.2;
+                    lit.2.toggle();
                 }
                 specs.push(u);
                 specs.push(negated);

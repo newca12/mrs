@@ -300,9 +300,9 @@ directory and requires a matching strict invocation in `verify.sh`; a unit
 regression rejects a nested source omitted from the verification list. It does not
 audit Rust modules outside this formal directory.
 
-The Verus executable is pinned to release `0.2026.10.18.7d82994` with a
+The Verus executable is pinned to rolling release `0.2026.11.18.a95764f` with a
 verified Linux x86_64 SHA-256. The release's `rust-toolchain.toml` declares
-Rust `1.99.1`, matching the requested toolchain. `verify.sh` records both
+Rust `1.100.0`, matching the requested toolchain. `verify.sh` records both
 requested and effective values. Updating either pin requires a fresh full
 verification run and recorded evidence.
 The first-order core, reproducible runtime builds and compiled-runtime mutants use
