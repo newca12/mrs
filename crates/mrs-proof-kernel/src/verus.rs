@@ -3702,10 +3702,18 @@ fn dag_request(
                         let c = instantiation_certificate(parent, parent, limits)?;
                         let conclusion = c.conclusion.clone();
                         (Kind::Instantiation(c), conclusion, parents)
+                    } else if let Ok(c) = condensation_certificate(parent, &raw, limits) {
+                        // Some producers label duplicate-literal contraction
+                        // as `copy`; the runtime still checks the verified
+                        // condensation certificate, not the rule name.
+                        let conclusion = c.conclusion.clone();
+                        (Kind::Condensation(c), conclusion, parents)
                     } else if clause_single_equality_symmetry(parent, &raw) {
                         (Kind::Symmetry, raw.clone(), parents)
                     } else {
-                        return Err("copy conclusion is not an allowed clause identity".into());
+                        return Err(
+                            "copy conclusion is not an allowed identity, condensation, or equality symmetry".into(),
+                        );
                     }
                 }
                 Some("instantiate")

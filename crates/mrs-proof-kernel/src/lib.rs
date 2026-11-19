@@ -581,8 +581,9 @@ fn verify_strict_with_source_internal(
             "fof_nnf" | "fof_nnf_transformation" | "nnf_transformation" => {
                 verify_nnf(&parents, conclusion, limits)
             }
-            "variable_rename" | "rename_variable" | "rename" | "rectify" | "copy" | "assume"
-            | "rewrite" | "duplicate" => verify_alpha_identity(&parents, conclusion),
+            "variable_rename" | "rename_variable" | "rename" | "rectify" | "assume" | "rewrite"
+            | "duplicate" => verify_alpha_identity(&parents, conclusion),
+            "copy" => verify_copy(&parents, conclusion, limits),
             "alpha" => {
                 let outcome = verify_alpha_identity(&parents, conclusion);
                 if matches!(outcome, KernelVerdict::Certified) {
@@ -4967,6 +4968,24 @@ fn verify_alpha_identity(parents: &[Formula], conclusion: &Formula) -> KernelVer
         KernelVerdict::Certified
     } else {
         KernelVerdict::Rejected("conclusion is not alpha-equivalent to parent".into())
+    }
+}
+
+fn verify_copy(
+    parents: &[Formula],
+    conclusion: &Formula,
+    limits: VerificationLimits,
+) -> KernelVerdict {
+    // Prover9 uses `copy` for both identity and literal contraction. Accept
+    // contraction only when the independent, bounded condensation checker
+    // supplies a valid certificate; do not treat arbitrary changes as copies.
+    match verify_alpha_identity(parents, conclusion) {
+        KernelVerdict::Certified => KernelVerdict::Certified,
+        identity_verdict => match verify_condensation(parents, conclusion, limits) {
+            KernelVerdict::Certified => KernelVerdict::Certified,
+            KernelVerdict::Inconclusive(reason) => KernelVerdict::Inconclusive(reason),
+            KernelVerdict::Rejected(_) => identity_verdict,
+        },
     }
 }
 
@@ -19425,6 +19444,26 @@ mod tests {
                      fof(n, axiom, ~p(a), file('problem.p', n)).\
                      fof(bot, plain, $false, inference(resolution, [status(thm)], [c,n])).";
         assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn certifies_copy_alias_for_clause_condensation() {
+        let problem = "cnf(duplicate,axiom,p|p).\ncnf(negative,axiom,~p).";
+        let proof = "cnf(duplicate,axiom,p|p,file('problem.p',duplicate)).\
+                     cnf(single,plain,p,inference(copy,[status(thm)],[duplicate])).\
+                     cnf(negative,axiom,~p,file('problem.p',negative)).\
+                     cnf(bot,plain,$false,inference(resolve,[status(thm)],[single,negative])).";
+        assert_eq!(check(problem, proof), KernelVerdict::Certified);
+    }
+
+    #[test]
+    fn rejects_copy_alias_that_drops_a_distinct_literal() {
+        let problem = "cnf(parent,axiom,p|q).\ncnf(negative,axiom,~p).";
+        let proof = "cnf(parent,axiom,p|q,file('problem.p',parent)).\
+                     cnf(single,plain,p,inference(copy,[status(thm)],[parent])).\
+                     cnf(negative,axiom,~p,file('problem.p',negative)).\
+                     cnf(bot,plain,$false,inference(resolve,[status(thm)],[single,negative])).";
+        assert!(matches!(check(problem, proof), KernelVerdict::Rejected(_)));
     }
 
     #[test]

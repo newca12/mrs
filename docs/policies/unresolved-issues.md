@@ -636,11 +636,11 @@ concrete form of "the archived proofs cannot show the fix". Auditing them needs
 
 ---
 
-## UI-2 — Problems that hang before emitting any SZS status (12 FEQ remaining)
+## UI-2 — Problems that hung before emitting any SZS status (resolved)
 
 | | |
 |---|---|
-| Status | **UEQ fixed** (`a67e523`), **FEQ fixed** (UI-10); re-confirmed on 96 GB campaign hosts |
+| Status | **UEQ fixed** (`a67e523`), **FEQ fixed** (UI-10); timeout/exit evidence added to the harness (`54b532f9`) |
 | Severity | was 15 of 300 casc-30 UEQ (5%) and 12 of 400 casc-30 FEQ (3%) |
 | Soundness | Not a false-positive issue. The timeouts may still cost coverage. |
 
@@ -737,22 +737,26 @@ through this API, but the campaign rows do not prove these 12 are stuck in that
 function. Stage telemetry or a targeted instrumented run is needed before
 assigning a root cause.
 
-This matters beyond these rows: the harness does not record per-stage progress,
-so an outer timeout cannot currently distinguish a slow preprocessing stage
-from a long search.
+This matters beyond these rows. The harness now records `actual_wall_time_s`,
+`exit_code`, `termination_signal`, `szs_emitted`, and `last_completed_stage`
+(`54b532f9`), so an outer kill can be distinguished from a prover-emitted SZS
+status and the last completed MRS stage is preserved. It still does not identify
+the stage currently in progress, so a long preprocessing phase needs a targeted
+instrumented run before it can be distinguished from a long search.
 
-### Secondary defect, independent of the above
+### Secondary reporting defect — resolved in `54b532f9`
 
-The CSV cannot distinguish "searched hard and timed out" from "stopped in a
-long non-search phase and was killed". Both are recorded as `Timeout` with no
-marker. A harness change should preserve the exit code and whether an SZS status
-was emitted, so these cases can be separated in the results.
+The CSV now preserves the process exit code and whether an SZS status was
+emitted, along with actual wall time, termination signal, and the last completed
+MRS stage. This separates outer termination from a prover-reported timeout;
+it does not on its own identify an in-progress preprocessing stage.
 
 ### Also affects the memory column
 
-For those 15 rows `peak_memory_mb` comes from GNU `time` Max RSS
-(`casc.sh:750-757`); the other 285 are mrs's self-reported VmPeak. The column
-is **not homogeneous** and must not be charted as one series.
+For those 15 rows `peak_memory_mb` comes from GNU `time` Max RSS; the other 285
+are mrs's self-reported VmPeak. That legacy column remains **not homogeneous**.
+New rows also carry separate `peak_rss_mb` and `peak_virtual_mb` fields; use
+those explicit source columns for memory comparisons.
 
 ---
 

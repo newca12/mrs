@@ -123,8 +123,9 @@ parent-order inference result after a bounded, shared-fuel alpha/permutation
 comparison; the strict kernel checks the unmodified TSTP step. The `paramod`
 alias searches both equality orientations and then uses verified superposition
 replay. A `copy` edge is limited to clause identity modulo alpha/literal
-permutation or one equality-symmetry step with unchanged context. These
-normalizations remain in the unverified adapter boundary. Proof
+permutation, checked clause condensation, or one equality-symmetry step with
+unchanged context. These normalizations remain in the unverified adapter
+boundary. Proof
 names must be unique; missing parents, cycles, nonempty roots and disconnected
 nodes cannot obtain a formal positive result. The whole DAG is transmitted;
 unused proof nodes are not silently deleted to obtain closure.
@@ -177,10 +178,10 @@ campaign provenance. A separate complete public Leo-III THF TSTP solution is pre
 `fixtures/archived-unsupported-proofs.tsv` and must fail closed at the unsupported
 type-declaration guard; it is not certified. CI also checks actual supported CNF
 complete refutations, including one with an essential superposition followed by
-exact unary-predicate resolution. The twelve-entry dual-check corpus now includes
-an exact anonymous-leaf case and three complete public Prover9 2026-6A proofs:
-seven-node `SYN343-1`, 31-node
-`PUZ001-1`, and 42-node equality `PUZ001-2`. Their archive headers name TPTP
+exact unary-predicate resolution. The fourteen-entry dual-check corpus now
+includes an exact anonymous-leaf case and four complete public Prover9 2026-6A
+proofs: seven-node `SYN343-1`, 13-node `SYN052-1` (including `copy` clause
+condensation), 31-node `PUZ001-1`, and 42-node equality `PUZ001-2`. Their archive headers name TPTP
 v9.3.1; each is checked against its vendored TPTP v10.0.0 problem fixture. The
 vendored proofs remove only trailing horizontal whitespace; raw archive and
 normalized fixture hashes are both recorded in the support manifest. These
@@ -310,12 +311,12 @@ request tests, then runs Rust integration tests against that exact temporary
 artifact/hash. Rust tests requiring the artifact are explicitly ignored in
 ordinary `cargo test`; they are mandatory in the formal CI job.
 The bridge suite also reads `fixtures/supported-dag-corpus.tsv` and requires all
-twelve indexed full TPTP refutations to pass the strict/Verus dual-check path
-with their recorded node counts. The set includes five hand-authored smoke proofs
-(one with exact anonymous input leaves), a synthetic MRS 0.3.0 seven-node
+fourteen indexed full TPTP refutations to pass the strict/Verus dual-check path
+with their recorded node counts. The set includes six hand-authored smoke proofs
+(one with exact anonymous input leaves and a two-step unit-demodulation chain), a synthetic MRS 0.3.0 seven-node
 function-bearing Horn chain, three MRS 0.3.0
-proofs generated from real TPTP v10.0.0 problems, and three complete archived
-Prover9 2026-6A proofs: `SYN343-1` (7 nodes), `PUZ001-1` (31 nodes) and
+proofs generated from real TPTP v10.0.0 problems, and four complete archived
+Prover9 2026-6A proofs: `SYN343-1` (7 nodes), `SYN052-1` (13 nodes), `PUZ001-1` (31 nodes) and
 `PUZ001-2` (42 nodes). Their archive headers name TPTP v9.3.1; their proof nodes
 are checked against the vendored v10.0.0 problem fixtures. The equality proof
 exercises the restricted `copy` symmetry and `paramod` adapter paths.

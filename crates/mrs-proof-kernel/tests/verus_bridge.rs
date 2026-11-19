@@ -17,6 +17,57 @@ fn config() -> VerusConfig {
     }
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[test]
+fn multi_step_demodulation_fixture_certifies_in_strict_kernel() {
+    let problem = mrs_tptp::parse_tptp(include_str!(
+        "../../../formal/superposition-checker/fixtures/multi-step-demodulation-problem.p"
+    ))
+    .expect("multi-step demodulation problem parses");
+    let proof = mrs_tptp::parse_tptp(include_str!(
+        "../../../formal/superposition-checker/fixtures/multi-step-demodulation-proof.p"
+    ))
+    .expect("multi-step demodulation proof parses");
+
+    assert_eq!(
+        verify_strict_with_source(
+            &problem,
+            &proof,
+            Some("input"),
+            VerificationLimits::default(),
+        ),
+        KernelVerdict::Certified
+    );
+}
+
+#[test]
+fn archived_prover9_syn052_proof_certifies_in_strict_kernel() {
+    let problem = mrs_tptp::parse_tptp(include_str!(
+        "../../../formal/superposition-checker/fixtures/SYN052-1.p"
+    ))
+    .expect("SYN052-1 problem parses");
+    let proof = mrs_tptp::parse_tptp(include_str!(
+        "../../../formal/superposition-checker/fixtures/SYN052-1-Prover9-2026-6A.s"
+    ))
+    .expect("SYN052-1 Prover9 proof parses");
+
+    assert_eq!(
+        verify_strict_with_source(
+            &problem,
+            &proof,
+            Some("theBenchmark.p"),
+            VerificationLimits::default(),
+        ),
+        KernelVerdict::Certified
+    );
+}
+
 fn first_input_name(tptp: &str) -> Option<&str> {
     tptp.lines().find_map(|line| {
         let declaration = line
@@ -1285,6 +1336,22 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         }
         let problem_text = load_fixture(problem_file);
         let proof_text = load_fixture(proof_file);
+        if *name == "multi-step-demodulation" {
+            let demod_case =
+                &corpus_manifest["limits"]["supported_dag_fixture_corpus_multi_step_demodulation"];
+            assert_eq!(demod_case["problem_file"], *problem_file);
+            assert_eq!(
+                demod_case["problem_sha256"],
+                sha256_hex(problem_text.as_bytes())
+            );
+            assert_eq!(demod_case["proof_file"], *proof_file);
+            assert_eq!(
+                demod_case["proof_sha256"],
+                sha256_hex(proof_text.as_bytes())
+            );
+            assert_eq!(demod_case["demodulation_steps"], 2);
+            assert_eq!(demod_case["checked_nodes"], 7);
+        }
         if *origin == "mrs-generated-tptp-v10.0.0" {
             let tptp_case = &corpus_manifest["limits"]["supported_dag_fixture_corpus_real_tptp_problems"]
                 [*problem_file];
@@ -1324,6 +1391,10 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
                     "a39372f9b113e504401adb071a32940660919e7f0f86ddd1423004e8ae890df9",
                     "https://seetptp.tptp.org/file/TPTPWorld/TSTP/Solutions/SYN/SYN343-1/Prover9---2026-6A.UNS-CRf.s",
                 ),
+                "SYN052-1-Prover9-2026-6A.s" => (
+                    "39ac7bfda61201f47924cf9a6e800df9ff8dcb0f7f7eb59334eff5a386389a86",
+                    "https://seetptp.tptp.org/file/TPTPWorld/TSTP/Solutions/SYN/SYN052-1/Prover9---2026-6A.UNS-CRf.s",
+                ),
                 "PUZ001-1-Prover9-2026-6A.s" => (
                     "64ad5924638b8b900b9d4d453d5a9b32fa92891688b7eed5cf5f2b746f964be0",
                     "https://seetptp.tptp.org/file/TPTPWorld/TSTP/Solutions/PUZ/PUZ001-1/Prover9---2026-6A.UNS-CRf.s",
@@ -1338,6 +1409,11 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
                 "SYN343-1-Prover9-2026-6A.s" => &[
                     "input_clause_alpha_literal_permutation",
                     "clausify_clause_permutation",
+                ],
+                "SYN052-1-Prover9-2026-6A.s" => &[
+                    "input_clause_alpha_literal_permutation",
+                    "clausify_clause_permutation",
+                    "copy_clause_condensation",
                 ],
                 "PUZ001-1-Prover9-2026-6A.s" => &[
                     "input_clause_alpha_literal_permutation",
@@ -1557,11 +1633,46 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
             &disconnected_proof,
             source,
         );
+        if *name == "multi-step-demodulation" {
+            let truncated_chain = proof_text.replacen(
+                "cnf(demodulated,plain,p(f(c)),",
+                "cnf(demodulated,plain,p(f(b)),",
+                1,
+            );
+            assert_ne!(truncated_chain, proof_text);
+            let truncated_problem = mrs_tptp::parse_tptp(&problem_text)
+                .expect("multi-step demodulation problem parses");
+            let truncated_proof = mrs_tptp::parse_tptp(&truncated_chain)
+                .expect("truncated demodulation proof parses");
+            let report = check_tptp_dag(
+                &truncated_problem,
+                &truncated_proof,
+                source,
+                VerificationLimits::default(),
+                &cfg,
+            );
+            assert_ne!(
+                report.verdict,
+                ShadowVerdict::CertifiedDagIr,
+                "multi-step demodulation mutation skipped a cited rewrite: {report:?}"
+            );
+        }
+        if *name == "archived-prover9-syn052" {
+            let forged_contraction =
+                proof_text.replacen("cnf(c_6,plain,\n    p,", "cnf(c_6,plain,\n    q,", 1);
+            assert_ne!(forged_contraction, proof_text);
+            assert_mutation_rejected(
+                "archived-prover9-syn052 forged copy contraction",
+                &problem_text,
+                &forged_contraction,
+                source,
+            );
+        }
         cases += 1;
     }
-    assert_eq!(cases, 12, "supported DAG corpus inventory changed");
+    assert_eq!(cases, 14, "supported DAG corpus inventory changed");
     assert_eq!(
-        hand_authored_cases, 5,
+        hand_authored_cases, 6,
         "hand-authored corpus inventory changed"
     );
     assert_eq!(
@@ -1573,7 +1684,7 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         "TPTP generated corpus inventory changed"
     );
     assert_eq!(
-        archived_positive_cases, 3,
+        archived_positive_cases, 4,
         "archived positive inventory changed"
     );
     assert_eq!(

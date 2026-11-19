@@ -84,7 +84,7 @@
       "id": "demodulation",
       "module": "first_order_core.rs",
       "status": "verified_executable_step_and_dag_dispatch",
-      "description": "Demodulation (unit equality rewriting): from target clause C and unit positive equality parent s = t (or t = s), replacing an occurrence of s sigma (or t sigma) at position p in literal k of C by t sigma (or s sigma) derives C with literal k rewritten, preserving all other literals and their positions. Dispatched in proof DAGs via ProofNodeKind::Demodulation; proven by demodulation_sound to preserve universal validity.",
+      "description": "Bounded unit-equality demodulation: each discovered rewrite is replayed as a binary proof-DAG node from a target clause and one unit positive equality. Multi-step chains expand to independently checked intermediate nodes; each local step is proven sound by demodulation_sound.",
       "production_certification": false
     },
     {
@@ -366,21 +366,30 @@
     "tptp_paramod_alias_dispatches_to_verified_superposition_replay": true,
     "tptp_copy_alias_supported_normalizations": [
       "clause_alpha_literal_permutation",
-      "single_equality_symmetry_with_unchanged_context"
+      "single_equality_symmetry_with_unchanged_context",
+      "clause_condensation"
     ],
     "tptp_input_leaf_alpha_permutation_normalization_trusted": true,
     "tptp_anonymous_leaf_requires_bounded_premise_formula_match": true,
     "tptp_anonymous_leaf_instance_matching_supported": false,
     "strict_leaf_premise_role_may_match_exact_negated_conjecture": true,
     "supported_dag_fixture_corpus_manifest": "fixtures/supported-dag-corpus.tsv",
-    "supported_dag_fixture_corpus_entries": 12,
-    "supported_dag_fixture_corpus_hand_authored_cases": 5,
+    "supported_dag_fixture_corpus_entries": 14,
+    "supported_dag_fixture_corpus_hand_authored_cases": 6,
     "supported_dag_fixture_corpus_mrs_generated_cases": 4,
     "supported_dag_fixture_corpus_generated_proof_generator": "mrs 0.3.0",
     "supported_dag_fixture_corpus_synthetic_generated_cases": 1,
     "supported_dag_fixture_corpus_synthetic_proof_command": "cargo run --release --bin mrs -- --time 5 --workers 1 --schedule fast <problem>",
     "supported_dag_fixture_corpus_real_tptp_generated_cases": 3,
-    "supported_dag_fixture_corpus_archived_positive_cases": 3,
+    "supported_dag_fixture_corpus_archived_positive_cases": 4,
+    "supported_dag_fixture_corpus_multi_step_demodulation": {
+      "problem_file": "multi-step-demodulation-problem.p",
+      "problem_sha256": "fe6ecceab8deb9c5115ce50754a521b5ba5a675d06d3c00627bff5e1121c920d",
+      "proof_file": "multi-step-demodulation-proof.p",
+      "proof_sha256": "f8690b6152ee7b4b912ab29f5112195b3cec32816f475bf8e23b3e1247ad1877",
+      "demodulation_steps": 2,
+      "checked_nodes": 7
+    },
     "supported_dag_fixture_corpus_archived_positive_proofs": {
       "SYN343-1-Prover9-2026-6A.s": {
         "problem_file": "SYN343-1.p",
@@ -397,6 +406,24 @@
         "adapter_normalizations": [
           "input_clause_alpha_literal_permutation",
           "clausify_clause_permutation"
+        ]
+      },
+      "SYN052-1-Prover9-2026-6A.s": {
+        "problem_file": "SYN052-1.p",
+        "problem_sha256": "0cd83dba30d871336b077d0605bf99b1ccd781535f7d060d3ca9f2ac1c764718",
+        "problem_fixture_tptp_release": "10.0.0",
+        "archive_sha256": "39ac7bfda61201f47924cf9a6e800df9ff8dcb0f7f7eb59334eff5a386389a86",
+        "fixture_sha256": "4c808911c662fadcec3622ad9295d3857585d6ff840d507cd17ec693d4b75357",
+        "fixture_normalization": "remove_trailing_ascii_horizontal_whitespace_per_line",
+        "proof_url": "https://seetptp.tptp.org/file/TPTPWorld/TSTP/Solutions/SYN/SYN052-1/Prover9---2026-6A.UNS-CRf.s",
+        "system": "Prover9",
+        "system_version": "2026-6A",
+        "proof_metadata_tptp_release": "9.3.1",
+        "checked_nodes": 13,
+        "adapter_normalizations": [
+          "input_clause_alpha_literal_permutation",
+          "clausify_clause_permutation",
+          "copy_clause_condensation"
         ]
       },
       "PUZ001-1-Prover9-2026-6A.s": {

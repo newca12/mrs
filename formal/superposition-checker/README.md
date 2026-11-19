@@ -5,11 +5,12 @@
 The compiled checker now exposes bounded wire v1 for local steps and complete
 proof DAGs. `mrs-proof-kernel::verus` and `mrs-proover::strict` provide opt-in
 shadow and dual-check APIs; a CLI example and formal-CI integration tests run
-actual parsed supported proof artifacts, the twelve-entry corpus in
+actual parsed supported proof artifacts, the fourteen-entry corpus in
 `fixtures/supported-dag-corpus.tsv`, and the archived c502 local-step fixture
 through the artifact. Each corpus entry also has wrong-parent, unsupported-rule,
-disconnected-input, and forged-root negative variants. The corpus contains five
-hand-authored smoke proofs (including exact anonymous input leaves), one
+disconnected-input, and forged-root negative variants. The corpus contains six
+hand-authored smoke proofs (including exact anonymous input leaves and a
+multi-step unit-demodulation chain), one
 synthetic MRS 0.3.0 Horn-chain proof, and three
 MRS 0.3.0 proofs generated from real TPTP v10.0.0 problems: the 28-node
 `PUZ001-1` Dreadbury Mansion refutation, five-node `SYN343-1`, and 29-node
@@ -17,12 +18,14 @@ MRS 0.3.0 proofs generated from real TPTP v10.0.0 problems: the 28-node
 at `c54`; `PUZ001-2` expands a symmetric source equality into an explicit
 symmetry node before superposition, and exercises equality resolution,
 demodulation and subsumption resolution. It also includes complete public
-Prover9 2026-6A archive proofs for `SYN343-1`, `PUZ001-1`, and `PUZ001-2`.
+Prover9 2026-6A archive proofs for `SYN343-1`, `SYN052-1`, `PUZ001-1`, and
+`PUZ001-2`. `SYN052-1` exercises a `copy` step that the adapter lowers to the
+verified clause-condensation rule.
 Their metadata names TPTP v9.3.1; the strict/Verus gate checks them against the
 vendored v10.0.0 problem fixtures using restricted FOF-clause proof input. The
 `PUZ001-1` proof exercises resolution-order normalization; the equality proof
 also covers Prover9 `paramod` and equality-symmetry `copy`. Raw archive,
-normalized proof fixture and problem hashes are recorded. These three archived
+normalized proof fixture and problem hashes are recorded. These four archived
 solutions do not constitute a representative competition corpus.
 The separately archived SPASS 3.9 `SYN343-1` proof is retained as a fail-closed
 negative: its lowercase `u`/`v` are TPTP constants, so no variable recasing or
