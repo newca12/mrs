@@ -1305,7 +1305,7 @@ worker-count preflight checks to the campaign and invocation scripts, with a
 regression test for this mismatch; that guard does not change the archived
 results. See the [second-run details](reports/benchmarks/eps-2026-09.md#second-casc-30-eps-run-with-portfolio-validation-failures-2026-11-06-supplemental).
 
-### CASC-J12 UEQ campaign (2026-11-17; archived audit needs rerun)
+### CASC-J12 UEQ campaign (2026-11-17; exact strict re-audit 2026-11-19)
 
 The UEQ-only run returned **147/300 raw `Unsatisfiable` answers**. Its archived
 strict audit reports **97 `VerifiedGood`, 50 `Unknown`, and 0 `VerifiedBad`**.
@@ -1313,24 +1313,29 @@ All 50 `Unknown` results are missing-`Axioms/` include errors. At producer
 commit `9c10581`, the audit child overrode the recorded
 `TPTP=/DATA/ai/TPTP-v9.0.0` with the selected-problem directory, which has no
 `Axioms/` tree. The saved audit predates commit `637f396` (19:47 vs. 17:54),
-which removes that override; the archived result has not yet been rerun with the
-fix.
+which removes that override; the archived audit was saved before that fix was
+rerun.
 
 A first local replay of those 50 proofs used a different `mrs-proover` binary
 and TPTP v9.3.1: 49 returned `VerifiedGood`, while `LAT171-1` remained `Unknown`
 on an incomplete AC-superposition replay. The kernel now has a regression-tested
 associative fallback for that AC subset shape; a fresh local build verifies all
-50 on TPTP v9.3.1. This remains diagnostic, not an exact v9.0.0 re-audit, and
-must not be combined with the archived 97 as an updated certification count.
-Re-audit with the fixed tool, exact J12 problem corpus, and TPTP v9.0.0 before
-publishing a revised number.
+50 on TPTP v9.3.1. That replay was diagnostic. The fixed audit was subsequently
+rerun on 2026-11-19 with the exact J12 problem corpus and TPTP v9.0.0; its
+identity matches the archived `run.csv` and corpus digests. The exact strict
+result is **147/147 `VerifiedGood`, 0 `VerifiedBad`, 0 `Unknown`, and 0 verifier
+timeouts**. This supersedes the archived 97/50 audit split for proof
+certification, but it does not change the raw campaign result or make it a
+canonical CASC score.
 
 The producer tree was dirty. The run used eight workers on a 16-physical-core
 host with 108,816 MB effective memory against the 131,072 MB allowance. It is a
 single raw campaign observation, **not** a canonical CASC measurement, a
-certified 147-solve score, or a schedule comparison. See the [full J12 UEQ
-report](reports/benchmarks/cert-j12-ueq-2026-11-17.md) for run details, hashes,
-family counts, and the diagnostic replay command.
+schedule comparison, or official score. The archived proofs are now all
+strictly verified, but the producer tree was dirty and the host did not match
+the canonical eight-physical-core/full-memory CASC machine. See the [full J12
+UEQ report](reports/benchmarks/cert-j12-ueq-2026-11-17.md) for both audit
+identities, archive hashes, run details, and the diagnostic replay command.
 
 ### CASC-J12 FNE campaign (2026-11-17; fixed replay used TPTP v10.0.0)
 

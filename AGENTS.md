@@ -389,11 +389,13 @@ The question is whether those division schedules are optimal for 8 cores.
 > TPTP v9.3.1 verified 49/50; investigation isolated `LAT171-1` c379 to a
 > missing associative-subset fallback. A regression-tested kernel fallback now
 > replays all 50 as `VerifiedGood` with a fresh local checker and TPTP v9.3.1.
-> This is not an exact v9.0.0 re-audit or a canonical score: the producer tree
-> was dirty, and the 16-physical-core host had 108,816 MB effective memory. Do
-> not treat this replay as an updated campaign certification count; replace the
-> archived count only with a fixed audit against the exact J12 corpus and TPTP
-> v9.0.0. See
+> The fixed audit was then rerun on 2026-11-19 against the exact J12 problem
+> corpus and TPTP v9.0.0: all **147/147** emitted refutations are now
+> `VerifiedGood`, with 0 `VerifiedBad`, 0 `Unknown`, and 0 verifier timeouts.
+> The audit identity's run-CSV and problem-corpus digests match the archived
+> identity. This verifies the proofs emitted by that archived run, not a new
+> solve campaign or a canonical CASC score: the producer tree was dirty and its
+> 16-physical-core host had 108,816 MB effective memory. See
 > `docs/reports/benchmarks/cert-j12-ueq-2026-11-17.md`. This separate J12 result
 > does not replace the CASC-J13 observations below.
 > **Separate CASC-J12 FNE observation (2026-11-17):** the 75-row run produced

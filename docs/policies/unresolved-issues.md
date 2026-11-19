@@ -91,10 +91,14 @@ skipped the associative sequence fallback for commutative symbols.
 fails. Regression
 `certifies_ac_subset_superposition_with_source_variable_absorbing_operands`
 certifies the cited shape and rejects a forged conclusion. A fresh local replay
-now verifies all 50 previously unresolved J12 proofs with TPTP v9.3.1, but this
-does not replace the archived audit: the required TPTP v9.0.0 audit is still
-pending, and this one case does not establish coverage of every AC shape. See
-the [J12 UEQ campaign report](../reports/benchmarks/cert-j12-ueq-2026-11-17.md).
+verified all 50 previously unresolved J12 proofs with TPTP v9.3.1. The exact
+strict re-audit was completed on 2026-11-19 with the fixed audit tool, the J12
+problem archive, and TPTP v9.0.0: **147/147 `VerifiedGood`, 0 `VerifiedBad`, 0
+`Unknown`, 0 verifier timeouts**. Its run-CSV and selected-corpus digests match
+the archived audit identity. This certifies the proofs emitted by that archived
+run; it is not a new solve campaign or a canonical CASC score, and it does not
+establish coverage of every AC shape. See the [J12 UEQ campaign
+report](../reports/benchmarks/cert-j12-ueq-2026-11-17.md).
 
 The November 3 full CASC-J13 campaign emitted 143 UEQ refutations, all 143
 `VerifiedGood`, and 253 strictly verified refutations across FEQ/FNE/UEQ. It
