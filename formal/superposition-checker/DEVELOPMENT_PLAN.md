@@ -884,10 +884,15 @@ byte lexer.
   each target file, after recursively resolving that file's own includes.
   Regression tests cover direct selection, nested selection and clearing the
   resolved directive list before adapter entry.
-- **REMAINING:** file path resolution, include graph traversal, and the parser
-  remain trusted host behavior. Resource/cycle limits and an independently
-  reviewed, verified include resolver are still needed before the boundary can
-  be considered end-to-end verified.
+- **DONE (local containment guard, still trusted code):** the loader detects
+  include cycles using canonicalized active paths and caps nesting at 64 active
+  included files and total include occurrences at 1,024; regressions exercise
+  cycle, depth, and count failures.
+- **REMAINING:** path resolution, canonicalization, include selection, file reads,
+  and parsing remain unverified host behavior. These guards do not bound the
+  bytes or parse memory of an individual file. Byte/resource accounting and an
+  independently reviewed, verified include resolver are still needed before the
+  boundary can be considered end-to-end verified.
 
 - **DONE:** wire v1 for superposition steps and complete proof DAGs; bounded
   decoder invokes the same compiled Verus-verified replay/certifier.

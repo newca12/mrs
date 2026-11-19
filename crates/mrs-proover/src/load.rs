@@ -1,10 +1,23 @@
 //! Load and parse a proof file together with its linked problem file.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use mrs_tptp::owned::{OwnedTPTPProblem, parse_tptp_file};
 use mrs_tptp::proover::proof_header_link;
+
+// Bound recursion and retained include ASTs for one verification job. These
+// limits do not bound the bytes or parse memory of an individual file.
+const MAX_INCLUDE_DEPTH: usize = 64;
+const MAX_INCLUDE_FILES: usize = 1024;
+
+#[derive(Default)]
+struct IncludeResolutionState {
+    active_paths: HashSet<PathBuf>,
+    active_depth: usize,
+    files_read: usize,
+}
 
 /// All inputs for one verification job.
 pub struct LoadedJob {
@@ -81,12 +94,21 @@ pub fn load(proof_path: &Path, problems_root: Option<&Path>) -> Result<LoadedJob
                     .map_err(|e| LoadError::ParseProblem(e.to_string(), path.clone()))?;
 
                 let base_dir = path.parent().unwrap_or(Path::new("."));
+                let mut include_state = IncludeResolutionState::default();
+                let canonical_problem_path = fs::canonicalize(&path).map_err(|error| {
+                    LoadError::ReadProblem(
+                        format!("cannot canonicalize linked problem file: {error}"),
+                        path.clone(),
+                    )
+                })?;
+                include_state.active_paths.insert(canonical_problem_path);
                 resolve_includes_recursive(
                     proof_path,
                     problems_root,
                     &parsed.problem().includes,
                     base_dir,
                     &mut problem_includes,
+                    &mut include_state,
                 )?;
                 (Some(path), Some(parsed))
             }
@@ -130,12 +152,14 @@ pub fn load_text(
         .map_err(|e| LoadError::ParseProblem(e.to_string(), include_root.join("stdin.p")))?;
     let virtual_proof_path = include_root.join("stdin.p");
     let mut problem_includes = Vec::new();
+    let mut include_state = IncludeResolutionState::default();
     resolve_includes_recursive(
         &virtual_proof_path,
         Some(include_root),
         &problem.problem().includes,
         include_root,
         &mut problem_includes,
+        &mut include_state,
     )?;
     problem.clear_includes();
     for inc in &problem_includes {
@@ -229,6 +253,139 @@ mod include_selection_tests {
         assert_eq!(names, vec!["chosen", "outer_unselected"]);
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn recursive_include_cycle_is_rejected() {
+        let root = std::env::temp_dir().join(format!(
+            "mrs_recursive_include_cycle_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.p"), "include('b.p').\n").unwrap();
+        std::fs::write(root.join("b.p"), "include('a.p').\n").unwrap();
+
+        let error = match load_text(
+            "include('a.p').\n".into(),
+            "% Proof : input\ncnf(root,axiom,p,file('input',root)).\n".into(),
+            &root,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("cyclic include graph should be rejected"),
+        };
+
+        assert!(error.to_string().contains("include cycle"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn include_cycle_back_to_linked_problem_is_rejected() {
+        let root = std::env::temp_dir().join(format!(
+            "mrs_linked_problem_include_cycle_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("problem.p"),
+            "include('child.p').\ncnf(root,axiom,p).\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("child.p"), "include('problem.p').\n").unwrap();
+        std::fs::write(
+            root.join("proof.p"),
+            "% Proof : problem.p\ncnf(root,axiom,p,file('problem.p',root)).\n",
+        )
+        .unwrap();
+
+        let error = match load(&root.join("proof.p"), None) {
+            Err(error) => error,
+            Ok(_) => panic!("include cycle back to the linked problem should be rejected"),
+        };
+
+        assert!(error.to_string().contains("include cycle"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn include_nesting_limit_is_enforced() {
+        let root =
+            std::env::temp_dir().join(format!("mrs_include_depth_limit_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for index in 0..=MAX_INCLUDE_DEPTH {
+            let contents = if index < MAX_INCLUDE_DEPTH {
+                format!("include('nested-{}.p').\n", index + 1)
+            } else {
+                "cnf(leaf,axiom,p).\n".to_owned()
+            };
+            std::fs::write(root.join(format!("nested-{index}.p")), contents).unwrap();
+        }
+
+        let error = match load_text(
+            "include('nested-0.p').\n".into(),
+            "% Proof : input\ncnf(root,axiom,p,file('input',root)).\n".into(),
+            &root,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("include nesting beyond the configured limit should fail"),
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("include nesting exceeds the limit")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn total_include_file_limit_is_enforced() {
+        let root =
+            std::env::temp_dir().join(format!("mrs_include_file_limit_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("shared.p"), "cnf(shared,axiom,p).\n").unwrap();
+        let problem = (0..=MAX_INCLUDE_FILES)
+            .map(|_| "include('shared.p').\n")
+            .collect::<String>();
+
+        let error = match load_text(
+            problem,
+            "% Proof : input\ncnf(root,axiom,p,file('input',root)).\n".into(),
+            &root,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("include count beyond the configured limit should fail"),
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("include file count exceeds the limit")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn include_resolution_limits_match_formal_manifest() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../formal/superposition-checker/supported-rules.json"
+        ))
+        .unwrap();
+        let limits = &manifest["limits"];
+
+        assert_eq!(
+            limits["include_resolution_max_active_depth"],
+            MAX_INCLUDE_DEPTH
+        );
+        assert_eq!(
+            limits["include_resolution_max_file_count"],
+            MAX_INCLUDE_FILES
+        );
+        assert_eq!(
+            limits["include_resolution_cycle_detection"],
+            "canonicalized_active_paths"
+        );
+        assert_eq!(limits["include_resolution_file_bytes_bounded"], false);
+        assert_eq!(limits["include_resolver_verified"], false);
+    }
 }
 
 fn resolve_includes_recursive(
@@ -237,22 +394,55 @@ fn resolve_includes_recursive(
     includes: &[mrs_tptp::ast::Include<'_>],
     base_dir: &Path,
     problem_includes: &mut Vec<OwnedTPTPProblem>,
+    state: &mut IncludeResolutionState,
 ) -> Result<(), LoadError> {
     for inc in includes {
         let rel = inc.file_name;
         let candidate = resolve_problem_path_with_base(proof_path, problems_root, base_dir, rel);
         if let Some(path) = candidate {
+            let canonical_path = fs::canonicalize(&path).map_err(|error| {
+                LoadError::ReadProblem(
+                    format!("cannot canonicalize included file: {error}"),
+                    path.clone(),
+                )
+            })?;
+            if state.active_paths.contains(&canonical_path) {
+                return Err(LoadError::ReadProblem(
+                    "include cycle detected".into(),
+                    path,
+                ));
+            }
+            if state.active_depth >= MAX_INCLUDE_DEPTH {
+                return Err(LoadError::ReadProblem(
+                    format!("include nesting exceeds the limit of {MAX_INCLUDE_DEPTH}"),
+                    path,
+                ));
+            }
+            if state.files_read >= MAX_INCLUDE_FILES {
+                return Err(LoadError::ReadProblem(
+                    format!("include file count exceeds the limit of {MAX_INCLUDE_FILES}"),
+                    path,
+                ));
+            }
+            state.files_read += 1;
+
             let mut parsed = parse_tptp_file(&path)
                 .map_err(|e| LoadError::ParseProblem(e.to_string(), path.clone()))?;
 
+            state.active_paths.insert(canonical_path.clone());
+            state.active_depth += 1;
             let inc_dir = path.parent().unwrap_or(Path::new("."));
-            resolve_includes_recursive(
+            let nested_result = resolve_includes_recursive(
                 proof_path,
                 problems_root,
                 &parsed.problem().includes,
                 inc_dir,
                 problem_includes,
-            )?;
+                state,
+            );
+            state.active_depth -= 1;
+            state.active_paths.remove(&canonical_path);
+            nested_result?;
 
             parsed.retain_formula_names(inc.selection.as_deref());
             parsed.clear_includes();

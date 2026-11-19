@@ -80,7 +80,11 @@ positive SPASS proof or evidence for a SPASS variable convention.
 Loaded-job bridge tests also resolve selected and nested includes through the
 ProoVer loader, then require the same formal DAG gate to accept; introducing an
 unselected premise into the resolved problem is rejected by the adapter. Include
-path resolution and selection filtering remain trusted loader behavior.
+path resolution and selection filtering remain trusted loader behavior. The
+loader rejects cycles found on a canonicalized active path and limits one job to
+64 active include files and 1,024 include occurrences. These guards are ordinary
+trusted Rust, do not cap file bytes or parse memory, and are not an end-to-end
+verified include resolver.
 
 Build evidence records source commit/dirty state/hash, artifact SHA-256, Verus
 binary SHA-256/version, effective Rust toolchain, support manifest and exact
