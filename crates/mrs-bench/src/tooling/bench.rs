@@ -1496,7 +1496,7 @@ pub fn summarize_certification(args: CertificationSummaryArgs) -> ToolResult<()>
             .lines()
             .filter_map(|line| {
                 let (division, problem) = line.trim().split_once('/')?;
-                let problem = problem.strip_suffix(".p").unwrap_or(problem);
+                let problem = problem.trim_suffix(".p");
                 Some((division.to_ascii_lowercase(), problem.to_owned()))
             })
             .collect::<BTreeSet<_>>();
@@ -1505,8 +1505,7 @@ pub fn summarize_certification(args: CertificationSummaryArgs) -> ToolResult<()>
             let problem = row
                 .get(columns[2])
                 .unwrap_or_default()
-                .strip_suffix(".p")
-                .unwrap_or(row.get(columns[2]).unwrap_or_default())
+                .trim_suffix(".p")
                 .to_owned();
             selected.contains(&(division, problem))
         });

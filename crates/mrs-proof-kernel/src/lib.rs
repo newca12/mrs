@@ -9141,7 +9141,7 @@ fn verify_subsumption_resolution(
         for target_form in target_forms {
             for removed_idx in 0..target_form.len() {
                 let mut modified_target = target_form.to_vec();
-                modified_target[removed_idx].positive = !modified_target[removed_idx].positive;
+                modified_target[removed_idx].positive.toggle();
                 match clause_subsumes_set(
                     &active,
                     &modified_target,
@@ -22214,7 +22214,7 @@ mod leaf_matching_tests {
         assert!(clause_alpha_equiv(&left, &right));
 
         let mut different = right;
-        different[0].positive = !different[0].positive;
+        different[0].positive.toggle();
         assert!(!clause_alpha_equiv(&left, &different));
     }
 

@@ -181,7 +181,7 @@ impl Evaluator {
             return Err(Error::ResourceLimit);
         }
         self.charge(text.len() as u64)?;
-        let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+        let digits = text.trim_prefix(['+', '-']);
         if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(Error::InvalidNumber);
         }

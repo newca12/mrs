@@ -4511,7 +4511,7 @@ mod tests {
             return ("!=".to_string(), vec![l.to_string(), r.to_string()]);
         }
         if let Some((name, args)) = atom.split_once('(') {
-            let args = args.strip_suffix(')').unwrap_or(args);
+            let args = args.trim_suffix(')');
             return (
                 name.to_string(),
                 args.split(", ")

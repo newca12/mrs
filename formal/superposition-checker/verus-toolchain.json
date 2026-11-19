@@ -1,7 +1,7 @@
 {
-  "verus": "0.2026.10.18.7d82994",
-  "release_tag": "release/0.2026.10.18.7d82994",
-  "rust_toolchain": "1.99.1-x86_64-unknown-linux-gnu",
-  "linux_x86_64_asset": "verus-0.2026.10.18.7d82994-x86-linux.zip",
-  "linux_x86_64_sha256": "e9af03732d4bdd32b93a8fcf471706739c24c1473fa5086618d96c47237845dd"
+  "verus": "0.2026.11.18.a95764f",
+  "release_tag": "release/rolling/0.2026.11.18.a95764f",
+  "rust_toolchain": "1.100.0-x86_64-unknown-linux-gnu",
+  "linux_x86_64_asset": "verus-0.2026.11.18.a95764f-x86-linux.zip",
+  "linux_x86_64_sha256": "3e9d7152a609ff2d6dc6c263997d7e3d84ee78be8546700de10cd23fbf8e83c9"
 }

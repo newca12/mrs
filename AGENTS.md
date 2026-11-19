@@ -16,7 +16,7 @@ its child modules (for example, `src/tooling.rs` with
 ## 1. NixOS WSL Development Environment (SOTA)
 The host environment is **NixOS running inside Windows Subsystem for Linux (WSL)**.
 - Traditional FHS assumptions do NOT apply. Files and libraries are versioned under `/nix/store/` instead of `/lib` or `/usr/include`.
-- This project uses **Nix Flakes** (`flake.nix`) and **direnv** (`.envrc`) to declare its development dependencies (including Rust compiler stable 1.99.1, cargo, clippy, rustfmt, rust-analyzer, pkg-config, git, and cargo-nextest).
+- This project uses **Nix Flakes** (`flake.nix`) and **direnv** (`.envrc`) to declare its development dependencies (including Rust compiler stable 1.100.0, cargo, clippy, rustfmt, rust-analyzer, pkg-config, git, and cargo-nextest).
 
 ### Execution Rule (Critical)
 Because your native agent `bash` or terminal execution tool starts in a raw shell that does not automatically load `direnv`, prefer wrapping compilation, testing, and development commands in the Nix environment when `nix` or `direnv` is available.
@@ -94,7 +94,7 @@ defined by `formal/superposition-checker/ASSURANCE.md` and `supported-rules.json
 The pinned Verus version/toolchain
 and checksums are recorded in `formal/superposition-checker/verus-toolchain.json`.
 
-Use the isolated Verus Nix shell (separate from the workspace Rust 1.99.1
+Use the isolated Verus Nix shell (separate from the workspace Rust 1.100.0
 toolchain):
 
 ```bash
@@ -104,8 +104,8 @@ nix develop .#verus -c formal/superposition-checker/verify.sh
 
 `VERUS=/path/to/verus formal/superposition-checker/verify.sh` can select an
 already installed binary. The `verus` shell uses a separate `RUSTUP_HOME` and
-`CARGO_HOME` by default, so installing Verus's required Rust 1.98 toolchain
-does not alter the workspace Rust 1.99.1 toolchain. The verifier release and its
+`CARGO_HOME` by default, so installing Verus's required Rust 1.100.0 toolchain
+does not alter the workspace Rust 1.100.0 toolchain. The verifier release and its
 required Rust toolchain are pinned separately. Changes to the formal
 specification, executable checker, toolchain pins, or archived fixtures must
 keep this verification gate passing.

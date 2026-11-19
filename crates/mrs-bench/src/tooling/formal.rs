@@ -574,6 +574,9 @@ fn run_runtime_mutation(
             .ok_or("runtime mutation anchor is missing")?;
         let function = enclosing_function_name(original, anchor_position)?;
         let mut command = Command::new(verus);
+        // These compile-failure probes use --verify-root, which current Verus
+        // releases reject when combined with --no-cheating. The base module is
+        // still checked with --no-cheating by verify.sh.
         if case.no_cheating {
             command.arg("--no-cheating");
         }
@@ -966,22 +969,22 @@ mod tests {
     #[test]
     fn verus_runtime_evidence_matches_the_pinned_verifier_and_toolchain() {
         let pin = VerusToolchainPin {
-            verus: "0.2026.10.18.7d82994".into(),
-            rust_toolchain: "1.99.1-x86_64-unknown-linux-gnu".into(),
+            verus: "0.2026.11.18.a95764f".into(),
+            rust_toolchain: "1.100.0-x86_64-unknown-linux-gnu".into(),
         };
-        let output = "Verus\n  Version: 0.2026.10.18.7d82994\n  Profile: release\n  Toolchain: 1.99.1-x86_64-unknown-linux-gnu (overridden by environment variable RUSTUP_TOOLCHAIN)\n";
+        let output = "Verus\n  Version: 0.2026.11.18.a95764f\n  Profile: release\n  Toolchain: 1.100.0-x86_64-unknown-linux-gnu (overridden by environment variable RUSTUP_TOOLCHAIN)\n";
         let identity = validate_verus_identity(output, &pin).unwrap();
         assert_eq!(identity.version, pin.verus);
         assert_eq!(identity.rust_toolchain, pin.rust_toolchain);
 
-        let wrong_version = output.replace("0.2026.10.18.7d82994", "0.2026.10.01.other");
+        let wrong_version = output.replace("0.2026.11.18.a95764f", "0.2026.11.19.other");
         assert!(
             validate_verus_identity(&wrong_version, &pin)
                 .unwrap_err()
                 .to_string()
                 .contains("Verus version mismatch")
         );
-        let wrong_toolchain = output.replace("1.99.1-x86_64", "1.98.0-x86_64");
+        let wrong_toolchain = output.replace("1.100.0-x86_64", "1.99.1-x86_64");
         assert!(
             validate_verus_identity(&wrong_toolchain, &pin)
                 .unwrap_err()

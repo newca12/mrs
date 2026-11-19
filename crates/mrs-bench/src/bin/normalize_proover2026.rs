@@ -110,7 +110,7 @@ fn normalize(root: &Path, clean_source: bool, restore_sources: bool) -> Result<(
         fs::write(problems.join(name), problem)
             .map_err(|error| format!("write problem {name}: {error}"))?;
 
-        let proof_name = name.strip_suffix(".p").unwrap_or(name).to_owned() + ".s";
+        let proof_name = name.trim_suffix(".p").to_owned() + ".s";
         let proof = rewrite_proof_header(&input, name);
         fs::write(proofs.join(proof_name), proof)
             .map_err(|error| format!("write proof {name}: {error}"))?;

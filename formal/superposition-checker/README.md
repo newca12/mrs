@@ -154,9 +154,9 @@ forbidden-image freshness mutation; removing a redundant check alone is not a
 valid negative test. Separately, the compiled target-parent collision mutant
 must fail the collision-specific runtime assertion.
 
-The checks use pinned Verus `0.2026.10.18.7d82994`.
-This release declares Rust `1.99.1` in
-[`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/0.2026.10.18.7d82994/rust-toolchain.toml),
+The checks use pinned Verus rolling release `0.2026.11.18.a95764f`.
+This release declares Rust `1.100.0` in
+[`verus/rust-toolchain.toml`](https://github.com/verus-lang/verus/blob/release/rolling/0.2026.11.18.a95764f/rust-toolchain.toml),
 matching the requested toolchain. The verification log records both requested
 and effective toolchains. The first-order core, reproducible runtime builds, and
 compiled-runtime mutants use `--rlimit 30`; verifier-negative mutants keep Verus's
@@ -329,7 +329,7 @@ ancestry, nor the full refutation, whose final proof uses unsupported AVATAR/SAT
 rules. The compiled runtime suite also accepts a distinct certificate that
 binds a freshened source variable to a ground target subterm.
 
-Verus `0.2026.10.18.7d82994` is pinned in
+Verus rolling release `0.2026.11.18.a95764f` is pinned in
 [`verus-toolchain.json`](verus-toolchain.json); CI downloads and checksum-checks
 the corresponding Linux binary. CI runs this as a regular required project
 check. See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md)
