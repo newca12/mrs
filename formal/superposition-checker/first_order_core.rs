@@ -41,6 +41,31 @@ spec fn clause_equal(left: Clause, right: Clause) -> bool {
     seq_equal(left.literals, right.literals)
 }
 
+spec fn literal_permutation_forward_at(
+    original: Clause,
+    reordered: Clause,
+    order: Seq<usize>,
+    reordered_index: int,
+) -> bool
+    recommends 0 <= reordered_index < order.len()
+{
+    0 <= (order[reordered_index] as int)
+        && (order[reordered_index] as int) < original.literals.len()
+        && reordered.literals[reordered_index]
+            == original.literals[(order[reordered_index] as int)]
+}
+
+spec fn literal_permutation_inverse_at(
+    order: Seq<usize>,
+    inverse: Seq<usize>,
+    original_index: int,
+) -> bool
+    recommends 0 <= original_index < inverse.len()
+{
+    (inverse[original_index] as int) < order.len()
+        && (order[(inverse[original_index] as int)] as int) == original_index
+}
+
 pub struct Interpretation {
     domain: Set<u64>,
     // These finite maps act as total interpretations only when their domains
@@ -2021,6 +2046,93 @@ proof fn clause_validity_is_stable_under_literal_permutation(
             assert(literal_holds(original.literals[corresponding], interp, valuation));
         }
     }
+}
+
+proof fn clause_validity_is_stable_under_certified_literal_permutation(
+    original: Clause,
+    reordered: Clause,
+    order: Seq<usize>,
+    inverse: Seq<usize>,
+    interp: Interpretation,
+)
+    requires
+        original.literals.len() == reordered.literals.len(),
+        order.len() == reordered.literals.len(),
+        inverse.len() == original.literals.len(),
+        forall|i: int| 0 <= i < order.len()
+            ==> #[trigger] literal_permutation_forward_at(original, reordered, order, i),
+        forall|i: int| 0 <= i < inverse.len()
+            ==> #[trigger] literal_permutation_inverse_at(order, inverse, i),
+    ensures clause_valid(original, interp) == clause_valid(reordered, interp)
+{
+    assert forall|valuation: Valuation|
+        valuation_well_formed(interp, valuation)
+        implies clause_holds(original, interp, valuation)
+            == clause_holds(reordered, interp, valuation) by {
+        if clause_holds(original, interp, valuation) {
+            let original_index = choose|i: int|
+                0 <= i < original.literals.len()
+                    && literal_holds(original.literals[i], interp, valuation);
+            assert(inverse.len() == original.literals.len());
+            assert(0 <= original_index);
+            assert(original_index < inverse.len());
+            assert(literal_permutation_inverse_at(order, inverse, original_index));
+            reveal(literal_permutation_inverse_at);
+            let reordered_index = inverse[original_index] as int;
+            assert(0 <= reordered_index < order.len());
+            assert((order[reordered_index] as int) == original_index);
+            assert(literal_permutation_forward_at(
+                original, reordered, order, reordered_index,
+            ));
+            reveal(literal_permutation_forward_at);
+            assert(reordered.literals[reordered_index]
+                == original.literals[original_index]);
+            assert(literal_holds(
+                reordered.literals[reordered_index], interp, valuation,
+            ));
+        } else if clause_holds(reordered, interp, valuation) {
+            let reordered_index = choose|j: int|
+                0 <= j < reordered.literals.len()
+                    && literal_holds(reordered.literals[j], interp, valuation);
+            assert(literal_permutation_forward_at(
+                original, reordered, order, reordered_index,
+            ));
+            reveal(literal_permutation_forward_at);
+            let original_index = order[reordered_index] as int;
+            assert(0 <= original_index < original.literals.len());
+            assert(reordered.literals[reordered_index]
+                == original.literals[original_index]);
+            assert(literal_holds(
+                original.literals[original_index], interp, valuation,
+            ));
+        }
+    }
+    assert(clause_valid(original, interp) == clause_valid(reordered, interp));
+}
+
+proof fn accepted_exec_clause_permutation_preserves_validity(
+    original: ExecClause,
+    reordered: ExecClause,
+    order: Seq<usize>,
+    inverse: Seq<usize>,
+    interp: Interpretation,
+)
+    requires
+        view_clause(original).literals.len() == view_clause(reordered).literals.len(),
+        order.len() == view_clause(reordered).literals.len(),
+        inverse.len() == view_clause(original).literals.len(),
+        forall|i: int| 0 <= i < order.len()
+            ==> #[trigger] literal_permutation_forward_at(
+                view_clause(original), view_clause(reordered), order, i,
+            ),
+        forall|i: int| 0 <= i < inverse.len()
+            ==> #[trigger] literal_permutation_inverse_at(order, inverse, i),
+    ensures clause_valid(view_clause(original), interp)
+        == clause_valid(view_clause(reordered), interp)
+{
+    clause_validity_is_stable_under_certified_literal_permutation(
+        view_clause(original), view_clause(reordered), order, inverse, interp,
+    );
 }
 
 proof fn permutation_reindexed_sequence(
@@ -8997,6 +9109,123 @@ fn same_clause_exact_checked_with_work(
         Some(same) => same,
         None => false,
     }
+}
+
+/// Compare clauses under a caller-supplied literal-position permutation.
+/// Every occurrence is matched, so duplicates cannot be added or removed.
+/// The returned `None` means the shared work ceiling was exhausted.
+fn same_clause_permutation_with_work(
+    original: &ExecClause,
+    reordered: &ExecClause,
+    order: &Vec<usize>,
+    inverse: &Vec<usize>,
+    work: &mut usize,
+    work_limit: usize,
+) -> (result: Option<bool>)
+    requires *old(work) <= work_limit,
+    ensures *final(work) <= work_limit,
+        result.is_some() && result.unwrap() ==> (
+            view_clause(*original).literals.len() == view_clause(*reordered).literals.len()
+                && order@.len() == view_clause(*reordered).literals.len()
+                && inverse@.len() == view_clause(*original).literals.len()
+                && forall|i: int| 0 <= i < order@.len()
+                    ==> #[trigger] literal_permutation_forward_at(
+                        view_clause(*original), view_clause(*reordered), order@, i,
+                    )
+                && forall|i: int| 0 <= i < inverse@.len()
+                    ==> #[trigger] literal_permutation_inverse_at(order@, inverse@, i)
+        )
+{
+    if original.literals.len() != reordered.literals.len()
+        || order.len() != reordered.literals.len()
+        || inverse.len() != original.literals.len()
+    {
+        return Some(false);
+    }
+    if !charge_clause_structure(original, work, work_limit)
+        || !charge_clause_structure(reordered, work, work_limit)
+    {
+        return None;
+    }
+
+    let mut position: usize = 0;
+    while position < order.len()
+        invariant
+            position <= order.len(),
+            order.len() == original.literals.len(),
+            inverse.len() == original.literals.len(),
+            original.literals.len() == reordered.literals.len(),
+            *work <= work_limit,
+            forall|j: int| 0 <= j < position as int
+                ==> (order@[j] as int) < original.literals@.len()
+                    && view_literal(original.literals@[order@[j] as int])
+                        == view_literal(reordered.literals@[j]),
+        decreases order.len() - position
+    {
+        if !consume_work(work, work_limit) { return None; }
+        let original_index = order[position];
+        if original_index >= original.literals.len() { return Some(false); }
+        match same_literal_with_work(
+            &original.literals[original_index],
+            &reordered.literals[position],
+            work,
+            work_limit,
+        ) {
+            Some(true) => {},
+            Some(false) => return Some(false),
+            None => return None,
+        }
+        assert(view_literal(original.literals@[original_index as int])
+            == view_literal(reordered.literals@[position as int]));
+        position += 1;
+    }
+
+    let mut original_index: usize = 0;
+    while original_index < original.literals.len()
+        invariant
+            original_index <= original.literals.len(),
+            order.len() == original.literals.len(),
+            inverse.len() == original.literals.len(),
+            original.literals.len() == reordered.literals.len(),
+            *work <= work_limit,
+            forall|j: int| 0 <= j < order@.len()
+                ==> (order@[j] as int) < original.literals@.len()
+                    && view_literal(original.literals@[order@[j] as int])
+                        == view_literal(reordered.literals@[j]),
+            forall|j: int| 0 <= j < original_index as int
+                ==> (inverse@[j] as int) < order@.len()
+                    && (order@[inverse@[j] as int] as int) == j,
+        decreases original.literals.len() - original_index
+    {
+        if !consume_work(work, work_limit) { return None; }
+        let reordered_index = inverse[original_index];
+        if reordered_index >= order.len() { return Some(false); }
+        if order[reordered_index] != original_index { return Some(false); }
+        assert((inverse@[original_index as int] as int) < order@.len());
+        assert((order@[inverse@[original_index as int] as int] as int)
+            == original_index as int);
+        original_index += 1;
+    }
+
+    assert(position == order.len());
+    assert(original_index == inverse.len());
+    assert forall|i: int| 0 <= i < order@.len()
+        implies #[trigger] literal_permutation_forward_at(
+            view_clause(*original), view_clause(*reordered), order@, i,
+        ) by {
+        assert(i < position as int);
+        reveal(literal_permutation_forward_at);
+        assert(view_clause(*reordered).literals[i]
+            == view_literal(reordered.literals@[i]));
+        assert(view_clause(*original).literals[order@[i] as int]
+            == view_literal(original.literals@[order@[i] as int]));
+    }
+    assert forall|i: int| 0 <= i < inverse@.len()
+        implies #[trigger] literal_permutation_inverse_at(order@, inverse@, i) by {
+        assert(i < original_index as int);
+        reveal(literal_permutation_inverse_at);
+    }
+    Some(true)
 }
 
 fn build_nullary_resolution_conclusion(left: &ExecClause, right: &ExecClause,
@@ -18640,8 +18869,108 @@ fn wire_tokenizer_boundary_regression() -> bool {
         && exact_byte_limit_ok && over_byte_limit_rejected && too_many_tokens_rejected
 }
 
+fn executable_clause_permutation_examples() -> bool {
+    let predicate = ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) };
+    let other = ExecLiteral { positive: true, atom: ExecAtom::Pred0(2) };
+    let original = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(2) },
+    ] };
+    let reordered = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(2) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+    ] };
+    let order = vec![2usize, 0, 1];
+    let inverse = vec![1usize, 2, 0];
+
+    let mut measured_work: usize = 0;
+    if same_clause_permutation_with_work(
+        &original, &reordered, &order, &inverse, &mut measured_work, usize::MAX,
+    ) != Some(true) {
+        return false;
+    }
+    // Independent cost: 12 units for both clause structures, 12 for three
+    // literal comparisons plus their outer scans, and 3 for inverse validation.
+    let required_work = 27usize;
+    if measured_work != required_work { return false; }
+
+    let mut exact_work: usize = 0;
+    let exact_result = same_clause_permutation_with_work(
+        &original, &reordered, &order, &inverse, &mut exact_work, required_work,
+    );
+    if exact_result != Some(true) || exact_work != required_work { return false; }
+
+    let mut short_work: usize = 0;
+    if same_clause_permutation_with_work(
+        &original, &reordered, &order, &inverse, &mut short_work, required_work - 1,
+    ).is_some() {
+        return false;
+    }
+
+    let duplicate_index_order = vec![0usize, 0, 2];
+    let duplicate_index_inverse = vec![0usize, 2, 2];
+    let same_order = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(2) },
+    ] };
+    let mut duplicate_work: usize = 0;
+    if same_clause_permutation_with_work(
+        &same_order, &same_order, &duplicate_index_order, &duplicate_index_inverse,
+        &mut duplicate_work, usize::MAX,
+    ) != Some(false) {
+        return false;
+    }
+
+    let out_of_range_order = vec![3usize, 0, 1];
+    let mut out_of_range_work: usize = 0;
+    if same_clause_permutation_with_work(
+        &original, &reordered, &out_of_range_order, &inverse,
+        &mut out_of_range_work, usize::MAX,
+    ) != Some(false) {
+        return false;
+    }
+
+    let out_of_range_inverse = vec![3usize, 0, 1];
+    let mut invalid_inverse_work: usize = 0;
+    if same_clause_permutation_with_work(
+        &original, &reordered, &order, &out_of_range_inverse,
+        &mut invalid_inverse_work, usize::MAX,
+    ) != Some(false) {
+        return false;
+    }
+
+    let mismatched = ExecClause { literals: vec![
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(2) },
+        ExecLiteral { positive: true, atom: ExecAtom::Pred0(1) },
+        ExecLiteral { positive: false, atom: ExecAtom::Pred0(1) },
+    ] };
+    let mut mismatch_work: usize = 0;
+    if same_clause_permutation_with_work(
+        &original, &mismatched, &order, &inverse, &mut mismatch_work, usize::MAX,
+    ) != Some(false) {
+        return false;
+    }
+
+    let too_short = ExecClause { literals: vec![predicate, other] };
+    let mut length_work: usize = 0;
+    if same_clause_permutation_with_work(
+        &original, &too_short, &order, &inverse, &mut length_work, usize::MAX,
+    ) != Some(false) {
+        return false;
+    }
+
+    let mut zero_work: usize = 0;
+    same_clause_permutation_with_work(
+        &original, &reordered, &order, &inverse, &mut zero_work, 0,
+    ).is_none()
+}
+
 fn run_examples() -> bool {
     proof { variable_substitution_is_an_instance(); }
+    if !executable_clause_permutation_examples() { return false; }
     executable_literal_replay_examples();
     executable_clause_replay_example();
     executable_unifier_certificate_examples();

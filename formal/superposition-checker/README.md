@@ -30,6 +30,13 @@ solutions do not constitute a representative competition corpus.
 The separately archived SPASS 3.9 `SYN343-1` proof is retained as a fail-closed
 negative: its lowercase `u`/`v` are TPTP constants, so no variable recasing or
 positive SPASS claim is made.
+The first-order core also contains a verified, work-metered literal-permutation
+comparator with explicit forward/inverse witnesses and a universal-validity
+preservation lemma. It preserves duplicate-literal multiplicity, with positive,
+malformed-witness and exact-cutoff regressions plus a compiled charge-removal
+mutation. This primitive is not yet dispatched by the DAG/wire checker; active
+replay still compares ordered clauses exactly, and alpha-renaming remains in the
+trusted adapter.
 See **[`INTERCHANGE.md`](INTERCHANGE.md)** for build/run commands, wire grammar,
 limits, support and provenance. The dual gate requires both the independent
 strict kernel and Verus IR certifier to accept. Wire-v1 structural decoding and
@@ -105,7 +112,7 @@ subsumption resolution, weakening, demodulation, instantiation, condensation,
 reflexivity, transitivity, and wire
 tokenization. The verification gate requires Verus to reject all 58 broken
 refinements, including skipped node validation, forged input membership,
-forward parents, and nonempty-root acceptance. Forty-nine compiled-runtime mutations
+forward parents, and nonempty-root acceptance. Fifty compiled-runtime mutations
 remove the root-ancestor closure guard, repeated input-comparison node charge,
 duplicate-ID rejection, decimal-token guard, or target-parent freshening avoid
 set, freshening lookup-work charge, clause-collection literal charge, or
@@ -165,7 +172,7 @@ and effective toolchains. The first-order core, reproducible runtime builds, and
 compiled-runtime mutants use `--rlimit 30`; verifier-negative mutants keep Verus's
 default limit so they reject promptly. Mutation jobs use one solver thread each
 and share the `VERUS_MUTATION_WORKERS` Rayon pool. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `570 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `576 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 

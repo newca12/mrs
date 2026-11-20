@@ -110,7 +110,7 @@ checked. A two-independent-runner same-image comparison is configured, but its
 result is pending; cross-distribution reproducibility and verified TPTP lowering
 remain open.
 
-The mutation inventory is now fifty-eight verifier-negative checks and forty-nine
+The mutation inventory is now fifty-eight verifier-negative checks and fifty
 compiled-runtime checks plus one valid assumption probe (accepted without strict mode,
 rejected with `--no-cheating`). Prior claims that the redundant target-freshening
 guard mutation failed were incorrect; the actual forbidden-image check is now
@@ -126,6 +126,10 @@ executable refinements. `first_order_core.rs` includes a universally closed
 semantic superposition theorem for standardized parents and a proposed common
 unifier. Successful `check_superposition_and_replay` now establishes the semantic
 premises and proves universal validity preservation for its exact conclusion.
+It also contains a standalone bounded literal-permutation comparator, whose
+forward/inverse witness preserves duplicate occurrences and whose verified
+semantic lemma preserves clause validity. It is not yet dispatched by the DAG or
+wire checker; active inference replay still requires exact literal order.
 `check_dag_superposition_step` checks the certificate against its cited parent
 nodes and conclusion and proves local entailment from universally valid parents.
 The ground-unit checker and fixed two-literal schema are narrower verified
@@ -338,7 +342,7 @@ unestablished until that CI comparison passes.
 The verification gate enforces 58 verifier-negative mutations across inference
 replay, DAG dispatch and wire tokenization. Each mutated temporary source must
 fail Verus verification. This samples key executable/model refinement
-contracts; it is not comprehensive threat-model coverage. Forty-nine
+contracts; it is not comprehensive threat-model coverage. Fifty
 compiled-runtime mutations cover root-ancestor closure, input and node identity,
 target-parent freshening, freshening and replay work charges, clause/term
 comparison, and shared work across local inference replay and DAG nodes. Each
@@ -364,6 +368,10 @@ assertion. Freshening-budget mutants remove the binding-lookup, collection-liter
 or materialization charge and must fail their exact local meter regressions. The mutation runner enforces the
 expected inventory counts so an accidental removal of either verifier-negative
 or compiled-runtime coverage fails the gate.
+The standalone literal-permutation regression checks reordering with repeated
+literals, duplicate and out-of-range witnesses, mismatched clauses, zero work,
+and the exact cumulative cutoff; a compiled mutant removes the inverse-witness
+scan charge.
 
 ## Re-audit triggers
 

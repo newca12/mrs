@@ -822,5 +822,21 @@
     "no_cheating": true,
     "timeout_compile_s": 300,
     "timeout_run_s": 30
+  },
+  {
+    "name": "first_order_core_without_clause_permutation_inverse_scan_charge",
+    "source_file": "first_order_core_without_clause_permutation_inverse_scan_charge.rs",
+    "binary_name": "first-order-core-without-clause-permutation-inverse-scan-charge",
+    "edits": [
+      {
+        "anchor": "        if !consume_work(work, work_limit) { return None; }\n        let reordered_index = inverse[original_index];\n",
+        "replacement": "        // Mutant omits inverse-permutation scan work.\n        if false && !consume_work(work, work_limit) { return None; }\n        let reordered_index = inverse[original_index];\n"
+      }
+    ],
+    "expected_failure": "DAG certification regression failed",
+    "wire": false,
+    "no_cheating": true,
+    "timeout_compile_s": 300,
+    "timeout_run_s": 30
   }
 ]

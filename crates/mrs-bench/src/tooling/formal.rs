@@ -691,7 +691,7 @@ pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
     let source = fs::read_to_string(&source_path)?;
     let verifier_mutations: Vec<VerifierMutation> = serde_json::from_str(VERIFIER_MUTATIONS)?;
     let runtime_mutations: Vec<RuntimeMutation> = serde_json::from_str(RUNTIME_MUTATIONS)?;
-    if verifier_mutations.len() != 58 || runtime_mutations.len() != 49 {
+    if verifier_mutations.len() != 58 || runtime_mutations.len() != 50 {
         return Err(format!(
             "mutation inventory changed: verifier-negative={}, compiled-runtime={}",
             verifier_mutations.len(),
@@ -799,7 +799,7 @@ pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
     for result in runtime_results {
         result.map_err(|error| -> Box<dyn Error> { error.into() })?;
     }
-    println!("mutation gate passed: verifier_negative=58 compiled_runtime=49");
+    println!("mutation gate passed: verifier_negative=58 compiled_runtime=50");
     Ok(())
 }
 
@@ -1087,7 +1087,7 @@ run_check "$VERUS_BIN" --no-cheating --triggers-mode silent \
     #[test]
     fn runtime_mutation_inventory_has_unique_anchors() {
         let mutations: Vec<RuntimeMutation> = serde_json::from_str(RUNTIME_MUTATIONS).unwrap();
-        assert_eq!(mutations.len(), 49);
+        assert_eq!(mutations.len(), 50);
         let mut source_files = HashSet::new();
         let mut binary_names = HashSet::new();
         for mutation in &mutations {
