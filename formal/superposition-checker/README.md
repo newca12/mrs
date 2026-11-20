@@ -34,9 +34,10 @@ The first-order core also contains a verified, work-metered literal-permutation
 comparator with explicit forward/inverse witnesses and a universal-validity
 preservation lemma. It preserves duplicate-literal multiplicity, with positive,
 malformed-witness and exact-cutoff regressions plus a compiled charge-removal
-mutation. This primitive is not yet dispatched by the DAG/wire checker; active
-replay still compares ordered clauses exactly, and alpha-renaming remains in the
-trusted adapter.
+mutation. A separate semantic theorem composes literal permutation with
+bijective variable-renaming validity. Neither primitive is dispatched by the
+DAG/wire checker; active replay still compares ordered clauses exactly, and
+executable alpha-renaming remains in the trusted adapter.
 See **[`INTERCHANGE.md`](INTERCHANGE.md)** for build/run commands, wire grammar,
 limits, support and provenance. The dual gate requires both the independent
 strict kernel and Verus IR certifier to accept. Wire-v1 structural decoding and
@@ -172,7 +173,7 @@ and effective toolchains. The first-order core, reproducible runtime builds, and
 compiled-runtime mutants use `--rlimit 30`; verifier-negative mutants keep Verus's
 default limit so they reject promptly. Mutation jobs use one solver thread each
 and share the `VERUS_MUTATION_WORKERS` Rayon pool. Verus uses its bundled Z3. Results:
-`5 verified, 0 errors` for the original pilot, `576 verified, 0 errors` for
+`5 verified, 0 errors` for the original pilot, `577 verified, 0 errors` for
 the first-order core, `5 verified, 0 errors` for the ground superposition
 checker, and `5 verified, 0 errors` for the variable two-literal schema.
 

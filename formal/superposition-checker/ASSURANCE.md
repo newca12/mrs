@@ -128,8 +128,10 @@ unifier. Successful `check_superposition_and_replay` now establishes the semanti
 premises and proves universal validity preservation for its exact conclusion.
 It also contains a standalone bounded literal-permutation comparator, whose
 forward/inverse witness preserves duplicate occurrences and whose verified
-semantic lemma preserves clause validity. It is not yet dispatched by the DAG or
-wire checker; active inference replay still requires exact literal order.
+semantic lemma preserves clause validity. A separate theorem composes that
+result with the existing bijective variable-renaming theorem. These results are
+not yet dispatched by the DAG or wire checker; active inference replay still
+requires exact literal order, and executable alpha-renaming remains trusted.
 `check_dag_superposition_step` checks the certificate against its cited parent
 nodes and conclusion and proves local entailment from universally valid parents.
 The ground-unit checker and fixed two-literal schema are narrower verified

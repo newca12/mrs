@@ -2135,6 +2135,42 @@ proof fn accepted_exec_clause_permutation_preserves_validity(
     );
 }
 
+/// A bijective variable renaming followed by a certified literal permutation
+/// preserves universal clause validity. This composes the two equivalences
+/// needed by alpha-normalized clause comparison; it does not implement a
+/// runtime alpha-renaming discovery procedure.
+proof fn alpha_and_literal_permutation_preserve_clause_validity(
+    original: Clause,
+    reordered: Clause,
+    renaming: Substitution,
+    inverse_renaming: Substitution,
+    order: Seq<usize>,
+    inverse_order: Seq<usize>,
+    interp: Interpretation,
+)
+    requires
+        interpretation_well_formed(interp),
+        inverse_renamings(renaming, inverse_renaming),
+        substitute_clause(original, renaming).literals.len() == reordered.literals.len(),
+        order.len() == reordered.literals.len(),
+        inverse_order.len() == substitute_clause(original, renaming).literals.len(),
+        forall|i: int| 0 <= i < order.len()
+            ==> #[trigger] literal_permutation_forward_at(
+                substitute_clause(original, renaming), reordered, order, i,
+            ),
+        forall|i: int| 0 <= i < inverse_order.len()
+            ==> #[trigger] literal_permutation_inverse_at(order, inverse_order, i),
+    ensures clause_valid(reordered, interp) == clause_valid(original, interp)
+{
+    standardization_apart_preserves_clause_validity(
+        original, renaming, inverse_renaming, interp,
+    );
+    clause_validity_is_stable_under_certified_literal_permutation(
+        substitute_clause(original, renaming), reordered, order, inverse_order, interp,
+    );
+    assert(clause_valid(reordered, interp) == clause_valid(original, interp));
+}
+
 proof fn permutation_reindexed_sequence(
     source: Clause,
     source_equality_index: int,

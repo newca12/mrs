@@ -7,7 +7,7 @@ The bounded **M5 interchange and MRS integration implementation now exists**.
 The older milestone narrative below records the prototype's history; statements
 that no interchange or caller exists are superseded by this update.
 
-### 2026-11-20 verified literal-permutation primitive checkpoint
+### 2026-11-20 literal-permutation and alpha-renaming semantics checkpoint
 
 - **DONE (M2/M3 foundation):** add a bounded
   executable clause comparator driven by explicit forward and inverse literal
@@ -19,12 +19,18 @@ that no interchange or caller exists are superseded by this update.
   mismatched clauses, zero work, and exact/one-short work cutoffs have runtime
   regressions; the 50-case compiled-runtime mutation gate rejects a mutant that
   removes the inverse-scan charge.
-- **Verification:** the pinned gate passes with 576 first-order-core checks,
+- **DONE (M1/M3 semantic composition):** compose the
+  bijective variable-renaming validity theorem with the certified literal
+  permutation theorem, so alpha-renaming followed by reordering preserves
+  universal clause validity. Executable alpha-renaming discovery is still
+  unimplemented.
+- **Verification:** the pinned gate passes with 577 first-order-core checks,
   58 verifier-negative mutations, 50 compiled-runtime mutations, and
   `VERUS_MUTATION_WORKERS=4`.
-- **Scope:** this is a verified standalone primitive, not a new wire command or
+- **Scope:** these are verified standalone primitives, not a new wire command or
   DAG acceptance path. Existing replay continues to require exact literal order;
-  alpha-renaming and trusted TPTP normalization remain open M3/M5 work.
+  executable alpha-renaming discovery and trusted TPTP normalization remain
+  open M3/M5 work.
 
 ### 2026-11-14 archived Prover9 positive-proof checkpoint
 
@@ -998,7 +1004,7 @@ invalidate the original code. The gate now removes the actual forbidden-image
 check and requires Verus to reject that mutation. The no-cheating self-test first
 accepts a valid assumption probe without the flag, then requires rejection with
 the flag; the earlier malformed `assume_specification` probe was not evidence.
-Current module counts: **5 / 576 / 5 / 5**, with **58 verifier-negative mutations,
+Current module counts: **5 / 577 / 5 / 5**, with **58 verifier-negative mutations,
 fifty compiled-runtime mutations, and one no-cheating probe**. The tokenizer
 mutation is rejected at compile time because the weakened source no longer proves
 the tokenizer invariant. The compiled-runtime mutations cover root closure,
@@ -1049,7 +1055,7 @@ that a nested source omitted from the script is rejected. Workspace-wide auditin
 outside this Verus directory remains open.
 
 **What is DONE now:** the pinned local command `formal/superposition-checker/verify.sh`
-passes all four Verus files (currently `5`, `576`, `5`, and `5` verified functions
+passes all four Verus files (currently `5`, `577`, `5`, and `5` verified functions
 respectively), the compiled runtime fixtures pass, and all mutation gates pass.
 The general replay accepts the manually encoded local c502 step with its semantic
 validity-preservation theorem. The trusted adapter also parses and dual-checks the
