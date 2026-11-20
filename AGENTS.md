@@ -496,6 +496,21 @@ The question is whether those division schedules are optimal for 8 cores.
 > corpus digest is recorded, but the remote producer corpus identity is not
 > established. See
 > `docs/reports/benchmarks/cert-30-2026-11-07.md`.
+>
+> **Separate CASC-30 EPU observation (2026-11-19):** The complete 100-row
+> auto-routed run returned 17 raw `Unsatisfiable`. The bundled audit had 15
+> `VerifiedGood` and 2 input-size `Unknown`; after removing the TPTP source byte
+> ceilings, a targeted strict replay of all 17 archived proofs returned 17
+> `VerifiedGood`, 0 `VerifiedBad`, and 0 `Unknown`. It reproduces all 13 certified
+> names from the Nov 6 explicit candidate on the same audit corpus digest and
+> adds `HWV089-1`, `HWV090-1`, `HWV092-1`, and `HWV094-1`. It is a different dirty
+> build/host and used auto routing (94 `casc_epr`, 6 `casc_fne`), not an explicit
+> `casc_epu` or paired result. The 8-core host reported 81,582 MB effective
+> memory against 131,072 MB. This is supplemental, not a promotion or replacement
+> for the Nov 7 11/100 reference; its audit corpus differs from the Nov 7 audit.
+> See
+> `docs/reports/benchmarks/epu-2026-09.md` and the EPU row in
+> `docs/results/intermittency.md`.
 > Never present the raw 257/400 or 222/300 figures as valid scores: they are
 > unsound/unverified legacy status counts and are superseded.
 

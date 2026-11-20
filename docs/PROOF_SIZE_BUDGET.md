@@ -82,6 +82,11 @@ omitted keeps the solve and reports exactly what was dropped. Every number is
 recorded in `run.csv` via `failure_detail`, so the benchmark harness can track
 the distribution without re-running anything.
 
+This output ceiling is separate from verifier input handling: the `mrs-proover`
+proof-DAG loader retains a 32-MiB cap on proof files it reads, but imposes no
+per-file or aggregate byte ceiling on TPTP problem and included-source files.
+Uncapped source loading does not bound parser or AST memory use.
+
 ## Reducing the tail
 
 The remaining lever is the AVATAR split representation, not the calculus.

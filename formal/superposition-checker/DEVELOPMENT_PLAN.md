@@ -907,13 +907,14 @@ byte lexer.
 - **DONE (local containment guard, still trusted code):** the loader detects
   include cycles using canonicalized active paths and caps nesting at 64 active
   included files and total include occurrences at 1,024; regressions exercise
-  cycle, depth, and count failures. Proof/problem/include reads are now bounded
-  to 32 MiB per file and 128 MiB total source bytes per job, with regressions for
-  per-file and cumulative ceilings.
+  cycle, depth, and count failures. Proof-DAG inputs retain a 32-MiB file cap,
+  while TPTP problem/include source bytes have no per-file or aggregate cap.
+  Regressions cover problem sources larger than the proof-file cap and the
+  separate proof cap.
 - **REMAINING:** path resolution, canonicalization, include selection, and
-  parsing remain unverified host behavior. The source-byte limits do not prove
-  parser/AST memory use. An independently reviewed, verified include resolver
-  is still needed before the boundary can be considered end-to-end verified.
+  parsing remain unverified host behavior. Uncapped source loading does not bound
+  parser/AST memory. An independently reviewed, verified include resolver is
+  still needed before the boundary can be considered end-to-end verified.
 
 - **DONE:** wire v1 for superposition steps and complete proof DAGs; bounded
   decoder invokes the same compiled Verus-verified replay/certifier.
@@ -982,10 +983,10 @@ byte lexer.
   These are in force before exec. Peer regressions confirm environment and cwd
   isolation, limits, malformed responses, nonzero exits, hangs, output floods and
   descendants retaining pipes all fail closed.
-- **DONE (trusted host limits only):** the wire runner bounds requests to 4 MiB,
-  and the ProoVer loaded-job path bounds proof/problem/include sources to 32 MiB
-  per file and 128 MiB per job. These are not verified refinements and do not
-  bound parser/AST memory exactly.
+- **DONE (trusted host limits only):** the wire runner bounds requests to 4 MiB;
+  the ProoVer loader caps proof-DAG inputs at 32 MiB but leaves TPTP
+  problem/include source bytes uncapped. These are not verified refinements and
+  do not bound parser/AST memory exactly.
 - **REMAINING:** TPTP parser/lowering, certificate
   discovery, alpha/equality normalization and the process supervisor's host
   implementation remain

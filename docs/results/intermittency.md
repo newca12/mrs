@@ -71,20 +71,26 @@ outcome does not qualify them as full CASC-30/ICU campaigns for this inventory.
 > recompute full signatures after reconciling corpus identity rather than
 > appending only those pairwise differences.
 
-> **CASC-30 EPU refresh pending (2026-11-06):** Two complete Nov 6 EPU archives
-> include bundled row-level strict audits: portfolio `[1,6,5,11,4,2,3,7]`
-> certified 13/100, and `[1,6,14,5,11,4,2,3]` certified 12/100. Their
-> problem-name sets overlap on 12 names; `HWV107-1` is candidate-only by name.
-> The `[1,6,14,5,11,4,2,3]` run's 12-name set also matches Nov 5's result by
-> name. Against Nov 3 it shares 10 certified names, adds `PUZ037-2` and
-> `PUZ037-3`, and does not reproduce `HWV107-1`; this archive's corpus digest
-> matches Nov 3, so that is a same-input-set observation, not a paired run.
-> Do not fold these into the EPU signature table yet: their audit corpus digests
-> differ (`bb153a22…b6f16` versus `9a9cabd1…77570a`), and the latter matches the
-> Nov 3 full-campaign audit while the former does not. The producer binaries and
-> hosts also differ, so this is not a same-input portfolio comparison. Reconcile
-> the corpus identity and recompute full EPU signatures before adding campaign
-> keys. See the [EPU report](../reports/benchmarks/epu-2026-09.md#2026-11-06-explicit-portfolio-screen-supplemental).
+> **CASC-30 EPU refresh pending (2026-11-19):** The two complete Nov 6 EPU
+> archives have bundled row-level strict audits: `[1,6,5,11,4,2,3,7]` certified
+> 13/100, and `[1,6,14,5,11,4,2,3]` certified 12/100. The complete Nov 19
+> auto-routed campaign returned 17 raw `Unsatisfiable`. Its original bundled
+> audit had 15 `VerifiedGood` and 2 input-size `Unknown`; after removing the
+> TPTP source byte ceilings, a targeted strict replay of all 17 archived
+> problem/proof pairs returned **17 `VerifiedGood`**, 0 `VerifiedBad`, 0
+> `Unknown`, and 0 verifier timeouts. It reproduces all 13 certified names from
+> the Nov 6 13-result run and adds `HWV089-1`, `HWV090-1`, `HWV092-1`, and
+> `HWV094-1`. The original Nov 19 `certification/audit.csv` remains unchanged.
+> Its bundled audit corpus SHA matches the Nov 6 candidate (`bb153a22…b6f16`),
+> but not the other Nov 6 archive or the Nov 3 audit (`9a9cabd1…77570a`). The
+> `[1,6,14,5,11,4,2,3]` run's 12-name set also matches Nov 5 by name; against
+> Nov 3 it shares 10 certified names, adds `PUZ037-2` and `PUZ037-3`, and does
+> not reproduce `HWV107-1`. These are cross-run observations, not paired
+> portfolio effects; producer binaries and hosts differ, and Nov 19 used auto
+> routing rather than an explicit `casc_epu` order. Do not fold these campaigns
+> into the EPU signature table yet: reconcile corpus identity and recompute full
+> EPU signatures before adding campaign keys. See the [EPU report](../reports/benchmarks/epu-2026-09.md#2026-11-19-auto-routed-run-supplemental)
+> for provenance and the re-audit identity.
 
 > **CASC-30 full-campaign refresh pending (2026-11-11):** The Nov 7–10 archive
 > now has a complete 1,101-row strict audit: 319 certified refutations and 43

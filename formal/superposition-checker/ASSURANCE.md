@@ -85,10 +85,10 @@ ProoVer loader, then require the same formal DAG gate to accept; introducing an
 unselected premise into the resolved problem is rejected by the adapter. Include
 path resolution and selection filtering remain trusted loader behavior. The
 loader rejects cycles found on a canonicalized active path and limits one job to
-64 active include files and 1,024 include occurrences. It also caps each proof,
-problem, or included source file at 32 MiB and the combined source bytes for one
-job at 128 MiB (including the proof). These are ordinary trusted Rust bounds,
-not a verified include resolver or an exact parser/AST-memory ceiling; path
+64 active include files and 1,024 include occurrences. Proof-DAG file input
+remains capped at 32 MiB. TPTP problem and included-source files have no
+per-file or aggregate byte ceiling. These are ordinary trusted Rust bounds, not
+a verified include resolver or an exact parser/AST-memory ceiling; path
 resolution, selection filtering, parsing, and lowering remain trusted behavior.
 
 Build evidence records source commit/dirty state/hash, artifact SHA-256, Verus
