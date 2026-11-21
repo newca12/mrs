@@ -7,6 +7,9 @@ the current commit and has been rerun under current controls.
 - [Paper implementation repairs](audits/paper-implementation-repairs-2026-11.md):
   AVATAR/conjecture assumption soundness, BCE/index repairs and stored-proof
   re-audits; no whole-prover completeness or score-promotion claim.
+- [Formal guarantee audit](audits/formal-guarantees-2026-11-21.md):
+  actual semantic scope, runtime-check versus formal-proof boundaries, full
+  implementation roadmap, and the first infinite-carrier repair.
 - [Term traversal and index cleanup](benchmarks/term-transforms-2026-11-21.md):
   lazy-copy transformations, exact-order retrieval tests and identity-bound
   fixed-work diagnostics; instruction reduction with mixed wall-clock results.

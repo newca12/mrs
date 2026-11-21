@@ -24,6 +24,8 @@ hardware, and environment.
 | Measure search speed on this machine | [Fixed-work performance probe](results/perf/README.md) |
 | Verify TSTP proofs | [ProoVer guide](guides/proover.md) |
 | Understand the trust boundary | [Trust and verification](reference/trust-and-verification.md) |
+| Know the actual formal guarantees and missing proofs | [Formal guarantee inventory](reference/formal-guarantees.md) |
+| Implement the remaining formal assurance work | [Formal assurance roadmap](research/formal-assurance-roadmap.md) |
 | Run the experimental LCL condensed-detachment pre-pass | [Condensed-detachment experiment](research/condensed-detachment.md) |
 | Work on a soundness-sensitive change | [Development methodology](policies/methodology.md) |
 | Prepare a release | [Release policy](policies/release.md) |
@@ -78,14 +80,16 @@ report and link it from the relevant current guide instead.
 
 ## Current status in one paragraph
 
-`mrs` 0.2.3 is a Rust first-order theorem prover using clausification,
+`mrs` 0.3.0 is a Rust first-order theorem prover using clausification,
 superposition and resolution search, AVATAR/CaDiCaL integration, EPR-oriented
 prepasses, indexed redundancy elimination, and configurable strategy
 portfolios. The default `casc` schedule contains 15 active base strategies plus
 a zero-time diagnostic slot. Division schedules select and scale those base
 strategies by worker count. Cross-strategy unit-equality sharing is opt-in.
-Strict self-checking certifies refutation proofs; incomplete search and
-unsupported positive claims fail closed. `mrs-proover` provides a standalone
+Strict self-checking is opt-in and checks refutation proofs with an ordinary
+Rust kernel; incomplete search and unsupported positive claims fail closed.
+The Verus checker verifies its declared decoded-IR subset through a trusted
+input bridge, not the whole prover. `mrs-proover` provides a standalone
 strict-kernel mode and a broader competition-mode verifier with optional ATP
 backends.
 

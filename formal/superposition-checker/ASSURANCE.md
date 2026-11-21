@@ -1,5 +1,33 @@
 # Superposition-checker assurance note
 
+## Current guarantee inventory and semantic carrier (2026-11-21)
+
+The current cross-project [guarantee inventory](../../docs/reference/formal-guarantees.md)
+and [formal implementation roadmap](../../docs/research/formal-assurance-roadmap.md)
+separate formal theorems, ordinary runtime checks, standalone lemmas, trusted
+input/build boundaries and unsupported claims. MRS itself is not end-to-end
+formally verified, and default theorem output does not require `--self-check`.
+
+The audit baseline (`bd04ae44`) modeled semantic domains as `Set<u64>` and
+denotations as `u64`: its no-model theorem quantified over finite,
+machine-bounded carriers. The main semantic core now uses **`ISet<int>`** and
+mathematical integer denotations, retaining `u64` syntax identifiers. Its domain
+may be an arbitrarily large finite or countably infinite nonempty subset.
+`infinite_semantic_carrier_regression` constructs a successor model for the
+injectivity / omitted-range-element clauses and proves membership beyond
+`u64::MAX`. The full pinned gate passes: 578 main-core checks, zero errors in
+all modules, reproducible-runtime/DAG and actual bridge checks, and all 58/50
+mutations. The exact log and checked-source identities are retained in
+`docs/results/formal-audit-20261121/`; the dated audit records the dirty-tree
+identity and unchanged limits.
+
+This does **not** prove arbitrary-carrier transport or an unrestricted standard
+first-order all-model theorem; that is explicit remaining F1 roadmap work.
+The older ground/schema pilot modules retain their narrower machine-denotation
+semantics. The core's `dag_inputs_unsatisfiable` statement is relative to its
+declared semantic universe and supplied decoded clauses, not to arbitrary
+TPTP input or models by an unstated external theorem.
+
 ## Integration boundary (2026-10-20)
 
 The bounded wire-v1 checker and CNF-problem/restricted-FOF-clause proof adapter are implemented; see
@@ -294,10 +322,12 @@ The proof claim depends on:
 
 - the pinned Verus binary and its verification-condition generation;
 - the SMT solver bundled/used by Verus;
+- the specifications/refinements supplied by the pinned vstd library;
 - the Rust toolchain pinned by the Verus repository's `rust-toolchain.toml`;
 - Rust/LLVM compilation of the checked Verus source;
 - the shell/Nix/CI commands selecting source files, tools, and flags; and
-- any future decoder, serialization adapter, or MRS integration boundary.
+- the current unverified TPTP adapter, request encoder, byte-acquisition /
+  response host shims, and MRS integration boundary.
 
 Verus does not prove its own verifier or the compiler. Until the input adapter is
 verified or losslessly checked by the verified side, it remains trusted. A

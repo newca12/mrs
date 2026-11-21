@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "checker_status": "prototype_non_certifying",
+  "checker_status": "verified_decoded_ir_not_end_to_end_tptp",
   "ir_schema_status": "wire_v1_verified_bounded_decoder_and_unverified_tptp_bridge",
   "rules": [
     {
@@ -148,6 +148,49 @@
       "module": "first_order_core.rs",
       "status": "verified_ir_dag_certification",
       "description": "certify_dag proves no well-formed interpretation satisfies the supplied universally closed IR inputs. Per-node support includes exact input membership, superposition, nullary and exact-atom resolution, first-order resolution, equality resolution, clause and equality factoring, subsumption resolution, weakening, demodulation, clause instantiation, clause condensation, equality reflexivity, equality transitivity, equality symmetry, clause excluded middle, equality congruence, and clause tautology. Wire v1 decoding is verified; the CNF TPTP bridge remains trusted and provides opt-in MRS shadow and dual-check APIs.",
+      "production_certification": false
+    }
+  ],
+  "semantic_carrier": {
+    "module": "first_order_core.rs",
+    "values": "mathematical_int",
+    "domain": "ISet<int>",
+    "nonempty_required": true,
+    "arbitrarily_large_finite_domains": true,
+    "countably_infinite_domains": true,
+    "syntax_identifiers": "u64",
+    "arbitrary_carrier_types": false,
+    "standard_fol_all_models_transport_verified": false,
+    "infinite_successor_model_regression": "infinite_semantic_carrier_regression",
+    "production_certification": false
+  },
+  "standalone_guarantees": [
+    {
+      "id": "literal-permutation-validity",
+      "module": "first_order_core.rs",
+      "checker": "same_clause_permutation_with_work",
+      "semantic_lemma": "accepted_exec_clause_permutation_preserves_validity",
+      "status": "verified_standalone_not_dispatched",
+      "preserves_duplicate_occurrences": true,
+      "dag_dispatch": false,
+      "wire_dispatch": false,
+      "production_certification": false
+    },
+    {
+      "id": "bijective-variable-renaming-validity",
+      "module": "first_order_core.rs",
+      "semantic_lemma": "standardization_apart_preserves_clause_validity",
+      "status": "verified_semantic_lemma",
+      "verified_executable_alpha_discovery": false,
+      "production_certification": false
+    },
+    {
+      "id": "alpha-and-literal-permutation-validity",
+      "module": "first_order_core.rs",
+      "semantic_lemma": "alpha_and_literal_permutation_preserve_clause_validity",
+      "status": "verified_standalone_not_dispatched",
+      "dag_dispatch": false,
+      "wire_dispatch": false,
       "production_certification": false
     }
   ],

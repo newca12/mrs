@@ -1,5 +1,21 @@
 # Certification status
 
+## Current assurance versus historical scores (2026-11-21)
+
+The [formal guarantee inventory](reference/formal-guarantees.md) is the current
+source-derived assurance contract; the [formal roadmap](research/formal-assurance-roadmap.md)
+tracks missing proofs. The ordinary strict kernel and finite-model evaluator
+are not formally verified. The Verus theorem covers its declared decoded IR
+and semantic carrier through a trusted input bridge, not whole-prover or
+original-TPTP soundness/completeness.
+
+The numeric tables below remain **historical artifact/mode/budget observations**,
+including the older ProoVer competition-mode scores. They must not be presented
+as current HEAD results or formal guarantees without a fresh identity-bound
+replay. The November 21 paper repair replay is separately recorded in
+`reports/audits/paper-implementation-repairs-2026-11.md`: it does not revise
+the competition-mode score table by comparing a different strict-mode run.
+
 > Interpretation policy (2026-10-25): the dated tables below describe their
 > named producer/checker revisions and budgets; they are not a single HEAD
 > baseline. Later re-audits supersede earlier interpretations only for the same
@@ -9,10 +25,11 @@
 > [`methodology`](policies/methodology.md#85-experimental-design-and-evidence-strength)
 > and the active [`roadmap`](../ROADMAP.md).
 
-The single place that records what `mrs-proover` scores and what fraction of
+This page records historical `mrs-proover` scores and what fraction of
 `mrs`'s own proofs its strict kernel can certify, with the hardware each number
 was measured on. Older status notes are kept for history but are not
-authoritative; where they disagree with this file, this file is right.
+authoritative. Current source and scope contracts take precedence; only exact
+artifact re-audits can supersede a historical verdict.
 
 Two questions, kept separate on purpose:
 
@@ -26,6 +43,10 @@ Two questions, kept separate on purpose:
 ---
 
 ## 1. ProoVer 2026
+
+**Historical competition-mode measurement, not a current source-bound score.**
+The producer/checker identity must be established by a fresh replay before
+these numbers are attributed to today's source.
 
 Corpus: `crates/mrs-bench/proover-corpus/Proover2026` — the 100 CASC-J13
 problems `PRV000+1` … `PRV099+1`, 50 valid / 40 evil / 10 locally-sound evil,
@@ -85,7 +106,8 @@ problem can never be `VerifiedGood` regardless of how individual checks treat
 their steps. The competition wrappers pass `--problems-dir`, so this costs
 nothing there; it costs coverage only on proof sets that ship no problem file
 (the Zenodo Otter half), where the previous behaviour was a free pass for every
-axiom. See `docs/VERIFIER_SPEC.md` §2 and the regression tests in
+axiom. See [Trust and verification](reference/trust-and-verification.md) §2
+and the regression tests in
 `crates/mrs-proover/tests/corpus_regressions.rs`.
 
 ---

@@ -5,19 +5,29 @@ TPTP/TSTP. The kernel checks proof steps from their parsed parents and
 conclusions. It does not accept a proof because an inference name looks
 familiar or because another theorem prover agrees with it.
 
+The ordinary Rust kernel and model evaluator are **not formally verified**.
+The distinct `verus` module can call a supplied formal decoded-IR checker through
+a trusted input bridge; it does not turn the ordinary kernel into verified Rust.
+See the [actual guarantee inventory](../../docs/reference/formal-guarantees.md)
+and [formal roadmap](../../docs/research/formal-assurance-roadmap.md).
+
 ## Trust Boundary
 
-`mrs-proof-kernel` deliberately depends only on:
+The ordinary logical checking paths share these workspace dependencies:
 
 - `mrs-core` for lowered formulas, terms, clauses, symbols, and substitutions;
 - `mrs-tptp` for the parsed TPTP/TSTP representation;
+- `mrs-cnf` for bounded formula normalization/clausification infrastructure;
 - `mrs-arithmetic` for bounded, exact integer/rational source evaluation (using
   arbitrary-precision integers and normalized rationals, not floating point);
 - `mrs-cadical` for the bounded in-process SAT consistency check used by
   explicit AVATAR roll-ups that do not carry a replayable SAT trace.
 
-It does not depend on `mrs-search`, `mrs-proover`, ATP adapters, external
-processes, global mutable verifier state, or network services. Search may
+Metadata/serialization/hash and platform dependencies are listed in
+`Cargo.toml`; the list above is not a claim that those libraries are verified.
+The crate does not depend on `mrs-search`, `mrs-calculus`, `mrs-unify`,
+`mrs-proover`, ATP adapters or network services. Ordinary strict replay does
+not call external processes; the explicit `verus` bridge does. Search may
 generate a proof, but it is not trusted by the kernel. CaDiCaL is used only
 after the kernel has validated the AVATAR split, branch, and provenance
 metadata; it does not verify first-order inference steps.
@@ -41,7 +51,8 @@ path recorded by the proof header.
 
 The result is intentionally three-way:
 
-- `Certified`: every reachable node was checked by an implemented kernel rule;
+- `Certified`: every admitted FOF/CNF node was checked, including extra nodes,
+  and an unconditional discharged terminal false root exists;
 - `Rejected(reason)`: the proof is structurally or logically invalid;
 - `Inconclusive(reason)`: the proof uses an unsupported shape or exceeds a
   deterministic resource limit.
@@ -54,8 +65,9 @@ Resource exhaustion is never proof evidence. Callers must not map
 The current kernel checks:
 
 - named problem leaves, roles, provenance, source identity, and reachability;
-- unique names, parent references, acyclicity, disconnected nodes, and one
-  reachable unparented `$false` root;
+- unique names, resolved parents, acyclicity and checked extra nodes; at least
+  one terminal `$false` node must be discharged and independent of positive
+  conjecture assumptions (it may have inference parents);
 - consistent predicate/function signatures and arities across the problem and
   proof DAG;
 - negated conjectures, NNF transformations, and alpha-equivalent identities;
@@ -105,11 +117,13 @@ reduct, not a finite integer or rational universe.
 
 The kernel returns `Inconclusive` for, among other cases:
 
-- multi-parent Skolemization;
-- justified literal-deletion rules other than bounded condensation;
+- general/unannotated multi-parent Skolemization outside the implemented
+  validated witness/definition contract;
+- unimplemented deletion/transformation rule labels; every accepted deletion
+  must satisfy an implemented replay contract;
 - formula equivalence outside bounded NNF and AC/idempotent canonicalization;
-- multi-parent CNF transformations and definitional CNF outside the bounded
-  clause-extraction fragment;
+- general multi-parent CNF transformations and definitional CNF outside the
+  implemented bounded clause/definition/explicit-Skolem parent contract;
 - general AVATAR SAT proofs without explicit complete case-split certificates;
   explicit certificates remain bounded by the AVATAR variable limit;
 - unsupported TPTP dialects, sequents, or formula shapes.

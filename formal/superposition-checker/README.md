@@ -1,5 +1,16 @@
 # Verus superposition checker
 
+The cross-project [guarantee audit](../../docs/reference/formal-guarantees.md)
+and [formal roadmap](../../docs/research/formal-assurance-roadmap.md) distinguish
+machine-checked IR theorems from ordinary kernel checks and trusted TPTP input.
+The main core now uses nonempty **`ISet<int>`** domains with mathematical integer
+denotations, admitting arbitrarily large finite and countably infinite carriers;
+syntax identifiers remain `u64`. An infinite successor model is a new semantic
+regression. The earlier `Set<u64>`/`u64` carrier was machine-finite. Generic
+arbitrary-carrier transport remains open; no unstated all-model theorem or
+end-to-end TPTP claim follows from this repair. Gate evidence is recorded in the
+[dated audit](../../docs/reports/audits/formal-guarantees-2026-11-21.md).
+
 ## TPTP interchange and MRS integration
 
 The compiled checker now exposes bounded wire v1 for local steps and complete

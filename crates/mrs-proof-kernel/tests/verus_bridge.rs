@@ -1511,7 +1511,7 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
             .unwrap_or_else(|| panic!("{name} report omitted support manifest: {report:?}"));
         assert_eq!(support_manifest["schema_version"], 1, "{name}: {report:?}");
         assert_eq!(
-            support_manifest["checker_status"], "prototype_non_certifying",
+            support_manifest["checker_status"], "verified_decoded_ir_not_end_to_end_tptp",
             "{name}: {report:?}"
         );
         assert_eq!(
@@ -1527,7 +1527,28 @@ fn supported_dag_fixture_corpus_certifies_with_both_checkers() {
         let serialized_report = serde_json::to_value(&report).unwrap();
         assert_eq!(
             serialized_report["support_manifest"]["checker_status"],
-            "prototype_non_certifying"
+            "verified_decoded_ir_not_end_to_end_tptp"
+        );
+        assert_eq!(support_manifest["semantic_carrier"]["domain"], "ISet<int>");
+        assert_eq!(
+            support_manifest["semantic_carrier"]["countably_infinite_domains"],
+            true
+        );
+        assert_eq!(
+            support_manifest["semantic_carrier"]["arbitrary_carrier_types"],
+            false
+        );
+        assert_eq!(
+            support_manifest["semantic_carrier"]["standard_fol_all_models_transport_verified"],
+            false
+        );
+        assert_eq!(
+            support_manifest["standalone_guarantees"][0]["dag_dispatch"],
+            false
+        );
+        assert_eq!(
+            support_manifest["standalone_guarantees"][0]["wire_dispatch"],
+            false
         );
 
         let empty_roots = proof

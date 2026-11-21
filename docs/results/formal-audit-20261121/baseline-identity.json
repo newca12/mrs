@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "baseline_commit": "bd04ae44",
+  "first_order_core_sha256": "6382e356a0159ac30669e5db4ad9244611a009db107a575c47c69b6d2cbc3baf",
+  "support_manifest_sha256": "2887aaaae9520db135706c7a3e814f25b320ea6a8e6be99ca77797830b9c2e4d",
+  "semantic_domain": "Set<u64>",
+  "semantic_denotations": "u64",
+  "actual_scope": "finite machine-bounded carriers, not an unrestricted first-order no-model theorem"
+}

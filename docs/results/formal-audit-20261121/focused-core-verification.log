@@ -1,0 +1,5 @@
+warning: Git tree '/home/fr22192/EDLA/git/mrs' is dirty
+mrs Verus shell — rustup home: /home/fr22192/.cache/mrs-verus/rustup
+  install: formal/superposition-checker/install-verus.sh
+  verify:  formal/superposition-checker/verify.sh
+verification results:: 578 verified, 0 errors

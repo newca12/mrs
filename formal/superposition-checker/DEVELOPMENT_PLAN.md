@@ -1,5 +1,17 @@
 # Verus superposition checker: development plan
 
+## Active cross-project roadmap (2026-11-21)
+
+Use the [actual guarantee inventory](../../docs/reference/formal-guarantees.md)
+and [formal assurance implementation roadmap](../../docs/research/formal-assurance-roadmap.md)
+for current F0–F8 status and acceptance gates. The older M0–M7 checkpoints
+below are history, not a blanket current guarantee. The first new repair widens
+the main carrier from `Set<u64>`/`u64` to `ISet<int>`/mathematical integers and
+adds an infinite successor model regression. Full gate evidence belongs in the
+dated audit; arbitrary-carrier transport, verified TPTP lowering, permutation
+dispatch, FOF conservative extensions, AVATAR/SAT and finite-model assurance
+remain distinct open work packages.
+
 ## Integration implementation update (2026-10-20)
 
 The bounded **M5 interchange and MRS integration implementation now exists**.

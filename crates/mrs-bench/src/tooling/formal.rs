@@ -474,7 +474,7 @@ pub fn runtime_check(args: RuntimeCheckArgs) -> ToolResult<()> {
             }
             if sha == digest.as_str()
                 && !String::from_utf8_lossy(&cli.stderr)
-                    .contains("\"checker_status\":\"prototype_non_certifying\"")
+                    .contains("\"checker_status\":\"verified_decoded_ir_not_end_to_end_tptp\"")
             {
                 return Err(format!(
                     "ProoVer Verus report omitted the support manifest: {}",

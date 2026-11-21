@@ -145,6 +145,13 @@ not a variable. The target is any literal `L` and one argument-slot/term-path
 position `p` at which a subterm `u` occurs. The target literal may have either
 polarity and may itself be equality. Equality is interpreted as identity.
 
+The main semantic carrier is a nonempty `ISet<int>` with mathematical integer
+denotations; syntax identifiers remain `u64`. Finite domains have no machine
+cardinality ceiling, and countably infinite domains are admitted. Generic
+arbitrary-carrier semantics/model transport is not yet proved. The audit's
+earlier `Set<u64>` model restriction must not be attributed to this updated
+core or mistaken for an unrestricted first-order no-model result.
+
 The two parent clauses are independently standardized apart by finite,
 simultaneous variable renamings `rho_s` and `rho_t`:
 

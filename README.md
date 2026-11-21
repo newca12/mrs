@@ -26,14 +26,41 @@ and the [certification status](docs/CERTIFICATION_STATUS.md).
 mrs --self-check problem.p
 ```
 
-The project also maintains an ongoing [Verus formalization of a supported subset
-of the proof kernel](formal/superposition-checker/ASSURANCE.md). Its current
-theorem covers a declared subset of inference replay and supported CNF proof
-DAGs over decoded intermediate representations. It does **not** verify
-the complete prover, all inference rules, or the TPTP parsing/lowering path; the
-Verus integration is explicit shadow or opt-in dual-checking, not a replacement
-for the default strict kernel check. The assurance note documents the supported
-rules and trusted boundary.
+### What is formally guaranteed?
+
+**MRS is not an end-to-end formally verified prover.** Its assurance levels are
+deliberately separate:
+
+| Layer | Actual assurance |
+|---|---|
+| Ordinary search | Produces candidate proofs; no proved whole-engine soundness/completeness or strict certification requirement by default. |
+| `--self-check` / standalone strict verifier | A separate **ordinary Rust** kernel checks supported refutations against the supplied problem. Strong runtime/regression evidence, not formal verification of that kernel. |
+| Finite models / bounded ground-EPR closure | Separate runtime-checked routes; not a formally proved model evaluator or grounding/closure completeness theorem. |
+| Verus checker | Machine-checked supported inference replay, proof-DAG refutation and wire/token decoding **over decoded IR**. Main semantic domains use nonempty `ISet<int>` carriers, including infinite domains; arbitrary-carrier transport remains open. |
+| TPTP-to-Verus bridge | Trusted parsing/lowering, source/role handling, normalization and certificate discovery. Opt-in dual checking requires both kernels, but does not verify original TPTP bytes end to end. |
+
+The main semantic carrier was audited and widened from finite `u64` domains;
+this does not add FOF/AVATAR/AC/arithmetic rules to the verified checker. A
+successful local c502 check is not certification of the complete SWV406+1 proof.
+Formal evidence does not replace the normal strict policy or prove search
+fairness, completeness, wall-clock determinism, or compiler/OS correctness.
+
+See the [complete guarantee audit](docs/reference/formal-guarantees.md),
+[formal assurance roadmap](docs/research/formal-assurance-roadmap.md), and
+[normative Verus assurance note](formal/superposition-checker/ASSURANCE.md).
+The roadmap names the remaining semantic, input-fidelity, normalization,
+FOF, AVATAR/SAT, model and runtime/build work with explicit acceptance gates.
+
+To invoke the supplied formal artifact explicitly:
+
+```bash
+mrs-proover --verus-gate /path/to/verified-checker --verus-sha256 HASH proof.p
+```
+
+This implies strict verification and fails closed unless both paths accept.
+`--verus-shadow` instead reports formal evidence without changing the strict
+verdict. The selected artifact's own hash-bound support manifest defines its
+scope; an older artifact does not inherit today's stronger theorem.
 
 ## Install
 
@@ -212,7 +239,9 @@ mrs/
 
 For the organized documentation map, see [`docs/README.md`](docs/README.md).
 Paper-derived techniques and their supported scope are listed in [`docs/reference/paper-implementations.md`](docs/reference/paper-implementations.md); technique names are not whole-paper or completeness claims.
-The active performance and architecture plan is [`ROADMAP.md`](ROADMAP.md).
+The active performance and architecture plan is [`ROADMAP.md`](ROADMAP.md);
+the detailed formal work packages are in the
+[formal assurance roadmap](docs/research/formal-assurance-roadmap.md).
 
 ## License
 

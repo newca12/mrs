@@ -3,13 +3,18 @@
 This document defines the trust boundary between MRS search, the competition
 checker, and strict self-verification.
 
+For a source-derived distinction between **formal theorems**, ordinary runtime
+checks, evidence and missing proofs, read the
+[formal guarantee inventory](formal-guarantees.md). This specification of
+ordinary strict checking is not itself a Verus proof of the Rust kernel.
+
 ## 1. Verdicts
 
 The strict kernel uses three internal outcomes:
 
 | Kernel outcome | Meaning |
 |---|---|
-| `Certified` | Every reachable proof step was checked by the kernel. |
+| `Certified` | Every admitted FOF/CNF node was checked, including extra nodes, and at least one terminal false root is unconditional and discharged. |
 | `Rejected` | The input is structurally or logically invalid. |
 | `Inconclusive` | The input uses an unsupported rule, dialect, or resource shape. |
 
@@ -111,6 +116,12 @@ not an independent proof kernel.
 
 Strict verification requires:
 
+The standalone CLI supplies the linked problem/include closure. Library APIs
+can instead take caller-supplied parsed problem/proof ASTs and an optional
+expected source; they do not independently acquire or verify the original
+input bytes. File-based self-check with includes can reread the main problem
+and library files; an immutable producer/checker input snapshot is still open.
+
 - a parseable TSTP proof
 - a `% Proof : ...` link to a parseable problem
 - all includes resolved
@@ -118,7 +129,9 @@ Strict verification requires:
 - unique formula names
 - resolved parent references
 - an acyclic parent graph
-- at least one unparented `$false` root
+- at least one terminal `$false` root, not used as a parent by another node;
+  it may have inference parents, but must have no residual branch or positive
+  conjecture assumption
 - every proof node is structurally validated; nodes outside a root derivation
   cannot affect the accepted refutation
 - every input leaf tied to a named formula in the linked problem
@@ -142,7 +155,8 @@ certification in the first kernel version.
 The first strict kernel implementation certifies only:
 
 - named problem axiom/hypothesis/conjecture leaves, matched by exact
-  formula name first, then file-source provenance
+  formula name first, then file-source provenance; positive conjectures are
+  source metadata, not asserted refutation premises
 - direct `negated_conjecture` / `assume_negation`
 - exact alpha-equivalent variable-renaming and identity rewrites, over one
   or more identical parents

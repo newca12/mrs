@@ -67,16 +67,19 @@ spec fn literal_permutation_inverse_at(
 }
 
 pub struct Interpretation {
-    domain: Set<u64>,
+    // Semantic values are mathematical integers, not machine-width IDs.
+    // Nonempty subsets may be finite of any size or countably infinite.
+    // General transport from arbitrary carrier types remains a separate proof.
+    domain: ISet<int>,
     // These finite maps act as total interpretations only when their domains
     // contain every signature application used by the formula. Semantic
     // lemmas state those definedness preconditions explicitly.
-    functions: IMap<(u64, Seq<u64>), u64>,
-    predicates: IMap<(u64, Seq<u64>), bool>,
+    functions: IMap<(u64, Seq<int>), int>,
+    predicates: IMap<(u64, Seq<int>), bool>,
 }
 
 pub struct Valuation {
-    values: IMap<u64, u64>,
+    values: IMap<u64, int>,
 }
 
 pub struct Model {
@@ -88,10 +91,10 @@ pub struct Model {
 /// total and return carrier elements. Predicate interpretations are total as
 /// well, so substituted argument tuples are always defined.
 spec fn interpretation_well_formed(interp: Interpretation) -> bool {
-    (exists|x: u64| interp.domain.contains(x))
+    (exists|x: int| interp.domain.contains(x))
         && interp.functions.is_full()
         && interp.predicates.is_full()
-        && forall|f: u64, args: Seq<u64>|
+        && forall|f: u64, args: Seq<int>|
             interp.domain.contains(interp.functions[(f, args)])
 }
 
@@ -102,14 +105,14 @@ spec fn valuation_well_formed(interp: Interpretation, valuation: Valuation) -> b
 
 /// Truth of a universally closed formula with one free variable.
 pub struct UniversalFormula {
-    body: IMap<u64, bool>,
+    body: IMap<int, bool>,
 }
 
 spec fn formula_holds(formula: UniversalFormula) -> bool {
-    forall|value: u64| formula.body[value]
+    forall|value: int| formula.body[value]
 }
 
-proof fn universal_formula_instance(formula: UniversalFormula, chosen: u64)
+proof fn universal_formula_instance(formula: UniversalFormula, chosen: int)
     requires formula_holds(formula)
     ensures formula.body[chosen]
 {
@@ -156,7 +159,7 @@ spec fn apply(term: Term, sigma: Substitution) -> Term
     }
 }
 
-spec fn eval(term: Term, interp: Interpretation, valuation: Valuation) -> u64
+spec fn eval(term: Term, interp: Interpretation, valuation: Valuation) -> int
     decreases term
 {
     match term {
@@ -1616,6 +1619,92 @@ spec fn clause_valid(clause: Clause, interp: Interpretation) -> bool {
     forall|valuation: Valuation|
         valuation_well_formed(interp, valuation)
             ==> clause_holds(clause, interp, valuation)
+}
+
+/// A countably infinite model: constant 0 denotes zero; unary symbol 1 is
+/// successor on the nonnegative carrier. Out-of-carrier argument tuples have
+/// an arbitrary total extension, as required by interpretation_well_formed.
+spec fn infinite_successor_interpretation() -> Interpretation {
+    Interpretation {
+        domain: ISet::new(|value: int| value >= 0),
+        functions: IMap::total(|key: (u64, Seq<int>)|
+            if key.0 == 1 && key.1.len() == 1 && key.1[0] >= 0 {
+                key.1[0] + 1
+            } else { 0 }),
+        predicates: IMap::total(|_key: (u64, Seq<int>)| false),
+    }
+}
+
+spec fn successor_of(variable: u64) -> Term {
+    Term::App1(1, Box::new(Term::Var(variable)))
+}
+
+spec fn successor_injectivity_clause() -> Clause {
+    Clause { literals: seq![
+        Literal { positive: false, atom: Atom::Eq(successor_of(0), successor_of(1)) },
+        Literal { positive: true, atom: Atom::Eq(Term::Var(0), Term::Var(1)) },
+    ] }
+}
+
+spec fn zero_outside_successor_range_clause() -> Clause {
+    Clause { literals: seq![Literal {
+        positive: false,
+        atom: Atom::Eq(successor_of(0), Term::Const(0)),
+    }] }
+}
+
+/// This finite clause theory has an infinite model (an injective unary function
+/// with an element outside its range). Checking only machine-finite carriers
+/// would not establish the intended first-order no-model claim for this theory.
+proof fn infinite_semantic_carrier_regression()
+    ensures
+        interpretation_well_formed(infinite_successor_interpretation()),
+        forall|value: int| value >= 0
+            ==> infinite_successor_interpretation().domain.contains(value),
+        infinite_successor_interpretation().domain.contains(u64::MAX as int + 1),
+        clause_valid(successor_injectivity_clause(), infinite_successor_interpretation()),
+        clause_valid(zero_outside_successor_range_clause(), infinite_successor_interpretation()),
+{
+    reveal_with_fuel(eval, 2);
+    let interp = infinite_successor_interpretation();
+    assert(interp.domain.contains(0));
+    assert(interp.functions.is_full());
+    assert(interp.predicates.is_full());
+    assert forall|symbol: u64, args: Seq<int>|
+        interp.domain.contains(interp.functions[(symbol, args)]) by {
+        if symbol == 1 && args.len() == 1 && args[0] >= 0 {
+            assert(args[0] + 1 >= 0);
+        }
+    }
+    assert(interpretation_well_formed(interp));
+    assert forall|value: int| value >= 0
+        implies interp.domain.contains(value) by {}
+    assert(interp.domain.contains(u64::MAX as int + 1));
+
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(successor_injectivity_clause(), interp, valuation) by {
+        let x = valuation.values[0];
+        let y = valuation.values[1];
+        assert(x >= 0 && y >= 0);
+        assert(eval(successor_of(0), interp, valuation) == x + 1);
+        assert(eval(successor_of(1), interp, valuation) == y + 1);
+        let clause = successor_injectivity_clause();
+        if x == y {
+            assert(literal_holds(clause.literals[1], interp, valuation));
+        } else {
+            assert(x + 1 != y + 1);
+            assert(literal_holds(clause.literals[0], interp, valuation));
+        }
+    }
+    assert forall|valuation: Valuation| valuation_well_formed(interp, valuation)
+        implies clause_holds(zero_outside_successor_range_clause(), interp, valuation) by {
+        let x = valuation.values[0];
+        assert(x >= 0);
+        assert(eval(successor_of(0), interp, valuation) == x + 1);
+        assert(eval(Term::Const(0), interp, valuation) == 0);
+        assert(x + 1 != 0);
+        assert(literal_holds(zero_outside_successor_range_clause().literals[0], interp, valuation));
+    }
 }
 
 proof fn literal_holds_after_substitution(
@@ -3812,8 +3901,8 @@ proof fn standardization_apart_preserves_clause_validity(
     }
 }
 
-proof fn universal_clause_instance(p: IMap<u64, bool>, instance: u64)
-    requires forall|x: u64| p[x]
+proof fn universal_clause_instance(p: IMap<int, bool>, instance: int)
+    requires forall|x: int| p[x]
     ensures p[instance]
 {
     assert(p[instance]);
@@ -3836,18 +3925,18 @@ spec fn positive_clause_holds_after(
 /// other target literal is instantiated too. This proves the soundness of this
 /// instance, not the validity of archived c502 or of the general calculus.
 proof fn target_variable_superposition_instance(
-    f: IMap<u64, u64>,
-    p: IMap<u64, bool>,
-    q: IMap<u64, bool>,
-    a: u64,
-    b: u64,
+    f: IMap<int, int>,
+    p: IMap<int, bool>,
+    q: IMap<int, bool>,
+    a: int,
+    b: int,
 )
     requires
         f.dom().contains(a),
         p.dom().contains(b),
         q.dom().contains(a),
         f[a] == b,
-        forall|y: u64| f.dom().contains(y) && q.dom().contains(y) && p.dom().contains(f[y])
+        forall|y: int| f.dom().contains(y) && q.dom().contains(y) && p.dom().contains(f[y])
             ==> q[y] || p[f[y]],
     ensures
         q[a] || p[b],
@@ -14770,7 +14859,7 @@ proof fn validated_dag_has_no_model(dag: ProofDag)
         proof_dag_nodes_follow_from_local_rule_soundness(
             dag.nodes@, dag.input_clauses@, interp, dag.nodes@.len(),
         );
-        let element = choose|element: u64| interp.domain.contains(element);
+        let element = choose|element: int| interp.domain.contains(element);
         let valuation = Valuation { values: IMap::total(|v: u64| element) };
         assert(valuation.values.is_full());
         assert forall|v: u64| interp.domain.contains(valuation.values[v]) by {

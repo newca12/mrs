@@ -1,7 +1,8 @@
 //! Bounded shadow bridge to the compiled Verus checker.
 //!
 //! The parser, lowering, alpha/orientation normalization, certificate discovery,
-//! wire decoder and process runner are trusted/unverified. A positive result is
+//! wire request encoder and process runner are trusted/unverified. The compiled
+//! artifact's wire decoder/tokenizer are Verus-verified. A positive result is
 //! evidence about the decoded IR only and never upgrades a kernel verdict.
 
 use super::*;

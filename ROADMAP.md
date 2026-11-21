@@ -215,7 +215,13 @@ for multiple noisy portfolio selections using a fresh final holdout.
 
 ## P6 — Formal assurance integration (months 3–12)
 
-Follow `formal/superposition-checker/DEVELOPMENT_PLAN.md` and `ASSURANCE.md`.
+The source-derived inventory is `docs/reference/formal-guarantees.md`; follow
+the explicit F0–F8 packages in `docs/research/formal-assurance-roadmap.md` and
+the normative `formal/superposition-checker/ASSURANCE.md`. The older development
+plan retains milestone history. The first 2026-11-21 repair separates semantic
+values from machine IDs and admits infinite main-core domains; arbitrary-carrier
+transport, verified TPTP/normalization, FOF signature extensions, AVATAR/SAT,
+finite models/grounding and dynamic completeness remain separate open projects.
 Prioritize real production rule frequency and replay cost, adapter fidelity,
 resource accounting and dual-check disagreement analysis. Publish a rule/coverage
 matrix with explicit trusted boundaries. Formal rule count is not production

@@ -73,6 +73,13 @@ These APIs do not change the default strict kernel or prover output behavior.
 
 ## Trust boundary and supported subset
 
+The main theorem's semantic domains are nonempty `ISet<int>` subsets with
+mathematical integer denotations, admitting arbitrarily large finite and
+countably infinite carriers. The wire's `u64` values identify symbols/variables;
+they are not a bound on semantic denotations. Formal transport to arbitrary
+carrier types / unrestricted standard first-order models remains open. This
+semantic repair adds no wire tag or runtime syntax support.
+
 The Verus theorem covers the **decoded IR**. Wire-v1 version/tag/field/count
 validation, recursive term/clause/certificate/DAG decoding, command dispatch,
 and ASCII whitespace/unsigned-decimal tokenization are Verus-verified by
