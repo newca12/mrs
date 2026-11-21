@@ -1,3 +1,4 @@
+pub mod autosearch;
 pub mod bench;
 pub mod corpus;
 pub mod formal;

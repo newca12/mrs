@@ -85,6 +85,7 @@ mrs [options] <file.p>
 | `--schedule <name>` | `casc` | Select a named schedule. See [`docs/reference/schedules.md`](docs/reference/schedules.md). |
 | `--auto-schedule` | off | Select a division schedule from clause shape. An explicit schedule wins. |
 | `--strategy <N>` | — | Run one base strategy for the full budget. Valid IDs are 1 through 15. |
+| `--selection <selector>` | — | Experimental queue-policy override for all scheduled workers (`fifo`, `smallest`, `age:N`, `goal:N`, `ml:N:ALPHA`, or `queue:...`). Used by the local autosearch tool. |
 | `--portfolio <IDs>` | — | Run one explicit base strategy per worker, for example `12,11,10,6,8,1,4,13`. |
 | `--self-check` | off | Strict-check candidate refutations before emitting theorem/proof output. Rejection or inconclusive verification becomes `GaveUp`. |
 | `--certify-ordered` | off | Run bounded ordered-resolution certification; requires `--workers 1 --strategy N`. |

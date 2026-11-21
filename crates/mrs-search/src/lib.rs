@@ -48,6 +48,7 @@ pub mod prephase;
 pub use mrs_prephase::preprocessing;
 pub use mrs_prephase::{Analysis, MetaInput};
 pub mod resource;
+pub(crate) mod sat_subsumption;
 pub mod select;
 pub mod sine;
 pub mod state;
@@ -109,6 +110,46 @@ pub use symbol_config::{PrecedenceScheme, SymbolWeightScheme, compute_symbol_con
 /// aggregates them across the whole portfolio run.
 #[derive(Clone, Debug, Default)]
 pub struct SearchStats {
+    /// Whether this strategy used the opt-in combined SAT simplifier.
+    pub sat_simplification_enabled: bool,
+    /// Wide clause pairs considered by the combined SAT simplifier.
+    pub sat_simplification_attempts: u64,
+    /// Total microseconds spent building/solving combined SAT simplifications.
+    pub sat_simplification_elapsed_us: u64,
+    /// Ordinary-subsumption queries that entered CaDiCaL.
+    pub sat_subsumption_solver_entries: u64,
+    /// Validated ordinary subsumption models.
+    pub sat_subsumption_sat: u64,
+    /// CaDiCaL UNSAT results for ordinary subsumption.
+    pub sat_subsumption_unsat: u64,
+    /// Ordinary-subsumption pairs rejected before SAT due to no literal match.
+    pub sat_subsumption_no_match: u64,
+    /// Ordinary-subsumption queries stopped by deadline or cancellation.
+    pub sat_subsumption_unknown: u64,
+    /// Ordinary-subsumption encodings refused at a declared limit.
+    pub sat_subsumption_limited: u64,
+    /// Ordinary-subsumption SAT models rejected by witness reconstruction.
+    pub sat_subsumption_invalid: u64,
+    /// Targets deleted by SAT-based ordinary subsumption.
+    pub sat_subsumption_deleted: u64,
+    /// SR stages reached after ordinary subsumption did not apply.
+    pub sat_sr_attempts: u64,
+    /// SR queries that entered CaDiCaL.
+    pub sat_sr_solver_entries: u64,
+    /// Validated SR SAT models.
+    pub sat_sr_sat: u64,
+    /// CaDiCaL UNSAT results for SR.
+    pub sat_sr_unsat: u64,
+    /// SR pairs rejected before SAT due to no pivot/match options.
+    pub sat_sr_no_match: u64,
+    /// SR queries stopped by deadline or cancellation.
+    pub sat_sr_unknown: u64,
+    /// SR encodings refused at a declared limit.
+    pub sat_sr_limited: u64,
+    /// SR SAT models rejected by witness reconstruction.
+    pub sat_sr_invalid: u64,
+    /// Validated target-literal removals by SAT-based SR.
+    pub sat_sr_simplified: u64,
     pub queue_tombstones_removed: u64,
     /// Final storage counts, not memory-byte estimates.
     pub retained_terms: u64,
@@ -428,6 +469,105 @@ impl ScheduleReport {
                 state.processed,
                 state.generated,
                 state.passive
+            ));
+        }
+
+        let sat_simplification_strategies = self
+            .strategies
+            .iter()
+            .filter(|strategy| strategy.stats.sat_simplification_enabled)
+            .map(|strategy| (strategy.strategy_idx, strategy.strategy_id))
+            .collect::<Vec<_>>();
+        if !sat_simplification_strategies.is_empty() {
+            detail.push_str(&format!(
+                " sat_simplify_strategy_ids={} sat_simplify_pairs={} sat_simplify_elapsed_us={} \
+                 sat_subsumption_solver_entries={} sat_subsumption_sat={} sat_subsumption_unsat={} \
+                 sat_subsumption_no_match={} sat_subsumption_unknown={} sat_subsumption_limited={} \
+                 sat_subsumption_invalid={} sat_subsumption_deleted={} \
+                 sat_sr_attempts={} sat_sr_solver_entries={} sat_sr_sat={} sat_sr_unsat={} \
+                 sat_sr_no_match={} sat_sr_unknown={} sat_sr_limited={} sat_sr_invalid={} \
+                 sat_sr_simplified={}",
+                sat_simplification_strategies
+                    .iter()
+                    .map(|(slot, id)| format!("{slot}:{id}"))
+                    .collect::<Vec<_>>()
+                    .join(";"),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_simplification_attempts)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_simplification_elapsed_us)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_subsumption_solver_entries)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_subsumption_sat)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_subsumption_unsat)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_subsumption_no_match)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_subsumption_unknown)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_subsumption_limited)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_subsumption_invalid)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_subsumption_deleted)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_sr_attempts)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_sr_solver_entries)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_sr_sat)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_sr_unsat)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_sr_no_match)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_sr_unknown)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_sr_limited)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_sr_invalid)
+                    .sum::<u64>(),
+                self.strategies
+                    .iter()
+                    .map(|strategy| strategy.stats.sat_sr_simplified)
+                    .sum::<u64>(),
             ));
         }
 
@@ -1240,6 +1380,44 @@ mod tests {
         assert!(detail.contains("epr_solves=3"));
         assert!(detail.contains("epr_solver_entries=2"));
         assert!(detail.contains("epr_solve_ms=17"));
+    }
+
+    #[test]
+    fn combined_sat_simplification_telemetry_identifies_enabled_strategy() {
+        let report = ScheduleReport {
+            strategies: vec![StrategyReport {
+                strategy_idx: 2,
+                strategy_id: 14,
+                result: SearchResult::GaveUp,
+                stats: SearchStats {
+                    sat_simplification_enabled: true,
+                    sat_simplification_attempts: 4,
+                    sat_simplification_elapsed_us: 37_000,
+                    sat_subsumption_solver_entries: 3,
+                    sat_subsumption_sat: 2,
+                    sat_subsumption_deleted: 2,
+                    sat_sr_attempts: 2,
+                    sat_sr_solver_entries: 1,
+                    sat_sr_sat: 1,
+                    sat_sr_unsat: 1,
+                    sat_sr_simplified: 1,
+                    ..SearchStats::default()
+                },
+                elapsed_ms: 40,
+            }],
+            ..ScheduleReport::default()
+        };
+
+        let detail = report.telemetry_detail("GaveUp");
+        assert!(detail.contains("sat_simplify_strategy_ids=2:14"));
+        assert!(detail.contains("sat_simplify_pairs=4"));
+        assert!(detail.contains("sat_simplify_elapsed_us=37000"));
+        assert!(detail.contains("sat_subsumption_solver_entries=3"));
+        assert!(detail.contains("sat_subsumption_deleted=2"));
+        assert!(detail.contains("sat_sr_attempts=2"));
+        assert!(detail.contains("sat_sr_solver_entries=1"));
+        assert!(detail.contains("sat_sr_sat=1"));
+        assert!(detail.contains("sat_sr_simplified=1"));
     }
 
     #[test]

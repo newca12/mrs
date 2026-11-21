@@ -187,6 +187,7 @@ fn run() {
     let mut auto_schedule = false;
     let mut exact_strategy: Option<usize> = None;
     let mut portfolio: Option<Vec<usize>> = None;
+    let mut selection_override: Option<mrs_search::SelectionStrategy> = None;
     let mut ml_prune_ratio: Option<f32> = None;
     let mut self_check = false;
     let mut cert_reserve_worker = false;
@@ -284,6 +285,20 @@ fn run() {
                     process::exit(1);
                 }
                 exact_strategy = Some(parsed);
+            }
+            "--selection" => {
+                let raw = args.next().unwrap_or_else(|| {
+                    eprintln!(
+                        "Error: --selection requires fifo, smallest, age:N, goal:N, ml:N:ALPHA, or queue:..."
+                    );
+                    process::exit(1);
+                });
+                selection_override = Some(
+                    mrs_search::select::parse_selection_strategy(&raw).unwrap_or_else(|error| {
+                        eprintln!("Error: invalid --selection: {error}");
+                        process::exit(1);
+                    }),
+                );
             }
             "--portfolio" => {
                 let val = args.next().unwrap_or_else(|| {
@@ -530,7 +545,7 @@ fn run() {
             _ => {
                 if path.is_some() {
                     eprintln!(
-                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--pre-phase] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+                        "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--selection SELECTOR] [--goal-transform MODE] [--certify-ordered] [--pre-phase] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
                     );
                     process::exit(1);
                 }
@@ -550,7 +565,7 @@ fn run() {
             });
     let Some(path) = path else {
         eprintln!(
-            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--goal-transform MODE] [--certify-ordered] [--pre-phase] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
+            "Usage: mrs [--time <seconds>] [--schedule NAME] [--workers N] [--strategy N|--portfolio IDS] [--selection SELECTOR] [--goal-transform MODE] [--certify-ordered] [--pre-phase] [--proof-bytes-limit N] [--no-bce] [--no-ple] [--no-instgen] [--no-lrs] [--no-sharing] [--self-check] [--stats|--profile] [--profile-json] [--include-root DIR] <file.p>"
         );
         eprintln!("  An automated theorem prover for TPTP problems.");
         eprintln!(
@@ -1214,6 +1229,13 @@ fn run() {
             decision = Some(route);
         }
         let _ = &decision;
+        if let Some(selection) = &selection_override {
+            let selector = mrs_search::select::format_selection_strategy(selection);
+            info!("% Experimental selection override: {selector}");
+            for (config, _) in &mut schedule.strategies {
+                config.selection = selection.clone();
+            }
+        }
         if let Some(gt) = goal_transform {
             for (config, _) in &mut schedule.strategies {
                 config.goal_transformation = Some(gt);

@@ -31,7 +31,7 @@ pub struct FileEntry {
     pub bytes: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ProblemEntry {
     pub path: String,
     pub family: String,

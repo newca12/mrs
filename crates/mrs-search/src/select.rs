@@ -44,6 +44,150 @@ pub enum SelectionStrategy {
     MultiQueue(Vec<(QueueType, u32)>),
 }
 
+/// Parse the bounded selection-expression syntax used by experimental runs.
+///
+/// Supported forms are `fifo`, `smallest`, `age:N`, `goal:N`, and
+/// `ml:N:ALPHA`, or `queue:age=N,weight=N,goal=N,unit=N,horn=N,sos=N`. Queue
+/// entries are kept in the supplied order because that order defines the phase
+/// of the interleaving. Zero-frequency and duplicate queues are rejected rather
+/// than silently changing the requested selector.
+pub fn parse_selection_strategy(value: &str) -> Result<SelectionStrategy, String> {
+    let value = value.trim();
+    let lower = value.to_ascii_lowercase();
+    match lower.as_str() {
+        "fifo" => return Ok(SelectionStrategy::Fifo),
+        "smallest" | "smallest-first" => return Ok(SelectionStrategy::SmallestFirst),
+        _ => {}
+    }
+
+    if let Some(raw_ratio) = lower.strip_prefix("age:") {
+        let ratio = raw_ratio
+            .parse::<u32>()
+            .ok()
+            .filter(|ratio| *ratio > 0)
+            .ok_or_else(|| "age: requires a positive integer ratio".to_string())?;
+        if ratio == 1 {
+            return Ok(SelectionStrategy::Fifo);
+        }
+        return Ok(SelectionStrategy::AgeWeight(ratio));
+    }
+    if let Some(raw_ratio) = lower.strip_prefix("goal:") {
+        let ratio = raw_ratio
+            .parse::<u32>()
+            .ok()
+            .filter(|ratio| *ratio > 0)
+            .ok_or_else(|| "goal: requires a positive integer ratio".to_string())?;
+        if ratio == 1 {
+            return Ok(SelectionStrategy::Fifo);
+        }
+        return Ok(SelectionStrategy::GoalDirected(ratio));
+    }
+    if let Some(raw_ml) = lower.strip_prefix("ml:") {
+        let Some((raw_ratio, raw_alpha)) = raw_ml.split_once(':') else {
+            return Err("ml: requires a positive ratio and an alpha in 0..=1".into());
+        };
+        let ratio = raw_ratio
+            .parse::<u32>()
+            .ok()
+            .filter(|ratio| *ratio > 0)
+            .ok_or_else(|| "ml: requires a positive integer ratio".to_string())?;
+        let alpha = raw_alpha
+            .parse::<f32>()
+            .ok()
+            .filter(|alpha| alpha.is_finite() && (0.0..=1.0).contains(alpha))
+            .ok_or_else(|| "ml: alpha must be finite and in 0..=1".to_string())?;
+        return Ok(SelectionStrategy::MlGuided { ratio, alpha });
+    }
+
+    let Some(raw_queues) = lower.strip_prefix("queue:") else {
+        return Err(format!(
+            "unknown selection {value:?}; expected fifo, smallest, age:N, goal:N, ml:N:ALPHA, or queue:..."
+        ));
+    };
+    if raw_queues.is_empty() {
+        return Err("queue: requires at least one queue=frequency entry".into());
+    }
+
+    let mut queues = Vec::new();
+    let mut seen = [false; 6];
+    let mut total = 0u32;
+    for entry in raw_queues.split(',') {
+        let Some((name, raw_weight)) = entry.split_once('=') else {
+            return Err(format!(
+                "invalid queue entry {entry:?}; expected queue=positive_integer"
+            ));
+        };
+        let queue = match name.trim() {
+            "age" => QueueType::Age,
+            "weight" => QueueType::Weight,
+            "goal" => QueueType::Goal,
+            "unit" => QueueType::Unit,
+            "horn" => QueueType::Horn,
+            "sos" => QueueType::Sos,
+            _ => return Err(format!("unknown queue {name:?}")),
+        };
+        let index = match queue {
+            QueueType::Age => 0,
+            QueueType::Weight => 1,
+            QueueType::Goal => 2,
+            QueueType::Unit => 3,
+            QueueType::Horn => 4,
+            QueueType::Sos => 5,
+        };
+        if seen[index] {
+            return Err(format!("queue {name:?} appears more than once"));
+        }
+        seen[index] = true;
+        let weight = raw_weight
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|weight| *weight > 0)
+            .ok_or_else(|| format!("queue {name:?} requires a positive frequency"))?;
+        total = total
+            .checked_add(weight)
+            .ok_or_else(|| "sum of queue frequencies exceeds u32::MAX".to_string())?;
+        queues.push((queue, weight));
+    }
+    if total == 0 {
+        return Err("queue: requires a positive total frequency".into());
+    }
+
+    Ok(SelectionStrategy::MultiQueue(queues))
+}
+
+/// Format a selection strategy in the syntax accepted by
+/// [`parse_selection_strategy`].
+pub fn format_selection_strategy(strategy: &SelectionStrategy) -> String {
+    match strategy {
+        SelectionStrategy::Fifo => "fifo".into(),
+        SelectionStrategy::SmallestFirst => "smallest".into(),
+        SelectionStrategy::AgeWeight(ratio) => format!("age:{ratio}"),
+        SelectionStrategy::GoalDirected(ratio) => format!("goal:{ratio}"),
+        SelectionStrategy::MlGuided { ratio, alpha } => {
+            format!("ml:{ratio}:{alpha}")
+        }
+        SelectionStrategy::MultiQueue(queues) => format!(
+            "queue:{}",
+            queues
+                .iter()
+                .map(|(queue, weight)| {
+                    let name = match queue {
+                        QueueType::Age => "age",
+                        QueueType::Weight => "weight",
+                        QueueType::Goal => "goal",
+                        QueueType::Unit => "unit",
+                        QueueType::Horn => "horn",
+                        QueueType::Sos => "sos",
+                    };
+                    format!("{name}={weight}")
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    }
+}
+
 /// Selects and removes a clause ID from the unprocessed set.
 ///
 /// `sos_depth`: if `< u32::MAX`, the weight-based pop uses SOS restriction
@@ -179,6 +323,52 @@ mod tests {
     use mrs_core::clause::{Clause, ClauseSource};
     use mrs_core::term_bank::TermBank;
     use mrs_core::{Atom, Literal, SymbolTable, Term};
+
+    #[test]
+    fn selection_expression_round_trips_supported_policies() {
+        for expression in [
+            "fifo",
+            "smallest",
+            "age:5",
+            "goal:8",
+            "ml:5:0.3",
+            "queue:age=1,weight=3,goal=2,unit=1,horn=2,sos=1",
+        ] {
+            let parsed = parse_selection_strategy(expression).unwrap();
+            assert_eq!(format_selection_strategy(&parsed), expression);
+        }
+    }
+
+    #[test]
+    fn selection_expression_rejects_bad_ratios_and_queue_specs() {
+        for expression in [
+            "age:0",
+            "goal:nope",
+            "ml:5:NaN",
+            "queue:",
+            "queue:age=0,weight=1",
+            "queue:age=1,age=2",
+            "queue:other=1",
+            "queue:age=4294967295,weight=1",
+        ] {
+            assert!(
+                parse_selection_strategy(expression).is_err(),
+                "accepted invalid selector {expression:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_in_n_age_or_goal_selection_canonicalizes_to_fifo() {
+        assert!(matches!(
+            parse_selection_strategy("age:1"),
+            Ok(SelectionStrategy::Fifo)
+        ));
+        assert!(matches!(
+            parse_selection_strategy("goal:1"),
+            Ok(SelectionStrategy::Fifo)
+        ));
+    }
 
     fn make_id_clause(
         id: u64,

@@ -175,33 +175,114 @@ fn match_atoms_id(
             }
             Some(subst)
         }
-        (IdAtom::Eq(l1, r1), IdAtom::Eq(l2, r2)) => {
-            let mut subst = current_subst.clone();
-            let l1_applied = apply_subst_flat_id(&subst, *l1, bank, deadline);
-            if match_single_term_id(l1_applied, *l2, &mut subst, min_bindable, bank, deadline) {
-                if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
-                    return None;
-                }
-                let r1_applied = apply_subst_flat_id(&subst, *r1, bank, deadline);
-                if match_single_term_id(r1_applied, *r2, &mut subst, min_bindable, bank, deadline) {
-                    return Some(subst);
-                }
-            }
-            let mut subst = current_subst.clone();
-            let l1_applied = apply_subst_flat_id(&subst, *l1, bank, deadline);
-            if match_single_term_id(l1_applied, *r2, &mut subst, min_bindable, bank, deadline) {
-                if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
-                    return None;
-                }
-                let r1_applied = apply_subst_flat_id(&subst, *r1, bank, deadline);
-                if match_single_term_id(r1_applied, *l2, &mut subst, min_bindable, bank, deadline) {
-                    return Some(subst);
-                }
-            }
-            None
-        }
+        (IdAtom::Eq(l1, r1), IdAtom::Eq(l2, r2)) => match_eq_orientation_id(
+            (*l1, *r1),
+            (*l2, *r2),
+            current_subst,
+            min_bindable,
+            bank,
+            deadline,
+        )
+        .or_else(|| {
+            match_eq_orientation_id(
+                (*l1, *r1),
+                (*r2, *l2),
+                current_subst,
+                min_bindable,
+                bank,
+                deadline,
+            )
+        }),
         _ => None,
     }
+}
+
+/// Return every one-way matching substitution for an atom pair, including both
+/// orientations of equality. The source variables must be standardized apart
+/// from the target and are the only variables that may be bound.
+///
+/// This is used by SAT-based subsumption resolution to expose alternative
+/// equality matches as separate Boolean choices. The ordinary backtracking
+/// matcher should continue to use [`match_atoms_id`], which stops at its first
+/// successful equality orientation.
+pub fn subsumption_resolution_atom_match_options_id(
+    pattern: &IdAtom,
+    target: &IdAtom,
+    min_bindable: u32,
+    bank: &mut TermBank,
+    deadline: Option<std::time::Instant>,
+) -> Vec<IdSubstitution> {
+    match (pattern, target) {
+        (IdAtom::Eq(pattern_left, pattern_right), IdAtom::Eq(target_left, target_right)) => {
+            let mut matches = Vec::with_capacity(2);
+            if let Some(direct) = match_eq_orientation_id(
+                (*pattern_left, *pattern_right),
+                (*target_left, *target_right),
+                &IdSubstitution::new(),
+                min_bindable,
+                bank,
+                deadline,
+            ) {
+                matches.push(direct);
+            }
+            if let Some(reversed) = match_eq_orientation_id(
+                (*pattern_left, *pattern_right),
+                (*target_right, *target_left),
+                &IdSubstitution::new(),
+                min_bindable,
+                bank,
+                deadline,
+            ) {
+                matches.push(reversed);
+            }
+            matches
+        }
+        _ => match_atoms_id(
+            pattern,
+            target,
+            &IdSubstitution::new(),
+            min_bindable,
+            bank,
+            deadline,
+        )
+        .into_iter()
+        .collect(),
+    }
+}
+
+fn match_eq_orientation_id(
+    pattern: (TermId, TermId),
+    target: (TermId, TermId),
+    current_subst: &IdSubstitution,
+    min_bindable: u32,
+    bank: &mut TermBank,
+    deadline: Option<std::time::Instant>,
+) -> Option<IdSubstitution> {
+    let mut subst = current_subst.clone();
+    let left_applied = apply_subst_flat_id(&subst, pattern.0, bank, deadline);
+    if !match_single_term_id(
+        left_applied,
+        target.0,
+        &mut subst,
+        min_bindable,
+        bank,
+        deadline,
+    ) {
+        return None;
+    }
+    if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+        return None;
+    }
+    let right_applied = apply_subst_flat_id(&subst, pattern.1, bank, deadline);
+    match_single_term_id(
+        right_applied,
+        target.1,
+        &mut subst,
+        min_bindable,
+        bank,
+        deadline,
+    )
+    .then_some(subst)
 }
 
 fn match_single_term_id(

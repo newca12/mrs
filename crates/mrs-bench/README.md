@@ -67,7 +67,7 @@ Notes:
 | `audit_casc_proofs` | Replay archived CASC prover output through strict, MRS-only, and full-ladder checks without rerunning MRS |
 | `check_canary_drift.sh` / `mrs-tools check-canary-drift` | Audit canary outcomes and telemetry for include-drift contamination |
 | `perf_probe` | The measurement tool behind `perf_probe.sh`: run a fixed-work search and emit a JSON row (`measure`), or append rows to the bank and render a report (`bank`) |
-| `mrs_tools` | Shared Rust library/CLI for corpus manifests, paired and fixed-work analysis, certification summaries, pre-phase analysis, CSV repairs, and the Verus development gates |
+| `mrs_tools` | Shared Rust library/CLI for corpus manifests, paired and fixed-work analysis, clause-selection autosearch, certification summaries, pre-phase analysis, CSV repairs, and the Verus development gates |
 
 Data-oriented tools share the `mrs-bench` library and the `mrs_tools`
 subcommands. Bash scripts keep process and campaign orchestration; their shared

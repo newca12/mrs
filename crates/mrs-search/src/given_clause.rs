@@ -38,6 +38,71 @@ use crate::state::SearchState;
 use crate::weight;
 use crate::{SearchConfig, SearchResult};
 
+fn sat_simplification_selected_for_strategy(config: &SearchConfig) -> bool {
+    if std::env::var("MRS_SAT_SR").as_deref() != Ok("1") {
+        return false;
+    }
+    match std::env::var("MRS_SAT_SR_STRATEGY") {
+        Ok(raw) => raw
+            .parse::<usize>()
+            .is_ok_and(|strategy_id| strategy_id == config.strategy_id),
+        Err(std::env::VarError::NotPresent) => true,
+        Err(std::env::VarError::NotUnicode(_)) => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_sat_simplification_pair(
+    active: &IdClause,
+    target: &IdClause,
+    bank: &mut mrs_core::term_bank::TermBank,
+    deadline: Option<Instant>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+    stats: &mut crate::SearchStats,
+) -> crate::sat_subsumption::SatSimplificationOutcome {
+    let attempt =
+        crate::sat_subsumption::simplify_pair_until(active, target, bank, deadline, cancellation);
+    stats.sat_simplification_attempts += 1;
+    stats.sat_simplification_elapsed_us += attempt.elapsed_us;
+    if attempt.subsumption_solver_entered {
+        stats.sat_subsumption_solver_entries += 1;
+    }
+    match attempt.subsumption {
+        crate::sat_subsumption::SatQueryOutcome::Sat => stats.sat_subsumption_sat += 1,
+        crate::sat_subsumption::SatQueryOutcome::Unsat => stats.sat_subsumption_unsat += 1,
+        crate::sat_subsumption::SatQueryOutcome::NoMatch => stats.sat_subsumption_no_match += 1,
+        crate::sat_subsumption::SatQueryOutcome::Unknown => stats.sat_subsumption_unknown += 1,
+        crate::sat_subsumption::SatQueryOutcome::Limit => stats.sat_subsumption_limited += 1,
+        crate::sat_subsumption::SatQueryOutcome::InvalidModel => stats.sat_subsumption_invalid += 1,
+        crate::sat_subsumption::SatQueryOutcome::NotRun => {}
+    }
+    if attempt.sr != crate::sat_subsumption::SatQueryOutcome::NotRun {
+        stats.sat_sr_attempts += 1;
+    }
+    if attempt.sr_solver_entered {
+        stats.sat_sr_solver_entries += 1;
+    }
+    match attempt.sr {
+        crate::sat_subsumption::SatQueryOutcome::Sat => stats.sat_sr_sat += 1,
+        crate::sat_subsumption::SatQueryOutcome::Unsat => stats.sat_sr_unsat += 1,
+        crate::sat_subsumption::SatQueryOutcome::NoMatch => stats.sat_sr_no_match += 1,
+        crate::sat_subsumption::SatQueryOutcome::Unknown => stats.sat_sr_unknown += 1,
+        crate::sat_subsumption::SatQueryOutcome::Limit => stats.sat_sr_limited += 1,
+        crate::sat_subsumption::SatQueryOutcome::InvalidModel => stats.sat_sr_invalid += 1,
+        crate::sat_subsumption::SatQueryOutcome::NotRun => {}
+    }
+    match attempt.outcome {
+        crate::sat_subsumption::SatSimplificationOutcome::Subsumed => {
+            stats.sat_subsumption_deleted += 1
+        }
+        crate::sat_subsumption::SatSimplificationOutcome::SubsumptionResolution(_) => {
+            stats.sat_sr_simplified += 1
+        }
+        _ => {}
+    }
+    attempt.outcome
+}
+
 /// Builds a topologically-ordered ancestor chain for `head_id` (input
 /// clauses first, `head_id` last), converting each clause to its portable
 /// "legacy" representation for the cross-strategy shared pool.
@@ -1331,14 +1396,19 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
     // saturation result is rejected by the completeness audit below.
     let ordered_inferences = config.ordered_inferences_enabled();
 
-    // Subsumption resolution is quadratic in the width of the clause being
-    // simplified, so it is only attempted while the target is narrow enough for
-    // the simplification gain to be worth the cost. Skipping it is a loss of
-    // redundancy elimination, never a loss of refutational completeness.
+    // The combined SAT simplifier is experimental and selected per portfolio
+    // strategy. It extends both ordinary subsumption and SR to wider targets;
+    // failure to simplify is always a safe no-op.
+    let sat_simplification_enabled = sat_simplification_selected_for_strategy(config);
+    state.stats.sat_simplification_enabled = sat_simplification_enabled;
     let sr_width_ok = |width: usize| {
-        config
-            .max_subsumption_resolution_literals
-            .is_none_or(|max| width <= max)
+        if sat_simplification_enabled {
+            width <= crate::sat_subsumption::MAX_SAT_SR_WIDTH
+        } else {
+            config
+                .max_subsumption_resolution_literals
+                .is_none_or(|max| width <= max)
+        }
     };
     let condense_allowed = |width: usize| {
         config
@@ -1861,7 +1931,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             continue;
         }
 
-        // Forward Subsumption Resolution
+        // Forward subsumption and subsumption resolution
         let mut given_fv = FeatureVector::from_id_clause(&given, &state.term_bank);
         // The candidate list is built once, not once per removed literal.
         //
@@ -1876,13 +1946,26 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
         // over every processed clause that shares a symbol with the target,
         // once per literal removed, which on an equational problem is most of
         // the processed set.
-        let sr_candidates = if sr_width_ok(given.literals.len()) {
+        let sat_width_threshold = config.max_subsumption_resolution_literals.unwrap_or(20);
+        let mut sr_candidates = if sr_width_ok(given.literals.len()) {
             state
                 .processed
                 .subsumption_resolution_candidates_for(&given, &given_fv)
         } else {
             Vec::new()
         };
+        let initial_sat_pair = sat_simplification_enabled
+            && given.literals.len() > sat_width_threshold
+            && given.literals.len() <= crate::sat_subsumption::MAX_SAT_SR_WIDTH;
+        if initial_sat_pair {
+            // A plain subsumer is also an SR feature-vector candidate, but union
+            // both index queries here so the combined check remains robust if
+            // either filter is tightened independently in the future.
+            sr_candidates.extend(state.processed.subsumption_candidate_ids(&given_fv));
+            sr_candidates.sort_unstable();
+            sr_candidates.dedup();
+        }
+        let mut given_subsumed = false;
         loop {
             if !sr_width_ok(given.literals.len()) {
                 break;
@@ -1905,20 +1988,47 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 let Some(p) = state.processed.get(*candidate_id) else {
                     continue;
                 };
-                let removed_idx = if p.avatar_is_subset_of(&given) {
-                    subsumption::subsumption_resolution_id_until(
-                        p,
-                        &given,
-                        &mut state.term_bank,
-                        state.search_deadline,
-                    )
+                let pair_result = if p.avatar_is_subset_of(&given) {
+                    if sat_simplification_enabled
+                        && given.literals.len() > sat_width_threshold
+                        && given.literals.len() <= crate::sat_subsumption::MAX_SAT_SR_WIDTH
+                    {
+                        try_sat_simplification_pair(
+                            p,
+                            &given,
+                            &mut state.term_bank,
+                            state.search_deadline,
+                            state.stop_flag.as_deref(),
+                            &mut state.stats,
+                        )
+                    } else {
+                        subsumption::subsumption_resolution_id_until(
+                            p,
+                            &given,
+                            &mut state.term_bank,
+                            state.search_deadline,
+                        )
+                        .map(
+                            crate::sat_subsumption::SatSimplificationOutcome::SubsumptionResolution,
+                        )
+                        .unwrap_or(
+                            crate::sat_subsumption::SatSimplificationOutcome::NoSimplification,
+                        )
+                    }
                 } else {
-                    None
+                    crate::sat_subsumption::SatSimplificationOutcome::NoSimplification
                 };
                 if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
                     return SearchResult::Timeout;
                 }
-                if let Some(removed_idx) = removed_idx {
+                if pair_result == crate::sat_subsumption::SatSimplificationOutcome::Subsumed {
+                    given_subsumed = true;
+                    break;
+                }
+                if let crate::sat_subsumption::SatSimplificationOutcome::SubsumptionResolution(
+                    removed_idx,
+                ) = pair_result
+                {
                     let parent = p.id;
                     let target_proof_id = given
                         .proof_id
@@ -1950,6 +2060,11 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             if !changed || given.is_empty() {
                 break;
             }
+        }
+        if given_subsumed {
+            state.stats.forward_subsumed += 1;
+            iteration += 1;
+            continue;
         }
         if start.elapsed() >= config.time_limit {
             return SearchResult::Timeout;
@@ -2001,8 +2116,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
             }
         }
 
-        // Forward subsumption: skip if given is subsumed by a processed clause
-        {
+        // A wide target has already been checked for both ordinary subsumption
+        // and SR against this candidate superset. Narrow targets retain the
+        // legacy ordinary-subsumption path.
+        let combined_wide_subsumption_checked = sat_simplification_enabled
+            && given.literals.len() > sat_width_threshold
+            && given.literals.len() <= crate::sat_subsumption::MAX_SAT_SR_WIDTH;
+        if !combined_wide_subsumption_checked {
             let candidates = state.processed.subsumption_candidate_ids(&given_fv);
             let mut subsumed = false;
             for id in &candidates {
@@ -2588,16 +2708,85 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
 
         // Backward subsumption: remove processed clauses subsumed by the given
         let mut to_remove_from_processed = Vec::new();
+        // Backward subsumption and SR share one match set for wide targets.
+        // Narrow targets retain the legacy two-stage checks below.
+        let mut backward_sr_simplified = Vec::new();
         {
-            let candidates = state.processed.subsumed_candidate_ids(&given_fv);
+            let subsumption_candidates = state.processed.subsumed_candidate_ids(&given_fv);
+            let sr_candidates = if sr_width_ok(given.literals.len()) {
+                state
+                    .processed
+                    .backward_subsumption_resolution_candidates_for(&given, &given_fv)
+            } else {
+                Vec::new()
+            };
+            let mut candidates = subsumption_candidates.clone();
+            candidates.extend(sr_candidates.iter().copied());
+            candidates.sort_unstable();
+            candidates.dedup();
+
             for candidate_id in candidates {
-                if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
+                if start.elapsed() >= config.time_limit {
                     return SearchResult::Timeout;
                 }
                 let Some(p) = state.processed.get(candidate_id) else {
                     continue;
                 };
-                let subsumes = given.avatar_is_subset_of(p)
+                let is_subsumption_candidate =
+                    subsumption_candidates.binary_search(&candidate_id).is_ok();
+                let is_sr_candidate = sr_candidates.binary_search(&candidate_id).is_ok();
+                let sat_wide_target = sat_simplification_enabled
+                    && p.literals.len() > config.max_subsumption_resolution_literals.unwrap_or(20)
+                    && p.literals.len() <= crate::sat_subsumption::MAX_SAT_SR_WIDTH
+                    && given.literals.len() <= crate::sat_subsumption::MAX_SAT_SR_WIDTH;
+
+                if sat_wide_target && given.avatar_is_subset_of(p) {
+                    let result = try_sat_simplification_pair(
+                        &given,
+                        p,
+                        &mut state.term_bank,
+                        state.search_deadline,
+                        state.stop_flag.as_deref(),
+                        &mut state.stats,
+                    );
+                    match result {
+                        crate::sat_subsumption::SatSimplificationOutcome::Subsumed => {
+                            to_remove_from_processed.push(candidate_id);
+                        }
+                        crate::sat_subsumption::SatSimplificationOutcome::SubsumptionResolution(
+                            removed_idx,
+                        ) => {
+                            let target_proof_id =
+                                p.proof_id.unwrap_or(mrs_core::witness::ProofNodeId(p.id.0));
+                            let subsumer_proof_id = given
+                                .proof_id
+                                .unwrap_or(mrs_core::witness::ProofNodeId(given.id.0));
+                            let mut new_lits = p.literals.clone();
+                            new_lits.remove(removed_idx);
+                            let mut simplified = IdClause::new_avatar(
+                                state.id_gen.next(),
+                                new_lits,
+                                ClauseSource::Inference {
+                                    rule: "subsumption_resolution",
+                                    parents: vec![p.id, given.id].into(),
+                                },
+                                p.avatar.clone(),
+                            );
+                            simplified.witness =
+                                Some(mrs_core::witness::ProofWitness::SubsumptionResolution {
+                                    target: target_proof_id,
+                                    subsumer: subsumer_proof_id,
+                                    deleted_lit_idx: removed_idx,
+                                });
+                            backward_sr_simplified.push((p.id, simplified));
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                let subsumed = is_subsumption_candidate
+                    && given.avatar_is_subset_of(p)
                     && subsumption::subsumes_id_until(
                         &given,
                         p,
@@ -2607,41 +2796,14 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
                     return SearchResult::Timeout;
                 }
-                if subsumes {
+                if subsumed {
                     to_remove_from_processed.push(candidate_id);
-                }
-            }
-        }
-
-        for id in to_remove_from_processed {
-            state.stats.backward_deleted += 1;
-            state.processed.remove(id, &state.term_bank);
-            state.unprocessed.remove(id);
-            state.dormant_processed.remove(&id);
-            state.dormant_unprocessed.remove(&id);
-        }
-
-        // Backward Subsumption Resolution: simplify processed clauses using `given`
-        let mut backward_sr_simplified = Vec::new();
-        {
-            let candidates = if sr_width_ok(given.literals.len()) {
-                state
-                    .processed
-                    .backward_subsumption_resolution_candidates_for(&given, &given_fv)
-            } else {
-                Vec::new()
-            };
-            for candidate_id in candidates {
-                if start.elapsed() >= config.time_limit {
-                    return SearchResult::Timeout;
-                }
-                let Some(p) = state.processed.get(candidate_id) else {
                     continue;
-                };
-                // Here `p` is the target being simplified. SR's quadratic
-                // target-copy cost depends on its width, not on `given` (the
-                // active simplifier), so gate each target independently.
-                if !sr_width_ok(p.literals.len()) {
+                }
+
+                // Here `p` is the target being simplified. SR's width guard
+                // applies to that target, not to the active `given` clause.
+                if !is_sr_candidate || !sr_width_ok(p.literals.len()) {
                     continue;
                 }
                 if given.avatar_is_subset_of(p)
@@ -2677,6 +2839,14 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     backward_sr_simplified.push((p.id, simplified));
                 }
             }
+        }
+
+        for id in to_remove_from_processed {
+            state.stats.backward_deleted += 1;
+            state.processed.remove(id, &state.term_bank);
+            state.unprocessed.remove(id);
+            state.dormant_processed.remove(&id);
+            state.dormant_unprocessed.remove(&id);
         }
 
         for (old_id, simplified) in backward_sr_simplified {
@@ -3390,7 +3560,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     &stage_mark,
                 );
                 let stage_mark = std::time::Instant::now();
-                // Forward Subsumption Resolution: simplify clause using processed clauses
+                // Forward subsumption and SR simplify a clause using processed clauses
                 // Register the pre-simplification clause before creating a
                 // destructive child. The child cites this clause as its
                 // primary parent, and proof extraction must be able to walk
@@ -3399,16 +3569,26 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                 state.register_clause(&clause);
                 let mut clause_fv = FeatureVector::from_id_clause(&clause, &state.term_bank);
                 let mut clause = clause;
+                let sat_width_threshold = config.max_subsumption_resolution_literals.unwrap_or(20);
                 // See the given-clause forward-SR loop for why the candidate
                 // list is built once and the feature-vector test re-applied per
                 // removal instead of the list being rebuilt.
-                let sr_candidates = if sr_width_ok(clause.literals.len()) {
+                let mut sr_candidates = if sr_width_ok(clause.literals.len()) {
                     state
                         .processed
                         .subsumption_resolution_candidates_for(&clause, &clause_fv)
                 } else {
                     Vec::new()
                 };
+                let initial_sat_pair = sat_simplification_enabled
+                    && clause.literals.len() > sat_width_threshold
+                    && clause.literals.len() <= crate::sat_subsumption::MAX_SAT_SR_WIDTH;
+                if initial_sat_pair {
+                    sr_candidates.extend(state.processed.subsumption_candidate_ids(&clause_fv));
+                    sr_candidates.sort_unstable();
+                    sr_candidates.dedup();
+                }
+                let mut clause_subsumed = false;
                 loop {
                     // One pass over the subsumption-resolution candidates can be
                     // expensive on wide clauses with a weakly selective feature
@@ -3432,20 +3612,44 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         let Some(p) = state.processed.get(*candidate_id) else {
                             continue;
                         };
-                        let removed_idx = if p.avatar_is_subset_of(&clause) {
-                            subsumption::subsumption_resolution_id_until(
-                                p,
-                                &clause,
-                                &mut state.term_bank,
-                                state.search_deadline,
-                            )
+                        let pair_result = if p.avatar_is_subset_of(&clause) {
+                            if sat_simplification_enabled
+                                && clause.literals.len() > sat_width_threshold
+                                && clause.literals.len() <= crate::sat_subsumption::MAX_SAT_SR_WIDTH
+                            {
+                                try_sat_simplification_pair(
+                                    p,
+                                    &clause,
+                                    &mut state.term_bank,
+                                    state.search_deadline,
+                                    state.stop_flag.as_deref(),
+                                    &mut state.stats,
+                                )
+                            } else {
+                                subsumption::subsumption_resolution_id_until(
+                                    p,
+                                    &clause,
+                                    &mut state.term_bank,
+                                    state.search_deadline,
+                                )
+                                .map(crate::sat_subsumption::SatSimplificationOutcome::SubsumptionResolution)
+                                .unwrap_or(crate::sat_subsumption::SatSimplificationOutcome::NoSimplification)
+                            }
                         } else {
-                            None
+                            crate::sat_subsumption::SatSimplificationOutcome::NoSimplification
                         };
                         if state.search_deadline.is_some_and(|d| Instant::now() >= d) {
                             return SearchResult::Timeout;
                         }
-                        if let Some(removed_idx) = removed_idx {
+                        if pair_result == crate::sat_subsumption::SatSimplificationOutcome::Subsumed
+                        {
+                            clause_subsumed = true;
+                            break;
+                        }
+                        if let crate::sat_subsumption::SatSimplificationOutcome::SubsumptionResolution(
+                            removed_idx,
+                        ) = pair_result
+                        {
                             let parent = p.id;
                             let target_proof_id = clause
                                 .proof_id
@@ -3479,6 +3683,10 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         break;
                     }
                 }
+                if clause_subsumed {
+                    state.stats.forward_subsumed += 1;
+                    continue;
+                }
 
                 trace_stage(trace_progress, iteration, new_index, "fwd_sr", &stage_mark);
                 if clause.is_empty() {
@@ -3508,8 +3716,13 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                     continue;
                 }
 
-                // Forward subsumption: skip if subsumed by a processed clause
-                {
+                // The wide SAT path checked ordinary subsumption together with
+                // SR. Keep the legacy check for narrow targets and any width
+                // outside the SAT ceiling.
+                let combined_wide_subsumption_checked = sat_simplification_enabled
+                    && clause.literals.len() > sat_width_threshold
+                    && clause.literals.len() <= crate::sat_subsumption::MAX_SAT_SR_WIDTH;
+                if !combined_wide_subsumption_checked {
                     let candidates = state.processed.subsumption_candidate_ids(&clause_fv);
                     let mut subsumed = false;
                     for id in &candidates {
@@ -3533,6 +3746,7 @@ fn search_internal(state: &mut SearchState, config: &SearchConfig) -> SearchResu
                         return SearchResult::Timeout;
                     }
                     if subsumed {
+                        state.stats.forward_subsumed += 1;
                         continue;
                     }
                 }

@@ -2,7 +2,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use mrs_bench::tooling::{bench, corpus, formal, prephase};
+use mrs_bench::tooling::{autosearch, bench, corpus, formal, prephase};
 
 #[derive(Parser)]
 #[command(
@@ -19,6 +19,8 @@ struct Cli {
 enum Command {
     /// Create an immutable corpus manifest and family-disjoint split.
     FreezeCorpus(corpus::FreezeArgs),
+    /// Search clause-selection policies on a family-disjoint local corpus.
+    Autosearch(autosearch::AutosearchArgs),
     /// Run randomized, strictly audited comparisons of frozen builds.
     PairedCampaign(bench::PairedCampaignArgs),
     /// Compare frozen builds at identical selected-clause work.
@@ -89,6 +91,7 @@ struct ValidateJsonArgs {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::parse().command {
         Command::FreezeCorpus(args) => mrs_bench::tooling::corpus::freeze_command(args),
+        Command::Autosearch(args) => mrs_bench::tooling::autosearch::run(args),
         Command::PairedCampaign(args) => mrs_bench::tooling::bench::paired_campaign(args),
         Command::FixedWorkCompare(args) => mrs_bench::tooling::bench::fixed_work_compare(args),
         Command::CheckCanaryDrift(args) => mrs_bench::tooling::bench::check_canary_drift(args),
