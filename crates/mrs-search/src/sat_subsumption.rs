@@ -298,7 +298,6 @@ fn simplify_pair_inner(
         );
     }
 
-    encoder.solver.assume(mode_var);
     let (sr, sr_solver_entered, sr_result) =
         solve_encoded(&mut encoder, mode_var, true, query_deadline, cancellation);
     if !sr_solver_entered {
@@ -1216,5 +1215,96 @@ mod tests {
             simplify_pair_until(&active, &target, &mut bank, None, None).outcome,
             SatSimplificationOutcome::Limit
         );
+    }
+
+    #[test]
+    fn expired_or_cancelled_queries_never_simplify() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let mut bank = TermBank::new();
+        let mut ids = ClauseIdGen::new();
+        let active = id_clause(
+            &mut ids,
+            vec![Literal::pos(Atom::pred(p, vec![]))],
+            &mut bank,
+            "active",
+        );
+        let target = id_clause(
+            &mut ids,
+            vec![Literal::neg(Atom::pred(p, vec![]))],
+            &mut bank,
+            "target",
+        );
+        let cancelled = AtomicBool::new(true);
+        for (deadline, cancellation) in [(Some(Instant::now()), None), (None, Some(&cancelled))] {
+            let attempt = simplify_pair_until(&active, &target, &mut bank, deadline, cancellation);
+            assert_eq!(attempt.outcome, SatSimplificationOutcome::Unknown);
+            assert!(!attempt.subsumption_solver_entered && !attempt.sr_solver_entered);
+        }
+    }
+
+    #[test]
+    fn bounded_sat_matches_independent_legacy_clause_oracles() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let terms = [Term::var(0), Term::constant(a), Term::constant(b)];
+        let mut ids = ClauseIdGen::new();
+        for source_term in &terms {
+            for left in &terms {
+                for right in &terms {
+                    for polarity in [false, true] {
+                        let mut bank = TermBank::new();
+                        let source = Clause::new(
+                            ids.next(),
+                            vec![
+                                Literal::pos(Atom::pred(p, vec![source_term.clone()])),
+                                Literal::pos(Atom::pred(q, vec![source_term.clone()])),
+                            ],
+                            ClauseSource::Input {
+                                name: "source".into(),
+                                role: "axiom".into(),
+                            },
+                        );
+                        let target = Clause::new(
+                            ids.next(),
+                            vec![
+                                Literal {
+                                    positive: polarity,
+                                    atom: Atom::pred(p, vec![left.clone()]),
+                                },
+                                Literal::pos(Atom::pred(q, vec![right.clone()])),
+                            ],
+                            ClauseSource::Input {
+                                name: "target".into(),
+                                role: "axiom".into(),
+                            },
+                        );
+                        let plain = mrs_calculus::subsumption::subsumes(&source, &target);
+                        let source_id = bank.clause_from_legacy(&source);
+                        let target_id = bank.clause_from_legacy(&target);
+                        let attempt =
+                            simplify_pair_until(&source_id, &target_id, &mut bank, None, None);
+                        if plain {
+                            assert_eq!(attempt.outcome, SatSimplificationOutcome::Subsumed);
+                        } else {
+                            // The legacy representation uses a separately implemented matcher.
+                            let pivot =
+                                mrs_calculus::subsumption::subsumption_resolution(&source, &target);
+                            assert_eq!(
+                                attempt.outcome,
+                                pivot.map_or(
+                                    SatSimplificationOutcome::NoSimplification,
+                                    SatSimplificationOutcome::SubsumptionResolution,
+                                ),
+                                "source={source:?}, target={target:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

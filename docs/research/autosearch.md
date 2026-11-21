@@ -77,7 +77,8 @@ defines the phase of the interleaving.
   cores (minimum one), because a self-checked run may overlap its search and
   certificate worker. Each child has an
   `MRS_MAX_MEMORY_MB` watchdog; Linux also applies `RLIMIT_AS` with 512 MiB of
-  address-space headroom. The aggregate cap is checked against host and cgroup
+   address-space headroom. The aggregate budget reserves both the prover and
+   its overlapping self-check child and is checked against host and cgroup
   memory headroom. The defaults are conservative for the project's
   four-physical-core, 15-GiB WSL development host. Lower `--jobs` or
   `--memory-mb` if other work is running.

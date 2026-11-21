@@ -12,7 +12,7 @@ use std::error::Error;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -977,7 +977,12 @@ fn check_resource_budget(
         .into());
     }
     if let Some(available) = available_memory_mb {
-        let per_job = memory_mb.saturating_add(ADDRESS_SPACE_HEADROOM_MB);
+        // A self-checked prover may overlap its same-binary checker. Their
+        // address spaces/RSS are separate; budget both rather than pretending
+        // that the parent's watchdog includes the child.
+        let per_job = memory_mb
+            .saturating_add(ADDRESS_SPACE_HEADROOM_MB)
+            .saturating_mul(2);
         let aggregate = per_job.saturating_mul(jobs as u64);
         if aggregate > available.saturating_mul(3) / 4 {
             return Err(format!(
@@ -1411,13 +1416,11 @@ fn run_search(context: &RunContext<'_>, run: SearchRun<'_>) -> ToolResult<RunRec
     let (exit_code, outer_timeout) = match child.wait_timeout(timeout) {
         Ok(Some(status)) => (status.code().or(Some(-1)), false),
         Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_child(&mut child);
             (Some(124), true)
         }
         Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_child(&mut child);
             let _ = fs::remove_file(&work_stdout);
             let _ = fs::remove_file(&work_stderr);
             return Err(error.into());
@@ -1451,9 +1454,7 @@ fn run_search(context: &RunContext<'_>, run: SearchRun<'_>) -> ToolResult<RunRec
         .get("self_check")
         .cloned()
         .unwrap_or_else(|| "Missing".into());
-    let certified = !outer_timeout
-        && matches!(status.as_str(), "Theorem" | "Unsatisfiable")
-        && self_check == "Certified";
+    let certified = certified_search(&status, &self_check, exit_code, outer_timeout);
     let proof_emitted = details
         .get("proof_emitted")
         .is_some_and(|value| value == "true")
@@ -1666,20 +1667,15 @@ fn audit_holdout_proof(context: &RunContext<'_>, record: &RunRecord) -> String {
     let audit_success = match child.wait_timeout(timeout) {
         Ok(Some(status)) => status.success(),
         Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_child(&mut child);
             return "AuditTimeout".into();
         }
         Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_child(&mut child);
             return "AuditWaitError".into();
         }
     };
-    if !audit_success {
-        return "AuditExitFailure".into();
-    }
-    fs::read_to_string(stdout_path)
+    let verdict = fs::read_to_string(stdout_path)
         .ok()
         .and_then(|text| {
             text.lines()
@@ -1687,7 +1683,43 @@ fn audit_holdout_proof(context: &RunContext<'_>, record: &RunRecord) -> String {
                 .and_then(|line| line.split_whitespace().next())
                 .map(str::to_owned)
         })
-        .unwrap_or_else(|| "AuditNoStatus".into())
+        .unwrap_or_else(|| "AuditNoStatus".into());
+    checked_audit_verdict(&verdict, audit_success)
+}
+
+fn checked_audit_verdict(verdict: &str, success: bool) -> String {
+    match verdict {
+        "VerifiedBad" | "Unknown" => verdict.to_owned(),
+        "VerifiedGood" if success => verdict.to_owned(),
+        _ if !success => "AuditExitFailure".into(),
+        _ => "AuditNoStatus".into(),
+    }
+}
+
+fn certified_search(
+    status: &str,
+    self_check: &str,
+    exit_code: Option<i32>,
+    outer_timeout: bool,
+) -> bool {
+    !outer_timeout
+        && exit_code == Some(0)
+        && matches!(status, "Theorem" | "Unsatisfiable")
+        && self_check == "Certified"
+}
+
+fn terminate_child(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // Children are launched into a private process group. Stop their
+        // overlapping certificate subprocess as well as the coordinator.
+        // SAFETY: a negative PID targets only the group created for this child.
+        unsafe {
+            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn make_holdout_pairs(
@@ -1762,6 +1794,11 @@ fn parse_detail(stderr: &str) -> BTreeMap<String, String> {
 }
 
 fn apply_address_space_limit(command: &mut Command, memory_mb: u64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::process::CommandExt;
@@ -1968,7 +2005,8 @@ mod tests {
     #[test]
     fn resource_budget_rejects_oversubscription() {
         assert!(check_resource_budget(5, 512, 4, Some(8192)).is_err());
-        assert!(check_resource_budget(2, 2048, 4, Some(8192)).is_ok());
+        assert!(check_resource_budget(2, 2048, 4, Some(16384)).is_ok());
+        assert!(check_resource_budget(2, 2048, 4, Some(8192)).is_err());
         assert!(check_resource_budget(3, 2048, 4, Some(8192)).is_err());
         assert!(check_resource_budget(1, 2048, 1, Some(8192)).is_ok());
     }
@@ -1999,5 +2037,20 @@ mod tests {
 
         fs::write(snapshot.join("AAA001+1.p"), "changed").unwrap();
         assert!(prepare_corpus_snapshot(source.path(), &manifest, &snapshot, true).is_err());
+    }
+
+    #[test]
+    fn audit_verdicts_keep_rejections_but_never_credit_failed_children() {
+        assert_eq!(checked_audit_verdict("VerifiedBad", false), "VerifiedBad");
+        assert_eq!(checked_audit_verdict("Unknown", false), "Unknown");
+        assert_eq!(
+            checked_audit_verdict("VerifiedGood", false),
+            "AuditExitFailure"
+        );
+        assert_eq!(checked_audit_verdict("VerifiedGood", true), "VerifiedGood");
+        assert!(certified_search("Theorem", "Certified", Some(0), false));
+        assert!(!certified_search("Theorem", "Certified", Some(1), false));
+        assert!(!certified_search("Theorem", "Certified", Some(0), true));
+        assert!(!certified_search("GaveUp", "Certified", Some(0), false));
     }
 }
