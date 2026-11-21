@@ -1,0 +1,55 @@
+{
+  "arguments": {
+    "baseline": "/tmp/opencode/mrs-opt-20261121/baseline/mrs",
+    "candidate": "/tmp/opencode/mrs-opt-20261121/candidate/mrs",
+    "candidate_compact": false,
+    "candidate_specialize": false,
+    "guard_seconds": 120,
+    "output": "/tmp/opencode/mrs-opt-20261121/ring_idem-pairs",
+    "processed": 100,
+    "reps": 5,
+    "schedule": "casc_ueq",
+    "seed": 42,
+    "strategy": 4
+  },
+  "binary_sha256": {
+    "baseline": "cefef3d7473c614aa1408465668dae12f194a5d302b7936cd93a292820e89f3f",
+    "candidate": "075caf496cbef525b8c234ac06138f723ec9fcfba70aa5a8e1246858913d8dcf"
+  },
+  "environment": {
+    "MRS_COMPACT_QUEUES": "0",
+    "MRS_MAX_MEMORY_MB": "12288",
+    "MRS_MAX_PROCESSED": "100",
+    "MRS_NO_LRS": "1",
+    "MRS_PREPHASE": "0",
+    "MRS_SHARED_POOL_INTERVAL": "0",
+    "MRS_SPECIALIZE_QUEUES": "0",
+    "MRS_TRAJECTORY_DIGEST": "1",
+    "TPTP": "/tmp/opencode/mrs-opt-20261121/fixtures"
+  },
+  "orders": [
+    [
+      "candidate",
+      "baseline"
+    ],
+    [
+      "baseline",
+      "candidate"
+    ],
+    [
+      "candidate",
+      "baseline"
+    ],
+    [
+      "baseline",
+      "candidate"
+    ],
+    [
+      "baseline",
+      "candidate"
+    ]
+  ],
+  "problem": "/tmp/opencode/mrs-opt-20261121/fixtures/ring_idem.p",
+  "problem_sha256": "f2023a53c17bb28b1696e0f55dec39e66eef21e64497a27bd282a4fbaf900f26",
+  "schema": 1
+}

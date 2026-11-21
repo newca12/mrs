@@ -1,0 +1,21 @@
+==810269== Callgrind, a call-graph generating cache profiler
+==810269== Copyright (C) 2002-2017, and GNU GPL'd, by Josef Weidendorfer et al.
+==810269== Using Valgrind-3.26.0 and LibVEX; rerun with -h for copyright info
+==810269== Command: /tmp/opencode/mrs-opt-20261121/baseline/mrs --time 600 --workers 1 --schedule casc_ueq --strategy 4 /tmp/opencode/mrs-opt-20261121/fixtures/LAT141-1.p
+==810269== 
+==810269== For interactive control, run 'callgrind_control -h'.
+% Stage start: parse elapsed_ms=7
+% Stage complete: parse duration_ms=16 elapsed_ms=27
+% Stage start: prepare elapsed_ms=28
+% Stage complete: prepare lowering_us=10824 includes_us=12605 clausification_us=3709 clauses=10 provenance=0 elapsed_ms=59
+% Resolved 1 include directive(s)
+% Hardware: hardware=adaptive workers=1 host_physical_cores=4 mem_budget_mb=11020 effective_mem_mb=11020
+% Problem: LAT141-1 (0 axioms, 0 conjectures, 10 cnf clauses)
+% Stage start: search elapsed_ms=91
+% Stage complete: search duration_ms=8660 elapsed_ms=8756
+% SZS detail strategies=1 workers=1 strategy_ids=0:4 result=ResourceOut elapsed_ms=8660 timeout=0 saturated=0 processed=100 generated=847 passive=744 weight_discarded=102 lrs_discarded=0 fwd_subsumed=63 shared_published=0 shared_imported=0 parent_guidance_pruned=0 parent_guidance_sampled=0 demod_memo_lookups=29994 demod_memo_hits=10758 demod_memo_evictions=0 passive_queue_entries=4162 queue_tombstones_removed=0 retained_terms=73266 retained_proof_clauses=4321 trajectory_sha256=0:7fbd7aba37a46cf6072e2ea0e3373c9a3995fbd53d3f378a88c6d0d30ef7da99 resource_reason=max_processed resource_detail="processed-clause limit 100 reached (100 processed)"
+==810269== 
+==810269== Events    : Ir
+==810269== Collected : 843713633
+==810269== 
+==810269== I   refs:      843,713,633

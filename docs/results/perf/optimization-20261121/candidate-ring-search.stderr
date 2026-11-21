@@ -1,0 +1,9 @@
+% Stage start: parse elapsed_ms=0
+% Stage complete: parse duration_ms=0 elapsed_ms=0
+% Stage start: prepare elapsed_ms=0
+% Stage complete: prepare lowering_us=28 includes_us=0 clausification_us=171 clauses=8 provenance=25 elapsed_ms=0
+% Hardware: hardware=adaptive workers=1 host_physical_cores=4 mem_budget_mb=12288 effective_mem_mb=12288
+% Problem: ring_idem (7 axioms, 1 conjectures, 0 cnf clauses)
+% Stage start: search elapsed_ms=0
+% Stage complete: search duration_ms=105 elapsed_ms=106
+% SZS detail strategies=1 workers=1 strategy_ids=0:4 result=Refutation elapsed_ms=105 timeout=0 saturated=0 processed=107 generated=1369 passive=1201 weight_discarded=0 lrs_discarded=0 fwd_subsumed=136 shared_published=0 shared_imported=0 parent_guidance_pruned=0 parent_guidance_sampled=0 demod_memo_lookups=27138 demod_memo_hits=10417 demod_memo_evictions=0 passive_queue_entries=6674 queue_tombstones_removed=0 retained_terms=35399 retained_proof_clauses=4470 trajectory_sha256=0:49d69ca912b14726d455dc135822f7916bd71e27ffe25714fca456b1996df0e3 proof_nodes=94 proof_bytes=12954 proof_emitted=true

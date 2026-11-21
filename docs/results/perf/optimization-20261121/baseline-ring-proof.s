@@ -1,0 +1,105 @@
+% SZS status Theorem for ring_idem
+% SZS output start Proof for ring_idem
+% Proof : /tmp/opencode/mrs-opt-20261121/fixtures/ring_idem.p
+fof(c28, conjecture, ![X0]: (![X1]: (times(X0, X1) = times(X1, X0))), file('/tmp/opencode/mrs-opt-20261121/fixtures/ring_idem.p', 'goal')).
+fof(c16, axiom, ![X0]: (![X1]: (![X2]: (times(X0, plus(X1, X2)) = plus(times(X0, X1), times(X0, X2))))), file('/tmp/opencode/mrs-opt-20261121/fixtures/ring_idem.p', 'left_distribute')).
+fof(c4, axiom, ![X0]: (plus(neg(X0), X0) = zero), file('/tmp/opencode/mrs-opt-20261121/fixtures/ring_idem.p', 'left_inverse')).
+fof(c8, axiom, ![X0]: (![X1]: (![X2]: (plus(plus(X0, X1), X2) = plus(X0, plus(X1, X2))))), file('/tmp/opencode/mrs-opt-20261121/fixtures/ring_idem.p', 'associativity_plus')).
+fof(c0, axiom, ![X0]: (plus(zero, X0) = X0), file('/tmp/opencode/mrs-opt-20261121/fixtures/ring_idem.p', 'left_identity')).
+fof(c24, axiom, ![X0]: (times(X0, X0) = X0), file('/tmp/opencode/mrs-opt-20261121/fixtures/ring_idem.p', 'idempotent')).
+fof(c20, axiom, ![X0]: (![X1]: (![X2]: (times(plus(X0, X1), X2) = plus(times(X0, X2), times(X1, X2))))), file('/tmp/opencode/mrs-opt-20261121/fixtures/ring_idem.p', 'right_distribute')).
+fof(c12, axiom, ![X0]: (![X1]: (![X2]: (times(times(X0, X1), X2) = times(X0, times(X1, X2))))), file('/tmp/opencode/mrs-opt-20261121/fixtures/ring_idem.p', 'associativity_times')).
+fof(c29, negated_conjecture, ~(![X0]: (![X1]: (times(X0, X1) = times(X1, X0)))), inference(negated_conjecture, [status(cth)], [c28])).
+fof(c17, plain, ![X0]: (![X1]: (![X2]: (times(X0, plus(X1, X2)) = plus(times(X0, X1), times(X0, X2))))), inference(fof_nnf_transformation, [status(thm)], [c16])).
+fof(c5, plain, ![X0]: (plus(neg(X0), X0) = zero), inference(fof_nnf_transformation, [status(thm)], [c4])).
+fof(c9, plain, ![X0]: (![X1]: (![X2]: (plus(plus(X0, X1), X2) = plus(X0, plus(X1, X2))))), inference(fof_nnf_transformation, [status(thm)], [c8])).
+fof(c1, plain, ![X0]: (plus(zero, X0) = X0), inference(fof_nnf_transformation, [status(thm)], [c0])).
+fof(c25, plain, ![X0]: (times(X0, X0) = X0), inference(fof_nnf_transformation, [status(thm)], [c24])).
+fof(c21, plain, ![X0]: (![X1]: (![X2]: (times(plus(X0, X1), X2) = plus(times(X0, X2), times(X1, X2))))), inference(fof_nnf_transformation, [status(thm)], [c20])).
+fof(c13, plain, ![X0]: (![X1]: (![X2]: (times(times(X0, X1), X2) = times(X0, times(X1, X2))))), inference(fof_nnf_transformation, [status(thm)], [c12])).
+fof(c30, plain, ?[X0]: (?[X1]: (~(times(X0, X1) = times(X1, X0)))), inference(fof_nnf_transformation, [status(thm)], [c29])).
+fof(c18, plain, ![X0]: (![X1]: (![X2]: (times(X0, plus(X1, X2)) = plus(times(X0, X1), times(X0, X2))))), inference(skolemisation, [status(esa)], [c17])).
+fof(c6, plain, ![X0]: (plus(neg(X0), X0) = zero), inference(skolemisation, [status(esa)], [c5])).
+fof(c10, plain, ![X0]: (![X1]: (![X2]: (plus(plus(X0, X1), X2) = plus(X0, plus(X1, X2))))), inference(skolemisation, [status(esa)], [c9])).
+fof(c2, plain, ![X0]: (plus(zero, X0) = X0), inference(skolemisation, [status(esa)], [c1])).
+fof(c26, plain, ![X0]: (times(X0, X0) = X0), inference(skolemisation, [status(esa)], [c25])).
+fof(c22, plain, ![X0]: (![X1]: (![X2]: (times(plus(X0, X1), X2) = plus(times(X0, X2), times(X1, X2))))), inference(skolemisation, [status(esa)], [c21])).
+fof(c14, plain, ![X0]: (![X1]: (![X2]: (times(times(X0, X1), X2) = times(X0, times(X1, X2))))), inference(skolemisation, [status(esa)], [c13])).
+fof(c31, plain, ~(times(sk_goal_0, sk_goal_1) = times(sk_goal_1, sk_goal_0)), inference(skolemisation, [status(esa)], [c30])).
+cnf(c19, plain, times(X0, plus(X1, X2)) = plus(times(X0, X1), times(X0, X2)), inference(cnf_transformation, [status(thm)], [c18])).
+cnf(c7, plain, plus(neg(X0), X0) = zero, inference(cnf_transformation, [status(thm)], [c6])).
+cnf(c11, plain, plus(plus(X0, X1), X2) = plus(X0, plus(X1, X2)), inference(cnf_transformation, [status(thm)], [c10])).
+cnf(c3, plain, plus(zero, X0) = X0, inference(cnf_transformation, [status(thm)], [c2])).
+cnf(c27, plain, times(X0, X0) = X0, inference(cnf_transformation, [status(thm)], [c26])).
+cnf(c23, plain, times(plus(X0, X1), X2) = plus(times(X0, X2), times(X1, X2)), inference(cnf_transformation, [status(thm)], [c22])).
+cnf(c15, plain, times(times(X0, X1), X2) = times(X0, times(X1, X2)), inference(cnf_transformation, [status(thm)], [c14])).
+cnf(c32, plain, times(sk_goal_0, sk_goal_1) != times(sk_goal_1, sk_goal_0), inference(cnf_transformation, [status(thm)], [c31])).
+cnf(c43, plain, plus(zero, X3) = plus(neg(X2), plus(X2, X3)), inference(superposition, [status(thm)], [c7, c11])).
+cnf(c222, plain, times(X3, plus(X2, X3)) = plus(times(X3, X2), X3), inference(superposition, [status(thm)], [c27, c19])).
+cnf(c221, plain, times(X2, plus(X2, X3)) = plus(X2, times(X2, X3)), inference(superposition, [status(thm)], [c27, c19])).
+cnf(c335, plain, times(X3, plus(X5, X5)) = times(plus(X3, X3), X5), inference(superposition, [status(thm)], [c23, c19])).
+cnf(c347, plain, times(plus(X3, X2), X3) = plus(X3, times(X2, X3)), inference(superposition, [status(thm)], [c27, c23])).
+cnf(c348, plain, times(plus(X1, X3), X3) = plus(times(X1, X3), X3), inference(superposition, [status(thm)], [c27, c23])).
+cnf(c96, plain, times(X2, X3) = times(X2, times(X2, X3)), inference(superposition, [status(thm)], [c27, c15])).
+cnf(c52, plain, X3 = plus(neg(X2), plus(X2, X3)), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [0]))], [c43, c3])).
+cnf(c937, plain, times(X4, zero) = times(plus(X4, X4), zero), inference(superposition, [status(thm)], [c3, c335])).
+cnf(c938, plain, times(zero, plus(X6, X6)) = times(zero, X6), inference(superposition, [status(thm)], [c3, c335])).
+cnf(c225, plain, times(X4, plus(times(X4, X3), X6)) = plus(times(X4, X3), times(X4, X6)), inference(superposition, [status(thm)], [c96, c19])).
+cnf(c226, plain, times(X4, plus(X5, times(X4, X3))) = plus(times(X4, X5), times(X4, X3)), inference(superposition, [status(thm)], [c96, c19])).
+cnf(c210, plain, times(X0, X2) = plus(neg(times(X0, X1)), times(X0, plus(X1, X2))), inference(superposition, [status(thm)], [c19, c52])).
+cnf(c59, plain, plus(X2, X3) = plus(neg(neg(X2)), X3), inference(superposition, [status(thm)], [c52, c52])).
+cnf(c62, plain, X4 = plus(neg(neg(X4)), zero), inference(superposition, [status(thm)], [c7, c52])).
+cnf(c1065, plain, times(plus(X4, X4), plus(zero, plus(X4, X4))) = plus(times(X4, zero), plus(X4, X4)), inference(superposition, [status(thm)], [c937, c222])).
+cnf(c1304, plain, times(plus(zero, plus(X6, X6)), plus(X6, X6)) = plus(times(zero, X6), plus(X6, X6)), inference(superposition, [status(thm)], [c938, c348])).
+cnf(c241, plain, times(X4, plus(times(X4, X3), X6)) = times(X4, plus(X3, X6)), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1]))], [c225, c19])).
+cnf(c242, plain, times(X4, plus(X5, times(X4, X3))) = times(X4, plus(X5, X3)), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1]))], [c226, c19])).
+cnf(c2383, plain, times(X1, X3) = plus(neg(times(X1, neg(X3))), times(X1, zero)), inference(superposition, [status(thm)], [c7, c210])).
+cnf(c157, plain, plus(X2, neg(X2)) = zero, inference(superposition, [status(thm)], [c59, c7])).
+cnf(c161, plain, X7 = plus(X2, plus(neg(X2), X7)), inference(superposition, [status(thm)], [c59, c52])).
+cnf(c175, plain, X4 = plus(X4, zero), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1]))], [c62, c59])).
+cnf(c1095, plain, plus(X4, X4) = plus(times(X4, zero), plus(X4, X4)), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [0, 1]), rule(2, 0, [0]))], [c1065, c3, c27])).
+cnf(c1345, plain, plus(X6, X6) = plus(times(zero, X6), plus(X6, X6)), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [0, 0]), rule(2, 0, [0]))], [c1304, c3, c27])).
+cnf(c2812, plain, times(X8, times(plus(X8, X10), X10)) = times(X8, plus(X10, X10)), inference(superposition, [status(thm)], [c348, c241])).
+cnf(c190, plain, zero = plus(X3, plus(X4, neg(plus(X3, X4)))), inference(superposition, [status(thm)], [c157, c11])).
+cnf(c264, plain, neg(neg(X5)) = plus(X5, zero), inference(superposition, [status(thm)], [c157, c161])).
+cnf(c425, plain, plus(X4, neg(plus(X7, X4))) = plus(neg(X7), zero), inference(superposition, [status(thm)], [c190, c52])).
+cnf(c280, plain, neg(neg(X5)) = X5, inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1]))], [c264, c175])).
+cnf(c454, plain, plus(X4, neg(plus(X7, X4))) = neg(X7), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1]))], [c425, c175])).
+cnf(c1621, plain, plus(plus(X4, X4), neg(plus(X4, X4))) = neg(times(X4, zero)), inference(superposition, [status(thm)], [c1095, c454])).
+cnf(c2142, plain, plus(plus(X6, X6), neg(plus(X6, X6))) = neg(times(zero, X6)), inference(superposition, [status(thm)], [c1345, c454])).
+cnf(c1655, plain, zero = neg(times(X4, zero)), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [0]), rule(2, 0, [0, 1]), rule(3, 0, [0]))], [c1621, c11, c454, c157])).
+cnf(c2184, plain, zero = neg(times(zero, X6)), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [0]), rule(2, 0, [0, 1]), rule(3, 0, [0]))], [c2142, c11, c454, c157])).
+cnf(c1676, plain, plus(zero, times(X4, zero)) = zero, inference(superposition, [status(thm)], [c1655, c7])).
+cnf(c2210, plain, plus(zero, times(zero, X6)) = zero, inference(superposition, [status(thm)], [c2184, c7])).
+cnf(c1695, plain, times(X4, zero) = zero, inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [0]))], [c1676, c3])).
+cnf(c2235, plain, times(zero, X6) = zero, inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [0]))], [c2210, c3])).
+cnf(c2445, plain, times(X1, X3) = neg(times(X1, neg(X3))), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1, 1]), rule(2, 0, [1]))], [c2383, c1695, c175])).
+cnf(c2490, plain, times(neg(X4), X4) = neg(neg(X4)), inference(superposition, [status(thm)], [c27, c2445])).
+cnf(c2519, plain, times(neg(X4), X4) = X4, inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1]))], [c2490, c280])).
+cnf(c2558, plain, times(plus(X8, neg(X8)), X8) = plus(X8, X8), inference(superposition, [status(thm)], [c2519, c347])).
+cnf(c2588, plain, zero = plus(X8, X8), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [0, 0]), rule(2, 0, [0]))], [c2558, c157, c2235])).
+cnf(c2603, plain, X12 = plus(neg(X12), zero), inference(superposition, [status(thm)], [c2588, c52])).
+cnf(c2883, plain, times(X8, times(plus(X8, X10), X10)) = zero, inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1, 1]), rule(2, 0, [1]))], [c2812, c2588, c1695])).
+cnf(c2818, plain, times(X13, zero) = times(X13, plus(X12, times(X13, X12))), inference(superposition, [status(thm)], [c2588, c241])).
+cnf(c2651, plain, X12 = neg(X12), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1]))], [c2603, c175])).
+cnf(c2888, plain, zero = times(X13, times(plus(X12, X13), X12)), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [0]), rule(2, 0, [1, 1]))], [c2818, c1695, c347])).
+cnf(c2714, plain, X3 = plus(X2, plus(X2, X3)), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1, 0]))], [c52, c2651])).
+cnf(c3211, plain, times(X12, times(X3, plus(X12, X3))) = zero, inference(superposition, [status(thm)], [c2714, c2883])).
+cnf(c3301, plain, zero = times(plus(X16, X3), times(X3, X16)), inference(superposition, [status(thm)], [c2714, c2888])).
+cnf(c3373, plain, times(X15, plus(X15, times(X3, plus(X15, X3)))) = plus(X15, zero), inference(superposition, [status(thm)], [c3211, c221])).
+cnf(c3426, plain, times(X15, plus(X15, times(X3, plus(X15, X3)))) = X15, inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1]))], [c3373, c175])).
+cnf(c6254, plain, times(times(X6, X1), times(X6, plus(X1, plus(times(X6, X1), X6)))) = times(X6, X1), inference(superposition, [status(thm)], [c19, c3426])).
+cnf(c6327, plain, times(X6, times(X1, X6)) = times(X6, X1), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [0]), rule(2, 0, [0, 1, 1, 1, 1]), rule(3, 0, [0, 1, 1]), rule(4, 0, [0, 1, 1, 1]), rule(5, 0, [0, 1, 1]))], [c6254, c15, c222, c242, c2714, c27])).
+cnf(c6389, plain, times(plus(times(X1, X9), X9), times(X1, X9)) = plus(times(X1, X9), times(X9, X1)), inference(superposition, [status(thm)], [c6327, c347])).
+cnf(c6498, plain, zero = plus(times(X1, X9), times(X9, X1)), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [0, 0]), rule(2, 0, [0]), rule(3, 0, [0, 1]), rule(4, 0, [0]))], [c6389, c348, c15, c6327, c3301])).
+cnf(c6586, plain, times(X9, X1) = plus(times(X1, X9), zero), inference(superposition, [status(thm)], [c6498, c2714])).
+cnf(c6694, plain, times(X9, X1) = times(X1, X9), inference(demodulation, [status(thm), demodulation_steps(rule(1, 0, [1]))], [c6586, c175])).
+cnf(c6966, plain, $false, inference(subsumption_resolution, [status(thm)], [c32, c6694])).
+% SZS output end Proof for ring_idem
+% ------------------------------
+% Version: mrs 0.3.0
+% Termination reason: Refutation
+% Time elapsed: 0.347 s
+% Proof: 94 nodes, 12954 bytes
+% Peak memory usage: 1359 MB
+% ------------------------------

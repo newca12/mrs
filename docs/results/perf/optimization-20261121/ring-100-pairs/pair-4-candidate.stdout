@@ -1,0 +1,8 @@
+% SZS status ResourceOut for ring_idem
+% ------------------------------
+% Version: mrs 0.3.0
+% Termination reason: ResourceOut
+% Resource limit: processed-clause limit 100 reached (100 processed)
+% Time elapsed: 0.085 s
+% Peak memory usage: 1359 MB
+% ------------------------------

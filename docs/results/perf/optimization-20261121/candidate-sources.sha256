@@ -1,0 +1,6 @@
+82da225120f9a6cbc1fed115f98e1406887c51e660972887e336cb570799a74a  crates/mrs-core/src/term_bank.rs
+86e9b88e29f400f71739cc4be3db05663aefdb6ef6cc58433206c9d8a8188400  crates/mrs-calculus/src/rename.rs
+150bfcdc00a73edf17340a145ec3d1740c60d59002a38fb5ec43c722336a5969  crates/mrs-calculus/src/subsumption.rs
+d96c75f848e64e4e9e5a7194eef9c831e05df410014cf42be2a6f89aeec3c9f1  crates/mrs-calculus/src/demodulation.rs
+f2159e69ab25620c5a38115ba7609eaa6eded7434c813939676f3e0c6a4bcd20  crates/mrs-index/src/stree.rs
+9a92c52b9a2c89ddd07f85bbe71e1e343f92fba68ebf2bac7b51e3ee63029f3e  Cargo.lock

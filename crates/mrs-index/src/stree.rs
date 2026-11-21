@@ -6,7 +6,7 @@
 //! # Structure
 //!
 //! Every trie node stores a `BTreeMap<Cell, (Vec<Cell>, STreeId<V>)>`:
-//! - **Key** = first `Cell` of the edge (fast O(1) dispatch on symbol / variable).
+//! - **Key** = first `Cell` of the edge (O(log n) symbol lookup).
 //! - **Value** = `(edge_rest, child)` where `edge_rest` is the remainder of the
 //!   compressed edge label (may be empty, equivalent to `DTreeId`).
 //!
@@ -14,14 +14,13 @@
 //!
 //! For three stored terms with flat paths:
 //! ```text
-//! f(g(a))  →  [f/2, g/1, a/0]
-//! f(g(b))  →  [f/2, g/1, b/0]
-//! f(h(X))  →  [f/2, h/1, Var(0)]
+//! f(g(a))  →  [f/1, g/1, a/0]
+//! f(g(b))  →  [f/1, g/1, b/0]
+//! f(h(X))  →  [f/1, h/1, Var(0)]
 //! ```
 //!
-//! `DTreeId` creates 5 single-child nodes before branching.
-//! `STreeId` stores one node with key `f/2`, edge label `[g/1]` / `[h/1]`,
-//! branching at the second level — cutting node count in half for this prefix.
+//! `STreeId` compresses the non-branching paths; the shared `f/1` node
+//! branches into the `g/1` and `h/1` paths, and `g/1` branches at `a/0` / `b/0`.
 //!
 //! More dramatically: if 50 000 clauses all begin with `f(g(h(`, the three-cell
 //! common prefix is stored once in a single compressed edge instead of three
@@ -57,7 +56,7 @@ fn common_prefix_len(a: &[Cell], b: &[Cell]) -> usize {
 pub struct STreeId<V> {
     /// Compressed edges to children.
     ///
-    /// Key   = first `Cell` of the edge (O(1) dispatch).
+    /// Key   = first `Cell` of the edge (O(log n) symbol lookup).
     /// Value = `(edge_rest, child)`:
     ///   - `edge_rest`: remaining cells on this edge after the key cell.
     ///   - `child`:     sub-tree rooted after the full edge `[key] ++ edge_rest`.
@@ -269,6 +268,22 @@ impl<V: Clone + PartialEq> STreeId<V> {
             return;
         }
 
+        // A query symbol can only unify with the same symbol/arity or a
+        // stored variable. A query variable still needs every child. Visiting
+        // symbols before variables retains the BTreeMap traversal order.
+        if let Cell::Sym(..) = query[pos] {
+            if let Some((edge_rest, child)) = self.children.get(&query[pos]) {
+                unify_walk_edge(
+                    query[pos], edge_rest, 0, query, pos, child, results, bindings,
+                );
+            }
+            for (&first_cell, (edge_rest, child)) in self.children.range(Cell::Var(VarId::MIN)..) {
+                unify_walk_edge(
+                    first_cell, edge_rest, 0, query, pos, child, results, bindings,
+                );
+            }
+            return;
+        }
         for (first_cell, (edge_rest, child)) in &self.children {
             // Walk the edge label [*first_cell, edge_rest...] against query[pos..],
             // collecting results into `results` when the edge is fully consumed.
@@ -441,6 +456,9 @@ fn skip_walk_edge<V: Clone + PartialEq>(
         child.skip_stored(remaining, query, q, results, bindings);
     }
 }
+
+#[cfg(test)]
+mod dispatch_tests;
 // ── edge walking — unification ────────────────────────────────────────────────
 //
 // `unify_walk_edge` mirrors `DTreeId::unify_flat` / `DTreeId::skip_stored` but

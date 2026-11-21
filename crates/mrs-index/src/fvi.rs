@@ -561,20 +561,24 @@ mod tests {
         assert!(tree.is_empty());
         assert_eq!(tree.len(), 0);
 
-        let mut fv1 = FeatureVector::default();
-        fv1.num_lits = 2;
-        fv1.pos_lits = 1;
-        fv1.neg_lits = 1;
+        let fv1 = FeatureVector {
+            num_lits: 2,
+            pos_lits: 1,
+            neg_lits: 1,
+            ..Default::default()
+        };
         let id1 = ClauseId(1);
 
         tree.insert(id1, fv1);
         assert!(!tree.is_empty());
         assert_eq!(tree.len(), 1);
 
-        let mut target = FeatureVector::default();
-        target.num_lits = 3;
-        target.pos_lits = 2;
-        target.neg_lits = 1;
+        let target = FeatureVector {
+            num_lits: 3,
+            pos_lits: 2,
+            neg_lits: 1,
+            ..Default::default()
+        };
 
         let mut out = Vec::new();
         tree.query_subsumers(&target, &mut out);
@@ -609,8 +613,8 @@ mod tests {
             fv.num_lits = (rand_u16() % 8 + 1) as u32;
             fv.pos_lits = (rand_u16() % (fv.num_lits as u16 + 1)) as u32;
             fv.neg_lits = fv.num_lits - fv.pos_lits;
-            for b in 0..10 {
-                fv.sym_counts[b] = rand_u16() % 5;
+            for count in &mut fv.sym_counts[..10] {
+                *count = rand_u16() % 5;
             }
 
             tree.insert(id, fv);
@@ -624,8 +628,8 @@ mod tests {
             query_fv.num_lits = (rand_u16() % 10 + 1) as u32;
             query_fv.pos_lits = (rand_u16() % (query_fv.num_lits as u16 + 1)) as u32;
             query_fv.neg_lits = query_fv.num_lits - query_fv.pos_lits;
-            for b in 0..10 {
-                query_fv.sym_counts[b] = rand_u16() % 5;
+            for count in &mut query_fv.sym_counts[..10] {
+                *count = rand_u16() % 5;
             }
 
             // 1. query_subsumers vs linear

@@ -1,0 +1,9 @@
+% Stage start: parse elapsed_ms=0
+% Stage complete: parse duration_ms=0 elapsed_ms=0
+% Stage start: prepare elapsed_ms=0
+% Stage complete: prepare lowering_us=28 includes_us=0 clausification_us=170 clauses=8 provenance=25 elapsed_ms=0
+% Hardware: hardware=adaptive workers=1 host_physical_cores=1 mem_budget_mb=12288 effective_mem_mb=12288
+% Problem: ring_idem (7 axioms, 1 conjectures, 0 cnf clauses)
+% Stage start: search elapsed_ms=0
+% Stage complete: search duration_ms=82 elapsed_ms=83
+% SZS detail strategies=1 workers=1 strategy_ids=0:4 result=ResourceOut elapsed_ms=82 timeout=0 saturated=0 processed=100 generated=1102 passive=944 weight_discarded=0 lrs_discarded=0 fwd_subsumed=132 shared_published=0 shared_imported=0 parent_guidance_pruned=0 parent_guidance_sampled=0 demod_memo_lookups=21234 demod_memo_hits=8311 demod_memo_evictions=0 passive_queue_entries=5349 queue_tombstones_removed=0 retained_terms=25973 retained_proof_clauses=3626 trajectory_sha256=0:c98255f02fd511e7bef8f21be91beb6d2f356fd562085b070ea5655e1e96be1c resource_reason=max_processed resource_detail="processed-clause limit 100 reached (100 processed)"

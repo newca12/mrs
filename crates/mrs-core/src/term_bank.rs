@@ -346,7 +346,7 @@ pub struct TermBank {
     ///
     /// Parallel to `nodes`, so an entry is valid as soon as it is filled in: a
     /// term is hash-consed, so its variables never change. The trade is one
-    /// byte per interned term against a walk of the whole subtree per query.
+    /// `MaxVarMemo` entry per queried term against repeated subtree walks.
     /// The subsumption matcher asks for the largest variable of a clause on both
     /// sides of every test, and a callgrind profile of a single-strategy UEQ run
     /// put that walk at about 8 % of search instructions.
@@ -415,6 +415,46 @@ impl TermBank {
     #[inline]
     pub fn get(&self, id: TermId) -> &TermNode {
         &self.nodes[id.0 as usize]
+    }
+
+    /// Maps an application's immediate children in argument order.
+    ///
+    /// The callback may intern terms (and thereby reallocate the arena). Read
+    /// each child by ID after the previous callback, rather than holding a node
+    /// borrow or cloning its arguments before knowing whether anything changes.
+    /// The argument list is copied at most once, on the first changed child;
+    /// an unchanged application keeps its ID without a hash-consing lookup.
+    /// Variables are returned unchanged and do not invoke the callback.
+    pub fn map_app_args(
+        &mut self,
+        term: TermId,
+        mut map: impl FnMut(TermId, &mut Self) -> TermId,
+    ) -> TermId {
+        let (symbol, arity) = match self.get(term) {
+            TermNode::Var(_) => return term,
+            TermNode::App(symbol, args) => (*symbol, args.len()),
+        };
+        let mut changed_args = None;
+        for index in 0..arity {
+            let TermNode::App(_, args) = self.get(term) else {
+                unreachable!("interned nodes are immutable");
+            };
+            let arg = args[index];
+            let mapped = map(arg, self);
+            if mapped != arg {
+                let args = changed_args.get_or_insert_with(|| {
+                    let TermNode::App(_, args) = self.get(term) else {
+                        unreachable!("interned nodes are immutable");
+                    };
+                    args.clone()
+                });
+                args[index] = mapped;
+            }
+        }
+        match changed_args {
+            Some(args) => self.intern_app(symbol, args),
+            None => term,
+        }
     }
 
     pub fn collect_vars(&self, id: TermId, vars: &mut HashSet<VarId>) {
@@ -498,27 +538,12 @@ impl TermBank {
         target_var: VarId,
         replacement: TermId,
     ) -> TermId {
-        match self.get(term).clone() {
-            TermNode::Var(v) if v == target_var => replacement,
+        match self.get(term) {
+            TermNode::Var(v) if *v == target_var => replacement,
             TermNode::Var(_) => term,
-            TermNode::App(sym, args) => {
-                let mut changed = false;
-                let new_args: SmallVec<[TermId; 4]> = args
-                    .iter()
-                    .map(|&arg| {
-                        let new_arg = self.substitute_var(arg, target_var, replacement);
-                        if new_arg != arg {
-                            changed = true;
-                        }
-                        new_arg
-                    })
-                    .collect();
-                if changed {
-                    self.intern_app(sym, new_args)
-                } else {
-                    term
-                }
-            }
+            TermNode::App(..) => self.map_app_args(term, |arg, bank| {
+                bank.substitute_var(arg, target_var, replacement)
+            }),
         }
     }
 
@@ -900,33 +925,7 @@ impl IdSubstitution {
         }
 
         // Apply recursively to function arguments
-        match bank.get(term).clone() {
-            // Clone the node to decouple from bank borrow
-            TermNode::Var(_) => term,
-            TermNode::App(sym, args) => {
-                // Collect the arguments that actually change instead of
-                // rebuilding the list: an unchanged argument list interns back to
-                // the id it came from, so the rebuild and the hash lookup that
-                // follows it are pure overhead on the no-op path.
-                let mut rewritten: SmallVec<[(usize, TermId); 4]> = SmallVec::new();
-                for (idx, &arg) in args.iter().enumerate() {
-                    let new_arg = self.apply_term(arg, bank);
-                    if new_arg != arg {
-                        rewritten.push((idx, new_arg));
-                    }
-                }
-
-                if rewritten.is_empty() {
-                    term
-                } else {
-                    let mut new_args: SmallVec<[TermId; 4]> = args.iter().copied().collect();
-                    for (idx, new_arg) in rewritten {
-                        new_args[idx] = new_arg;
-                    }
-                    bank.intern_app(sym, new_args)
-                }
-            }
-        }
+        bank.map_app_args(term, |arg, bank| self.apply_term(arg, bank))
     }
 
     pub fn apply_atom(&self, atom: &IdAtom, bank: &mut TermBank) -> IdAtom {
@@ -1136,3 +1135,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod transform_tests;

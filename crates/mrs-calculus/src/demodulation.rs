@@ -190,16 +190,9 @@ fn apply_matching_subst(sigma: &Substitution, term: &Term) -> Term {
 use mrs_core::SymbolId;
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermId, TermNode};
 
-/// Root cell of a term: the symbol and arity a rewrite rule's left-hand side
-/// must share with a term for that rule to be able to rewrite it.
-///
-/// `TermNode` has no separate constant case, so a constant is `App(sym, 0)` and
-/// is covered by the same key.
-type RootKey = (SymbolId, u8);
-
 /// Cap on memoised terms.
 ///
-/// A memo entry is one interned `TermId` plus a root key and a generation, so
+/// A memo entry is one interned `TermId` plus a generation, so
 /// the cap is a bound on how much of the term bank the memo can pin. It is
 /// sized from the clauses-per-second these searches reach: a run that retires
 /// hundreds of thousands of given clauses visits far more distinct terms than
@@ -261,23 +254,12 @@ impl DemodMemo {
         }
     }
 
-    /// Root cell of `term`, or `None` for a variable.
-    ///
-    /// A variable can never be rewritten: the index only ever holds a
-    /// non-variable side of a unit equality, and a variable has no root cell for
-    /// that cell to match.
-    fn root_key(term: TermId, bank: &TermBank) -> Option<RootKey> {
-        match bank.get(term) {
-            TermNode::Var(_) => None,
-            TermNode::App(sym, args) => Some((*sym, args.len() as u8)),
-        }
-    }
-
     /// Returns `true` if `term` is already known to be irreducible.
     pub fn is_irreducible(&mut self, term: TermId, bank: &TermBank) -> bool {
-        let Some(_key) = Self::root_key(term, bank) else {
+        // The rule index only stores non-variable sides of unit equalities.
+        if matches!(bank.get(term), TermNode::Var(_)) {
             return true;
-        };
+        }
         self.lookups += 1;
         let hit = self.entries.get(&term) == Some(&self.generation);
         if hit {
@@ -288,9 +270,9 @@ impl DemodMemo {
 
     /// Records that `term` was found irreducible by the current index.
     pub fn record_irreducible(&mut self, term: TermId, bank: &TermBank) {
-        let Some(_key) = Self::root_key(term, bank) else {
+        if matches!(bank.get(term), TermNode::Var(_)) {
             return;
-        };
+        }
         if self.entries.len() >= MAX_MEMO_ENTRIES {
             self.entries.clear();
             self.evictions += 1;
@@ -309,7 +291,7 @@ impl DemodMemo {
     /// practically unreachable counter wrap, clearing prevents an ancient entry
     /// from becoming valid again.
     pub fn invalidate(&mut self, term: TermId, bank: &TermBank) {
-        if Self::root_key(term, bank).is_some() {
+        if !matches!(bank.get(term), TermNode::Var(_)) {
             if let Some(next) = self.generation.checked_add(1) {
                 self.generation = next;
             } else {
@@ -484,95 +466,48 @@ fn rewrite_literal_id_until(
     deadline: Option<std::time::Instant>,
 ) -> bool {
     let mut changed = false;
-    // One path buffer for the whole literal, truncated and re-pushed per
-    // argument, instead of one `Vec` allocation per argument.
+    // Reuse inline path storage for the usual shallow case. Only an actual
+    // rewrite copies the path into its owning proof witness.
     let mut path = TermPath::new();
-    let new_atom = match &lit.atom {
-        IdAtom::Pred(p, args) => {
-            let arg_ids: smallvec::SmallVec<[TermId; 4]> = args.iter().copied().collect();
-            let new_args: smallvec::SmallVec<[TermId; 4]> = arg_ids
-                .iter()
-                .enumerate()
-                .map(|(arg_idx, arg)| {
-                    // The recorded path is the full chain of argument indices
-                    // from the literal's atom down to the rewritten subterm, so
-                    // it is threaded down the recursion rather than rebuilt at
-                    // each level.
-                    path.clear();
-                    path.push(arg_idx);
-                    let (new_arg, ch) = rewrite_term_id_until(
-                        *arg,
-                        lit_idx,
-                        &mut path,
-                        target_avatar,
-                        bank,
-                        demod_index,
-                        clause_store,
-                        used_unit_ids,
-                        steps,
-                        ac_syms,
-                        memo.as_deref_mut(),
-                        deadline,
-                    );
-                    if ch {
-                        changed = true;
-                    }
-                    new_arg
-                })
-                .collect();
-            IdAtom::Pred(*p, new_args)
-        }
-        IdAtom::Eq(l, r) => {
-            let (l, r) = (*l, *r);
-            path.clear();
-            path.push(0);
-            let (new_l, ch_l) = rewrite_term_id_until(
-                l,
-                lit_idx,
-                &mut path,
-                target_avatar,
-                bank,
-                demod_index,
-                clause_store,
-                used_unit_ids,
-                steps,
-                ac_syms,
-                memo.as_deref_mut(),
-                deadline,
-            );
-            path.clear();
-            path.push(1);
-            let (new_r, ch_r) = rewrite_term_id_until(
-                r,
-                lit_idx,
-                &mut path,
-                target_avatar,
-                bank,
-                demod_index,
-                clause_store,
-                used_unit_ids,
-                steps,
-                ac_syms,
-                // Argument position reborrows implicitly, so the binding goes
-                // across as-is.
-                memo,
-                deadline,
-            );
-            if ch_l || ch_r {
-                changed = true;
-            }
-            IdAtom::Eq(new_l, new_r)
+    let mut rewrite_arg = |index, arg: &mut TermId| {
+        path.clear();
+        path.push(index);
+        let (rewritten, did_rewrite) = rewrite_term_id_until(
+            *arg,
+            lit_idx,
+            &mut path,
+            target_avatar,
+            bank,
+            demod_index,
+            clause_store,
+            used_unit_ids,
+            steps,
+            ac_syms,
+            memo.as_deref_mut(),
+            deadline,
+        );
+        if did_rewrite {
+            *arg = rewritten;
+            changed = true;
         }
     };
-    if changed {
-        lit.atom = new_atom;
+    match &mut lit.atom {
+        IdAtom::Pred(_, args) => {
+            for (index, arg) in args.iter_mut().enumerate() {
+                rewrite_arg(index, arg);
+            }
+        }
+        IdAtom::Eq(left, right) => {
+            rewrite_arg(0, left);
+            rewrite_arg(1, right);
+        }
     }
     changed
 }
 
 /// Position of `term` inside its literal: an argument index for a predicate
 /// atom, `0`/`1` for the left/right side of an equality atom.
-type TermPath = Vec<usize>;
+type TermPath = smallvec::SmallVec<[usize; 8]>;
 
 /// `path` is the position of `term` inside its literal: the chain of argument
 /// indices from the literal's atom (or `0`/`1` for the left/right side of an
@@ -627,7 +562,7 @@ fn rewrite_term_id_until(
                 steps.push(DemodStepWitness {
                     rule_parent: proof_node_id_of(clause_store, unit_id),
                     lit_idx,
-                    term_path: path.clone(),
+                    term_path: path.to_vec(),
                     substitution: None,
                 });
                 return (rewritten, true);
@@ -703,17 +638,13 @@ fn apply_matching_subst_id(
     term: TermId,
     bank: &mut TermBank,
 ) -> TermId {
-    match bank.get(term).clone() {
-        mrs_core::term_bank::TermNode::Var(v) => match sigma.get(v) {
+    match bank.get(term) {
+        mrs_core::term_bank::TermNode::Var(v) => match sigma.get(*v) {
             Some(t) => t,
             None => term,
         },
-        mrs_core::term_bank::TermNode::App(f, args) => {
-            let new_args: Vec<TermId> = args
-                .iter()
-                .map(|&a| apply_matching_subst_id(sigma, a, bank))
-                .collect();
-            bank.intern_app(f, new_args)
+        mrs_core::term_bank::TermNode::App(..) => {
+            bank.map_app_args(term, |arg, bank| apply_matching_subst_id(sigma, arg, bank))
         }
     }
 }
@@ -1079,6 +1010,49 @@ mod tests {
             panic!("expected a predicate atom")
         };
         assert_eq!(args[0], ffb, "q(f(b)): only the inner f was rewritten");
+    }
+
+    #[test]
+    fn wide_predicate_and_spilled_path_keep_exact_rewrite_witnesses() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let g = symbols.intern("g");
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let b = symbols.intern("b");
+        let mut bank = TermBank::new();
+        let a = bank.intern_app(a, vec![]);
+        let b = bank.intern_app(b, vec![]);
+        let lhs = bank.intern_app(f, vec![a]);
+        let mut nested = lhs;
+        let mut expected_nested = b;
+        for _ in 0..12 {
+            nested = bank.intern_app(g, vec![nested]);
+            expected_nested = bank.intern_app(g, vec![expected_nested]);
+        }
+        let mut args = vec![a; 512];
+        args[0] = nested;
+        args[511] = lhs;
+        let (derived, steps) = demodulate_id_with_rule(
+            &mut bank,
+            lhs,
+            b,
+            vec![IdLiteral {
+                positive: true,
+                atom: IdAtom::Pred(p, args.into()),
+            }],
+        );
+        let IdAtom::Pred(_, args) = &derived.literals[0].atom else {
+            panic!("expected predicate");
+        };
+        assert_eq!(args.len(), 512);
+        assert_eq!(args[0], expected_nested);
+        assert!(args[1..511].iter().all(|&arg| arg == a));
+        assert_eq!(args[511], b);
+        assert_eq!(
+            steps.iter().map(|step| &step.term_path).collect::<Vec<_>>(),
+            vec![&vec![0; 13], &vec![511]]
+        );
     }
 
     #[test]

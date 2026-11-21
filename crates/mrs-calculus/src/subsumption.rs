@@ -85,6 +85,9 @@ pub fn subsumes_id_until(
 /// instead, allowing the given-clause loop to continue and respect the limit.
 const SUBSUMPTION_STEP_LIMIT: usize = 5_000;
 
+#[cfg(test)]
+mod transform_tests;
+
 #[allow(clippy::too_many_arguments)]
 fn match_literals_id(
     remaining: &[IdLiteral],
@@ -373,32 +376,14 @@ fn apply_subst_flat_id(
     if subst.is_empty() {
         return term;
     }
-    match bank.get(term).clone() {
-        TermNode::Var(v) => match subst.get(v) {
+    match bank.get(term) {
+        TermNode::Var(v) => match subst.get(*v) {
             Some(t) => t,
             None => term,
         },
-        TermNode::App(f, args) => {
-            // Rebuild only the arguments that change. An unchanged argument list
-            // interns back to the id it started from, so allocating it and
-            // hashing it into the bank is a cost with no effect.
-            let mut rewritten: smallvec::SmallVec<[(usize, TermId); 4]> = smallvec::SmallVec::new();
-            for (idx, &arg) in args.iter().enumerate() {
-                let new_arg = apply_subst_flat_id(subst, arg, bank, deadline);
-                if new_arg != arg {
-                    rewritten.push((idx, new_arg));
-                }
-            }
-            if rewritten.is_empty() {
-                term
-            } else {
-                let mut new_args: smallvec::SmallVec<[TermId; 4]> = args.iter().copied().collect();
-                for (idx, new_arg) in rewritten {
-                    new_args[idx] = new_arg;
-                }
-                bank.intern_app(f, new_args)
-            }
-        }
+        TermNode::App(..) => bank.map_app_args(term, |arg, bank| {
+            apply_subst_flat_id(subst, arg, bank, deadline)
+        }),
     }
 }
 
@@ -427,27 +412,9 @@ fn apply_subst_chain_id(
         break;
     }
 
-    match bank.get(term).clone() {
-        TermNode::Var(_) => term,
-        TermNode::App(f, args) => {
-            let mut rewritten: smallvec::SmallVec<[(usize, TermId); 4]> = smallvec::SmallVec::new();
-            for (idx, &arg) in args.iter().enumerate() {
-                let new_arg = apply_subst_chain_id(subst, arg, bank, deadline);
-                if new_arg != arg {
-                    rewritten.push((idx, new_arg));
-                }
-            }
-            if rewritten.is_empty() {
-                term
-            } else {
-                let mut new_args: smallvec::SmallVec<[TermId; 4]> = args.iter().copied().collect();
-                for (idx, new_arg) in rewritten {
-                    new_args[idx] = new_arg;
-                }
-                bank.intern_app(f, new_args)
-            }
-        }
-    }
+    bank.map_app_args(term, |arg, bank| {
+        apply_subst_chain_id(subst, arg, bank, deadline)
+    })
 }
 
 /// Returns `true` if `c1` subsumes `c2`.

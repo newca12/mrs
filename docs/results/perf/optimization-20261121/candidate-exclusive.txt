@@ -1,0 +1,331 @@
+--------------------------------------------------------------------------------
+Profile data file '/tmp/opencode/mrs-opt-20261121/candidate/LAT141.callgrind' (creator: callgrind-3.26.0)
+--------------------------------------------------------------------------------
+I1 cache: 
+D1 cache: 
+LL cache: 
+Timerange: Basic block 0 - 159865658
+Trigger: Program termination
+Profiled target:  /tmp/opencode/mrs-opt-20261121/candidate/mrs --time 600 --workers 1 --schedule casc_ueq --strategy 4 /tmp/opencode/mrs-opt-20261121/fixtures/LAT141-1.p (PID 845522, part 1)
+Events recorded:  Ir
+Events shown:     Ir
+Event sort order: Ir
+Thresholds:       85
+Include dirs:     
+User annotated:   
+Auto-annotation:  off
+
+--------------------------------------------------------------------------------
+Ir                   
+--------------------------------------------------------------------------------
+807,807,102 (100.0%)  PROGRAM TOTALS
+
+--------------------------------------------------------------------------------
+Ir                   file:function
+--------------------------------------------------------------------------------
+34,790,928 ( 4.31%)  ???:clock_gettime@@GLIBC_2.17 [/nix/store/qqiqd3ah10x8hzsif4j1y4xc1miw23nx-glibc-2.42-67/lib/libc.so.6]
+30,344,678 ( 3.76%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/pal/unix/time.rs:<std::sys::pal::unix::time::Timespec>::now [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+22,493,328 ( 2.78%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]> as core::clone::Clone>::clone [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+21,520,059 ( 2.66%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::apply_subst_flat_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+20,517,810 ( 2.54%)  ???:__memcpy_avx_unaligned_erms [/nix/store/qqiqd3ah10x8hzsif4j1y4xc1miw23nx-glibc-2.42-67/lib/libc.so.6]
+18,528,746 ( 2.29%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::contains_var_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+17,242,646 ( 2.13%)  crates/mrs-index/src/dtree.rs:mrs_index::dtree::skip_in_flat'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+12,118,228 ( 1.50%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::IdSubstitution>::apply_term'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+12,054,953 ( 1.49%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+11,927,546 ( 1.48%)  crates/mrs-index/src/dtree.rs:mrs_index::dtree::flatten_into_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+11,657,111 ( 1.44%)  crates/mrs-index/src/stree.rs:mrs_index::stree::gen_walk_edge::<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+10,425,633 ( 1.29%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+10,333,475 ( 1.28%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/free.c:mi_free
+ 8,721,764 ( 1.08%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/alloc-aligned.c:mi_theap_malloc_aligned [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 8,713,316 ( 1.08%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/alloc.c:_mi_theap_realloc_zero [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 8,663,566 ( 1.07%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::subsumption::apply_subst_flat_id'2
+ 8,254,225 ( 1.02%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/alloc.c:_mi_page_malloc_zero [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 8,122,723 ( 1.01%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs:<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]> as core::clone::Clone>::clone
+ 8,062,183 ( 1.00%)  crates/mrs-core/src/term_bank.rs:mrs_calculus::subsumption::apply_subst_flat_id'2
+ 7,747,582 ( 0.96%)  crates/mrs-calculus/src/rename.rs:mrs_calculus::rename::rename_term_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 7,581,170 ( 0.94%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/include/mimalloc/internal.h:mi_free [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 6,346,479 ( 0.79%)  crates/mrs-core/src/term_bank.rs:mrs_calculus::rename::rename_term_id'2
+ 6,192,753 ( 0.77%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+ 5,661,957 ( 0.70%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_calculus::subsumption::apply_subst_flat_id'2
+ 5,276,749 ( 0.65%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+ 4,744,275 ( 0.59%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::TermBank>::max_var [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 4,732,720 ( 0.59%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:<alloc::raw_vec::RawVecInner>::finish_grow [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 4,334,954 ( 0.54%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/pal/unix/mod.rs:<std::sys::pal::unix::time::Timespec>::now
+ 4,315,857 ( 0.53%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<mrs_core::term_bank::IdSubstitution>::bind
+ 4,147,577 ( 0.51%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<mrs_core::term_bank::IdSubstitution>::apply_term'2
+ 3,973,013 ( 0.49%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::apply_subst_flat_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 3,951,603 ( 0.49%)  crates/mrs-index/src/stree.rs:<mrs_index::stree::STreeId<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>>::gen_flat'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 3,903,211 ( 0.48%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/map.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode>
+ 3,846,436 ( 0.48%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_calculus::rename::rename_term_id'2
+ 3,745,492 ( 0.46%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::apply_subst_chain_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 3,690,042 ( 0.46%)  crates/mrs-core/src/term_bank.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode>
+ 3,575,051 ( 0.44%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+ 3,520,597 ( 0.44%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:<mrs_core::term_bank::IdSubstitution>::apply_term'2
+ 3,518,844 ( 0.44%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/alloc-aligned.c:mi_realloc_aligned [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 3,354,080 ( 0.42%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs:mrs_calculus::subsumption::contains_var_id'2
+ 3,335,717 ( 0.41%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:mrs_index::dtree::flatten_into_id'2
+ 3,140,685 ( 0.39%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/string.rs:<alloc::string::String as core::fmt::Write>::write_str [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 3,124,735 ( 0.39%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/mem/maybe_uninit.rs:<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]> as core::clone::Clone>::clone
+ 3,124,323 ( 0.39%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::match_single_term_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 3,121,559 ( 0.39%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs:<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]> as core::clone::Clone>::clone
+ 3,037,671 ( 0.38%)  crates/mrs-index/src/dtree.rs:mrs_index::dtree::skip_in_flat [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 3,024,381 ( 0.37%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:mrs_unify::ac_subset::flatten_ac
+ 2,989,904 ( 0.37%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:mrs_index::dtree::flatten_into_id'2
+ 2,891,763 ( 0.36%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/alloc.c:mi_theap_umalloc [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,818,711 ( 0.35%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::match_single_term_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,747,400 ( 0.34%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<smallvec::SmallVec<[core::option::Option<mrs_core::term_bank::TermId>; 8]> as core::clone::Clone>::clone [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,744,567 ( 0.34%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/fmt/mod.rs:<core::fmt::Formatter>::pad_integral [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,696,045 ( 0.33%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/fmt/mod.rs:core::fmt::write [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,639,802 ( 0.33%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/range.rs:mrs_calculus::subsumption::apply_subst_flat_id'2
+ 2,550,625 ( 0.32%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::TermBank>::ac_normalize'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,535,154 ( 0.31%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+ 2,467,657 ( 0.31%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<smallvec::SmallVec<[mrs_core::clause::ClauseId; 2]> as core::clone::Clone>::clone [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,464,264 ( 0.31%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_calculus::subsumption::contains_var_id'2
+ 2,423,358 ( 0.30%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:<alloc::raw_vec::RawVec<mrs_core::term_bank::TermId>>::grow_one [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,405,358 ( 0.30%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::rename::rename_term_id'2
+ 2,404,381 ( 0.30%)  crates/mrs-calculus/src/superposition.rs:mrs_calculus::superposition::superpose_selected_id_until [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,381,201 ( 0.29%)  crates/mrs-unify/src/ac_subset.rs:mrs_unify::ac_subset::flatten_ac [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,344,343 ( 0.29%)  crates/mrs-core/src/term_bank.rs:mrs_calculus::rename::rename_term_id
+ 2,309,426 ( 0.29%)  crates/mrs-unify/src/robinson.rs:mrs_unify::robinson::contains_var_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,270,333 ( 0.28%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/fmt/mod.rs:alloc::fmt::format::format_inner
+ 2,245,201 ( 0.28%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<hashbrown::raw::RawTable<(u32, u32)>>::reserve_rehash::<hashbrown::map::make_hasher<u32, u32, rustc_hash::FxBuildHasher>::{closure#0}> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,224,899 ( 0.28%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode>
+ 2,211,872 ( 0.27%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::IdClause>::new_avatar::<smallvec::SmallVec<[mrs_core::term_bank::IdLiteral; 4]>> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,207,546 ( 0.27%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::match_eq_orientation_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,201,678 ( 0.27%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/adapters/take.rs:<mrs_core::term_bank::IdSubstitution>::bind
+ 2,192,008 ( 0.27%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::TermBank>::max_var_atom [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,178,344 ( 0.27%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/include/mimalloc/internal.h:_mi_theap_realloc_zero
+ 2,167,477 ( 0.27%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/result.rs:<std::sys::pal::unix::time::Timespec>::now
+ 2,091,804 ( 0.26%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::rename::rename_clause_id
+ 2,087,889 ( 0.26%)  crates/mrs-calculus/src/rename.rs:mrs_calculus::rename::rename_term_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 2,071,572 ( 0.26%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/alloc-aligned.c:mi_malloc_aligned
+ 2,067,165 ( 0.26%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/include/mimalloc/internal.h:mi_theap_malloc_aligned
+ 2,059,471 ( 0.25%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs:<hashbrown::raw::RawTable<(mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId)>>::reserve_rehash::<hashbrown::map::make_hasher<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>::{closure#0}>
+ 1,993,296 ( 0.25%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/raw_vec/mod.rs:<alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,978,973 ( 0.24%)  crates/mrs-calculus/src/demodulation.rs:mrs_calculus::demodulation::rewrite_term_id_until'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,966,329 ( 0.24%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:core::ptr::drop_glue::<mrs_core::term_bank::IdClause> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,958,730 ( 0.24%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<hashbrown::raw::RawTable<(mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId)>>::reserve_rehash::<hashbrown::map::make_hasher<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>::{closure#0}> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,942,200 ( 0.24%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/collections/btree/search.rs:<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Immut, mrs_index::dtree::Cell, (alloc::vec::Vec<mrs_index::dtree::Cell>, mrs_index::stree::STreeId<mrs_core::clause::ClauseId>), alloc::collections::btree::node::marker::LeafOrInternal>>::find_lower_bound_index::<mrs_index::dtree::Cell> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,935,921 ( 0.24%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::IdSubstitution>::apply_term [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,929,334 ( 0.24%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::IdSubstitution>::bind [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,892,214 ( 0.23%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/raw_vec/mod.rs:<alloc::raw_vec::RawVecInner>::finish_grow [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,885,390 ( 0.23%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs:<alloc::raw_vec::RawVecInner>::finish_grow
+ 1,877,466 ( 0.23%)  crates/mrs-calculus/src/ordering.rs:<mrs_calculus::ordering::KBO>::weight_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,848,924 ( 0.23%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<smallvec::SmallVec<[mrs_core::clause::ClauseId; 2]>>::try_grow [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,795,068 ( 0.22%)  crates/mrs-core/src/term_bank.rs:mrs_calculus::subsumption::apply_subst_flat_id
+ 1,761,616 ( 0.22%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mut_ptr.rs:mrs_index::dtree::flatten_into_id'2
+ 1,747,258 ( 0.22%)  crates/mrs-index/src/stree.rs:mrs_index::stree::gen_walk_edge::<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,743,684 ( 0.22%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/alloc-aligned.c:mi_theap_malloc_zero_aligned_at_generic [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,725,845 ( 0.21%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/collections/btree/search.rs:<mrs_index::stree::STreeId<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>>::gen_flat'2
+ 1,722,982 ( 0.21%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<smallvec::SmallVec<[core::option::Option<mrs_core::term_bank::TermId>; 8]>>::try_grow [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,682,323 ( 0.21%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/page.c:_mi_malloc_generic [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,675,304 ( 0.21%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_index::dtree::flatten_into_id'2
+ 1,672,735 ( 0.21%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::match_literals_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,672,157 ( 0.21%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<mrs_core::term_bank::TermBank>::ac_normalize'2
+ 1,662,993 ( 0.21%)  crates/mrs-search/src/given_clause.rs:mrs_search::given_clause::search_internal [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,639,785 ( 0.20%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::subsumption::apply_subst_chain_id'2
+ 1,614,001 ( 0.20%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::subsumption::apply_subst_flat_id
+ 1,591,492 ( 0.20%)  crates/mrs-core/src/term_bank.rs:mrs_calculus::subsumption::apply_subst_chain_id'2
+ 1,476,613 ( 0.18%)  crates/mrs-unify/src/matching.rs:mrs_unify::matching::match_rec_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,476,376 ( 0.18%)  crates/mrs-calculus/src/ordering.rs:<mrs_calculus::ordering::KBO>::collect_var_counts_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,471,802 ( 0.18%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::TermBank>::collect_non_var_positions_until'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,465,194 ( 0.18%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:mrs_index::dtree::flatten_into_id'2
+ 1,422,709 ( 0.18%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:<mrs_core::term_bank::TermBank>::ac_normalize'2
+ 1,404,420 ( 0.17%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/result.rs:<alloc::raw_vec::RawVecInner>::finish_grow
+ 1,396,430 ( 0.17%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/option.rs:mrs_calculus::subsumption::apply_subst_flat_id'2
+ 1,358,368 ( 0.17%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/range.rs:mrs_index::dtree::skip_in_flat'2
+ 1,347,015 ( 0.17%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/control/tag.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+ 1,333,060 ( 0.17%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_calculus::rename::rename_term_id
+ 1,322,316 ( 0.16%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+ 1,302,480 ( 0.16%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/collections/btree/search.rs:<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Immut, mrs_index::dtree::Cell, (alloc::vec::Vec<mrs_index::dtree::Cell>, mrs_index::stree::STreeId<mrs_core::clause::ClauseId>), alloc::collections::btree::node::marker::LeafOrInternal>>::find_upper_bound_index::<mrs_index::dtree::Cell> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,292,755 ( 0.16%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::contains_var_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,287,264 ( 0.16%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/adapters/map.rs:<core::iter::adapters::map::Map<core::slice::iter::Iter<mrs_core::term_bank::IdLiteral>, mrs_calculus::rename::rename_clause_id::{closure#0}> as core::iter::traits::iterator::Iterator>::next [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,270,408 ( 0.16%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/cmp.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+ 1,262,338 ( 0.16%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/range.rs:mrs_calculus::rename::rename_term_id'2
+ 1,256,274 ( 0.16%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/vec/mod.rs:<alloc::string::String as core::fmt::Write>::write_str
+ 1,255,872 ( 0.16%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/std/src/sys/pal/unix/time.rs:mrs_calculus::subsumption::apply_subst_flat_id'2
+ 1,255,095 ( 0.16%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/raw_vec/mod.rs:<alloc::string::String as core::fmt::Write>::write_str
+ 1,249,894 ( 0.15%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mut_ptr.rs:<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]> as core::clone::Clone>::clone
+ 1,248,306 ( 0.15%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ops/function.rs:<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]> as core::clone::Clone>::clone
+ 1,248,306 ( 0.15%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]> as core::clone::Clone>::clone
+ 1,232,132 ( 0.15%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/option.rs:mrs_calculus::subsumption::contains_var_id'2
+ 1,232,132 ( 0.15%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/std/src/sys/pal/unix/time.rs:mrs_calculus::subsumption::contains_var_id'2
+ 1,210,694 ( 0.15%)  crates/mrs-unify/src/robinson.rs:mrs_unify::robinson::unify_rec_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,195,278 ( 0.15%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/page.c:mi_find_page [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,187,889 ( 0.15%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_unify::ac_subset::flatten_ac
+ 1,176,086 ( 0.15%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::subsumption::contains_var_id'2
+ 1,169,792 ( 0.14%)  crates/mrs-calculus/src/rename.rs:mrs_calculus::rename::rename_clause_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,157,471 ( 0.14%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mimalloc-0.1.52/src/lib.rs:<alloc::raw_vec::RawVecInner>::finish_grow
+ 1,155,582 ( 0.14%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:mrs_calculus::subsumption::apply_subst_flat_id'2
+ 1,155,582 ( 0.14%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:mrs_calculus::subsumption::apply_subst_flat_id'2
+ 1,152,311 ( 0.14%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:<alloc::raw_vec::RawVec<mrs_index::dtree::Cell>>::grow_one [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,150,779 ( 0.14%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/fmt/mod.rs:<core::fmt::Formatter>::pad_integral::write_prefix [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,146,274 ( 0.14%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/fmt/mod.rs:<&mrs_core::symbol::SymbolId as core::fmt::Debug>::fmt
+ 1,135,911 ( 0.14%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/control/tag.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode>
+ 1,134,672 ( 0.14%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/fmt.rs:alloc::fmt::format::format_inner [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,133,480 ( 0.14%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::match_atoms_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,128,600 ( 0.14%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs:mrs_calculus::subsumption::subsumes_id_until
+ 1,127,010 ( 0.14%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_index::dtree::flatten_into_id'2
+ 1,125,915 ( 0.14%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs:mrs_index::dtree::flatten_into_id'2
+ 1,117,930 ( 0.14%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/range.rs:<mrs_core::term_bank::IdSubstitution>::apply_term'2
+ 1,115,901 ( 0.14%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::rename::rename_term_id
+ 1,108,703 ( 0.14%)  ???:_dl_lookup_symbol_x [/nix/store/qqiqd3ah10x8hzsif4j1y4xc1miw23nx-glibc-2.42-67/lib/ld-linux-x86-64.so.2]
+ 1,102,923 ( 0.14%)  crates/mrs-unify/src/robinson.rs:mrs_unify::robinson::unify_rec_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,102,332 ( 0.14%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/std/src/collections/hash/map.rs:mrs_calculus::rename::rename_term_id'2
+ 1,086,882 ( 0.13%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mut_ptr.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode>
+ 1,072,170 ( 0.13%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::subsumes_id_until [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,059,299 ( 0.13%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::apply_subst_chain_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,054,993 ( 0.13%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/collections/btree/map.rs:<mrs_index::stree::STreeId<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>>::gen_flat'2
+ 1,053,635 ( 0.13%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::subsumption_resolution_id_until [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 1,047,096 ( 0.13%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode>
+ 1,018,799 ( 0.13%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/cmp.rs:mrs_index::dtree::skip_in_flat'2
+   999,271 ( 0.12%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::demodulation::rewrite_term_id_until'2
+   996,206 ( 0.12%)  crates/mrs-unify/src/robinson.rs:mrs_unify::robinson::contains_var_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   995,799 ( 0.12%)  crates/mrs-index/src/fvi.rs:<mrs_index::fvi::FeatureVectorTree>::query_subsumers_rec'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   995,740 ( 0.12%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_calculus::subsumption::apply_subst_chain_id'2
+   987,787 ( 0.12%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode>
+   984,020 ( 0.12%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_index::stree::gen_walk_edge::<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>'2
+   977,256 ( 0.12%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_calculus::subsumption::apply_subst_flat_id
+   968,741 ( 0.12%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs:<smallvec::SmallVec<[core::option::Option<mrs_core::term_bank::TermId>; 8]> as core::clone::Clone>::clone
+   966,590 ( 0.12%)  ???:__memset_avx2_unaligned_erms [/nix/store/qqiqd3ah10x8hzsif4j1y4xc1miw23nx-glibc-2.42-67/lib/libc.so.6]
+   954,529 ( 0.12%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/x86/sse2.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+   938,299 ( 0.12%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs:mrs_index::dtree::flatten_into_id'2
+   934,752 ( 0.12%)  crates/mrs-index/src/fvi.rs:<core::iter::adapters::filter::Filter<std::collections::hash::set::IntoIter<mrs_core::clause::ClauseId>, <mrs_index::literal_index::LiteralIndex>::subsumption_resolution_candidates_for::{closure#0}> as core::iter::traits::iterator::Iterator>::next
+   931,191 ( 0.12%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/hash/mod.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+   931,191 ( 0.12%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+   925,245 ( 0.11%)  crates/mrs-index/src/stree.rs:<mrs_index::stree::STreeId<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>>::gen_flat [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   909,788 ( 0.11%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/fmt/num.rs:<&u32 as core::fmt::Debug>::fmt
+   903,955 ( 0.11%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/page-queue.c:mi_bin
+   898,988 ( 0.11%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_unify::robinson::contains_var_id'2
+   898,151 ( 0.11%)  crates/mrs-unify/src/robinson.rs:mrs_unify::robinson::bind_var_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   897,084 ( 0.11%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/fmt/mod.rs:<&mrs_core::symbol::SymbolId as core::fmt::Debug>::fmt [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   896,929 ( 0.11%)  ???:do_lookup_x [/nix/store/qqiqd3ah10x8hzsif4j1y4xc1miw23nx-glibc-2.42-67/lib/ld-linux-x86-64.so.2]
+   882,948 ( 0.11%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mut_ptr.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+   862,861 ( 0.11%)  crates/mrs-index/src/fvi.rs:<mrs_index::fvi::FeatureVector>::count_term_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   842,652 ( 0.10%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs:<alloc::raw_vec::RawVecInner>::finish_grow
+   838,520 ( 0.10%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs:mrs_calculus::subsumption::contains_var_id'2
+   837,810 ( 0.10%)  /nix/store/29isvm6vfq10c528i31igdiy3fnvjcm3-glibc-2.42-67-dev/include/bits/string_fortified.h:_mi_theap_realloc_zero
+   837,652 ( 0.10%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:mrs_index::dtree::flatten_into_id'2
+   835,552 ( 0.10%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:mrs_search::weight::term_weight_id
+   825,680 ( 0.10%)  crates/mrs-core/src/term_bank.rs:mrs_calculus::subsumption::match_single_term_id
+   821,770 ( 0.10%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/x86/sse2.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode>
+   820,212 ( 0.10%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:core::ptr::drop_glue::<core::option::Option<mrs_core::witness::ProofWitness>> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   815,858 ( 0.10%)  ???:getenv [/nix/store/qqiqd3ah10x8hzsif4j1y4xc1miw23nx-glibc-2.42-67/lib/libc.so.6]
+   804,180 ( 0.10%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/pal/unix/time.rs:<std::sys::pal::unix::time::Timespec>::sub_timespec [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   801,561 ( 0.10%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs:<hashbrown::raw::RawTable<(mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId)>>::reserve_rehash::<hashbrown::map::make_hasher<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>::{closure#0}>
+   801,449 ( 0.10%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::subsumption::match_single_term_id
+   792,255 ( 0.10%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/cmp.rs:mrs_calculus::subsumption::apply_subst_flat_id'2
+   788,551 ( 0.10%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/collections/btree/search.rs:<mrs_index::stree::STreeId<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>>::gen_flat
+   785,197 ( 0.10%)  crates/mrs-unify/src/robinson.rs:mrs_unify::robinson::unify_ac_rec_id::<rustc_hash::FxBuildHasher> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   783,360 ( 0.10%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/alloc-aligned.c:mi_theap_malloc_zero_aligned_at_overalloc [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   783,029 ( 0.10%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/control/bitmask.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode>
+   781,051 ( 0.10%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/cmp.rs:<mrs_core::term_bank::IdSubstitution>::apply_term'2
+   777,052 ( 0.10%)  crates/mrs-calculus/src/demodulation.rs:mrs_calculus::demodulation::rewrite_term_id_until [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   771,544 ( 0.10%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/control/bitmask.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+   764,610 ( 0.09%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:core::ptr::drop_glue::<core::option::Option<mrs_core::clause::ClauseCertificate>> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   762,545 ( 0.09%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/control/tag.rs:mrs_index::dtree::flatten_into_id'2
+   761,900 ( 0.09%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/option.rs:<mrs_index::stree::STreeId<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>>::gen_flat'2
+   748,302 ( 0.09%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<mrs_core::term_bank::IdSubstitution>::apply_term
+   741,626 ( 0.09%)  crates/mrs-index/src/dtree.rs:mrs_index::dtree::flatten_into_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   740,737 ( 0.09%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/control/bitmask.rs:mrs_index::dtree::flatten_into_id'2
+   740,270 ( 0.09%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs:mrs_index::dtree::flatten_into_id'2
+   739,304 ( 0.09%)  crates/mrs-index/src/stree.rs:mrs_index::stree::unify_walk_edge::<mrs_core::clause::ClauseId>'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   739,001 ( 0.09%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/std/src/collections/hash/map.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+   732,906 ( 0.09%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+   725,075 ( 0.09%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/collections/btree/node.rs:<mrs_index::stree::STreeId<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>>::gen_flat'2
+   722,840 ( 0.09%)  crates/mrs-index/src/fvi.rs:<mrs_index::fvi::FeatureVector>::can_subsumption_resolve [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   721,157 ( 0.09%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/cmp.rs:mrs_index::stree::gen_walk_edge::<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>'2
+   716,784 ( 0.09%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<mrs_calculus::ordering::KBO>::collect_var_counts_id'2
+   716,461 ( 0.09%)  crates/mrs-core/src/term_bank.rs:mrs_calculus::subsumption::match_single_term_id'2
+   714,780 ( 0.09%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::subsumption::subsumes_id_until
+   714,281 ( 0.09%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs:<smallvec::SmallVec<[mrs_core::clause::ClauseId; 2]> as core::clone::Clone>::clone
+   712,676 ( 0.09%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/control/bitmask.rs:<hashbrown::raw::RawTable<(mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId)>>::reserve_rehash::<hashbrown::map::make_hasher<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>::{closure#0}>
+   711,139 ( 0.09%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::subsumption::match_single_term_id'2
+   710,528 ( 0.09%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<smallvec::SmallVec<[mrs_core::term_bank::IdLiteral; 4]> as core::clone::Clone>::clone [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   710,276 ( 0.09%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<hashbrown::raw::RawTable<(mrs_core::symbol::SymbolId, bool)>>::reserve_rehash::<hashbrown::map::make_hasher<mrs_core::symbol::SymbolId, bool, rustc_hash::FxBuildHasher>::{closure#0}> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   708,552 ( 0.09%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:core::ptr::drop_glue::<mrs_core::witness::ProofWitness> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   694,128 ( 0.09%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:<alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   687,636 ( 0.09%)  crates/mrs-core/src/term_bank.rs:<hashbrown::raw::RawTable<(mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId)>>::reserve_rehash::<hashbrown::map::make_hasher<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>::{closure#0}>
+   681,412 ( 0.08%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:<mrs_core::term_bank::IdSubstitution>::bind
+   680,408 ( 0.08%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::TermBank>::collect_vars'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   679,843 ( 0.08%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode>
+   671,165 ( 0.08%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/x86/sse2.rs:mrs_index::dtree::flatten_into_id'2
+   670,256 ( 0.08%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/free.c:_mi_theap_realloc_zero
+   662,753 ( 0.08%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<hashbrown::set::HashSet<mrs_core::clause::ClauseId, rustc_hash::FxBuildHasher> as core::iter::traits::collect::Extend<mrs_core::clause::ClauseId>>::extend::<core::iter::adapters::copied::Copied<std::collections::hash::set::Iter<mrs_core::clause::ClauseId>>>
+   662,268 ( 0.08%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/cmp.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::get::<mrs_core::term_bank::TermNode>
+   659,106 ( 0.08%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<core::iter::adapters::filter::Filter<std::collections::hash::set::IntoIter<mrs_core::clause::ClauseId>, <mrs_index::literal_index::LiteralIndex>::subsumption_resolution_candidates_for::{closure#0}> as core::iter::traits::iterator::Iterator>::next
+   655,890 ( 0.08%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::TermBank>::subterm_at'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   634,104 ( 0.08%)  crates/mrs-calculus/src/superposition.rs:mrs_calculus::superposition::assoc_replacement [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   627,936 ( 0.08%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/time/unix.rs:mrs_calculus::subsumption::apply_subst_flat_id'2
+   626,275 ( 0.08%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:mrs_unify::robinson::flatten_assoc::<rustc_hash::FxBuildHasher>
+   624,000 ( 0.08%)  crates/mrs-calculus/src/literal_selection.rs:mrs_calculus::literal_selection::id_term_weight'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   618,557 ( 0.08%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::insert
+   617,358 ( 0.08%)  crates/mrs-core/src/witness.rs:<mrs_core::witness::ProofWitness as core::clone::Clone>::clone [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   616,147 ( 0.08%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+   616,066 ( 0.08%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:mrs_calculus::subsumption::contains_var_id'2
+   616,066 ( 0.08%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:mrs_calculus::subsumption::contains_var_id'2
+   616,066 ( 0.08%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/time/unix.rs:mrs_calculus::subsumption::contains_var_id'2
+   616,066 ( 0.08%)  crates/mrs-core/src/term_bank.rs:mrs_calculus::subsumption::contains_var_id'2
+   608,370 ( 0.08%)  crates/mrs-calculus/src/demodulation.rs:mrs_calculus::demodulation::demodulate_id_until [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   603,405 ( 0.07%)  crates/mrs-calculus/src/rename.rs:<core::iter::adapters::map::Map<core::slice::iter::Iter<mrs_core::term_bank::IdLiteral>, mrs_calculus::rename::rename_clause_id::{closure#0}> as core::iter::traits::iterator::Iterator>::next
+   599,775 ( 0.07%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs:<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Immut, mrs_index::dtree::Cell, (alloc::vec::Vec<mrs_index::dtree::Cell>, mrs_index::stree::STreeId<mrs_core::clause::ClauseId>), alloc::collections::btree::node::marker::LeafOrInternal>>::find_lower_bound_index::<mrs_index::dtree::Cell>
+   585,211 ( 0.07%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/range.rs:mrs_calculus::rename::rename_term_id
+   573,556 ( 0.07%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:<hashbrown::raw::RawTable<(mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId)>>::reserve_rehash::<hashbrown::map::make_hasher<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>::{closure#0}>
+   573,041 ( 0.07%)  crates/mrs-core/src/clause.rs:mrs_calculus::rename::rename_clause_id
+   566,241 ( 0.07%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:<mrs_core::term_bank::IdSubstitution>::apply_term
+   565,359 ( 0.07%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:mrs_calculus::rename::rename_term_id'2
+   565,194 ( 0.07%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:mrs_calculus::rename::rename_term_id'2
+   555,859 ( 0.07%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::IdClause as core::clone::Clone>::clone [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   547,358 ( 0.07%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:<mrs_core::term_bank::TermBank>::max_var_atom
+   546,887 ( 0.07%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mimalloc-0.1.52/src/lib.rs:mrs_unify::ac_subset::flatten_ac
+   544,151 ( 0.07%)  ???:_dl_relocate_object_no_relro [/nix/store/qqiqd3ah10x8hzsif4j1y4xc1miw23nx-glibc-2.42-67/lib/ld-linux-x86-64.so.2]
+   536,396 ( 0.07%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::subsumption::subsumption_resolution_id_until
+   531,554 ( 0.07%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs:mrs_index::dtree::flatten_into_id'2
+   531,000 ( 0.07%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/mod.rs:<mrs_core::term_bank::TermBank>::ac_normalize'2
+   528,795 ( 0.07%)  crates/mrs-unify/src/ac_subset.rs:mrs_unify::ac_subset::match_element::<rustc_hash::FxBuildHasher> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   527,646 ( 0.07%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/mem/maybe_uninit.rs:mrs_calculus::subsumption::apply_subst_flat_id'2
+   525,515 ( 0.07%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/result.rs:<alloc::raw_vec::RawVecInner>::finish_grow
+   524,256 ( 0.06%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/cmp.rs:<alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+   523,356 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_search::weight::term_weight_id
+   517,893 ( 0.06%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/include/mimalloc/prim.h:mi_malloc_aligned [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   516,838 ( 0.06%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustc-hash-2.1.3/src/lib.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+   515,021 ( 0.06%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<mrs_index::literal_index::LiteralIndex>::get [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   512,878 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:core::ptr::drop_glue::<mrs_core::term_bank::TermBank> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   510,982 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_unify::robinson::unify_rec_id'2
+   510,498 ( 0.06%)  crates/mrs-index/src/dtree.rs:<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Immut, mrs_index::dtree::Cell, (alloc::vec::Vec<mrs_index::dtree::Cell>, mrs_index::stree::STreeId<mrs_core::clause::ClauseId>), alloc::collections::btree::node::marker::LeafOrInternal>>::find_lower_bound_index::<mrs_index::dtree::Cell>
+   507,071 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:<mrs_core::term_bank::TermBank>::collect_non_var_positions_until'2
+   501,760 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/range.rs:mrs_calculus::subsumption::apply_subst_flat_id
+   499,488 ( 0.06%)  crates/mrs-search/src/weight.rs:mrs_search::weight::term_weight_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   498,030 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_calculus::subsumption::match_single_term_id
+   495,825 ( 0.06%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/include/mimalloc/internal.h:mi_theap_umalloc
+   493,315 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs:mrs_calculus::subsumption::match_literals_id
+   492,663 ( 0.06%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::TermBank>::max_var'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   483,837 ( 0.06%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/alloc.c:_mi_theap_malloc_zero [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   474,880 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_unify::robinson::unify_ac_rec_id::<rustc_hash::FxBuildHasher>
+   474,857 ( 0.06%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/alloc.rs:<alloc::raw_vec::RawVecInner>::finish_grow
+   473,686 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:mrs_unify::ac_subset::flatten_ac
+   469,306 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:<mrs_core::term_bank::TermBank>::ac_normalize'2
+   466,945 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mut_ptr.rs:<hashbrown::raw::RawTable<(mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId)>>::reserve_rehash::<hashbrown::map::make_hasher<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>::{closure#0}>
+   466,517 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:<mrs_core::term_bank::TermBank>::ac_normalize'2
+   466,243 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/std/src/sys/pal/unix/time.rs:mrs_calculus::subsumption::apply_subst_chain_id'2
+   459,476 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:<mrs_calculus::ordering::KBO>::weight_id'2
+   457,386 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/slice/index.rs:mrs_calculus::subsumption::match_single_term_id'2
+   457,032 ( 0.06%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/option.rs:mrs_calculus::rename::rename_term_id'2
+   448,501 ( 0.06%)  crates/mrs-index/src/dtree.rs:mrs_index::dtree::flatten_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   448,490 ( 0.06%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.11.1/src/sha256/soft/unroll.rs:sha2::sha256::compress256
+   445,606 ( 0.06%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<hashbrown::raw::RawTable<(mrs_core::clause::ClauseId, ())>>::reserve_rehash::<hashbrown::map::make_hasher<mrs_core::clause::ClauseId, (), rustc_hash::FxBuildHasher>::{closure#0}> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   442,500 ( 0.05%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/vec/spec_from_iter_nested.rs:<mrs_core::term_bank::TermBank>::ac_normalize'2
+   429,837 ( 0.05%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:<hashbrown::raw::RawTable<(u32, ())>>::reserve_rehash::<hashbrown::map::make_hasher<u32, (), rustc_hash::FxBuildHasher>::{closure#0}> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   426,202 ( 0.05%)  crates/mrs-index/src/dtree.rs:mrs_index::stree::gen_walk_edge::<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>'2
+   425,404 ( 0.05%)  /cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/map.rs:<hashbrown::map::HashMap<mrs_core::term_bank::TermNode, mrs_core::term_bank::TermId, rustc_hash::FxBuildHasher>>::insert [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   424,592 ( 0.05%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs:mrs_search::weight::term_weight_id
+   422,263 ( 0.05%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs:<smallvec::SmallVec<[mrs_core::clause::ClauseId; 2]> as core::clone::Clone>::clone
+   418,857 ( 0.05%)  crates/mrs-calculus/src/ordering.rs:<mrs_calculus::ordering::KBO>::compare_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+   418,826 ( 0.05%)  crates/mrs-core/src/term_bank.rs:mrs_index::dtree::flatten_into_id'2
+   418,758 ( 0.05%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ptr/mod.rs:<alloc::string::String as core::fmt::Write>::write_str
+   412,939 ( 0.05%)  crates/mrs-unify/src/robinson.rs:mrs_calculus::superposition::superpose_selected_id_until
+   412,909 ( 0.05%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/range.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>>
+   411,815 ( 0.05%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/range.rs:mrs_calculus::subsumption::apply_subst_chain_id'2
+   410,750 ( 0.05%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs:mrs_index::stree::gen_walk_edge::<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>'2
+   408,822 ( 0.05%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:mrs_calculus::superposition::superpose_selected_id_until
+

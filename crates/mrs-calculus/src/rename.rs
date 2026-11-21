@@ -129,14 +129,10 @@ fn rename_term_id(
     offset: VarId,
     bank: &mut mrs_core::term_bank::TermBank,
 ) -> mrs_core::term_bank::TermId {
-    match bank.get(term).clone() {
-        mrs_core::term_bank::TermNode::Var(v) => bank.intern_var(v + offset),
-        mrs_core::term_bank::TermNode::App(sym, args) => {
-            let new_args: smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]> = args
-                .iter()
-                .map(|&a| rename_term_id(a, offset, bank))
-                .collect();
-            bank.intern_app(sym, new_args)
+    match bank.get(term) {
+        mrs_core::term_bank::TermNode::Var(v) => bank.intern_var(*v + offset),
+        mrs_core::term_bank::TermNode::App(..) => {
+            bank.map_app_args(term, |arg, bank| rename_term_id(arg, offset, bank))
         }
     }
 }
@@ -296,5 +292,25 @@ mod tests {
             ))],
         );
         assert_eq!(renamed.literals, expected.literals);
+    }
+
+    #[test]
+    fn interned_renaming_matches_legacy_on_shared_deep_and_wide_terms() {
+        let mut symbols = SymbolTable::new();
+        let f = symbols.intern("f");
+        let p = symbols.intern("p");
+        let a = symbols.intern("a");
+        let mut bank = mrs_core::term_bank::TermBank::new();
+        for arity in [0, 1, 4, 5, 256, 512] {
+            let shared = Term::app(f, vec![Term::var(0), Term::constant(a), Term::var(1)]);
+            let wide = Term::app(f, vec![shared; arity]);
+            let clause = input_clause(42, vec![Literal::pos(Atom::pred(p, vec![wide]))]);
+            let interned = bank.clause_from_legacy(&clause);
+            for offset in [0, 1, 7, 100] {
+                let expected = rename_clause(&clause, offset);
+                let actual = rename_clause_id(&interned, offset, &mut bank);
+                assert_eq!(bank.clause_to_legacy(&actual).literals, expected.literals);
+            }
+        }
     }
 }

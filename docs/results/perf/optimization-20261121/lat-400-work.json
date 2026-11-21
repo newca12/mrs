@@ -1,0 +1,12 @@
+{
+  "processed": "400",
+  "generated": "8185",
+  "passive": "7766",
+  "lrs_discarded": "0",
+  "weight_discarded": "5450",
+  "trajectory_sha256": "0:a6194fddfee8a4ca023799c4654de043954533d65ab89c3d4251d7889e0ff68f",
+  "resource_reason": "max_processed",
+  "retained_terms": "1276030",
+  "retained_proof_clauses": "60970",
+  "fwd_subsumed": "414"
+}

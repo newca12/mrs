@@ -1,0 +1,96 @@
+--------------------------------------------------------------------------------
+Profile data file '/tmp/opencode/mrs-opt-20261121/candidate/LAT141.callgrind' (creator: callgrind-3.26.0)
+--------------------------------------------------------------------------------
+I1 cache: 
+D1 cache: 
+LL cache: 
+Timerange: Basic block 0 - 159865658
+Trigger: Program termination
+Profiled target:  /tmp/opencode/mrs-opt-20261121/candidate/mrs --time 600 --workers 1 --schedule casc_ueq --strategy 4 /tmp/opencode/mrs-opt-20261121/fixtures/LAT141-1.p (PID 845522, part 1)
+Events recorded:  Ir
+Events shown:     Ir
+Event sort order: Ir
+Thresholds:       96
+Include dirs:     
+User annotated:   
+Auto-annotation:  off
+
+--------------------------------------------------------------------------------
+Ir                   
+--------------------------------------------------------------------------------
+807,807,102 (100.0%)  PROGRAM TOTALS
+
+--------------------------------------------------------------------------------
+Ir                    file:function
+--------------------------------------------------------------------------------
+803,912,941 (99.52%)  ???:start_thread [/nix/store/qqiqd3ah10x8hzsif4j1y4xc1miw23nx-glibc-2.42-67/lib/libc.so.6]
+803,806,086 (99.50%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/thread/unix.rs:<std::sys::thread::unix::Thread>::new::thread_start [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+803,780,608 (99.50%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/boxed.rs:<std::sys::thread::unix::Thread>::new::thread_start
+803,093,193 (99.42%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/ops/function.rs:<std::thread::lifecycle::spawn_unchecked<mrs_search::strategy::run_schedule_with_candidate_receiver::{closure#27}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0} [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+803,093,062 (99.42%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/std/src/thread/lifecycle.rs:<std::thread::lifecycle::spawn_unchecked<mrs_search::strategy::run_schedule_with_candidate_receiver::{closure#27}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+803,092,685 (99.42%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/std/src/sys/backtrace.rs:std::sys::backtrace::__rust_begin_short_backtrace::<mrs_search::strategy::run_schedule_with_candidate_receiver::{closure#27}::{closure#0}::{closure#0}, ()> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+803,092,681 (99.42%)  /home/fr22192/EDLA/git/mrs/crates/mrs-search/src/strategy.rs:mrs_search::strategy::run_schedule_with_candidate_receiver::{closure#27}::{closure#0}::{closure#0}
+803,060,872 (99.41%)  crates/mrs-search/src/strategy.rs:mrs_search::strategy::run_schedule_with_candidate_receiver::{closure#27}::{closure#0}::{closure#0} [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+799,380,610 (98.96%)  /home/fr22192/EDLA/git/mrs/crates/mrs-search/src/given_clause.rs:mrs_search::given_clause::search
+799,380,610 (98.96%)  crates/mrs-search/src/given_clause.rs:mrs_search::given_clause::search [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+799,380,577 (98.96%)  crates/mrs-search/src/given_clause.rs:mrs_search::given_clause::search_internal [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+338,610,381 (41.92%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::apply_subst_flat_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+289,739,357 (35.87%)  /home/fr22192/EDLA/git/mrs/crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::subsumes_id_until
+283,738,855 (35.12%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/option.rs:mrs_search::given_clause::search_internal
+283,475,627 (35.09%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::subsumes_id_until [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+283,196,730 (35.06%)  /home/fr22192/EDLA/git/mrs/crates/mrs-search/src/given_clause.rs:mrs_search::given_clause::search_internal::{closure#50}
+283,161,238 (35.05%)  crates/mrs-search/src/given_clause.rs:mrs_search::given_clause::search_internal::{closure#50} [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+247,890,654 (30.69%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::contains_var_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+239,615,995 (29.66%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::match_literals_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+234,324,703 (29.01%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::match_atoms_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+232,378,565 (28.77%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::match_eq_orientation_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+220,417,132 (27.29%)  crates/mrs-calculus/src/demodulation.rs:mrs_calculus::demodulation::rewrite_term_id_until'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+211,861,496 (26.23%)  crates/mrs-index/src/dtree.rs:mrs_index::dtree::flatten_into_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+208,004,545 (25.75%)  /home/fr22192/EDLA/git/mrs/crates/mrs-calculus/src/superposition.rs:mrs_calculus::superposition::superpose_selected_id_until
+175,262,465 (21.70%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::match_single_term_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+164,901,612 (20.41%)  crates/mrs-index/src/stree.rs:mrs_index::stree::gen_walk_edge::<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+152,630,673 (18.89%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::IdSubstitution>::apply_term'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+150,950,133 (18.69%)  crates/mrs-calculus/src/rename.rs:mrs_calculus::rename::rename_term_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+144,953,065 (17.94%)  /home/fr22192/EDLA/git/mrs/crates/mrs-calculus/src/demodulation.rs:mrs_calculus::demodulation::demodulate_id_until
+141,657,787 (17.54%)  crates/mrs-calculus/src/demodulation.rs:mrs_calculus::demodulation::demodulate_id_until [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+140,376,345 (17.38%)  crates/mrs-calculus/src/demodulation.rs:mrs_calculus::demodulation::rewrite_term_id_until [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+118,342,546 (14.65%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::TermBank>::ac_normalize'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+116,122,231 (14.37%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::apply_subst_flat_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+112,098,219 (13.88%)  crates/mrs-index/src/stree.rs:<mrs_index::stree::STreeId<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>>::gen_flat'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+109,268,382 (13.53%)  crates/mrs-calculus/src/superposition.rs:mrs_calculus::superposition::superpose_selected_id_until [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 97,752,190 (12.10%)  /home/fr22192/EDLA/git/mrs/crates/mrs-calculus/src/rename.rs:mrs_calculus::rename::rename_clause_id
+ 85,536,190 (10.59%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:mrs_calculus::rename::rename_clause_id
+ 83,444,386 (10.33%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/iter/adapters/map.rs:<core::iter::adapters::map::Map<core::slice::iter::Iter<mrs_core::term_bank::IdLiteral>, mrs_calculus::rename::rename_clause_id::{closure#0}> as core::iter::traits::iterator::Iterator>::next [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 81,352,582 (10.07%)  crates/mrs-calculus/src/rename.rs:<core::iter::adapters::map::Map<core::slice::iter::Iter<mrs_core::term_bank::IdLiteral>, mrs_calculus::rename::rename_clause_id::{closure#0}> as core::iter::traits::iterator::Iterator>::next
+ 80,749,177 (10.00%)  crates/mrs-calculus/src/rename.rs:mrs_calculus::rename::rename_term_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 80,141,386 ( 9.92%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::match_single_term_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 75,192,818 ( 9.31%)  crates/mrs-index/src/dtree.rs:mrs_index::dtree::skip_in_flat'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 74,579,210 ( 9.23%)  crates/mrs-core/src/term_bank.rs:<mrs_core::term_bank::TermBank>::intern_app::<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]>> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 72,570,777 ( 8.98%)  crates/mrs-index/src/stree.rs:mrs_calculus::demodulation::rewrite_term_id_until'2
+ 71,526,741 ( 8.85%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/pal/unix/time.rs:<std::sys::pal::unix::time::Timespec>::now [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 62,129,983 ( 7.69%)  crates/mrs-unify/src/robinson.rs:mrs_calculus::superposition::superpose_selected_id_until
+ 61,796,333 ( 7.65%)  crates/mrs-index/src/stree.rs:<mrs_index::stree::STreeId<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)>>::gen_flat [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 61,101,418 ( 7.56%)  /home/fr22192/EDLA/git/mrs/crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::subsumption_resolution_id_until
+ 57,603,878 ( 7.13%)  crates/mrs-index/src/stree.rs:mrs_index::stree::gen_walk_edge::<(mrs_core::term_bank::TermId, mrs_core::term_bank::TermId, mrs_core::clause::ClauseId)> [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 55,540,957 ( 6.88%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::contains_var_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 54,962,924 ( 6.80%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::apply_subst_chain_id'2 [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 54,773,919 ( 6.78%)  /home/fr22192/EDLA/git/mrs/crates/mrs-index/src/dtree.rs:mrs_index::dtree::flatten_id
+ 53,888,031 ( 6.67%)  crates/mrs-index/src/dtree.rs:mrs_index::dtree::flatten_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 53,831,248 ( 6.66%)  crates/mrs-index/src/dtree.rs:mrs_index::dtree::flatten_into_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 52,660,482 ( 6.52%)  crates/mrs-calculus/src/subsumption.rs:mrs_calculus::subsumption::subsumption_resolution_id_until [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 46,995,316 ( 5.82%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:<alloc::raw_vec::RawVecInner>::finish_grow [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 43,657,320 ( 5.40%)  crates/mrs-index/src/stree.rs:mrs_calculus::demodulation::rewrite_term_id_until
+ 43,284,046 ( 5.36%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/fmt.rs:alloc::fmt::format::format_inner [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 41,173,216 ( 5.10%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/fmt/mod.rs:alloc::fmt::format::format_inner
+ 40,608,851 ( 5.03%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.16.4/src/lib.rs:<smallvec::SmallVec<[mrs_core::term_bank::TermId; 4]> as core::clone::Clone>::clone [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 38,919,719 ( 4.82%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/fmt/mod.rs:core::fmt::write [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 37,797,832 ( 4.68%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mimalloc-0.1.52/src/lib.rs:<alloc::raw_vec::RawVecInner>::finish_grow
+ 35,757,569 ( 4.43%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/alloc-aligned.c:mi_realloc_aligned [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 35,701,235 ( 4.42%)  /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/fmt/rt.rs:core::fmt::write
+ 34,790,928 ( 4.31%)  ???:clock_gettime@@GLIBC_2.17 [/nix/store/qqiqd3ah10x8hzsif4j1y4xc1miw23nx-glibc-2.42-67/lib/libc.so.6]
+ 34,070,106 ( 4.22%)  /home/fr22192/EDLA/git/mrs/crates/mrs-search/src/state.rs:<mrs_search::state::SearchState>::ac_normalize_for_search
+ 34,047,435 ( 4.21%)  crates/mrs-unify/src/robinson.rs:mrs_unify::robinson::unify_rec_id [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 33,495,905 ( 4.15%)  /nix/store/1g1hnmp5czmjrj0g8x7q3k1jm7i127j3-rust-default-1.100.0/lib/rustlib/src/rust/library/core/src/fmt/mod.rs:<&mrs_core::symbol::SymbolId as core::fmt::Debug>::fmt [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 33,138,496 ( 4.10%)  crates/mrs-search/src/state.rs:<mrs_search::state::SearchState>::ac_normalize_for_search [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+ 31,903,597 ( 3.95%)  /home/fr22192/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libmimalloc-sys-0.1.49/c_src/mimalloc/v3/src/alloc.c:_mi_theap_realloc_zero [/tmp/opencode/mrs-opt-20261121/candidate/mrs]
+

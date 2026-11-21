@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "baseline_commit": "c2f2f46b",
+  "ratio_direction": "candidate elapsed / baseline elapsed; lower is faster",
+  "instruction_profile": {
+    "processed": 100,
+    "baseline": 843713633,
+    "candidate": 807807102,
+    "reduction_percent": 4.25577228998029
+  },
+  "lat_200": {
+    "pairs": 5,
+    "candidate_over_baseline": [
+      1.1115237306884063,
+      0.8850505902290386,
+      1.0735782976832426,
+      1.0188116056294576,
+      1.1060558092747415
+    ],
+    "mean": 1.0390040067009771,
+    "min": 0.8850505902290386,
+    "max": 1.1115237306884063,
+    "candidate_faster_pairs": 1
+  },
+  "ring_100": {
+    "pairs": 5,
+    "candidate_over_baseline": [
+      0.9540766800487427,
+      1.0073589092121449,
+      0.9979006811775758,
+      1.0320065572174268,
+      0.97969369180066
+    ],
+    "mean": 0.9942073038913101,
+    "min": 0.9540766800487427,
+    "max": 1.0320065572174268,
+    "candidate_faster_pairs": 3
+  },
+  "lat_400_block_a": {
+    "pairs": 5,
+    "candidate_over_baseline": [
+      0.9690879421625164,
+      0.8527044148395624,
+      0.94143196023408,
+      1.241201009829373,
+      0.8741168321057197
+    ],
+    "mean": 0.9757084318342502,
+    "min": 0.8527044148395624,
+    "max": 1.241201009829373,
+    "candidate_faster_pairs": 4
+  },
+  "lat_400_block_b": {
+    "pairs": 5,
+    "candidate_over_baseline": [
+      0.8802978010374605,
+      0.9468395444619583,
+      0.9841931426274285,
+      0.9462806536508083,
+      0.9775264142666489
+    ],
+    "mean": 0.947027511208861,
+    "min": 0.8802978010374605,
+    "max": 0.9841931426274285,
+    "candidate_faster_pairs": 5
+  },
+  "lat_400_pooled": {
+    "pairs": 10,
+    "candidate_over_baseline": [
+      0.9690879421625164,
+      0.8527044148395624,
+      0.94143196023408,
+      1.241201009829373,
+      0.8741168321057197,
+      0.8802978010374605,
+      0.9468395444619583,
+      0.9841931426274285,
+      0.9462806536508083,
+      0.9775264142666489
+    ],
+    "mean": 0.9613679715215554,
+    "min": 0.8527044148395624,
+    "max": 1.241201009829373,
+    "candidate_faster_pairs": 9
+  },
+  "interpretation": "Local fixed-work descriptive observations; mixed short-run timing, no general or CASC speedup claim"
+}

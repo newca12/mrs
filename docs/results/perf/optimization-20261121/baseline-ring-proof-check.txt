@@ -1,0 +1,2 @@
+% Audit input identity: {"include_sha256":[],"problem_path":"/tmp/opencode/mrs-opt-20261121/fixtures/ring_idem.p","problem_sha256":"f2023a53c17bb28b1696e0f55dec39e66eef21e64497a27bd282a4fbaf900f26","proof_sha256":"f9f4a8d3b2a287523e8173b4cbad1258ffec84a828efb2c8fd6d70b7e91c10db","schema":1}
+% SZS status VerifiedGood

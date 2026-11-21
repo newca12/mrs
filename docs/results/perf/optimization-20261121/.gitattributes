@@ -1,0 +1,5 @@
+# Preserve byte-exact tool output and frozen fixture EOFs, not source formatting.
+*-inclusive.txt whitespace=-blank-at-eol,-blank-at-eof
+*-exclusive.txt whitespace=-blank-at-eol,-blank-at-eof
+*-profile.stderr whitespace=-blank-at-eol
+fixtures/*.p whitespace=-blank-at-eof

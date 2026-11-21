@@ -170,6 +170,13 @@ Prerequisites: P0/P2 measurements and P1 identity contract.
 - [ ] Compare indexed backward rewriting policies, including requeue-to-passive.
 - [ ] Prototype shared immutable prepared input with worker-local derived arenas.
 - [ ] Bound inference batches and avoid avoidable intermediate collections.
+  The 2026-11-21 slice shares lazy-copy term transformations across substitution,
+  renaming and rewriting; literal rewriting avoids temporary argument vectors,
+  and unification retrieval preserves order while skipping mismatching symbols.
+  Oracle, recall/removal and proof replay tests pass. Local fixed-work profiles
+  use 4.26% fewer instructions, but paired wall-clock timings are mixed; no
+  general throughput or eight-worker coverage gain is established. See
+  `docs/reports/benchmarks/term-transforms-2026-11-21.md`.
 
 Targets: 1.5–2x fixed-work throughput on identified bottleneck classes and
 25–40% lower large-input/history peak memory. Gate: repeated actual eight-worker
