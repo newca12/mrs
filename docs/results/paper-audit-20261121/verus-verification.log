@@ -1,0 +1,134 @@
+verification_source_commit=4ee6d9ebef5ec280fc611b2922fe1a4720bf68e0
+verus_binary_sha256=c2ba0b04a0195bb76c25e340f3bc3eb5691a268056a733965d2fdf107a89d4d0
+rust_toolchain_requested=1.100.0-x86_64-unknown-linux-gnu
+rust_toolchain_effective=1.100.0-x86_64-unknown-linux-gnu
+first_order_core_smt_rlimit=30
+available_cpu_threads=8
+verus_num_threads=2
+verus_mutation_workers=2
+Verus
+  Version: 0.2026.11.18.a95764f
+  Profile: release
+  Platform: linux_x86_64
+  Toolchain: 1.100.0-x86_64-unknown-linux-gnu (overridden by environment variable RUSTUP_TOOLCHAIN)
+
+verus_version=0.2026.11.18.a95764f
+effective_rust_toolchain=1.100.0-x86_64-unknown-linux-gnu
+verus_binary_sha256=c2ba0b04a0195bb76c25e340f3bc3eb5691a268056a733965d2fdf107a89d4d0
+verification results:: 5 verified, 0 errors
+verification results:: 577 verified, 0 errors
+verification results:: 5 verified, 0 errors
+verification results:: 5 verified, 0 errors
+verified_runtime_sha256=8aa08f1e8006e5c1bc4da24060796538c33e15f597e5a49d044ebc149c3d3fe5
+reproducible verified runtime and DAG regressions passed
+runtime_mutation_compile_seconds=900
+mutation rejected: Verus --no-cheating rejects a valid assumption probe
+mutation rejected: exact resolution ignores atom identity
+mutation rejected: exact resolution ignores pivot polarity
+mutation rejected: freshening ignores forbidden variable images
+mutation rejected: literal substitution
+mutation rejected: literal polarity comparison
+mutation rejected: selected term-position lookup
+mutation rejected: superposition resolvent drops the target clause
+mutation rejected: DAG step skips verified replay
+mutation rejected: DAG step ignores cited source parent
+mutation rejected: DAG node validation skips superposition replay
+mutation rejected: certifier skips node validation
+mutation rejected: input validator forges membership
+mutation rejected: node validator admits forward parents
+mutation rejected: certifier accepts a nonempty root
+mutation rejected: resolution checker accepts a forged conclusion
+mutation rejected: resolution checker ignores predicate identity
+mutation rejected: resolution checker ignores oriented polarity
+mutation rejected: DAG resolution skips rule replay
+mutation rejected: DAG resolution checks a parent instead of the conclusion
+mutation rejected: tokenizer span correspondence omits inductive decimal append lemma
+mutation rejected: first-order resolution ignores unified atom equality
+mutation rejected: first-order resolution ignores pivot polarity
+mutation rejected: DAG first-order resolution skips rule replay
+mutation rejected: equality resolution ignores pivot polarity
+mutation rejected: equality resolution ignores unified terms equality
+mutation rejected: DAG equality resolution skips rule replay
+mutation rejected: clause factoring ignores polarity agreement
+mutation rejected: clause factoring ignores unified atom equality
+mutation rejected: DAG clause factoring skips rule replay
+mutation rejected: equality factoring ignores premise literal positive polarity
+mutation rejected: equality factoring ignores unified term equality
+mutation rejected: DAG equality factoring skips rule replay
+mutation rejected: subsumption resolution ignores pivot polarity
+mutation rejected: subsumption resolution ignores pivot atom equality
+mutation rejected: subsumption resolution ignores non-pivot literal match
+mutation rejected: DAG subsumption resolution skips rule replay
+mutation rejected: weakening ignores literal agreement
+mutation rejected: DAG weakening skips rule replay
+mutation rejected: demodulation ignores equality positive polarity
+mutation rejected: demodulation ignores unified term equality
+mutation rejected: DAG demodulation skips rule replay
+mutation rejected: instantiation ignores conclusion agreement
+mutation rejected: DAG instantiation skips rule replay
+mutation rejected: condensation ignores literal agreement
+mutation rejected: DAG condensation skips rule replay
+mutation rejected: reflexivity ignores identical terms
+mutation rejected: transitivity ignores valid chained orientation
+mutation rejected: DAG transitivity skips rule replay
+mutation rejected: symmetry ignores valid commuted orientation
+mutation rejected: DAG symmetry skips rule replay
+mutation rejected: excluded middle ignores opposite polarity or atom agreement
+mutation rejected: DAG excluded middle skips rule replay
+mutation rejected: congruence ignores function symbol or argument agreement
+mutation rejected: nested congruence ignores unchanged binary sibling
+mutation rejected: nested congruence ignores inner unary function symbol
+mutation rejected: DAG congruence skips rule replay
+mutation rejected: tautology skips clause validation
+mutation rejected: DAG tautology skips rule replay
+runtime mutation rejected: first_order_core_without_clause_deletion_charge
+mutation rejected at compile: first_order_core_accepts_duplicate_node_ids
+mutation rejected at compile: first_order_core_accepts_nondecimal
+runtime mutation rejected: first_order_core_without_clause_literal_charge
+runtime mutation rejected: first_order_core_resets_work_after_dag_closure
+runtime mutation rejected: first_order_core_without_congruence_term_charge
+runtime mutation rejected: first_order_core_resets_work_after_dag_structure
+runtime mutation rejected: first_order_core_without_equality_factoring_pivot_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_condensation
+runtime mutation rejected: first_order_core_without_excluded_middle_atom_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_congruence
+runtime mutation rejected: first_order_core_without_freshening_lookup_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_demodulation
+runtime mutation rejected: first_order_core_resets_work_at_dag_equality_factoring
+runtime mutation rejected: first_order_core_without_freshening_materialization_charge
+runtime mutation rejected: first_order_core_without_input_compare_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_equality_resolution
+runtime mutation rejected: first_order_core_without_dag_preflight_parent_compare_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_exact_resolution
+runtime mutation rejected: first_order_core_without_path_sequence_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_excluded_middle
+runtime mutation rejected: first_order_core_without_reflexivity_term_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_factoring
+runtime mutation rejected: first_order_core_without_replay_comparison_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_first_order_resolution
+runtime mutation rejected: first_order_core_without_replay_conclusion_build_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_instantiation
+runtime mutation rejected: first_order_core_without_replay_substitution_meter
+runtime mutation rejected: first_order_core_resets_work_at_dag_nullary_resolution
+runtime mutation rejected: first_order_core_without_replay_target_replacement_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_reflexivity
+runtime mutation rejected: first_order_core_without_root_closure
+runtime mutation rejected: first_order_core_resets_work_at_dag_subsumption
+runtime mutation rejected: first_order_core_without_selected_term_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_superposition
+runtime mutation rejected: first_order_core_without_subsumption_literal_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_symmetry
+runtime mutation rejected: first_order_core_without_symmetry_term_charge
+runtime mutation rejected: first_order_core_resets_work_at_dag_tautology
+runtime mutation rejected: first_order_core_resets_work_at_dag_transitivity
+runtime mutation rejected: first_order_core_without_target_freshening_guard
+runtime mutation rejected: first_order_core_resets_work_at_dag_weakening
+runtime mutation rejected: first_order_core_without_tautology_atom_charge
+runtime mutation rejected: first_order_core_resets_work_before_replay
+runtime mutation rejected: first_order_core_without_transitivity_term_charge
+runtime mutation rejected: first_order_core_resets_work_for_dag_nodes
+runtime mutation rejected: first_order_core_without_transitivity_fallback_scan_charge
+runtime mutation rejected: first_order_core_without_atom_comparison_charge
+runtime mutation rejected: first_order_core_without_unifier_term_charge
+runtime mutation rejected: first_order_core_without_clause_permutation_inverse_scan_charge
+mutation gate passed: verifier_negative=58 compiled_runtime=50

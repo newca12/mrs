@@ -105,6 +105,11 @@ fn run_capture(
     input: Option<&[u8]>,
     timeout: Duration,
 ) -> ToolResult<ProcessOutput> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     let stdout_file = tempfile::NamedTempFile::new()?;
     let stderr_file = tempfile::NamedTempFile::new()?;
     command
@@ -117,18 +122,25 @@ fn run_capture(
     });
     let mut child = command.spawn()?;
     if let Some(input) = input {
-        child
+        let write = child
             .stdin
             .take()
             .ok_or("child stdin was not piped")?
-            .write_all(input)?;
+            .write_all(input);
+        if let Err(error) = write {
+            super::autosearch::terminate_child(&mut child);
+            return Err(error.into());
+        }
     }
-    let status = match child.wait_timeout(timeout)? {
-        Some(status) => status,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
+    let status = match child.wait_timeout(timeout) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            super::autosearch::terminate_child(&mut child);
             return Err(format!("command timed out after {} seconds", timeout.as_secs()).into());
+        }
+        Err(error) => {
+            super::autosearch::terminate_child(&mut child);
+            return Err(error.into());
         }
     };
     Ok(ProcessOutput {
@@ -558,7 +570,10 @@ fn run_runtime_mutation(
     original: &str,
     temp: &Path,
     case: &RuntimeMutation,
+    compile_timeout_override: Option<Duration>,
 ) -> ToolResult<()> {
+    let compile_timeout =
+        compile_timeout_override.unwrap_or(Duration::from_secs(case.timeout_compile_s));
     let mut mutated = original.to_owned();
     for edit in &case.edits {
         mutated = replace_one(&mutated, &edit.anchor, &edit.replacement, &case.name)?;
@@ -591,11 +606,7 @@ fn run_runtime_mutation(
             ])
             .arg(function)
             .arg(&source_path);
-        let output = run_capture(
-            &mut command,
-            None,
-            Duration::from_secs(case.timeout_compile_s),
-        )?;
+        let output = run_capture(&mut command, None, compile_timeout)?;
         let text = output_text(&output);
         let expected = case
             .compile_failure_all
@@ -636,11 +647,7 @@ fn run_runtime_mutation(
         .arg(&source_path)
         .arg("-o")
         .arg(&binary_path);
-    let compile = run_capture(
-        &mut command,
-        None,
-        Duration::from_secs(case.timeout_compile_s),
-    )?;
+    let compile = run_capture(&mut command, None, compile_timeout)?;
     let compile_text = output_text(&compile);
     if !compile.status.success() {
         return Err(format!(
@@ -686,6 +693,14 @@ fn run_runtime_mutation(
 }
 
 pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
+    let compile_timeout_override = mutation_compile_timeout(
+        std::env::var("VERUS_MUTATION_COMPILE_SECONDS")
+            .ok()
+            .as_deref(),
+    )?;
+    if let Some(timeout) = compile_timeout_override {
+        println!("runtime_mutation_compile_seconds={}", timeout.as_secs());
+    }
     let verus = args.verus.canonicalize()?;
     let source_path = args.source.canonicalize()?;
     let source = fs::read_to_string(&source_path)?;
@@ -791,8 +806,8 @@ pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
         runtime_mutations
             .par_iter()
             .map(|case| {
-                run_runtime_mutation(&verus, &source, temp.path(), case)
-                    .map_err(|error| error.to_string())
+                run_runtime_mutation(&verus, &source, temp.path(), case, compile_timeout_override)
+                    .map_err(|error| format!("{}: {error}", case.name))
             })
             .collect::<Vec<_>>()
     });
@@ -801,6 +816,19 @@ pub fn mutation_check(args: MutationCheckArgs) -> ToolResult<()> {
     }
     println!("mutation gate passed: verifier_negative=58 compiled_runtime=50");
     Ok(())
+}
+
+fn mutation_compile_timeout(value: Option<&str>) -> ToolResult<Option<Duration>> {
+    value
+        .map(|value| {
+            let seconds = value
+                .parse::<u64>()
+                .ok()
+                .filter(|n| (1..=3600).contains(n))
+                .ok_or("VERUS_MUTATION_COMPILE_SECONDS must be in 1..=3600")?;
+            Ok(Duration::from_secs(seconds))
+        })
+        .transpose()
 }
 
 pub fn write_runtime_evidence(args: RuntimeEvidenceArgs) -> ToolResult<()> {
@@ -954,6 +982,44 @@ pub fn effective_toolchain(version_output: &str) -> ToolResult<&str> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn mutation_compile_override_is_bounded_and_never_an_unbounded_fallback() {
+        assert_eq!(mutation_compile_timeout(None).unwrap(), None);
+        assert_eq!(
+            mutation_compile_timeout(Some("900")).unwrap(),
+            Some(Duration::from_secs(900))
+        );
+        for value in ["0", "3601", "unbounded", "bad"] {
+            assert!(mutation_compile_timeout(Some(value)).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timed_out_formal_commands_do_not_leave_descendants_running() {
+        let directory = tempfile::tempdir().unwrap();
+        let started = directory.path().join("started");
+        let escaped = directory.path().join("escaped");
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "touch \"$STARTED\"; (sleep 0.75; touch \"$ESCAPED\") & wait",
+            ])
+            .env("STARTED", &started)
+            .env("ESCAPED", &escaped);
+        assert!(run_capture(&mut command, None, Duration::from_millis(250)).is_err());
+        assert!(
+            started.exists(),
+            "the subprocess must have entered its fixture"
+        );
+        std::thread::sleep(Duration::from_secs(1));
+        assert!(
+            !escaped.exists(),
+            "a timed-out verifier descendant escaped cleanup"
+        );
+    }
 
     #[test]
     fn source_audit_matches_calls_not_identifiers_or_comments() {

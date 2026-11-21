@@ -18,6 +18,12 @@ the producer source tree was dirty while these repair-stage audits ran.
 - `epu-release-*`: the repaired release checker replays all 17 archived proof
   bytes as `VerifiedGood` at 120 seconds / 2048 MiB. Its distinct binary hash is
   recorded; the debug timeout observation is not overwritten.
+- `verus-verification.log`: the complete successful isolated-shell gate,
+  including zero proof-verification errors, reproducible runtime checks and
+  all 58 verifier-negative / 50 runtime-mutation cases. The bounded mutation
+  compile allowance was 900 seconds; SMT budget and rejection rules were
+  unchanged. This verifies the declared decoded-IR subset, not AVATAR or the
+  whole prover.
 
 Reports preserve per-proof hashes and loaded problem/include identities.
 Compared verdicts are observations about identical artifacts, not search gains.

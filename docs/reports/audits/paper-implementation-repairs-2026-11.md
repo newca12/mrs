@@ -142,3 +142,19 @@ disabled to bypass that build-artifact collision. The independent formal
 verification run uses the
 isolated `.#verus` shell and remains evidence only for its declared decoded-IR
 subset, not for AVATAR or whole-prover completeness.
+
+The first full Verus run verified the base modules with zero errors and passed
+the reproducible runtime checks, but two runtime-mutation compilations reached
+their 300-second guards (`resets_work_at_dag_demodulation` and
+`without_freshening_lookup_charge`). This is not a passed mutation gate. The
+formal runner now reports the mutation name on timeout, kills/reaps descendant
+processes, and supports a bounded `VERUS_MUTATION_COMPILE_SECONDS` override
+(1–3600 seconds). The 58/50 inventory, SMT rlimit, expected rejection rules and
+execution limits are unchanged; timing out still fails the gate. The fresh full
+run with `VERUS_MUTATION_COMPILE_SECONDS=900` completed successfully with two
+Verus threads and two mutation workers: all base verification passes had zero
+errors, reproducible-runtime/DAG checks passed, and the complete
+`verifier_negative=58 compiled_runtime=50` gate passed. The verified runtime
+hash was `8aa08f1e8006e5c1bc4da24060796538c33e15f597e5a49d044ebc149c3d3fe5`.
+The exact log is banked as `verus-verification.log` beside the replay reports.
+The four Cargo gates were also rerun successfully after the runner fixes.
