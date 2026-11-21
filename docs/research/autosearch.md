@@ -19,7 +19,7 @@ the benchmark judge outside the model's control.
 Build the prover, strict auditor, and tool:
 
 ```bash
-nix develop -c cargo build --release --bin mrs --bin mrs-proover --bin mrs_tools
+nix develop -c cargo build --release -p mrs -p mrs-proover -p mrs-bench --bin mrs --bin mrs-proover --bin mrs_tools
 ```
 
 Start with FNE strategy 12, two parallel one-worker prover processes, 2 GiB RSS

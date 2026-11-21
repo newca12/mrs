@@ -14,6 +14,12 @@ use std::time::{Duration, Instant};
 
 use mrs_cadical::SolveResult;
 use mrs_core::clause::avatar_sat_trace_digest;
+
+mod avatar_validation;
+use avatar_validation::{register_avatar_components, require_disjoint_avatar_components};
+
+#[cfg(test)]
+mod avatar_regressions;
 use mrs_core::{Atom, Formula, Substitution, SymbolTable, Term, VarId};
 use mrs_tptp::ast::common::{AtomicWord, GeneralTerm};
 use mrs_tptp::proover::{
@@ -270,6 +276,7 @@ pub fn verify_strict_with_telemetry_and_source(
         expected_source,
         limits,
         Some(&mut steps),
+        false,
     );
     VerificationTelemetry {
         elapsed: start.elapsed(),
@@ -291,7 +298,21 @@ pub fn verify_strict_with_source(
     expected_source: Option<&str>,
     limits: VerificationLimits,
 ) -> KernelVerdict {
-    verify_strict_with_source_internal(problem, proof, expected_source, limits, None)
+    verify_strict_with_source_internal(problem, proof, expected_source, limits, None, false)
+}
+
+/// Check only conjecture polarity, case-split definitions, context transport/discharge and SAT
+/// evidence. `Ok(())` is structural validation, NOT a proof verdict:
+/// callers must separately verify every leaf and ordinary inference.
+pub fn check_avatar_structure(
+    problem: &mrs_tptp::TPTPProblem<'_>,
+    proof: &mrs_tptp::TPTPProblem<'_>,
+    limits: VerificationLimits,
+) -> Result<(), KernelVerdict> {
+    match verify_strict_with_source_internal(problem, proof, None, limits, None, true) {
+        KernelVerdict::Certified => Ok(()),
+        verdict => Err(verdict),
+    }
 }
 
 fn verify_strict_with_source_internal(
@@ -300,6 +321,7 @@ fn verify_strict_with_source_internal(
     expected_source: Option<&str>,
     limits: VerificationLimits,
     mut telemetry: Option<&mut Vec<VerificationStepTelemetry>>,
+    structure_only: bool,
 ) -> KernelVerdict {
     if limits
         .deadline
@@ -346,6 +368,8 @@ fn verify_strict_with_source_internal(
     }
     let mut branch_contexts: HashMap<usize, BranchContext> = HashMap::new();
     let mut avatar_splits: HashMap<usize, AvatarSplitContext> = HashMap::new();
+    let mut avatar_components: HashMap<u32, Vec<Literal>> = HashMap::new();
+    let mut positive_conjecture_assumptions = HashSet::new();
     let mut defined_symbols = HashSet::new();
     let mut skolem_axioms: HashMap<usize, OwnedSkolemAxiom> = HashMap::new();
     // Certified single-parent skolemisation (parent, conclusion) pairs.
@@ -363,9 +387,30 @@ fn verify_strict_with_source_internal(
     // from both LCL006+0.ax and LCL006+5.ax). Leaf matching below is
     // existential over same-named formulas, which is sound: the cited
     // formula is asserted by the problem under that name either way.
+    if problem
+        .formulas
+        .iter()
+        .filter(|formula| formula.role() == FormulaRole::Conjecture)
+        .count()
+        > 1
+    {
+        return KernelVerdict::Inconclusive(
+            "multiple-conjecture proof certification is unsupported".into(),
+        );
+    }
     for formula in &problem.formulas {
         if formula.role().is_type_declaration() {
             continue;
+        }
+        if !formula.role().is_premise()
+            && !matches!(
+                formula.role(),
+                FormulaRole::Conjecture | FormulaRole::NegatedConjecture | FormulaRole::Plain
+            )
+        {
+            return KernelVerdict::Inconclusive(
+                "problem role is not a supported proof premise or conjecture".into(),
+            );
         }
         if !formula.is_fof()
             && !formula.is_cnf()
@@ -454,11 +499,60 @@ fn verify_strict_with_source_internal(
         }
         let node = &dag.nodes[idx];
         let conclusion = proof_formulas.get(&idx).expect("lowered proof formula");
+        // Displaying the conjecture does not assert it as a refutation premise.
+        // Only its checked negation is available under the original problem.
+        if node.role == FormulaRole::Conjecture
+            && node
+                .formula
+                .annotations()
+                .and_then(|a| a.file_source())
+                .is_some()
+        {
+            positive_conjecture_assumptions.insert(idx);
+        }
+        if !matches!(node.rule, Some("negated_conjecture" | "assume_negation"))
+            && node.parents.iter().any(|parent| {
+                !parent.negated
+                    && positive_conjecture_assumptions.contains(&dag.by_name[parent.name])
+            })
+        {
+            positive_conjecture_assumptions.insert(idx);
+        }
         if let Err(reason) = register_signatures(conclusion, &mut signatures) {
             return KernelVerdict::Rejected(format!(
                 "proof node `{}` has inconsistent symbol signature: {reason}",
                 node.name
             ));
+        }
+
+        if structure_only
+            && !matches!(
+                node.rule,
+                Some(
+                    "split_component"
+                        | "avatar_split_clause"
+                        | "avatar_component_clause"
+                        | "avatar_branch_refutation"
+                        | "avatar_sat_refutation"
+                        | "negated_conjecture"
+                        | "assume_negation"
+                )
+            )
+        {
+            let mut context = None;
+            for parent in &node.parents {
+                if let Some(parent_context) = branch_contexts.get(&dag.by_name[parent.name]) {
+                    context = Some(match context {
+                        Some(existing) => merge_branch_contexts(&existing, parent_context),
+                        None => parent_context.clone(),
+                    });
+                }
+            }
+            if let Some(context) = context {
+                branch_contexts.insert(idx, context);
+            }
+            collect_all_symbols(node.formula, &mut known_symbols);
+            continue;
         }
 
         if node
@@ -764,6 +858,15 @@ fn verify_strict_with_source_internal(
                 &symbols,
                 limits,
             )
+            .and_then(|context| {
+                register_avatar_components(
+                    &context,
+                    &mut avatar_components,
+                    &known_symbols,
+                    limits,
+                )?;
+                Ok(context)
+            })
             .map(|context| {
                 let inherited = BranchContext {
                     assumptions: context.inherited_assumptions.clone(),
@@ -910,6 +1013,16 @@ fn verify_strict_with_source_internal(
         collect_all_symbols(node.formula, &mut known_symbols);
     }
 
+    if !dag.roots.iter().any(|root| {
+        !positive_conjecture_assumptions.contains(root)
+            && branch_contexts.get(root).is_none_or(|context| {
+                context.assumptions.is_empty() && context.sat_context.is_empty()
+            })
+    }) {
+        return KernelVerdict::Rejected(
+            "proof has no unconditional discharged `$false` root".into(),
+        );
+    }
     if limits
         .deadline
         .is_some_and(|deadline| Instant::now() >= deadline)
@@ -3667,6 +3780,7 @@ struct Dag<'a> {
     nodes: Vec<Node<'a>>,
     by_name: HashMap<&'a str, usize>,
     topo: Vec<usize>,
+    roots: Vec<usize>,
 }
 
 fn build_dag<'a>(
@@ -3727,6 +3841,18 @@ fn build_dag<'a>(
                     node.name, parent.name
                 )));
             }
+            let parent_node = &nodes[by_name[parent.name]];
+            if (parent.negated
+                || matches!(node.rule, Some("negated_conjecture" | "assume_negation")))
+                && (parent_node.role != FormulaRole::Conjecture
+                    || parent_node
+                        .formula
+                        .annotations()
+                        .and_then(|a| a.file_source())
+                        .is_none())
+            {
+                return Err(KernelVerdict::Rejected("assume_negation requires a source-bound conjecture, not an axiom or derived formula".into()));
+            }
         }
     }
 
@@ -3759,6 +3885,7 @@ fn build_dag<'a>(
         nodes,
         by_name,
         topo,
+        roots,
     })
 }
 
@@ -13207,7 +13334,6 @@ fn verify_avatar_split_clause(
         ));
     }
     let mut branch_vars = vec![0; split_positive.len()];
-    let mut seen_vars = HashSet::new();
     let mut component_literal_indices = vec![Vec::new(); split_positive.len()];
     let mut seen_indices = HashSet::new();
     for component in &annotation.components {
@@ -13224,11 +13350,6 @@ fn verify_avatar_split_clause(
                 "avatar_split_clause has an invalid SAT variable".into(),
             ));
         };
-        if !seen_vars.insert(var) {
-            return Err(KernelVerdict::Rejected(
-                "avatar_split_clause reuses a SAT variable".into(),
-            ));
-        }
         if split_positive[component.branch_index] != var {
             return Err(KernelVerdict::Rejected(
                 "avatar_split_clause metadata does not match its split literal".into(),
@@ -13266,6 +13387,7 @@ fn verify_avatar_split_clause(
             "avatar_split_clause does not cover every parent literal".into(),
         ));
     }
+    require_disjoint_avatar_components(&parent, &component_literal_indices)?;
     let inherited_vars = annotation
         .inherited
         .iter()
@@ -13760,9 +13882,6 @@ fn verify_avatar_sat_refutation(
         || !annotation.trace_cited_indices.is_empty()
         || !annotation.trace_clauses.is_empty()
         || annotation.trace_bytes.is_some();
-    if has_trace_payload && let Err(verdict) = verify_avatar_sat_trace(&annotation, limits) {
-        return verdict;
-    }
     let Some(split_indices) = annotation
         .split_nodes
         .iter()
@@ -13880,6 +13999,9 @@ fn verify_avatar_sat_refutation(
     // SAT instance is already proved unsatisfiable; enumeration would only
     // re-check the same fact.
     if has_trace_payload {
+        if let Err(verdict) = verify_avatar_sat_trace(&annotation, limits) {
+            return verdict;
+        }
         return KernelVerdict::Certified;
     }
     // No stored trace: reconstruct the SAT instance from the validated
@@ -13899,25 +14021,38 @@ fn verify_avatar_sat_refutation(
             "avatar_sat_refutation exceeded strict SAT-variable limit".into(),
         );
     }
+    // CaDiCaL allocates by the largest variable number, not by the number of
+    // distinct names. Densify sparse certificate names before solver entry.
+    let mut names: Vec<_> = variables.into_iter().collect();
+    names.sort_unstable();
+    let dense: HashMap<_, _> = names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| (name, (index + 1) as i32))
+        .collect();
     let mut solver = mrs_cadical::Solver::new();
     for split in &split_contexts {
         let mut clause = Vec::with_capacity(split.branch_vars.len() + split.inherited_vars.len());
         for &var in &split.branch_vars {
-            clause.push(var as i32);
+            clause.push(dense[&var]);
         }
         for &var in &split.inherited_vars {
-            clause.push(-(var as i32));
+            clause.push(-dense[&var]);
         }
         solver.add_clause(&clause);
     }
     for context in &branch_context_list {
         let mut clause = Vec::with_capacity(context.len());
         for &var in context {
-            clause.push(-(var as i32));
+            clause.push(-dense[&var]);
         }
         solver.add_clause(&clause);
     }
-    match solver.solve() {
+    let result = match limits.deadline {
+        Some(deadline) => solver.solve_until(deadline),
+        None => solver.solve(),
+    };
+    match result {
         SolveResult::Unsat => KernelVerdict::Certified,
         SolveResult::Unknown => KernelVerdict::Inconclusive(
             "avatar_sat_refutation SAT verification inconclusive".into(),
@@ -13982,6 +14117,25 @@ fn verify_avatar_sat_manifest_binding(
                 "avatar SAT trace citation does not match its AVATAR certificate".into(),
             ));
         }
+    }
+    // Uncited originals cannot become additional SAT premises. Duplicates of
+    // justified clauses (and propositional tautologies) are harmless, so keep
+    // compatibility with insertion-order manifests containing duplicate events.
+    let normalize = |clause: &[i32]| {
+        let mut clause = clause.to_vec();
+        clause.sort_unstable();
+        clause.dedup();
+        clause
+    };
+    let justified: HashSet<_> = expected.iter().map(|clause| normalize(clause)).collect();
+    if annotation
+        .trace_clauses
+        .iter()
+        .any(|clause| !is_tautology_kernel(clause) && !justified.contains(&normalize(clause)))
+    {
+        return Err(KernelVerdict::Rejected(
+            "avatar SAT trace has an unjustified original manifest clause".into(),
+        ));
     }
     Ok(())
 }
@@ -14634,6 +14788,14 @@ fn verify_case_split(
         return KernelVerdict::Rejected(
             "avatar_sat_refutation split parent must be a disjunction".into(),
         );
+    }
+    if split_definition.is_none() {
+        let indices = (0..top_clause.len())
+            .map(|index| vec![index])
+            .collect::<Vec<_>>();
+        if let Err(verdict) = require_disjoint_avatar_components(&top_clause, &indices) {
+            return verdict;
+        }
     }
     let mut seen = HashSet::new();
     for branch_root in &parent_indices[1..] {
@@ -18731,10 +18893,12 @@ mod tests {
 
     #[test]
     fn certifies_definition_renaming_before_nnf() {
-        let problem = "fof(goal, conjecture, ~((p => q) <=> r)).\n\
+        // Local replay starts from an asserted negated-goal premise, not from
+        // treating the positive conjecture as an axiom of a refutation.
+        let problem = "fof(goal, negated_conjecture, ~((p => q) <=> r)).\n\
                        fof(posr, axiom, r).\n\
                        fof(negr, axiom, ~r).";
-        let proof = "fof(goal, conjecture, ~((p => q) <=> r), file('problem.p', goal)).\
+        let proof = "fof(goal, negated_conjecture, ~((p => q) <=> r), file('problem.p', goal)).\
                      fof(posr, axiom, r, file('problem.p', posr)).\
                      fof(negr, axiom, ~r, file('problem.p', negr)).\
                      fof(d, definition, (d0 <=> (p => q)), introduced(definition, [new_symbols(definition, [d0])])).\
@@ -18751,10 +18915,10 @@ mod tests {
 
     #[test]
     fn certifies_krs187_definition_renaming() {
-        let problem = "fof(goal, conjecture, ~(((?[X2]: (model(X2, a)) <=> ?[X3]: (model(X3, b))) <=> r))).\n\
+        let problem = "fof(goal, negated_conjecture, ~(((?[X2]: (model(X2, a)) <=> ?[X3]: (model(X3, b))) <=> r))).\n\
                        fof(posr, axiom, r).\n\
                        fof(negr, axiom, ~r).";
-        let proof = "fof(goal, conjecture, ~(((?[X2]: (model(X2, a)) <=> ?[X3]: (model(X3, b))) <=> r)), file('problem.p', goal)).\n\
+        let proof = "fof(goal, negated_conjecture, ~(((?[X2]: (model(X2, a)) <=> ?[X3]: (model(X3, b))) <=> r)), file('problem.p', goal)).\n\
                      fof(posr, axiom, r, file('problem.p', posr)).\n\
                      fof(negr, axiom, ~r, file('problem.p', negr)).\n\
                      fof(c95, definition, ![X0]: ((def_esa_iff_0(X0) <=> ?[X2]: (model(X2, X0)))), introduced(definition, [new_symbols(definition, [def_esa_iff_0])])).\n\

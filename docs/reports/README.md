@@ -4,6 +4,10 @@ Reports are dated evidence. They are useful for understanding decisions and
 regressions, but no report is the current performance baseline unless it names
 the current commit and has been rerun under current controls.
 
+- [Paper implementation repairs](audits/paper-implementation-repairs-2026-11.md):
+  AVATAR/conjecture assumption soundness, BCE/index repairs and stored-proof
+  re-audits; no whole-prover completeness or score-promotion claim.
+
 | Area | Contents |
 |---|---|
 | `benchmarks/` | Dated division and benchmark summaries. |

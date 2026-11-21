@@ -568,7 +568,11 @@ impl SearchState {
     }
 
     /// Removes a clause and all its descendants from all active and passive sets.
-    /// This is Global Subsumption (Orphan Elimination).
+    /// Startup dependency eviction, not SAT-based global subsumption. Ordinary
+    /// backward subsumption deliberately does not erase every derived child:
+    /// a descendant is not redundant just because its historical parent was
+    /// simplified or removed. Any broader orphan policy needs a separate
+    /// fairness/redundancy argument and replay coverage.
     pub fn remove_clause_and_orphans(&mut self, id: ClauseId, ordering: &crate::TermOrdering) {
         let mut stack = vec![id];
         let mut visited = HashSet::default();

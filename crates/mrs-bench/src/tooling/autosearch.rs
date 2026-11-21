@@ -1687,7 +1687,7 @@ fn audit_holdout_proof(context: &RunContext<'_>, record: &RunRecord) -> String {
     checked_audit_verdict(&verdict, audit_success)
 }
 
-fn checked_audit_verdict(verdict: &str, success: bool) -> String {
+pub(super) fn checked_audit_verdict(verdict: &str, success: bool) -> String {
     match verdict {
         "VerifiedBad" | "Unknown" => verdict.to_owned(),
         "VerifiedGood" if success => verdict.to_owned(),
@@ -1708,7 +1708,7 @@ fn certified_search(
         && self_check == "Certified"
 }
 
-fn terminate_child(child: &mut Child) {
+pub(super) fn terminate_child(child: &mut Child) {
     #[cfg(unix)]
     {
         // Children are launched into a private process group. Stop their
@@ -1793,7 +1793,7 @@ fn parse_detail(stderr: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn apply_address_space_limit(command: &mut Command, memory_mb: u64) {
+pub(super) fn apply_address_space_limit(command: &mut Command, memory_mb: u64) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

@@ -324,9 +324,7 @@ impl<V: Clone + PartialEq> STreeId<V> {
         }
         match bank.get(query) {
             TermNode::Var(_) => false,
-            TermNode::App(sym, args) => self
-                .children
-                .contains_key(&Cell::Sym(*sym, args.len() as u8)),
+            TermNode::App(sym, args) => self.children.contains_key(&Cell::Sym(*sym, args.len())),
         }
     }
 
@@ -432,7 +430,7 @@ fn skip_walk_edge<V: Clone + PartialEq>(
                 remaining -= 1;
             }
             Cell::Sym(_, m) => {
-                remaining = remaining - 1 + m as usize;
+                remaining = remaining - 1 + m;
             }
         }
     }
@@ -502,7 +500,7 @@ fn unify_walk_edge<V: Clone + PartialEq>(
                 first,
                 rest,
                 e + 1,
-                _sn as usize,
+                _sn,
                 query,
                 q + 1,
                 child,

@@ -9,6 +9,25 @@ use mrs_tptp::proover::proof_header_link;
 
 use crate::load::LoadedJob;
 
+/// Identity of the exact source strings consumed by this checker invocation.
+/// Included sources are retained even after selection/merging into the AST.
+pub fn input_identity(job: &LoadedJob) -> serde_json::Value {
+    use sha2::{Digest, Sha256};
+    let digest = |source: &str| {
+        Sha256::digest(source.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    serde_json::json!({
+        "schema": 1,
+        "proof_sha256": digest(job.proof.source()),
+        "problem_path": job.problem_path,
+        "problem_sha256": job.problem.as_ref().map(|problem| digest(problem.source())),
+        "include_sha256": job.problem_includes.iter().map(|problem| digest(problem.source())).collect::<Vec<_>>(),
+    })
+}
+
 /// Opt-in formal-track shadow report alongside the authoritative strict kernel.
 /// Unsupported bridges and checker failures remain explicit Unknown evidence.
 pub fn verify_loaded_job_with_verus_shadow(
@@ -136,6 +155,21 @@ pub fn verify_text_with_include_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_identity_binds_the_actual_problem_and_proof_sources() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let problem = "cnf(p,axiom,p).";
+        let proof = "cnf(p,axiom,p,file('stdin.p',p)).";
+        let job = crate::load::load_text(problem.into(), proof.into(), root).unwrap();
+        let changed =
+            crate::load::load_text("cnf(p,axiom,~p).".into(), proof.into(), root).unwrap();
+        let a = input_identity(&job);
+        let b = input_identity(&changed);
+        assert_eq!(a["proof_sha256"], b["proof_sha256"]);
+        assert_ne!(a["problem_sha256"], b["problem_sha256"]);
+        assert_eq!(a["include_sha256"], serde_json::json!([]));
+    }
 
     #[test]
     fn verifies_in_memory_text() {

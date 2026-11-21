@@ -2082,6 +2082,53 @@ mod tests {
     use mrs_core::{Atom, Literal, SymbolTable, Term};
 
     #[test]
+    fn default_preprocessing_preserves_and_certifies_bce_paper_example_four() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let atom = |x, y| Atom::pred(p, vec![Term::var(x), Term::var(y)]);
+        let mut ids = ClauseIdGen::new();
+        let clauses = vec![
+            input_clause(
+                &mut ids,
+                vec![Literal::pos(atom(0, 1)), Literal::pos(atom(1, 0))],
+                "c",
+            ),
+            input_clause(
+                &mut ids,
+                vec![Literal::neg(atom(0, 1)), Literal::neg(atom(1, 0))],
+                "d",
+            ),
+        ];
+        let config = SearchConfig {
+            time_limit: Duration::from_secs(2),
+            ..Default::default()
+        };
+        let schedule = StrategySchedule {
+            strategies: vec![(config, Duration::from_secs(2))],
+        };
+        let (result, _) = run_schedule(
+            &clauses,
+            &[],
+            ids,
+            &schedule,
+            &symbols,
+            MlOptions::default(),
+            Some(1),
+        );
+        let SearchResult::Refutation(_, proof) = result else {
+            panic!("the BCE counterexample must still refute");
+        };
+        let problem =
+            mrs_tptp::parse_tptp("cnf(c,axiom,p(X,Y)|p(Y,X)). cnf(d,axiom,~p(U,V)|~p(V,U)).")
+                .unwrap();
+        let proof = mrs_tptp::parse_tptp(&proof).unwrap();
+        assert_eq!(
+            mrs_proof_kernel::verify_strict(&problem, &proof, Default::default()),
+            mrs_proof_kernel::KernelVerdict::Certified
+        );
+    }
+
+    #[test]
     fn epr_ground_prepass_defaults_on_and_supports_explicit_opt_out() {
         assert!(epr_ground_prepass_enabled(None));
         assert!(epr_ground_prepass_enabled(Some("1")));

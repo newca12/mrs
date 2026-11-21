@@ -1,0 +1,112 @@
+{
+  "changed_identical_artifacts": 0,
+  "counts": {
+    "VerifiedBad": 6
+  },
+  "interpretation": "archived-proof observations, not a fresh CASC score; no prior totals are overwritten",
+  "records": [
+    {
+      "detail": "% SZS status VerifiedBad : proof has no unconditional discharged `$false` root",
+      "elapsed_ms": 10,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/crates/mrs-proof-kernel/tests/resources/avatar/false-conjecture.p",
+        "problem_sha256": "f26b76a4d4710df6ec01eba6516b9c12d42b131fb66194afa1846600cf8bbee8",
+        "proof_sha256": "b0a9379eb6e5616e8cd68790c74375458290334ea2158543d2442b83fe677fa6",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "asserted-conjecture.s",
+      "sha256": "b0a9379eb6e5616e8cd68790c74375458290334ea2158543d2442b83fe677fa6",
+      "verdict": "VerifiedBad"
+    },
+    {
+      "detail": "% SZS status VerifiedBad : node split_b: avatar_split_clause reuses a SAT variable for non-equivalent components (including across splits)",
+      "elapsed_ms": 19,
+      "has_avatar": true,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/crates/mrs-proof-kernel/tests/resources/avatar/satisfiable.p",
+        "problem_sha256": "21c1d6e13e7aaddf9d9d2164edef7261399b2b139d02a9bdc6f6d968359d7184",
+        "proof_sha256": "7ec49e15ad8627805d0918472e25dccb13ba076ab1a6f0d71bfd05f8b697e2c0",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "inconsistent-names.s",
+      "sha256": "7ec49e15ad8627805d0918472e25dccb13ba076ab1a6f0d71bfd05f8b697e2c0",
+      "verdict": "VerifiedBad"
+    },
+    {
+      "detail": "% SZS status VerifiedBad : assume_negation requires a source-bound conjecture, not an axiom or derived formula",
+      "elapsed_ms": 10,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/crates/mrs-proof-kernel/tests/resources/avatar/satisfiable.p",
+        "problem_sha256": "21c1d6e13e7aaddf9d9d2164edef7261399b2b139d02a9bdc6f6d968359d7184",
+        "proof_sha256": "c0fab672c75a4f31d084841a96fb6e57284318c19e595642395e22a0ed0d3cde",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "negated-axiom.s",
+      "sha256": "c0fab672c75a4f31d084841a96fb6e57284318c19e595642395e22a0ed0d3cde",
+      "verdict": "VerifiedBad"
+    },
+    {
+      "detail": "% SZS status VerifiedBad : AVATAR split components share a first-order variable",
+      "elapsed_ms": 17,
+      "has_avatar": true,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/crates/mrs-proof-kernel/tests/resources/avatar/satisfiable.p",
+        "problem_sha256": "21c1d6e13e7aaddf9d9d2164edef7261399b2b139d02a9bdc6f6d968359d7184",
+        "proof_sha256": "5e6b0383d1b5327bfaa4b882f527fc79cd23f33349783884b97a53ec239dfaa1",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "shared-variable.s",
+      "sha256": "5e6b0383d1b5327bfaa4b882f527fc79cd23f33349783884b97a53ec239dfaa1",
+      "verdict": "VerifiedBad"
+    },
+    {
+      "detail": "% SZS status VerifiedBad : node bot: avatar SAT trace has an unjustified original manifest clause",
+      "elapsed_ms": 27,
+      "has_avatar": true,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/crates/mrs-proof-kernel/tests/resources/avatar/satisfiable.p",
+        "problem_sha256": "21c1d6e13e7aaddf9d9d2164edef7261399b2b139d02a9bdc6f6d968359d7184",
+        "proof_sha256": "30b98ff12ade8ddc410ca8904353e4cac6fe52583d8a8e9cf479b8ee11502d41",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "uncited-original.s",
+      "sha256": "30b98ff12ade8ddc410ca8904353e4cac6fe52583d8a8e9cf479b8ee11502d41",
+      "verdict": "VerifiedBad"
+    },
+    {
+      "detail": "% SZS status VerifiedBad : proof has no unconditional discharged `$false` root",
+      "elapsed_ms": 15,
+      "has_avatar": true,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/crates/mrs-proof-kernel/tests/resources/avatar/satisfiable.p",
+        "problem_sha256": "21c1d6e13e7aaddf9d9d2164edef7261399b2b139d02a9bdc6f6d968359d7184",
+        "proof_sha256": "e40a0805481fdda3781e10bc6e25fb351554ed8b9b80cd4dfe885b816b85c018",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "undischarged.s",
+      "sha256": "e40a0805481fdda3781e10bc6e25fb351554ed8b9b80cd4dfe885b816b85c018",
+      "verdict": "VerifiedBad"
+    }
+  ],
+  "schema": 1
+}

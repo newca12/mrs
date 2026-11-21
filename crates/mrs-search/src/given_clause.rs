@@ -4502,6 +4502,73 @@ mod tests {
     }
 
     #[test]
+    fn high_arity_resolution_refutes_and_replays() {
+        for arity in [255, 256, 257, 512] {
+            let mut symbols = SymbolTable::new();
+            let p = symbols.intern("p");
+            let q = symbols.intern("q");
+            let f = symbols.intern("f");
+            let a = symbols.intern("a");
+            let term = Term::app(f, vec![Term::constant(a); arity]);
+            let mut ids = ClauseIdGen::new();
+            let clauses = vec![
+                input_clause(
+                    &mut ids,
+                    vec![
+                        Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                        Literal::pos(Atom::pred(q, vec![Term::var(0)])),
+                    ],
+                    "c",
+                    "axiom",
+                ),
+                input_clause(
+                    &mut ids,
+                    vec![Literal::neg(Atom::pred(p, vec![term.clone()]))],
+                    "np",
+                    "axiom",
+                ),
+                input_clause(
+                    &mut ids,
+                    vec![Literal::neg(Atom::pred(q, vec![term]))],
+                    "nq",
+                    "axiom",
+                ),
+            ];
+            let mut state = SearchState::new(
+                clauses,
+                ids,
+                Arc::new(SymbolConfig::default()),
+                Arc::new(symbols),
+                false,
+            );
+            let config = SearchConfig {
+                time_limit: std::time::Duration::from_secs(2),
+                max_term_weight: None,
+                use_avatar: false,
+                lrs_policy: crate::LrsPolicy::Disabled,
+                ..Default::default()
+            };
+            let SearchResult::Refutation(_, proof) = search(&mut state, &config) else {
+                panic!("arity {arity} must refute");
+            };
+            let term = format!("f({})", vec!["a"; arity].join(","));
+            let problem = format!(
+                "cnf(c,axiom,p(X)|q(X)). cnf(np,axiom,~p({term})). cnf(nq,axiom,~q({term}))."
+            );
+            let verdict = mrs_proof_kernel::verify_strict(
+                &mrs_tptp::parse_tptp(&problem).unwrap(),
+                &mrs_tptp::parse_tptp(&proof).unwrap(),
+                Default::default(),
+            );
+            assert_eq!(
+                verdict,
+                mrs_proof_kernel::KernelVerdict::Certified,
+                "arity {arity}"
+            );
+        }
+    }
+
+    #[test]
     fn prove_socrates() {
         let mut syms = SymbolTable::new();
         let human = syms.intern("human");

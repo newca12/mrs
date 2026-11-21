@@ -2,7 +2,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use mrs_bench::tooling::{autosearch, bench, corpus, formal, prephase};
+use mrs_bench::tooling::{autosearch, bench, corpus, formal, prephase, reaudit};
 
 #[derive(Parser)]
 #[command(
@@ -21,6 +21,8 @@ enum Command {
     FreezeCorpus(corpus::FreezeArgs),
     /// Search clause-selection policies on a family-disjoint local corpus.
     Autosearch(autosearch::AutosearchArgs),
+    /// Fresh identity-bound strict replay of archived proof files.
+    ReauditProofs(reaudit::ReauditArgs),
     /// Run randomized, strictly audited comparisons of frozen builds.
     PairedCampaign(bench::PairedCampaignArgs),
     /// Compare frozen builds at identical selected-clause work.
@@ -92,6 +94,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::parse().command {
         Command::FreezeCorpus(args) => mrs_bench::tooling::corpus::freeze_command(args),
         Command::Autosearch(args) => mrs_bench::tooling::autosearch::run(args),
+        Command::ReauditProofs(args) => mrs_bench::tooling::reaudit::run(args),
         Command::PairedCampaign(args) => mrs_bench::tooling::bench::paired_campaign(args),
         Command::FixedWorkCompare(args) => mrs_bench::tooling::bench::fixed_work_compare(args),
         Command::CheckCanaryDrift(args) => mrs_bench::tooling::bench::check_canary_drift(args),

@@ -13,7 +13,9 @@ The strict kernel uses three internal outcomes:
 | `Rejected` | The input is structurally or logically invalid. |
 | `Inconclusive` | The input uses an unsupported rule, dialect, or resource shape. |
 
-Only `Certified` may be mapped to `VerifiedGood` in strict self-check mode.
+Only full-proof `Certified` may be mapped to `VerifiedGood` in strict self-check mode.
+The separate `check_avatar_structure` API is a structural gate only; its
+success must never replace checking leaves and ordinary inference content.
 Both `Rejected` and `Inconclusive` suppress theorem/proof output. The
 competition checker may map `Rejected` to `VerifiedBad` and `Inconclusive` to
 `Unknown` according to ProoVer scoring policy.
@@ -81,6 +83,23 @@ evidence against the certificate (`Rejected`); solver `Unknown` remains
 `Inconclusive`. Legacy `avatar_sat_refutation` nodes without explicit
 metadata are no longer plain ATP-fallback inputs — they follow this
 structure + CaDiCaL path.
+
+Both verifier policies also require variable-disjoint split components,
+proof-wide consistent SAT component names and an unconditional discharged
+false root. Trace manifest binding covers every original premise, not just
+the cited subset. Repeated justified originals and tautologies are harmless;
+an uncited invented clause cannot strengthen the replay problem. Unsupported
+or exhausted component-equivalence checks fail closed. These repairs change
+accepted certificate semantics; earlier audit totals remain historical until
+the exact artifacts are re-audited with the repaired checker.
+
+Positive conjecture leaves are not refutation premises. Their dependence is
+tracked to the final root; only a checked negation can be used as the problem's
+negated-goal assumption. `assume_negation` pedigrees cannot negate arbitrary
+axioms or derived formulas, including through nested parent annotations.
+Interpretation/logic roles and multiple positive conjectures are outside
+this proof-certification contract and fail closed rather than being asserted
+as extra axioms. Supplied CNF negated-conjecture clauses remain premises.
 
 ### Diagnostic mode
 

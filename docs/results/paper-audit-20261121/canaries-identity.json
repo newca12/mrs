@@ -1,0 +1,105 @@
+{
+  "avatar_only": false,
+  "git_commit": "4aec8c586ca62f47424b169c41d3a9cb15c23636",
+  "git_dirty": true,
+  "limit": 0,
+  "memory_mb": 2048,
+  "policy": "fresh strict replay; no proof regeneration, cache reuse, or score promotion",
+  "previous_report_sha256": null,
+  "problem_manifest": {
+    "corpus_sha256": "f9c4c76d7c56873aeecc0cb72994e78e070bddce641f38f4cadf98b477065d11",
+    "files": [
+      {
+        "bytes": 202,
+        "path": "asserted-conjecture.s",
+        "sha256": "b0a9379eb6e5616e8cd68790c74375458290334ea2158543d2442b83fe677fa6"
+      },
+      {
+        "bytes": 115,
+        "path": "false-conjecture.p",
+        "sha256": "f26b76a4d4710df6ec01eba6516b9c12d42b131fb66194afa1846600cf8bbee8"
+      },
+      {
+        "bytes": 1224,
+        "path": "inconsistent-names.s",
+        "sha256": "7ec49e15ad8627805d0918472e25dccb13ba076ab1a6f0d71bfd05f8b697e2c0"
+      },
+      {
+        "bytes": 179,
+        "path": "negated-axiom.s",
+        "sha256": "c0fab672c75a4f31d084841a96fb6e57284318c19e595642395e22a0ed0d3cde"
+      },
+      {
+        "bytes": 117,
+        "path": "satisfiable.p",
+        "sha256": "21c1d6e13e7aaddf9d9d2164edef7261399b2b139d02a9bdc6f6d968359d7184"
+      },
+      {
+        "bytes": 1094,
+        "path": "shared-variable.s",
+        "sha256": "5e6b0383d1b5327bfaa4b882f527fc79cd23f33349783884b97a53ec239dfaa1"
+      },
+      {
+        "bytes": 927,
+        "path": "uncited-original.s",
+        "sha256": "30b98ff12ade8ddc410ca8904353e4cac6fe52583d8a8e9cf479b8ee11502d41"
+      },
+      {
+        "bytes": 590,
+        "path": "undischarged.s",
+        "sha256": "e40a0805481fdda3781e10bc6e25fb351554ed8b9b80cd4dfe885b816b85c018"
+      }
+    ]
+  },
+  "problem_root": "/home/fr22192/EDLA/git/mrs/crates/mrs-proof-kernel/tests/resources/avatar",
+  "proof_manifest": {
+    "corpus_sha256": "f9c4c76d7c56873aeecc0cb72994e78e070bddce641f38f4cadf98b477065d11",
+    "files": [
+      {
+        "bytes": 202,
+        "path": "asserted-conjecture.s",
+        "sha256": "b0a9379eb6e5616e8cd68790c74375458290334ea2158543d2442b83fe677fa6"
+      },
+      {
+        "bytes": 115,
+        "path": "false-conjecture.p",
+        "sha256": "f26b76a4d4710df6ec01eba6516b9c12d42b131fb66194afa1846600cf8bbee8"
+      },
+      {
+        "bytes": 1224,
+        "path": "inconsistent-names.s",
+        "sha256": "7ec49e15ad8627805d0918472e25dccb13ba076ab1a6f0d71bfd05f8b697e2c0"
+      },
+      {
+        "bytes": 179,
+        "path": "negated-axiom.s",
+        "sha256": "c0fab672c75a4f31d084841a96fb6e57284318c19e595642395e22a0ed0d3cde"
+      },
+      {
+        "bytes": 117,
+        "path": "satisfiable.p",
+        "sha256": "21c1d6e13e7aaddf9d9d2164edef7261399b2b139d02a9bdc6f6d968359d7184"
+      },
+      {
+        "bytes": 1094,
+        "path": "shared-variable.s",
+        "sha256": "5e6b0383d1b5327bfaa4b882f527fc79cd23f33349783884b97a53ec239dfaa1"
+      },
+      {
+        "bytes": 927,
+        "path": "uncited-original.s",
+        "sha256": "30b98ff12ade8ddc410ca8904353e4cac6fe52583d8a8e9cf479b8ee11502d41"
+      },
+      {
+        "bytes": 590,
+        "path": "undischarged.s",
+        "sha256": "e40a0805481fdda3781e10bc6e25fb351554ed8b9b80cd4dfe885b816b85c018"
+      }
+    ]
+  },
+  "proof_root": "/home/fr22192/EDLA/git/mrs/crates/mrs-proof-kernel/tests/resources/avatar",
+  "schema": 1,
+  "time_seconds": 5,
+  "tool_sha256": "0b9d2a2068deb8d073baf255b24335e5511d8d7282c4c85a47670e59a05c7f97",
+  "verifier_sha256": "94a56f00130fcc90ecb8643ac08e9f9e642380df48598bbfa19f40c0732e2197"
+}

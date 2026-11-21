@@ -12,6 +12,8 @@ use mrs_core::term::{Term, VarId};
 use mrs_core::term_bank::{IdAtom, IdClause, IdLiteral, TermBank, TermNode};
 use mrs_core::witness::{ProofNodeId, ProofWitness};
 
+mod canonical;
+
 pub struct AvatarContext {
     pub solver: Solver,
     // Mapping from normalized split component to AVATAR propositional variable (u32).
@@ -55,8 +57,8 @@ impl AvatarContext {
     ///
     /// CaDiCaL literals use signed `i32` values, so refuse allocations beyond
     /// the representable positive-variable range instead of overflowing.
-    fn component_var(&mut self, key: String, used_vars: &HashSet<u32>) -> Option<u32> {
-        if let Some(&var) = self.component_vars.get(&key)
+    fn component_var(&mut self, key: Option<String>, used_vars: &HashSet<u32>) -> Option<u32> {
+        if let Some(&var) = key.as_ref().and_then(|key| self.component_vars.get(key))
             && !used_vars.contains(&var)
         {
             return Some(var);
@@ -67,7 +69,9 @@ impl AvatarContext {
             return None;
         }
         self.next_var = var.checked_add(1)?;
-        self.component_vars.entry(key).or_insert(var);
+        if let Some(key) = key {
+            self.component_vars.entry(key).or_insert(var);
+        }
         Some(var)
     }
 
@@ -304,6 +308,18 @@ impl AvatarContext {
             let lits: Vec<IdLiteral> = entries.iter().map(|(_, lit)| lit.clone()).collect();
             let comp_str = canonical_component_key_id(&lits, bank);
 
+            // Reserve a genuinely fresh marker, rather than interning over a
+            // user's existing nullary predicate with the same spelling.
+            while symbols
+                .resolve_name(&format!("spl0_{}", self.next_var))
+                .is_some()
+                || symbols
+                    .resolve_name(&format!("spl_{}", self.next_var))
+                    .is_some()
+            {
+                self.next_var = self.next_var.checked_add(1)?;
+            }
+
             let var = self.component_var(comp_str, &used_vars)?;
             if clause.avatar.contains(&var) {
                 // The clause already contains this component in its avatar trail.
@@ -495,14 +511,30 @@ fn literal_shape_key(lit: &Literal) -> String {
 }
 
 /// Returns a canonical string key for a set of literals that is invariant
-/// under variable renaming, literal permutation, and equality symmetry.
-fn canonical_component_key(lits: &[Literal]) -> String {
+/// under variable renaming, literal permutation, and equality symmetry. An
+/// ambiguous body exceeding the canonicalization budget gets a fresh SAT name.
+fn canonical_component_key(lits: &[Literal]) -> Option<String> {
     let mut indexed_lits: Vec<(usize, &Literal, String)> = lits
         .iter()
         .enumerate()
         .map(|(i, lit)| (i, lit, literal_shape_key(lit)))
         .collect();
     indexed_lits.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+    if indexed_lits.windows(2).any(|pair| pair[0].2 == pair[1].2)
+        || lits.iter().any(|lit| {
+            if let Atom::Eq(left, right) = &lit.atom {
+                let mut l = String::new();
+                let mut r = String::new();
+                term_shape_key(left, &mut l);
+                term_shape_key(right, &mut r);
+                l == r
+            } else {
+                false
+            }
+        })
+    {
+        return canonical::bounded_key(lits);
+    }
 
     let mut var_map: HashMap<VarId, u32> = HashMap::default();
     let mut next: u32 = 0;
@@ -548,7 +580,7 @@ fn canonical_component_key(lits: &[Literal]) -> String {
             }
         }
     }
-    s
+    Some(s)
 }
 
 fn write_term_canonical(
@@ -696,13 +728,33 @@ fn id_literal_shape_key(lit: &IdLiteral, bank: &TermBank) -> String {
 
 /// Returns a canonical string key for a set of `IdLiteral`s, invariant
 /// under variable renaming, literal permutation, and equality symmetry.
-fn canonical_component_key_id(lits: &[IdLiteral], bank: &TermBank) -> String {
+fn canonical_component_key_id(lits: &[IdLiteral], bank: &TermBank) -> Option<String> {
     let mut indexed_lits: Vec<(usize, &IdLiteral, String)> = lits
         .iter()
         .enumerate()
         .map(|(i, lit)| (i, lit, id_literal_shape_key(lit, bank)))
         .collect();
     indexed_lits.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+    if indexed_lits.windows(2).any(|pair| pair[0].2 == pair[1].2)
+        || lits.iter().any(|lit| {
+            if let IdAtom::Eq(left, right) = &lit.atom {
+                let mut l = String::new();
+                let mut r = String::new();
+                id_term_shape_key(*left, bank, &mut l);
+                id_term_shape_key(*right, bank, &mut r);
+                l == r
+            } else {
+                false
+            }
+        })
+    {
+        return canonical::bounded_key(
+            &lits
+                .iter()
+                .map(|lit| bank.literal_to_legacy(lit))
+                .collect::<Vec<_>>(),
+        );
+    }
 
     let mut var_map: HashMap<VarId, u32> = HashMap::default();
     let mut next: u32 = 0;
@@ -748,7 +800,7 @@ fn canonical_component_key_id(lits: &[IdLiteral], bank: &TermBank) -> String {
             }
         }
     }
-    s
+    Some(s)
 }
 
 fn write_id_term_canonical(
@@ -789,6 +841,108 @@ fn write_id_term_canonical(
 mod tests {
     use super::*;
     use mrs_core::{Atom, Literal, SymbolTable, Term};
+
+    #[test]
+    fn tied_shapes_are_canonical_in_both_representations() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let f = symbols.intern("f");
+        let edge = |x, y| Literal::pos(Atom::pred(p, vec![Term::var(x), Term::var(y)]));
+        let cases = [
+            (vec![edge(0, 1), edge(1, 2)], vec![edge(7, 8), edge(6, 7)]),
+            (
+                vec![
+                    Literal::pos(Atom::eq(
+                        Term::app(f, vec![Term::var(0)]),
+                        Term::app(f, vec![Term::var(1)]),
+                    )),
+                    Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                ],
+                vec![
+                    Literal::pos(Atom::pred(p, vec![Term::var(7)])),
+                    Literal::pos(Atom::eq(
+                        Term::app(f, vec![Term::var(6)]),
+                        Term::app(f, vec![Term::var(7)]),
+                    )),
+                ],
+            ),
+        ];
+        for (left, right) in cases {
+            let key = canonical_component_key(&left).expect("small body fits the bound");
+            assert_eq!(Some(key.clone()), canonical_component_key(&right));
+            let mut bank = TermBank::new();
+            let left_id = left
+                .iter()
+                .map(|lit| bank.literal_from_legacy(lit))
+                .collect::<Vec<_>>();
+            let right_id = right
+                .iter()
+                .map(|lit| bank.literal_from_legacy(lit))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                canonical_component_key_id(&left_id, &bank),
+                Some(key.clone())
+            );
+            assert_eq!(canonical_component_key_id(&right_id, &bank), Some(key));
+        }
+        assert_ne!(
+            canonical_component_key(&[edge(0, 1), edge(1, 2)]),
+            canonical_component_key(&[edge(0, 1), edge(0, 2)])
+        );
+    }
+
+    #[test]
+    fn exhausted_canonicalization_allocates_fresh_names_without_reuse() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let body = (0..7)
+            .map(|i| Literal::pos(Atom::pred(p, vec![Term::var(i), Term::var(i + 1)])))
+            .collect::<Vec<_>>();
+        assert!(canonical_component_key(&body).is_none());
+        let mut context = AvatarContext::new();
+        let used = HashSet::default();
+        assert_ne!(
+            context.component_var(None, &used),
+            context.component_var(None, &used)
+        );
+        assert!(context.component_vars.is_empty());
+    }
+
+    #[test]
+    fn marker_allocation_does_not_overwrite_input_predicates() {
+        let mut symbols = SymbolTable::new();
+        symbols.intern("spl0_1");
+        let p = symbols.intern("p");
+        let q = symbols.intern("q");
+        let mut bank = TermBank::new();
+        let mut ids = ClauseIdGen::new();
+        let clause = Clause::new(
+            ids.next(),
+            vec![
+                Literal::pos(Atom::pred(p, vec![Term::var(0)])),
+                Literal::pos(Atom::pred(q, vec![Term::var(1)])),
+            ],
+            ClauseSource::Input {
+                name: "c".into(),
+                role: "axiom".into(),
+            },
+        );
+        let clause = bank.clause_from_legacy(&clause);
+        let parts = AvatarContext::new()
+            .split_clause_id(
+                &clause,
+                &mut ids,
+                &bank,
+                &mut HashMap::default(),
+                &mut symbols,
+            )
+            .unwrap();
+        assert!(
+            parts
+                .iter()
+                .all(|part| part.avatar.last().copied() != Some(1))
+        );
+    }
 
     #[test]
     fn canonical_key_alpha_invariant() {

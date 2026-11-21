@@ -1,5 +1,8 @@
 # Guides
 
+- [Certificate re-audits](certificate-reaudits.md): fresh, identity-bound replay
+  after checker semantics change; never silently replace historical totals.
+
 | Document | Use it for |
 |---|---|
 | [Development](development.md) | Nix shell, builds, tests, lints, and repository checks. |

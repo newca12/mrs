@@ -111,6 +111,12 @@ In addition to the baseline release gate, every certified release promotion requ
 
 ## Known Boundaries
 
+- Proof-acceptance semantics changed in the November paper audit. Include the
+  proof-wide assumption canaries and their valid controls in release review;
+  retain fresh, identity-bound re-audits instead of treating older certificates
+  as evidence against newly discovered failure shapes. See
+  [`../reference/paper-implementations.md`](../reference/paper-implementations.md).
+
 - The PRV score report requires the configured verifier mode and any external
   ATP binaries used by competition mode. Missing external binaries are an
   environment limitation, not a reason to claim the documented score.

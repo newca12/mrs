@@ -31,6 +31,35 @@ pub struct FileEntry {
     pub bytes: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct FileManifest {
+    pub corpus_sha256: String,
+    pub files: Vec<FileEntry>,
+}
+
+/// Content identity only: proof-only/single-family trees do not need the
+/// development/holdout split required by the portfolio exploration workflow.
+pub fn freeze_files(root: &Path) -> Result<FileManifest, Box<dyn std::error::Error>> {
+    let mut paths = Vec::new();
+    collect_files(root, root, &mut paths)?;
+    paths.sort();
+    let mut files = Vec::with_capacity(paths.len());
+    for path in paths {
+        let path = path.to_string_lossy().replace('\\', "/");
+        let bytes = fs::read(root.join(&path))?;
+        files.push(FileEntry {
+            path,
+            sha256: hex_digest(&bytes),
+            bytes: bytes.len() as u64,
+        });
+    }
+    let rows = files.iter().map(|file| serde_json::json!({ "path": file.path, "sha256": file.sha256, "bytes": file.bytes })).collect::<Vec<_>>();
+    Ok(FileManifest {
+        corpus_sha256: hex_digest(&serde_json::to_vec(&rows)?),
+        files,
+    })
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ProblemEntry {
     pub path: String,
@@ -249,6 +278,17 @@ fn hex_digest(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_identity_accepts_a_proof_only_tree_without_a_training_split() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("proof.s"), "proof bytes").unwrap();
+        let manifest = freeze_files(root.path()).unwrap();
+        assert_eq!(manifest.files.len(), 1);
+        let original = manifest.corpus_sha256;
+        fs::write(root.path().join("proof.s"), "different proof bytes").unwrap();
+        assert_ne!(original, freeze_files(root.path()).unwrap().corpus_sha256);
+    }
 
     #[test]
     fn split_is_stable_and_content_identity_includes_axioms() {

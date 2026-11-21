@@ -2,6 +2,8 @@
 
 > Status: Historical gap analysis. Implemented features and boundaries may have
 > changed; consult [`reference/architecture.md`](../reference/architecture.md).
+> The blanket implementation checklist below is retired. Its overclaims are
+> corrected by the current [per-paper contracts](../reference/paper-implementations.md).
 
 To build a state-of-the-art (SOTA) Automated Theorem Prover (ATP) capable of rivaling giants like **Vampire** or **E**, the system must implement a massive stack of specific calculi, indexing data structures, redundancy elimination techniques, and search heuristics.
 
@@ -13,27 +15,27 @@ Here is a comprehensive breakdown of what defines a SOTA prover, the seminal res
 The foundation of modern first-order logic provers.
 
 *   **Superposition Calculus**: The complete, equational inference system that replaces naive resolution.
-    *   *Paper:* [Rewrite-based Equational Theorem Proving with Selection and Simplification (Bachmair & Ganzinger, 1994)](https://link.springer.com/chapter/10.1007/3-540-58462-0_52)
+    *   *Paper:* [Rewrite-based Equational Theorem Proving with Selection and Simplification (Bachmair & Ganzinger, 1994)](https://doi.org/10.1093/logcom/4.3.217)
     *   ✅ **Implemented:** Standard rules (Resolution, Factoring, Equality Resolution, Equality Factoring, Superposition).
 *   **The Given-Clause Loop**: The driving algorithm (Otter / DISCOUNT variants) that manages the active/passive clause sets.
-    *   *Paper:* [A DISCOUNT-based architecture for E (Schulz, 2002)](https://www.eprover.org/OLD/DISCOUNT_Architecture.pdf)
+    *   *Reference:* E: A Brainiac Theorem Prover (Schulz, 2002); the old standalone DISCOUNT PDF citation was not verified.
     *   ✅ **Implemented:** Standard Otter loop.
 *   **AVATAR (Advanced Vampire Architecture)**: Delegates propositional reasoning and clause splitting to a SAT solver.
     *   *Paper:* [AVATAR: The Architecture for First-Order Theorem Provers (Voronkov, 2014)](https://link.springer.com/chapter/10.1007/978-3-319-08867-9_46)
-    *   ✅ **Implemented:** Fully integrated with `varisat`. EPR-structured problems are now handled lazily by AVATAR instead of naive pre-expansion.
+    *   **Scoped adaptation:** AVATAR-style splitting with CaDiCaL. Neither whole-paper fidelity nor engine completeness follows from integration; EPR grounding/InstGen tiers are separate.
 *   **Instantiation-Based Methods (InstGen)**: Highly efficient algorithms tailored specifically for the Effectively Propositional (EPR) fragment.
-    *   *Paper:* [New Directions in Instantiation-Based Theorem Proving (Ganzinger & Korovin, 2003)](https://link.springer.com/chapter/10.1007/3-540-45085-8_6)
+    *   *Paper:* [New Directions in Instantiation-Based Theorem Proving (Ganzinger & Korovin, 2003)](https://doi.org/10.1109/LICS.2003.1210045)
     *   ✅ **Implemented (fail-closed SAT boundary):** Lazy SAT-guided InstGen now handles pure relational EPR with adaptive pre-pass budgets, MGU-driven instance generation, refutation proof extraction, and route/budget telemetry. Naive ground pre-expansion (`preprocess_epr`) remains disabled for large EPR inputs; variable-bearing satisfiability models still return `GaveUp` until a certified finite-model path exists.
 
 ### 2. Term Indexing Data Structures
 Without highly optimized indices, linear scans cause the prover to time out instantly.
 
 *   **Discrimination Trees & Trie Variants**: For fast term retrieval during unification and matching.
-    *   *Paper:* [Experiments with Discrimination-Tree Indexing and Path Indexing (McCune, 1992)](https://link.springer.com/article/10.1007/BF00881903)
-    *   ✅ **Implemented:** `DTreeId` now tracks variable bindings through traversal, making both unification (`unify_flat`) and generalization (`get_generalizations_rec`) binding-consistent (perfect index). False positives are eliminated at the index level.
+    *   *Paper:* [Experiments with Discrimination-Tree Indexing and Path Indexing (McCune, 1992)](https://doi.org/10.1007/BF00245458)
+    *   **Correction:** Unification retrieval is an imperfect filter. Binding checks remove some false positives, not all; exact callers re-check candidates.
     *   ❌ **Missing:** Substitution Trees (used by Vampire) share common subterm contexts across all stored clauses, drastically reducing memory footprint for large clause sets.
-*   **Feature Vector Indexing (FVI)**: Constant-time filtering for subsumption.
-    *   *Paper:* [Simple and Efficient Clause Subsumption with Feature Vector Indexing (Schulz, 2004)](https://link.springer.com/chapter/10.1007/978-3-540-25984-8_20)
+*   **Feature Vector Indexing (FVI)**: Fixed-dimensional filtering; whole-index retrieval is not constant-time.
+    *   *Paper:* [Simple and Efficient Clause Subsumption with Feature Vector Indexing (Schulz, 2004; revised 2013)](https://doi.org/10.1007/978-3-642-36675-8_3)
     *   ✅ **Implemented:** Symbol frequency and polarity vectors, cached inside `UnprocessedSet`.
 
 ### 3. Redundancy Elimination & Simplification
@@ -44,9 +46,9 @@ The primary reason Vampire wins is its ability to aggressively delete useless cl
     *   ✅ **Implemented:** Condensation and Tautology deletion.
 *   **Subsumption Resolution (Contextual Literal Cutting)**: If you have $C_1 = P \lor Q$ and $C_2 = \neg P \lor Q \lor R$, simplify $C_2$ directly to $Q \lor R$.
     *   ✅ **Implemented:** Index-driven via the Feature Vector Index in `mrs-index`.
-*   **Global Subsumption & Orphan Elimination**: Deleting clauses generated by parents that were later subsumed.
-    *   *Paper:* [Orphan Elimination in Vampire (Voronkov, 2010)]
-    *   ✅ **Implemented:** `SearchState` tracks a `children` map; `remove_clause_and_orphans` walks the dependency graph and evicts the entire subtree from processed, unprocessed, and dormant sets.
+*   **Dependency eviction / orphan bookkeeping**:
+    *   **Citation unresolved:** the previously listed standalone “Orphan Elimination in Vampire (Voronkov, 2010)” reference was not verified.
+    *   **Correction:** Startup descendant eviction exists; it is not a general backward-subsumption orphan policy and is not SAT-based global subsumption.
 
 ### 4. Search Control & Heuristics
 Deciding *which* clause to process next.
@@ -63,7 +65,7 @@ Deciding *which* clause to process next.
 *   **Set of Support (SOS)**:
     *   ✅ **Implemented:** Two complementary SOS mechanisms controlled by `SearchConfig.sos_depth`: selection SOS (only return goal-connected clauses from weight picks) and inference SOS (skip inferences where both parents have `distance >= sos_depth`).
 *   **Machine Learning Guided Selection (ENIGMA / Deepire)**: Using GNNs or XGBoost to evaluate clause usefulness based on past proofs.
-    *   *Paper:* [Deepire: Deep Learning for Clause Selection in Vampire (Selsam et al., 2020)](https://arxiv.org/abs/2004.09503)
+    *   **Citation correction:** the old Deepire arXiv link led to an unrelated Goldberg paper. No whole-Deepire implementation is claimed.
     *   ⚠️ **Partial:** `mrs` has an ENIGMA-style Burn MLP implementation behind the `ml-guidance` feature flag. Training data collection is in progress; the model is not yet integrated into the competition portfolio.
 *   **Goal-Directed Equational Reasoning**:
     *   ✅ **Implemented:** Distance-to-conjecture is tracked in the `Clause` structure and **propagated to derived clauses** (`min(parent.distance) + 1`). The `GoalDirected` selection strategy uses this to strongly penalize pure-axiom clauses in weight-based selection.
@@ -72,6 +74,6 @@ Deciding *which* clause to process next.
 *   **Associative-Commutative (AC) Unification**:
     *   *Paper:* [AC-Superposition (Bachmair & Ganzinger, 1994)]
     *   ✅ **Partially Implemented:** `mrs` detects AC axioms at search startup, eliminates the permutation axiom clauses from the passive set, and uses a heuristic AC-unification (`unify_ac_id`) that flattens associative chains and tries both orderings for commutativity.
-    *   ❌ **Missing:** Full AC-Superposition requires AC-compatible term orderings (AC-RPO or AC-KBO). The current standard LPO/KBO cannot soundly orient terms modulo AC, so some necessary search paths may still be pruned incorrectly.
+    *   **Correction:** AC-aware ordering helpers now exist, but restricted unification/replay and the complete AC calculus remain open. Their existence is not a completeness proof.
 *   **Clause Sharing**:
     *   ✅ **Implemented:** When cross-strategy sharing is enabled with a positive `MRS_SHARED_POOL_INTERVAL`, a strategy's derived unit equalities are broadcast to a shared `Arc<RwLock<Vec<Clause>>>` pool; sibling strategies ingest them at polling epochs and add them to their own demodulation indexes. Sharing is disabled by default.

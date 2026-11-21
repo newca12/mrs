@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub(crate) enum Cell {
     /// Function symbol with its arity.
-    Sym(SymbolId, u8),
+    Sym(SymbolId, usize),
     /// Variable with its normalized ID.
     Var(VarId),
 }
@@ -50,7 +50,7 @@ fn flatten_into(
             out.push(Cell::Var(norm_v));
         }
         Term::App(sym, args) => {
-            out.push(Cell::Sym(*sym, args.len() as u8));
+            out.push(Cell::Sym(*sym, args.len()));
             for arg in args {
                 flatten_into(arg, out, var_map, next_var);
             }
@@ -88,7 +88,7 @@ pub(crate) fn flatten_atom_id(atom: &IdAtom, bank: &TermBank) -> Vec<Cell> {
     let mut next_var = 0;
     match atom {
         IdAtom::Pred(sym, args) => {
-            cells.push(Cell::Sym(*sym, args.len() as u8));
+            cells.push(Cell::Sym(*sym, args.len()));
             for &arg in args {
                 flatten_into_id(arg, bank, &mut cells, &mut var_map, &mut next_var);
             }
@@ -115,7 +115,7 @@ pub(crate) fn flatten_into_id(
             out.push(Cell::Var(norm_v));
         }
         TermNode::App(sym, args) => {
-            out.push(Cell::Sym(*sym, args.len() as u8));
+            out.push(Cell::Sym(*sym, args.len()));
             for &arg in args {
                 flatten_into_id(arg, bank, out, var_map, next_var);
             }
@@ -278,7 +278,7 @@ impl<V: Clone + PartialEq> DTreeId<V> {
                             }
                         }
                         Cell::Sym(_, n) => {
-                            child.skip_stored(n as usize, query, pos + 1, results, bindings);
+                            child.skip_stored(n, query, pos + 1, results, bindings);
                         }
                     }
                 }
@@ -304,13 +304,7 @@ impl<V: Clone + PartialEq> DTreeId<V> {
                     child.skip_stored(remaining - 1, query, query_pos, results, bindings);
                 }
                 Cell::Sym(_, m) => {
-                    child.skip_stored(
-                        remaining - 1 + m as usize,
-                        query,
-                        query_pos,
-                        results,
-                        bindings,
-                    );
+                    child.skip_stored(remaining - 1 + m, query, query_pos, results, bindings);
                 }
             }
         }
@@ -485,7 +479,7 @@ impl<V: Clone + PartialEq> DTree<V> {
                         }
                         Cell::Sym(_, n) => {
                             // Stored function, query variable: skip stored subterm's children
-                            child.skip_stored(n as usize, query, pos + 1, results);
+                            child.skip_stored(n, query, pos + 1, results);
                         }
                     }
                 }
@@ -513,7 +507,7 @@ impl<V: Clone + PartialEq> DTree<V> {
                 }
                 Cell::Sym(_, m) => {
                     // One stored Sym(g, m) = one child subterm, which itself has m children
-                    child.skip_stored(remaining - 1 + m as usize, query, query_pos, results);
+                    child.skip_stored(remaining - 1 + m, query, query_pos, results);
                 }
             }
         }
@@ -635,7 +629,7 @@ impl<V: Clone + PartialEq> DTree<V> {
                         }
                         Cell::Sym(_, n) => {
                             // Skip stored function's children, then continue
-                            child.skip_stored(n as usize, query, pos + 1, results);
+                            child.skip_stored(n, query, pos + 1, results);
                         }
                     }
                 }

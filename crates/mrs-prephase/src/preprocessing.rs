@@ -14,11 +14,13 @@
 //!   descendants, and thus can never derive the empty clause $\Box$. Eliminating
 //!   such axiom clauses preserves unsatisfiability.
 //!
-//! - **Blocked Clause Elimination (BCE)**: In First-Order Logic (Kiesl, Suda,
-//!   Seidl, IJCAR 2016), a clause $C$ is blocked on literal $L \in C$ if for every
-//!   clause $D$ and literal $L' \in D$ such that $L$ and $\neg L'$ unify with MGU
-//!   $\sigma$, the resolvent $(C \setminus \{L\})\sigma \cup (D \setminus \{L'\})\sigma$
-//!   is a tautology. Eliminating blocked clauses is satisfiability-preserving:
+//! - **Blocked Clause Elimination (BCE)**: In first-order logic (Kiesl et al.,
+//!   LPAR 2017), blocking requires every **L-resolvent**, including resolvents
+//!   against jointly unifiable sets of opposite literals, to be valid. Binary
+//!   resolvents alone are insufficient (the paper's Example 4). This bounded
+//!   implementation enumerates all nonempty partner subsets; exhausted checks
+//!   leave the clause untouched. Eliminating genuinely blocked clauses preserves
+//!   satisfiability:
 //!   $F \setminus \{C\}$ is SAT $\iff F$ is SAT.
 //!   That guarantee covers resolution only: with equality present,
 //!   paramodulation can use a "blocked" literal, so BCE is skipped entirely
@@ -37,6 +39,8 @@ use mrs_core::formula::Atom;
 use mrs_core::symbol::SymbolId;
 use mrs_core::term::Term;
 use rustc_hash::FxHashMap;
+
+mod bce;
 
 /// Configuration options for clause preprocessing.
 #[derive(Clone, Debug)]
@@ -221,10 +225,14 @@ fn run_ple_pass(clauses: &[Clause], alive: &mut [bool]) -> usize {
 
 /// Executes a single pass of First-Order Blocked Clause Elimination (BCE).
 ///
-/// An axiom clause $C$ is blocked on literal $L \in C$ if for every resolution partner
-/// clause $D$ with an opposite literal $L' \in D$ that unifies with $L$ (MGU $\sigma$),
-/// the resolvent $(C \setminus \{L\})\sigma \cup (D \setminus \{L'\})\sigma$ is a tautology.
-fn run_bce_pass(clauses: &[Clause], alive: &mut [bool], config: &PreprocessingConfig) -> usize {
+/// Check the paper's L-resolvents, not only binary resolvents. Caps can only
+/// miss a deletion: no incomplete check is treated as a blocking certificate.
+fn run_bce_pass(
+    clauses: &[Clause],
+    alive: &mut [bool],
+    config: &PreprocessingConfig,
+    deadline: Instant,
+) -> usize {
     // 1. Index all currently alive literals by (SymbolId, polarity)
     let mut lit_index: FxHashMap<(SymbolId, bool), Vec<(usize, usize)>> = FxHashMap::default();
     for (i, clause) in clauses.iter().enumerate() {
@@ -245,12 +253,16 @@ fn run_bce_pass(clauses: &[Clause], alive: &mut [bool], config: &PreprocessingCo
 
     // 2. Check each non-protected clause for a blocking literal
     for i in 0..clauses.len() {
+        if Instant::now() >= deadline {
+            break;
+        }
         if !alive[i] || is_protected(&clauses[i]) {
             continue;
         }
         let c = &clauses[i];
 
         let mut clause_is_blocked = false;
+        let mut remaining = 4096;
 
         for (lit_idx, lit) in c.literals.iter().enumerate() {
             let Atom::Pred(sym, args) = &lit.atom else {
@@ -270,7 +282,7 @@ fn run_bce_pass(clauses: &[Clause], alive: &mut [bool], config: &PreprocessingCo
             let active_partners: Vec<(usize, usize)> = partners
                 .iter()
                 .copied()
-                .filter(|&(p_idx, _)| alive[p_idx])
+                .filter(|&(p_idx, _)| alive[p_idx] && p_idx != i)
                 .collect();
 
             if active_partners.is_empty() {
@@ -287,43 +299,24 @@ fn run_bce_pass(clauses: &[Clause], alive: &mut [bool], config: &PreprocessingCo
             let offset = max_var(c);
             let t1 = Term::app(*sym, args.clone());
 
-            for (p_idx, p_lit_idx) in active_partners {
+            let partner_clauses = active_partners
+                .iter()
+                .map(|&(p_idx, _)| p_idx)
+                .collect::<std::collections::BTreeSet<_>>();
+            for p_idx in partner_clauses {
                 let d = &clauses[p_idx];
                 let d_renamed = rename_clause(d, offset);
-                let l_d = &d_renamed.literals[p_lit_idx];
-
-                let Some(t2) = atom_to_term(&l_d.atom) else {
+                if bce::all_l_resolvents_valid(
+                    c,
+                    lit_idx,
+                    &t1,
+                    &d_renamed,
+                    deadline,
+                    &mut remaining,
+                ) != Some(true)
+                {
                     literal_blocks = false;
                     break;
-                };
-
-                match mrs_unify::unify(&t1, &t2) {
-                    Err(_) => {
-                        // Unification failed; no resolvent can be produced.
-                        // Condition holds for this partner!
-                        continue;
-                    }
-                    Ok(mgu) => {
-                        // Build resolvent literals
-                        let mut resolvent_lits =
-                            Vec::with_capacity(c.literals.len() + d_renamed.literals.len() - 2);
-                        for (k, l) in c.literals.iter().enumerate() {
-                            if k != lit_idx {
-                                resolvent_lits.push(mgu.apply_literal(l));
-                            }
-                        }
-                        for (k, l) in d_renamed.literals.iter().enumerate() {
-                            if k != p_lit_idx {
-                                resolvent_lits.push(mgu.apply_literal(l));
-                            }
-                        }
-
-                        if !is_resolvent_tautology(&resolvent_lits) {
-                            // Resolvent is non-tautological; literal does not block
-                            literal_blocks = false;
-                            break;
-                        }
-                    }
                 }
             }
 
@@ -333,7 +326,7 @@ fn run_bce_pass(clauses: &[Clause], alive: &mut [bool], config: &PreprocessingCo
             }
         }
 
-        if clause_is_blocked {
+        if clause_is_blocked && Instant::now() < deadline {
             alive[i] = false;
             removed += 1;
         }
@@ -400,7 +393,8 @@ pub fn preprocess_clauses(
         }
 
         if enable_bce {
-            let bce_removed = run_bce_pass(clauses, &mut alive, config);
+            let deadline = start_time.checked_add(time_limit).unwrap_or(start_time);
+            let bce_removed = run_bce_pass(clauses, &mut alive, config, deadline);
             if bce_removed > 0 {
                 stats.blocked_clauses_removed += bce_removed;
                 progress = true;
@@ -430,6 +424,122 @@ mod tests {
     use super::*;
     use mrs_core::clause::{ClauseId, ClauseSource};
     use mrs_core::symbol::SymbolTable;
+
+    #[test]
+    fn bce_retains_the_papers_nonbinary_resolvent_counterexample() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let atom = |x, y| Atom::pred(p, vec![Term::var(x), Term::var(y)]);
+        let clauses = vec![
+            make_clause(
+                0,
+                vec![Literal::pos(atom(0, 1)), Literal::pos(atom(1, 0))],
+                1,
+            ),
+            make_clause(
+                1,
+                vec![Literal::neg(atom(0, 1)), Literal::neg(atom(1, 0))],
+                1,
+            ),
+        ];
+        let (remaining, stats) = preprocess_clauses(&clauses, &PreprocessingConfig::default());
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(stats.total_removed, 0);
+    }
+
+    #[test]
+    fn bce_preserves_small_first_order_models_against_an_exhaustive_oracle() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let atom = |x, y| Atom::pred(p, vec![Term::var(x), Term::var(y)]);
+        let shapes = [
+            vec![Literal::pos(atom(0, 1))],
+            vec![Literal::neg(atom(0, 1))],
+            vec![Literal::pos(atom(0, 1)), Literal::pos(atom(1, 0))],
+            vec![Literal::neg(atom(0, 1)), Literal::neg(atom(1, 0))],
+            vec![Literal::pos(atom(0, 1)), Literal::neg(atom(1, 0))],
+            vec![Literal::pos(atom(0, 0)), Literal::pos(atom(1, 1))],
+            vec![Literal::neg(atom(0, 0)), Literal::neg(atom(1, 1))],
+        ];
+        // Independent two-element model enumeration, with four possible p atoms
+        // and universally quantified variables (not a resolution oracle).
+        let has_model = |clauses: &[Clause]| {
+            (0u32..16).any(|model| {
+                clauses.iter().all(|clause| {
+                    (0..4).all(|assignment| {
+                        clause.literals.iter().any(|literal| {
+                            let Atom::Pred(_, args) = &literal.atom else {
+                                panic!("predicate fixture");
+                            };
+                            let value = |term: &Term| match term {
+                                Term::Var(0) => assignment / 2,
+                                Term::Var(1) => assignment % 2,
+                                _ => panic!("two-variable fixture"),
+                            };
+                            let bit = value(&args[0]) * 2 + value(&args[1]);
+                            literal.positive == (model & (1 << bit) != 0)
+                        })
+                    })
+                })
+            })
+        };
+        for left in &shapes {
+            for right in &shapes {
+                let clauses = vec![
+                    make_clause(0, left.clone(), 1),
+                    make_clause(1, right.clone(), 1),
+                ];
+                let config = PreprocessingConfig {
+                    enable_ple: false,
+                    ..Default::default()
+                };
+                let (reduced, _) = preprocess_clauses(&clauses, &config);
+                assert_eq!(
+                    has_model(&clauses),
+                    has_model(&reduced),
+                    "clauses={clauses:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_exhausted_l_resolvent_check_cannot_delete_a_clause() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let literal = Literal::pos(Atom::pred(p, vec![Term::var(0)]));
+        let c = make_clause(0, vec![literal.clone()], 1);
+        let d = make_clause(1, vec![Literal::neg(literal.atom.clone()); 13], 1);
+        let term = atom_to_term(&literal.atom).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            bce::all_l_resolvents_valid(&c, 0, &term, &d, deadline, &mut 4096),
+            None
+        );
+        assert_eq!(
+            bce::all_l_resolvents_valid(&c, 0, &term, &d, Instant::now(), &mut 0),
+            None
+        );
+    }
+
+    #[test]
+    fn bce_refuses_function_expansion_shapes_before_legacy_fallbacks() {
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let f = symbols.intern("f");
+        let mut term = Term::var(0);
+        for _ in 0..32 {
+            term = Term::app(f, vec![term]);
+        }
+        let literal = Literal::pos(Atom::pred(p, vec![term]));
+        let clauses = vec![
+            make_clause(0, vec![literal.clone()], 1),
+            make_clause(1, vec![Literal::neg(literal.atom)], 1),
+        ];
+        let (retained, stats) = preprocess_clauses(&clauses, &Default::default());
+        assert_eq!(retained.len(), 2);
+        assert_eq!(stats.total_removed, 0);
+    }
 
     fn make_clause(id: u64, lits: Vec<Literal>, distance: u32) -> Clause {
         Clause::new(

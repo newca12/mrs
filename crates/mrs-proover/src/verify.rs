@@ -115,6 +115,55 @@ pub fn verify_with_telemetry(
     // thread-safe; the active run drains again only after all jobs have joined.
     let _ = atp.search_reports();
 
+    // Assumption soundness is proof-wide. Per-step ATP entailment checks must
+    // not invent premises from a positive conjecture or bypass split discharge.
+    let has_proof_assumptions = job.proof.problem().formulas.iter().any(|formula| {
+        formula.role() == FormulaRole::Conjecture
+            || formula.annotations().is_some_and(|annotations| {
+                annotations
+                    .parent_refs()
+                    .iter()
+                    .any(|parent| parent.negated)
+            })
+            || matches!(
+                formula.annotations().and_then(|a| a.inference_rule()),
+                Some(
+                    "split_component"
+                        | "avatar_split_clause"
+                        | "avatar_component_clause"
+                        | "avatar_branch_refutation"
+                        | "avatar_sat_refutation"
+                )
+            )
+    });
+    if has_proof_assumptions && let Some(problem) = &job.problem {
+        let limits = mrs_proof_kernel::VerificationLimits {
+            deadline: started.checked_add(settings.total_budget),
+            ..Default::default()
+        };
+        let verdict = match mrs_proof_kernel::check_avatar_structure(
+            problem.problem(),
+            job.proof.problem(),
+            limits,
+        ) {
+            Ok(()) => None,
+            Err(mrs_proof_kernel::KernelVerdict::Rejected(reason)) => {
+                Some(Verdict::VerifiedBad(reason))
+            }
+            Err(mrs_proof_kernel::KernelVerdict::Inconclusive(reason)) => {
+                Some(Verdict::Unknown(reason))
+            }
+            Err(mrs_proof_kernel::KernelVerdict::Certified) => {
+                Some(Verdict::Unknown("invalid structural-gate error".into()))
+            }
+        };
+        if let Some(verdict) = verdict {
+            telemetry.elapsed_ms = started.elapsed().as_millis() as u64;
+            telemetry.verdict = Some(verdict.clone());
+            return (verdict, telemetry);
+        }
+    }
+
     if settings.strict && job.problem.is_none() {
         let verdict = Verdict::Unknown(
             "strict: proof has no linked problem file for provenance verification".into(),

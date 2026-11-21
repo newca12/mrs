@@ -735,6 +735,57 @@ fn legacy_oracle_distinguishes_shapes() {
 }
 
 #[test]
+fn arity_boundaries_preserve_resolution_and_term_index_recall() {
+    use mrs_index::dtree::DTreeId;
+    for arity in [0, 1, 254, 255, 256, 257, 511, 512] {
+        let mut fx = Fixture::new();
+        let p = fx.sym("p");
+        let f = fx.sym("f");
+        let a = fx.sym("a");
+        let ca = fx.con(a);
+        let x = fx.var(0);
+        let ground = fx.app(f, vec![ca; arity]);
+        let variable = fx.app(f, vec![x; arity]);
+        fx.push(vec![fx.plit(true, p, vec![x])]);
+        fx.push(vec![fx.plit(false, p, vec![ground])]);
+        let index = fx.index();
+        check_resolution_recall(&fx.clauses, &fx.bank, &index, "arity-boundary");
+        assert_eq!(
+            index
+                .resolution_partner_ids(&fx.clauses[0].literals[0].atom, true, &fx.bank)
+                .len(),
+            1
+        );
+        for (stored, query) in [
+            (ground, x),
+            (x, ground),
+            (variable, ground),
+            (ground, variable),
+        ] {
+            assert!(legacy_unify_terms(stored, query, &fx.bank));
+            let mut trie = DTreeId::new();
+            let mut compressed = STreeId::new();
+            trie.insert(stored, &fx.bank, 1usize);
+            compressed.insert(stored, &fx.bank, 1usize);
+            assert_eq!(
+                trie.get_unifications(query, &fx.bank),
+                vec![1],
+                "arity {arity}"
+            );
+            assert_eq!(
+                compressed.get_unifications(query, &fx.bank),
+                vec![1],
+                "arity {arity}"
+            );
+            assert!(trie.remove(stored, &fx.bank, &1));
+            assert!(compressed.remove(stored, &fx.bank, &1));
+            assert!(trie.get_unifications(query, &fx.bank).is_empty());
+            assert!(compressed.get_unifications(query, &fx.bank).is_empty());
+        }
+    }
+}
+
+#[test]
 fn grp_resolution_partners_match_linear_scan() {
     let fx = grp_store();
     let index = fx.index();

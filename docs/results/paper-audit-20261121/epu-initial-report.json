@@ -1,0 +1,295 @@
+{
+  "changed_identical_artifacts": 0,
+  "counts": {
+    "AuditTimeout": 1,
+    "Unknown": 1,
+    "VerifiedGood": 15
+  },
+  "interpretation": "archived-proof observations, not a fresh CASC score; no prior totals are overwritten",
+  "records": [
+    {
+      "detail": "",
+      "elapsed_ms": 35059,
+      "has_avatar": true,
+      "input_identity": null,
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "HWV078-1.s",
+      "sha256": "a9aeb61655a444d9373e836cbee85c0df0c4ec034768ae056f4930c80f0a9935",
+      "verdict": "AuditTimeout"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 2717,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/HWV089-1.p",
+        "problem_sha256": "a049a3bb4978de799afeba2dd1ab355a89bb0ff1cdbd40501bfbea048befd9a4",
+        "proof_sha256": "f6872de98274e5c75d1dd6fe4a09cbe193248cbc9829c7963df273bb2e88c53a",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "HWV089-1.s",
+      "sha256": "f6872de98274e5c75d1dd6fe4a09cbe193248cbc9829c7963df273bb2e88c53a",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 27814,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/HWV090-1.p",
+        "problem_sha256": "47a88f0092f7eff77d44a22c047e3ab72e386e18aecee7add2b2ed20a7e18502",
+        "proof_sha256": "d6fca99229ab23a377315f8310c4b5974edbe89d08e82c39d65c58a2112c086b",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "HWV090-1.s",
+      "sha256": "d6fca99229ab23a377315f8310c4b5974edbe89d08e82c39d65c58a2112c086b",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status Unknown : strict verification deadline expired",
+      "elapsed_ms": 30604,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/HWV092-1.p",
+        "problem_sha256": "eb28318963f3c275ce4756fa6883c0694f52866d9fd396e240c8de6f79b6a677",
+        "proof_sha256": "def2ccc76ab7285cfe308582e7c4bd9b39b55e6ee2f15742ebbeb60a192c3e19",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "HWV092-1.s",
+      "sha256": "def2ccc76ab7285cfe308582e7c4bd9b39b55e6ee2f15742ebbeb60a192c3e19",
+      "verdict": "Unknown"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 21292,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/HWV094-1.p",
+        "problem_sha256": "cbeb755405f9e1cfb4492afe5c8ed04dfc55307a65fac62e61ae6808b6b20b43",
+        "proof_sha256": "153fb5b90c804b627611124d760345a0689cb19c946ebe6be5470d91a41554b0",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "HWV094-1.s",
+      "sha256": "153fb5b90c804b627611124d760345a0689cb19c946ebe6be5470d91a41554b0",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 3272,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/HWV107-1.p",
+        "problem_sha256": "d191755183be240eccccbae4e790ce043d79a7d8b5ab820100781203a3404ab9",
+        "proof_sha256": "736757ecd95061b14854570bcb3838925054cdaae66c1aaa6b636f45b390ceb7",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "HWV107-1.s",
+      "sha256": "736757ecd95061b14854570bcb3838925054cdaae66c1aaa6b636f45b390ceb7",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 7,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/LAT260-2.p",
+        "problem_sha256": "802a3bd786d9b8077b83f49f0406a2696ed1f5c292cffb39e6b0c051c0c1db7f",
+        "proof_sha256": "2b9ed84f7f01e349624dc68f6ed846987e7807bb268456dca4fab6609f2af4ba",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "LAT260-2.s",
+      "sha256": "2b9ed84f7f01e349624dc68f6ed846987e7807bb268456dca4fab6609f2af4ba",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 6,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/LAT261-2.p",
+        "problem_sha256": "b41e105aa9bc065c635a00a16c7921546010a8105a899d8479db3f53745f0957",
+        "proof_sha256": "bd4c174c4f56f2859311ce0588294f097e6dc54788b99196c798e367be3cc70e",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "LAT261-2.s",
+      "sha256": "bd4c174c4f56f2859311ce0588294f097e6dc54788b99196c798e367be3cc70e",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 8,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/LAT264-2.p",
+        "problem_sha256": "1b697e71e861371b94a897fe8c6bc010b2631c70d646cebf5acab165912b37be",
+        "proof_sha256": "320ce920fd96ca61b629a19c81cccc0eb3d97cf9bd6e0e31b33c24bded6aa96c",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "LAT264-2.s",
+      "sha256": "320ce920fd96ca61b629a19c81cccc0eb3d97cf9bd6e0e31b33c24bded6aa96c",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 6,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/LAT265-2.p",
+        "problem_sha256": "394f9acc99bf061b906a2122a23ef2d9e606beaf658753a79ee7386ad0f49c0f",
+        "proof_sha256": "cde347a40406f094b51e5692eb50a6445140da334095ee158861c593f3297f0f",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "LAT265-2.s",
+      "sha256": "cde347a40406f094b51e5692eb50a6445140da334095ee158861c593f3297f0f",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 6931,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/MSC024-1.p",
+        "problem_sha256": "9baf60f77b94ce957547b00ec0e54a32b8d3593f39abdcedb309b54c30cd7c74",
+        "proof_sha256": "03900664108d170e39da14d5b23cfc21641674e8c3266c0ec77083a869327ef0",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "MSC024-1.s",
+      "sha256": "03900664108d170e39da14d5b23cfc21641674e8c3266c0ec77083a869327ef0",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 14,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/PUZ008-2.p",
+        "problem_sha256": "4bce07547a38149d6e33941de81bbf3675a75d9ab8bab26a6131b2a1b1f64c9c",
+        "proof_sha256": "da4fd2665fea9c5cb3987b70a98a444b91659f5b651a45c29785255398f7ba5e",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "PUZ008-2.s",
+      "sha256": "da4fd2665fea9c5cb3987b70a98a444b91659f5b651a45c29785255398f7ba5e",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 11,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/PUZ036-1.005.p",
+        "problem_sha256": "b15fbc69bf2944ff4522885d925d45b92828da21af388a52ab69cb615e3a69cb",
+        "proof_sha256": "0922d744948ea0e6f856bb41ff4be7c788afdf95713cd7e49588fd0df9323e73",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "PUZ036-1.005.s",
+      "sha256": "0922d744948ea0e6f856bb41ff4be7c788afdf95713cd7e49588fd0df9323e73",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 25,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/PUZ037-2.p",
+        "problem_sha256": "cab94c88e457174342d47f9350cb54c76cc79737ab146b54ad90d8a755b1915f",
+        "proof_sha256": "a16d38584aef1f9516af70d1c77b7e193966161b83235608454ed774831361a7",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "PUZ037-2.s",
+      "sha256": "a16d38584aef1f9516af70d1c77b7e193966161b83235608454ed774831361a7",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 23,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/PUZ037-3.p",
+        "problem_sha256": "cc163fda9d7ed4a2524cf94bb01de514a19b1ea5dd3b79c1ca0be261fe2e8cec",
+        "proof_sha256": "fb340ef598904083b5b65c902f4e34f1a8d0fe762249f10d986d0f2f1b1c30b4",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "PUZ037-3.s",
+      "sha256": "fb340ef598904083b5b65c902f4e34f1a8d0fe762249f10d986d0f2f1b1c30b4",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 6,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/SET856-2.p",
+        "problem_sha256": "27d3fc1ff09fd23903d165fcc0504f696bafbb3619964fd7cf5bbb03eb92df4b",
+        "proof_sha256": "761d782c6a6b509760ea9e5ba7360e07c3cdd6ed4914c076ceabcbf7231c9722",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "SET856-2.s",
+      "sha256": "761d782c6a6b509760ea9e5ba7360e07c3cdd6ed4914c076ceabcbf7231c9722",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 2893,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/tmp/opencode/epu-reaudit-17-20261119-current-loader/proofs/mrs-starexec/epu/Problems/SYN837-1.p",
+        "problem_sha256": "baa040f83304402c643e290429b8b3f96b647ee595ebe6aa218a1a3a63567ab8",
+        "proof_sha256": "2d41b38a8fb727262d78217f05ede9cb406b673347d19c721dfb4ec86667c38d",
+        "schema": 1
+      },
+      "previous_input_match": null,
+      "previous_verdict": null,
+      "proof": "SYN837-1.s",
+      "sha256": "2d41b38a8fb727262d78217f05ede9cb406b673347d19c721dfb4ec86667c38d",
+      "verdict": "VerifiedGood"
+    }
+  ],
+  "schema": 1
+}

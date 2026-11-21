@@ -39,6 +39,9 @@ Every worker owns its `SearchState`, term bank, indexes, and local symbol-ID
 space. Shared equality chains carry symbol names and complete ancestry so they
 can be remapped and checked in the receiving worker.
 
+Technique names do not claim reproduction of an entire paper or dynamic
+completeness of this combination. See [Paper implementation contracts](paper-implementations.md).
+
 ## Trust boundary
 
 Search produces candidates and provenance. It does not by itself establish that

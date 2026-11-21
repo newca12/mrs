@@ -211,6 +211,7 @@ mrs/
 ```
 
 For the organized documentation map, see [`docs/README.md`](docs/README.md).
+Paper-derived techniques and their supported scope are listed in [`docs/reference/paper-implementations.md`](docs/reference/paper-implementations.md); technique names are not whole-paper or completeness claims.
 The active performance and architecture plan is [`ROADMAP.md`](ROADMAP.md).
 
 ## License

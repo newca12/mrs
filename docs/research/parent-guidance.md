@@ -6,6 +6,10 @@ candidate parent pair will generate at least one non-tautological result for a
 given inference operation. Features are fixed-width, symbol-name hashed, and do
 not contain clause IDs or problem-local symbol indices.
 
+This differs from the paper's proof/selected-clause usefulness labels and its
+freezer/revival mechanism. It does not reproduce the paper's GPU-server,
+GNN/GBDT pipeline; see the [per-paper contracts](../reference/paper-implementations.md).
+
 ## Safety and scope
 
 - Parent-pair observation and pruning are compiled behind the optional

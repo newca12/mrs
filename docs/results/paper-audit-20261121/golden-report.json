@@ -1,0 +1,129 @@
+{
+  "changed_identical_artifacts": 0,
+  "counts": {
+    "VerifiedGood": 7
+  },
+  "interpretation": "archived-proof observations, not a fresh CASC score; no prior totals are overwritten",
+  "records": [
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 18,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/problems/eq_func.p",
+        "problem_sha256": "c674c425db3a7c8d0e413260af5b4ae5185d6009ded6a073e48a70b7be6f0122",
+        "proof_sha256": "22bd87a655bf095962c84467f26a406523fa378cdadfd5aec31eb7aa8d001d89",
+        "schema": 1
+      },
+      "previous_input_match": true,
+      "previous_verdict": "VerifiedGood",
+      "proof": "eq_func.s",
+      "sha256": "22bd87a655bf095962c84467f26a406523fa378cdadfd5aec31eb7aa8d001d89",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 15,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/problems/eq_symm.p",
+        "problem_sha256": "7375b47a33e24800aaf57863b05f554b09e3d008fcf4d1662ef2a63f85b94c03",
+        "proof_sha256": "f6054c6ddbd6eeb6b3074d7b30ace8c6c717de95fcd9007a8af2480546b38a1e",
+        "schema": 1
+      },
+      "previous_input_match": true,
+      "previous_verdict": "VerifiedGood",
+      "proof": "eq_symm.s",
+      "sha256": "f6054c6ddbd6eeb6b3074d7b30ace8c6c717de95fcd9007a8af2480546b38a1e",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 13,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/problems/eq_trans.p",
+        "problem_sha256": "701017a668bf471cb973a74821f37721311de61991f3eb27ed89e0184622cc59",
+        "proof_sha256": "72ec3a37265bc9275b3413b063066ae2617afc0931b7b89dc9031a87da3bade4",
+        "schema": 1
+      },
+      "previous_input_match": true,
+      "previous_verdict": "VerifiedGood",
+      "proof": "eq_trans.s",
+      "sha256": "72ec3a37265bc9275b3413b063066ae2617afc0931b7b89dc9031a87da3bade4",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 22,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/problems/group.p",
+        "problem_sha256": "92a0b0843445fac1628912c788dcba1479d51a1faf4718d2f473bf6b42cf642b",
+        "proof_sha256": "d5a172581ded2f0f28b0e14fb60388598cabdae09a1415b323159da7561528c5",
+        "schema": 1
+      },
+      "previous_input_match": true,
+      "previous_verdict": "VerifiedGood",
+      "proof": "group.s",
+      "sha256": "d5a172581ded2f0f28b0e14fb60388598cabdae09a1415b323159da7561528c5",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 22,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/problems/lattice_absorb.p",
+        "problem_sha256": "17b7ee179d83c3c3ad455d17ee1d73ed1e7a2b9bab16d54b88a76f500425a2e6",
+        "proof_sha256": "697bc20e3bd87e18126c931ba5855b73e36e64feb2c0014d94aaf9967f3bde47",
+        "schema": 1
+      },
+      "previous_input_match": true,
+      "previous_verdict": "VerifiedGood",
+      "proof": "lattice_absorb.s",
+      "sha256": "697bc20e3bd87e18126c931ba5855b73e36e64feb2c0014d94aaf9967f3bde47",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 75,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/problems/ring_idem.p",
+        "problem_sha256": "f2023a53c17bb28b1696e0f55dec39e66eef21e64497a27bd282a4fbaf900f26",
+        "proof_sha256": "5d37c048f7452d6fae6aa445230117f700d4a40e9f951bf36d0eb3b117579bfb",
+        "schema": 1
+      },
+      "previous_input_match": true,
+      "previous_verdict": "VerifiedGood",
+      "proof": "ring_idem.s",
+      "sha256": "5d37c048f7452d6fae6aa445230117f700d4a40e9f951bf36d0eb3b117579bfb",
+      "verdict": "VerifiedGood"
+    },
+    {
+      "detail": "% SZS status VerifiedGood",
+      "elapsed_ms": 16,
+      "has_avatar": false,
+      "input_identity": {
+        "include_sha256": [],
+        "problem_path": "/home/fr22192/EDLA/git/mrs/problems/socrates.p",
+        "problem_sha256": "9d44687fcbddd10629aae7da30f026629aba92ae6979e767a0c9d2384a701021",
+        "proof_sha256": "2df7ab13d906c41d210747d5be35b582f3beaff8d27aa651c75666a6fbea2da8",
+        "schema": 1
+      },
+      "previous_input_match": true,
+      "previous_verdict": "VerifiedGood",
+      "proof": "socrates.s",
+      "sha256": "2df7ab13d906c41d210747d5be35b582f3beaff8d27aa651c75666a6fbea2da8",
+      "verdict": "VerifiedGood"
+    }
+  ],
+  "schema": 1
+}

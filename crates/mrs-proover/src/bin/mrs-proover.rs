@@ -18,7 +18,7 @@
 use mrs_proof_kernel::model::ModelEvaluation;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mrs_proover::atp::{
     EProverAtp, LadderAtp, MrsAtp, NoopAtp, VampireAtp, VampireFmbAtp, find_eprover, find_vampire,
@@ -44,6 +44,7 @@ fn usage() -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    let started = Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut proof_path: Option<PathBuf> = None;
     let mut problems_dir: Option<PathBuf> = None;
@@ -51,6 +52,7 @@ fn main() -> ExitCode {
     let mut no_mrs = false;
     let mut no_fmb = false;
     let mut strict = false;
+    let mut audit_input_identity = false;
     let mut verus: Option<(PathBuf, bool)> = None;
     let mut verus_hash: Option<String> = None;
     let mut eprover_override: Option<PathBuf> = None;
@@ -71,6 +73,7 @@ fn main() -> ExitCode {
             "--no-mrs" => no_mrs = true,
             "--no-fmb" => no_fmb = true,
             "--strict" => strict = true,
+            "--audit-input-identity" => audit_input_identity = true,
             "--verus-shadow" | "--verus-gate" => {
                 if verus.is_some() {
                     return usage();
@@ -199,7 +202,17 @@ fn main() -> ExitCode {
         }
     };
 
+    if audit_input_identity {
+        eprintln!(
+            "% Audit input identity: {}",
+            mrs_proover::strict::input_identity(&job)
+        );
+    }
     if strict {
+        let limits = mrs_proof_kernel::VerificationLimits {
+            deadline: started.checked_add(Duration::from_secs(total_budget_secs.unwrap_or(10))),
+            ..Default::default()
+        };
         let kernel = if let Some((path, gate)) = verus {
             let config = mrs_proof_kernel::verus::VerusConfig {
                 executable: path,
@@ -211,11 +224,7 @@ fn main() -> ExitCode {
             } else {
                 mrs_proover::strict::verify_loaded_job_with_verus_shadow
             };
-            match verify(
-                &job,
-                mrs_proof_kernel::VerificationLimits::default(),
-                &config,
-            ) {
+            match verify(&job, limits, &config) {
                 Ok((kernel, report)) => {
                     let report_json = serde_json::to_string(&report)
                         .expect("Verus shadow reports are JSON serializable");
@@ -228,7 +237,7 @@ fn main() -> ExitCode {
                 Err(verdict) => verdict,
             }
         } else {
-            mrs_proover::strict::verify_loaded_job_default(&job)
+            mrs_proover::strict::verify_loaded_job(&job, limits)
         };
         let verdict = match kernel {
             mrs_proof_kernel::KernelVerdict::Certified => Verdict::VerifiedGood,
